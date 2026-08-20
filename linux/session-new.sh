@@ -20,7 +20,9 @@
 # suites. Doing that once, after every source has moved, costs that churn once
 # instead of once per file.
 set -uo pipefail
-SESS_D="${STEWARD_SESSIONS_D:-$HOME/scripts/sessions.d}"
+# SESS_D is resolved AFTER the registry loads — see below. The estate owns the
+# session registry, and only the registry knows where the estate is.
+SESS_D=""
 SSH_DIR="${STEWARD_SSH_DIR:-$HOME/.ssh}"
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
 
@@ -38,10 +40,30 @@ fel() { echo "session-new: $1" >&2; exit "${2:-65}"; }
 # the supervisor does not recognise, and a guessed hub name would address the
 # request to a recipient that does not exist. Both failures are silent until
 # somebody wonders why a session never started.
-REG_LIB="${STEWARD_REGISTRY_LIB:-$HOME/scripts/lib/registry.sh}"
+# THE LIBRARY IS FOUND IN THE DEPLOYED LAYOUT FIRST, then relative to this
+# file. The order is the point: an existing installation must behave exactly as
+# before, so the deployed path wins whenever it exists. Only on a machine with
+# no deployment — a checkout, a fresh estate — do the siblings apply. The first
+# ordering tried was the reverse, and it made a supervisor in a product checkout
+# read the PRODUCT tree as its estate: sixty-nine green tests went thirty-six
+# red at once, which is exactly what the fixtures are for.
+_reg_lib_default() {
+  local d c
+  d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for c in "$HOME/scripts/lib/registry.sh" "$d/lib/registry.sh" "$d/../lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  printf '%s' "$HOME/scripts/lib/registry.sh"
+}
+REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 [ -f "$REG_LIB" ] || fel "registry library missing: $REG_LIB" 78
 # shellcheck source=/dev/null
 . "$REG_LIB" || fel "registry library could not be read: $REG_LIB" 78
+# THE SESSION REGISTRY COMES FROM THE ESTATE'S ROOT. It was a fixed path, so a
+# second estate on the same account was invisible: its confs existed and the
+# tooling looked past them, refusing with "no conf" — a refusal naming the wrong
+# cause. Deployed, the root resolves to the same directory as before.
+SESS_D="${STEWARD_SESSIONS_D:-$(registry_dir)}"
 RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
 NAV="$(registry_hub_session)" || exit 78
 

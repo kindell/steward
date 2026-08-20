@@ -21,7 +21,22 @@ set -euo pipefail
 # estate: another installation has another hub on another network, and a product
 # carrying our address would send a stranger's mail at our machine. That the key
 # refuses it is no comfort; the attempt has already happened.
-REG_LIB="${STEWARD_REGISTRY_LIB:-$HOME/scripts/lib/registry.sh}"
+# THE LIBRARY IS FOUND IN THE DEPLOYED LAYOUT FIRST, then relative to this
+# file. The order is the point: an existing installation must behave exactly as
+# before, so the deployed path wins whenever it exists. Only on a machine with
+# no deployment — a checkout, a fresh estate — do the siblings apply. The first
+# ordering tried was the reverse, and it made a supervisor in a product checkout
+# read the PRODUCT tree as its estate: sixty-nine green tests went thirty-six
+# red at once, which is exactly what the fixtures are for.
+_reg_lib_default() {
+  local d c
+  d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for c in "$HOME/scripts/lib/registry.sh" "$d/lib/registry.sh" "$d/../lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  printf '%s' "$HOME/scripts/lib/registry.sh"
+}
+REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 if [ ! -f "$REG_LIB" ]; then
   echo "bus-send: REFUSES — registry library missing: $REG_LIB" >&2
   exit 78

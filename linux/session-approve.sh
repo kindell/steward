@@ -15,19 +15,37 @@
 set -uo pipefail
 BUS_READ="${STEWARD_BUS_READ:-$HOME/bin/bus-read}"
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
-SESS_D="${STEWARD_SESSIONS_D:-$HOME/scripts/sessions.d}"
+# Resolved after the registry loads — the estate owns the session registry.
+SESS_D=""
 
 # THE HUB'S NAME COMES FROM THE ESTATE, not from a literal. See session-new.sh for
 # the same change and the reason: a product must not carry its owner's namespace
 # burned in, and a guessed hub name sends the report to a recipient that does not
 # exist — silently, until somebody wonders why the approval never arrived.
-REG_LIB="${STEWARD_REGISTRY_LIB:-$HOME/scripts/lib/registry.sh}"
+# THE LIBRARY IS FOUND IN THE DEPLOYED LAYOUT FIRST, then relative to this
+# file. The order is the point: an existing installation must behave exactly as
+# before, so the deployed path wins whenever it exists. Only on a machine with
+# no deployment — a checkout, a fresh estate — do the siblings apply. The first
+# ordering tried was the reverse, and it made a supervisor in a product checkout
+# read the PRODUCT tree as its estate: sixty-nine green tests went thirty-six
+# red at once, which is exactly what the fixtures are for.
+_reg_lib_default() {
+  local d c
+  d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for c in "$HOME/scripts/lib/registry.sh" "$d/lib/registry.sh" "$d/../lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  printf '%s' "$HOME/scripts/lib/registry.sh"
+}
+REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 if [ -f "$REG_LIB" ]; then
   # shellcheck source=/dev/null
   . "$REG_LIB" 2>/dev/null || { echo "session-approve: REFUSING — registry library could not be read: $REG_LIB" >&2; exit 78; }
 else
   echo "session-approve: REFUSING — registry library missing: $REG_LIB" >&2; exit 78
 fi
+# From the estate's root, not a fixed path — see session-new.sh.
+SESS_D="${STEWARD_SESSIONS_D:-$(registry_dir)}"
 NAV="$(registry_hub_session)" || exit 78
 
 pass=0; fail=0; RAPPORT=""

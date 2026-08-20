@@ -59,7 +59,22 @@ export PATH="$HOME/.local/bin:$PATH"
 # only after the pause guard — otherwise a broken estate would have burned a
 # timer every three minutes for every paused session, which is exactly the
 # damage #112 measured.
-REG_LIB="${STEWARD_REGISTRY_LIB:-$HOME/scripts/lib/registry.sh}"
+# THE LIBRARY IS FOUND IN THE DEPLOYED LAYOUT FIRST, then relative to this
+# file. The order is the point: an existing installation must behave exactly as
+# before, so the deployed path wins whenever it exists. Only on a machine with
+# no deployment — a checkout, a fresh estate — do the siblings apply. The first
+# ordering tried was the reverse, and it made a supervisor in a product checkout
+# read the PRODUCT tree as its estate: sixty-nine green tests went thirty-six
+# red at once, which is exactly what the fixtures are for.
+_reg_lib_default() {
+  local d c
+  d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for c in "$HOME/scripts/lib/registry.sh" "$d/lib/registry.sh" "$d/../lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  printf '%s' "$HOME/scripts/lib/registry.sh"
+}
+REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 _reg_ok=""
 if [ -f "$REG_LIB" ]; then
   # shellcheck source=/dev/null
@@ -138,7 +153,14 @@ PING_MSG="$(registry_ping_msg)" || exit 78
 # 2026-08-14 while narrowing its own proposal — it saw that the damage it
 # nearly caused by accident was already the normal outcome for an incomplete
 # conf.)
-CONF="$HOME/scripts/sessions.d/$NAME.conf"
+# THE CONF COMES FROM THE ESTATE'S ROOT, not a fixed path. This was
+# "$HOME/scripts/sessions.d/$NAME.conf", so supervision could only ever see ONE
+# estate: a session registered in a second estate on the same account was
+# invisible, and the refusal below named "no conf" while the conf existed one
+# directory away. A refusal pointing at the wrong cause is the failure shape this
+# whole file is built against. Deployed, the root resolves to the same directory
+# as before, so nothing about an existing installation changes.
+CONF="$(registry_dir)/$NAME.conf"
 # REFUSAL, NOT A WARNING. Until 2026-08-15 both cases below warned to stderr
 # and continued with rc 0 — a session without a conf silently got a private
 # credential directory and looked healthy all the way. One session dry-ran
