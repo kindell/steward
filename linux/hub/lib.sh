@@ -12,8 +12,26 @@
 # STEWARD_REGISTRY_DIR (sessions.d location, via lib/registry.sh) for testing.
 
 BUS_LIB_DIR="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../lib/registry.sh
-source "$BUS_LIB_DIR/../lib/registry.sh"
+# THE REGISTRY LIVES ONE STEP UP IN A DEPLOYED HOME (scripts/bus/ beside
+# scripts/lib/) but TWO steps up in the checkout (linux/hub/ beside lib/ at the
+# repo root). One fixed hop would make this library loadable in exactly one of
+# the two layouts and silently unloadable in the other — and a lib.sh that does
+# not load turns every caller into the self-refusing client's shape without its
+# explanation. STEWARD_REGISTRY_LIB overrides fully; found nowhere is a refusal,
+# because an unreadable registry must not look like an empty one.
+if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
+  # shellcheck source=/dev/null
+  source "$STEWARD_REGISTRY_LIB"
+elif [ -f "$BUS_LIB_DIR/../lib/registry.sh" ]; then
+  # shellcheck source=../lib/registry.sh
+  source "$BUS_LIB_DIR/../lib/registry.sh"
+elif [ -f "$BUS_LIB_DIR/../../lib/registry.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$BUS_LIB_DIR/../../lib/registry.sh"
+else
+  echo "bus/lib.sh: the registry library was found in neither layout (from $BUS_LIB_DIR)" >&2
+  return 78
+fi
 
 # THE PING IS A FIXED, CONTENTLESS PROMPT — the ONLY thing ever typed into a
 # recipient's pane. No message text, no sender name: a busy or idle mailbox

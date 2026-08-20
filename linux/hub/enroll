@@ -164,7 +164,23 @@ if [ -n "$KONTROLLERA" ]; then
 fi
 
 # ── EXECUTION ──────────────────────────────────────────────────────────────────
-BUS_SEND="${STEWARD_BUS_SEND:-$repo/bus/bin/bus-send}"
+# THE SEND GOES THROUGH THE SIBLING LIBRARY, NOT THROUGH A CLIENT PATH. The old
+# default kept the client path from this file's previous home, where $repo meant
+# the estate root; after the move $repo means the product root (checkout) or the
+# home root (deployed), and the path exists in NEITHER — so every live
+# confirm/proof died with rc 127 while the registration stood (measured on a
+# live hub 2026-08-21). The library is the one thing the manifest guarantees to
+# be a TRUE SIBLING of this file in both layouts, and running ON the hub is
+# exactly the context it is written for. STEWARD_BUS_SEND still overrides with
+# an executable (argv: <recipient>, text on stdin) — the tests drive their
+# stubs through it.
+BUS_SEND="${STEWARD_BUS_SEND:-}"
+BUS_LIB_LOADED=""
+_busdir="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "$BUS_SEND" ] && [ -f "$_busdir/lib.sh" ]; then
+  # shellcheck source=lib.sh
+  if source "$_busdir/lib.sh"; then BUS_LIB_LOADED=1; fi
+fi
 
 conf="$rdir/$NAMN.conf"
 tmpc="$(mktemp)" || exit 70
@@ -192,8 +208,14 @@ fi
 # authorized_keys: backup BEFORE the write, then exactly the restrict,command
 # form — the sender identity lives in the KEY, never in the message.
 cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
+# $here, NOT $repo: in a deployed hub home the relay lives at
+# <home>/scripts/bus/bin/bus-relay-in and $here IS <home>/scripts; $repo is one
+# step too high and was correct only in this file's previous home. In a
+# checkout-run hub the relay has not migrated to the product yet, so the line
+# names a path that will exist when it does — an inbound relay that
+# refuses loudly (no such file) rather than a key line that must be rewritten.
 printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
-  "$repo" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+  "$here" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
 
 # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, Task 2
 # envelope v2): "DRIFT enroll: <headline>". bus_send now refuses every SEND
@@ -202,17 +224,29 @@ printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
 # existed) and neither ENROLL-CONFIRM nor ENROLL-PROOF would have arrived. The
 # ENROLL-CONFIRM/PROOF markers stay as the second line — the approval script
 # and nav-enroll.test.sh look for them in the TEXT, not specifically on line one.
+# THE APPROVE PATH DEPENDS ON WHOSE MACHINE THE RECIPIENT IS ON. A recipient on
+# the hub's own machine shares the hub's layout, so $here (checkout or deployed
+# alike) is a path they can run. A recipient on a session host has the deployed
+# layout under their OWN home — an absolute hub path would name the hub owner's
+# home on a machine where it does not exist, so the tilde is left for THEIR
+# shell to expand. The old text hardcoded the deployed form for everyone, which
+# broke every checkout-run estate (measured on a live hub 2026-08-21).
+if [ "$VARD" = "$NAV_VARD" ]; then
+  APPROVE_CMD="bash $here/session-approve.sh"
+else
+  APPROVE_CMD='bash ~/scripts/session-approve.sh'
+fi
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1
 namn=$NAMN
 status=registered
 activate=systemctl --user enable --now agent-session@$NAMN.timer
-gate=the approval runs FROM the new session: bash ~/scripts/session-approve.sh"
+gate=the approval runs FROM the new session: $APPROVE_CMD"
 PROOF="DRIFT enroll: $NAMN registered, run session-approve.sh
 ENROLL-PROOF v1
 namn=$NAMN
 from-hub=yes — that this entry reached your inbox proves the hub knows the name
-task=run: bash ~/scripts/session-approve.sh  and send the outcome to $NAV"
+task=run: $APPROVE_CMD  and send the outcome to $NAV"
 
 if [ -n "$UTAN_SANDNING" ]; then
   printf '=== to %s ===\n%s\n=== to %s ===\n%s\n' \
@@ -225,7 +259,16 @@ else
   # as if CONFIRM arrived.
   bus_skicka() { # <vad> <mottagare> <text>
     local vad="$1" mot="$2" txt="$3" rc=0
-    printf '%s\n' "$txt" | "$BUS_SEND" "$mot" || rc=$?
+    if [ -n "$BUS_SEND" ]; then
+      printf '%s\n' "$txt" | "$BUS_SEND" "$mot" || rc=$?
+    elif [ -n "$BUS_LIB_LOADED" ]; then
+      # The hub sends as ITSELF — the identity is the hub session's name from
+      # the estate, the same NAV the proof instructs the recipient to answer.
+      bus_send "$mot" "$NAV" "$txt" >/dev/null || rc=$?
+    else
+      echo "nav-enroll: no send path — the sibling library did not load and STEWARD_BUS_SEND is unset" >&2
+      rc=78
+    fi
     case "$rc" in
       0) return 0 ;;
       65|78)
