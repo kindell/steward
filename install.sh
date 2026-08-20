@@ -44,7 +44,48 @@ case "$ORG" in
     die "estate name must be [a-z0-9-] and not empty (got '${ORG}')" 64 ;;
 esac
 
-# ── 2. THE PRODUCT ─────────────────────────────────────────────────────────
+# ── 2. PREREQUISITES ───────────────────────────────────────────────────────
+# Everything supervision and the bus lean on, checked BEFORE anything is
+# written: a bootstrap that discovers a missing tool halfway through leaves a
+# machine that is half an estate, and a half state that looks whole is the
+# recurring failure shape this code is written against.
+#
+# Installed via apt when possible; otherwise the refusal NAMES the missing
+# tools, because "install failed" without names sends the reader to a log
+# instead of to a package manager.
+say ""
+say "prerequisites:"
+_missing=""
+for _t in git curl tmux jq python3; do
+  if command -v "$_t" >/dev/null 2>&1; then say "  ok   $_t"
+  else _missing="$_missing $_t"; fi
+done
+if [ -n "$_missing" ]; then
+  if command -v apt-get >/dev/null 2>&1 && { [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; }; then
+    say "  installing:$_missing"
+    _sudo=""; [ "$(id -u)" = 0 ] || _sudo="sudo -n"
+    $_sudo apt-get update -qq && $_sudo apt-get install -y -qq $_missing >/dev/null       || die "could not install:$_missing" 70
+  else
+    die "missing tools:$_missing — install them and re-run. (No apt or no sudo here.)" 69
+  fi
+fi
+# claude: the session runtime. Installed with the official installer when
+# absent — into ~/.local/bin, no root needed. LOGIN is not done here: it is a
+# credential, it is interactive, and it is the owner's own act. The first
+# supervision round starts claude anyway; an unauthenticated claude shows its
+# login flow in the tmux pane, and attaching to answer it is the last step
+# printed below.
+if command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ]; then
+  say "  ok   claude ($("$HOME/.local/bin/claude" --version 2>/dev/null || claude --version 2>/dev/null | head -1))"
+else
+  say "  installing claude (official installer, into ~/.local/bin)"
+  curl -fsSL https://claude.ai/install.sh | bash >/dev/null 2>&1     || die "the claude installer failed — run it yourself and re-run this script:
+     curl -fsSL https://claude.ai/install.sh | bash" 70
+  [ -x "$HOME/.local/bin/claude" ] || die "claude did not land in ~/.local/bin" 70
+  say "  ok   claude ($("$HOME/.local/bin/claude" --version 2>/dev/null | head -1))"
+fi
+
+# ── 3. THE PRODUCT ─────────────────────────────────────────────────────────
 if [ -d "$PRODUCT_DIR/.git" ]; then
   say "product: already at $PRODUCT_DIR — fetching"
   git -C "$PRODUCT_DIR" fetch --quiet origin || die "could not fetch $STEWARD_REPO_URL" 70
@@ -57,7 +98,7 @@ else
 fi
 say "product: $(git -C "$PRODUCT_DIR" log --oneline -1)"
 
-# ── 3. THE ESTATE ──────────────────────────────────────────────────────────
+# ── 4. THE ESTATE ──────────────────────────────────────────────────────────
 # REFUSES TO OVERWRITE. An existing conf holds values that name live units and a
 # live tmux socket; rewriting it is how a machine loses track of what it is
 # already running. Removing it is the owner's deliberate act, never ours.
@@ -130,7 +171,7 @@ CONF
 chmod 600 "$ESTATE_DIR/estate/steward.conf"
 say "estate: written to $ESTATE_DIR/estate/steward.conf"
 
-# ── 4. THE MEASUREMENT ─────────────────────────────────────────────────────
+# ── 5. THE MEASUREMENT ─────────────────────────────────────────────────────
 # THE INSTALL ENDS WITH A MEASUREMENT, NOT A CLAIM. "Written" says a file
 # exists; it does not say the product can READ it. Every key is resolved through
 # the product's own readers here, so a typo surfaces now rather than at the first
@@ -163,11 +204,68 @@ fi
 [ "$_bad" -eq 0 ] || die "$_bad value(s) could not be read back. The estate file is at
      $ESTATE_DIR/estate/steward.conf — fix it and re-run this script." 78
 
+# ── 6. THE FIRST SESSION ───────────────────────────────────────────────────
+# THE FIRST SESSION CANNOT CREATE ITSELF. session-new.sh derives its identity
+# from the tmux pane it runs in, which requires an already-registered session —
+# right for every session after the first, impossible for the first. So the
+# installer writes the hub's registry entry itself, and everything after the
+# first goes through the enrolment chain like it should.
+HUB="${ORG}-hub"
+cat > "$ESTATE_DIR/sessions.d/$HUB.conf" <<CONF
+# $HUB — this estate's hub, written by install.sh. The FIRST session cannot be
+# created by session-new.sh (it derives identity from the pane it runs in), so
+# this one entry is written at install time. Every later session goes through
+# the enrolment chain.
+HOST="$(hostname -s)"
+REPO_PATH="$ESTATE_DIR"
+RC_LABEL="${ORG}: $HUB"
+PERMISSION_MODE="bypassPermissions"
+OWNER="$(id -un)"
+DOMAIN="$ORG"
+CONF
 say ""
-say "Estate '$ORG' is ready. Nothing has been started."
+say "hub session: $HUB registered"
+
+# ── 7. SUPERVISION ─────────────────────────────────────────────────────────
+# The unit templates ship pointing at the deployed image (~/scripts). This
+# install runs from a CHECKOUT, so a drop-in override points ExecStart at the
+# checkout and carries the estate root — the same mechanism systemd offers for
+# exactly this, and the shipped unit stays byte-identical for image installs.
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  _UD="$HOME/.config/systemd/user"
+  mkdir -p "$_UD/agent-session@.service.d"
+  cp "$PRODUCT_DIR/linux/agent-session@.service" "$_UD/"
+  cp "$PRODUCT_DIR/linux/agent-session@.timer"   "$_UD/"
+  cat > "$_UD/agent-session@.service.d/override.conf" <<UNIT
+# Written by install.sh: this estate runs from a checkout, not a deployed image.
+[Service]
+Environment=STEWARD_ESTATE_ROOT=$ESTATE_DIR
+Environment=STEWARD_REGISTRY_LIB=$PRODUCT_DIR/lib/registry.sh
+ExecStart=
+ExecStart=/bin/bash $PRODUCT_DIR/linux/session-supervisor-linux.sh %i
+UNIT
+  systemctl --user daemon-reload
+  # Linger, so the user manager — and with it every session — survives logout.
+  # Needs no root on modern systemd.
+  loginctl enable-linger "$(id -un)" 2>/dev/null || true
+  systemctl --user enable --now "agent-session@$HUB.timer" >/dev/null 2>&1     || die "could not enable agent-session@$HUB.timer" 70
+  say "supervision: agent-session@$HUB.timer enabled — first round within a minute"
+else
+  say "supervision: NO systemd user manager here — the timer was not installed."
+  say "  Start the hub by hand when you want it:"
+  say "    STEWARD_ESTATE_ROOT=$ESTATE_DIR bash $PRODUCT_DIR/linux/session-supervisor-linux.sh $HUB"
+fi
+
 say ""
-say "  next: create the hub session, then add projects to it:"
-say "    STEWARD_ESTATE_ROOT=$ESTATE_DIR bash $PRODUCT_DIR/linux/session-new.sh <project> <repo path>"
+say "Estate '$ORG' is up. One step remains, and it is yours:"
+say ""
+say "  the hub is starting under supervision. claude in it is NOT logged in —"
+say "  that is a credential, so the installer never touches it. Attach and log in:"
+say ""
+say "      tmux attach -t $HUB"
+say ""
+say "  after that: add projects from inside the hub with"
+say "      STEWARD_ESTATE_ROOT=$ESTATE_DIR bash $PRODUCT_DIR/linux/session-new.sh <project> <repo path>"
 say ""
 say "  the estate's values live in $ESTATE_DIR/estate/steward.conf and are yours;"
 say "  the product carries the mechanism and none of the names."
