@@ -1,0 +1,52 @@
+# linux/deploy-manifest — the single truth about what lives where in a home on
+# a Linux session host. Format: source target mode kind  (source relative to the
+# repo root, target relative to the home root). One source may have several
+# target rows. The row list was MEASURED against real homes — change it by
+# measuring, not by guessing.
+#
+# An estate adds its own rows in its own manifest; the deploy composes the union
+# and prints how many rows each side contributed. A stranger who clones this
+# repo gets the mechanism's rows and nothing else.
+#
+# FILE NAMES ARE STILL BEING RENAMED, and one of them is now done. The session
+# and job units used to be named after the estate; as of 2026-08-20 they carry a
+# FUNCTION name instead — `agent-`, which belongs to neither the estate nor this
+# product. That choice was deliberate: naming them after the product would have
+# put the product's name into somebody's operational layer, and the next rename
+# would drag thirty live timers along with it.
+#
+# The rename is only half an operation. New unit files can be DEPLOYED, but
+# switching a host over means disabling the old instances and enabling the new
+# ones per home — a service verb the deploy path refuses by design (see
+# test/deploy-policy.test.sh: daemon-reload and nothing else). Until a host has
+# had that done by hand, it runs the old units; the rows below describe what the
+# deploy WRITES, never what a host currently runs.
+#
+# What remains named in the estate's own language: a directory and two scripts,
+# all Swedish rather than estate-specific, and none of them load-bearing for a
+# running unit. Those are a rename with no operational half.
+
+# scripts
+linux/session-supervisor-linux.sh  scripts/session-supervisor-linux.sh  755  scripts
+linux/session-new.sh                scripts/session-new.sh                755  scripts
+linux/session-approve.sh           scripts/session-approve.sh           755  scripts
+job-runner.sh                      scripts/job-runner.sh                755  scripts
+lib/registry.sh                    scripts/lib/registry.sh              755  lib
+# bus clients + browser (executable locations — the loneliness sweep's core targets)
+linux/bus-send                     bin/bus-send                         755  bin
+linux/bus-read                     bin/bus-read                         755  bin
+linux/browser-stack.sh             bin/browser-stack.sh                 755  bin
+# systemd templates (daemon-reload only; never enable/restart)
+linux/agent-session@.service      .config/systemd/user/agent-session@.service  644  systemd
+linux/agent-session@.timer        .config/systemd/user/agent-session@.timer    644  systemd
+linux/agent-job@.service          .config/systemd/user/agent-job@.service      644  systemd
+linux/browser-stack.service        .config/systemd/user/browser-stack.service    644  systemd
+linux/browser-stack.timer          .config/systemd/user/browser-stack.timer      644  systemd
+# The hub guard's self-refusing client — NOT a duplicate but a guard. A session
+# owner's account once ran a working hub client where a refusing one belonged,
+# and the mistake was invisible because the file looked correct. As a manifest
+# target it is spared by the loneliness sweep AND measured by the drift gate: if
+# anyone swaps the guard for a working hub client, the gate fails. The guard is
+# guarded.
+linux/hub/bus-send             scripts/bus/bus-send                 755  scripts
+linux/hub/lib.sh               scripts/bus/lib.sh                   644  scripts

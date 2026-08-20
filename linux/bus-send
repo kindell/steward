@@ -1,0 +1,407 @@
+#!/bin/bash
+# linux/bus-send <recipient> "<text>" — a session host's channel to the fleet.
+#
+# ONE KEY PER SESSION, NOT PER MACHINE. The identity lives in the key line on the
+# RECEIVING side (authorized_keys: `bus-relay-in <name>`), so a session cannot
+# claim to be another. That presupposes each session uses ITS OWN key.
+#
+# It did not: a host once had a single ~/.ssh/id_busrelay bound to the first
+# session that lived there. When a second session moved in, all of its mail was
+# stamped with the first one's name — a report signed by one session arrived in
+# an envelope from another (2026-08-06).
+#
+# The session name is read from the CALLER'S OWN tmux pane. `tmux display-message
+# -p '#S'` without a target answers with the machine's most recently used
+# session, not the caller's — it would rather lie than admit it does not know.
+set -euo pipefail
+
+# THE HUB'S SSH TARGET COMES FROM THE ESTATE. It was a literal here — an account
+# name and an internal address in the middle of a file destined for the product,
+# two leak classes on one line. The ADDRESS, not merely the name, belongs to the
+# estate: another installation has another hub on another network, and a product
+# carrying our address would send a stranger's mail at our machine. That the key
+# refuses it is no comfort; the attempt has already happened.
+REG_LIB="${STEWARD_REGISTRY_LIB:-$HOME/scripts/lib/registry.sh}"
+if [ ! -f "$REG_LIB" ]; then
+  echo "bus-send: REFUSES — registry library missing: $REG_LIB" >&2
+  exit 78
+fi
+# shellcheck source=/dev/null
+. "$REG_LIB" || { echo "bus-send: REFUSES — $REG_LIB could not be read" >&2; exit 78; }
+HUB_SSH_TARGET="$(registry_hub_ssh)" || exit 78
+
+# THE ESCAPE HATCH IS AN ARGUMENT, NOT AN ENVIRONMENT VARIABLE.
+#
+# An environment variable IS INHERITED. A trigger variable inherited from a tmux
+# server's first session once made a session read another's inbox; this claim,
+# when it lived in a variable, sat in one test shell and rode along on FOUR
+# sends, three of which contained nothing that could even trip the guard.
+#
+# The consequence is worse than noise: the field's WHOLE purpose is that its
+# presence should mean SOMEBODY MADE A JUDGEMENT. Set reflexively, its presence
+# instead means "came from that rig". Measured in one archive: four of 57
+# messages carried the field, ONE was a real judgement and three were noise. The
+# signal diluted to a quarter within an hour, by the party that built it.
+#
+# A claim is made PER MESSAGE. Per message is per invocation, hence an argument —
+# it cannot be inherited, it cannot be left behind in a shell, and it stands in
+# the command somebody actually wrote.
+#
+# THE FLAG IS ACCEPTED BEFORE OR AFTER THE RECIPIENT, and a text beginning with
+# -- is REFUSED. The first version read only $1. The consequence, provoked:
+#     bus-send <me> --not-a-secret "this is the real text"
+#     -> rc 0, DELIVERED, text = "--not-a-secret"
+# Three losses in ONE call: the intended message never arrived, no claim was
+# recorded (the flag was not read as a flag), and the sender got rc 0 AND a
+# filename — two receipts for a send that dropped its content. The asymmetry is
+# the recurring shape: the fault is VISIBLE to the recipient, who receives a
+# message reading "--not-a-secret", and INVISIBLE to the sender.
+#
+# AN INHERITANCE FAULT WAS TRADED FOR AN ORDERING FAULT. The variable was wrong
+# because it is inherited; a positional argument is not inherited but has an edge
+# of its own. The trade was right and the fix moves forward, not back.
+#
+# A text that legitimately begins with -- goes through stdin, where it cannot be
+# confused with a flag.
+_NOT_A_SECRET=""
+_flag() { [ "${1:-}" = "--not-a-secret" ]; }
+while _flag "${1:-}"; do _NOT_A_SECRET=1; shift; done
+if [ -n "${STEWARD_BUS_NOT_A_SECRET:-}" ]; then
+  echo "bus-send: STEWARD_BUS_NOT_A_SECRET has been removed — it could be inherited." >&2
+  echo "  Use --not-a-secret as the first argument instead. A claim about ONE" >&2
+  echo "  message is made per invocation, not left behind in a shell." >&2
+  exit 64
+fi
+# THE TEXT MAY COME FROM STDIN. The safest form should also be the shortest —
+# otherwise it is a step people skip when they are in a hurry.
+#
+# THE MEASUREMENT THAT MOTIVATES IT (2026-08-14): a session reviewed its own sent/
+# archive and found that FIVE OF NINE messages discussing a shell fallback
+# expression had LOST the expression — its own shell expanded it to an empty
+# string before bus-send saw the text, leaving a double space that reads as
+# careless punctuation. Four held, the ones where the escaping was right.
+#
+# 44 per cent accuracy from somebody who KNEW about the trap and was trying to
+# avoid it. Escaping is discipline per OCCURRENCE: you lose the ninth dollar sign
+# because you escaped the first eight. An interface that makes the safe path
+# shorter removes the shape instead of warning about it.
+#
+#   bash ~/bin/bus-send <recipient> <<'"'"'EOF'"'"'
+#   text with $ and ${VAR} exactly as written
+#   EOF
+#
+# The -t 0 guard is not cosmetic: without it `cat` blocks forever when somebody
+# runs the command with no arguments in a terminal, and a hung session looks like
+# a working session.
+to="${1:?bus-send <recipient> <text>   (or: bus-send <recipient> <<'"'"'EOF'"'"' ... EOF)}"
+# ...and once more AFTER the recipient, so both orderings work.
+while _flag "${2:-}"; do
+  set -- "$1" "${@:3}"
+  _NOT_A_SECRET=1
+done
+case "${2:-}" in
+  --*) echo "bus-send: REFUSES — the text begins with '$2'." >&2
+       echo "  That is almost always a misplaced flag, and a misplaced flag DISCARDS" >&2
+       echo "  the real text silently: it becomes an argument nobody reads, while you" >&2
+       echo "  get rc 0 and a filename. The only known flag is --not-a-secret." >&2
+       echo "  If the text REALLY must begin with --: send it through stdin instead." >&2
+       exit 64 ;;
+esac
+if [ $# -ge 2 ]; then
+  text="$2"
+elif [ -t 0 ]; then
+  echo "bus-send: no text. Give it as an argument, or feed it in:" >&2
+  echo "  bash \$0 $to <<'"'"'EOF'"'"'" >&2
+  echo "  your text, with \$ and \${VAR} exactly as written" >&2
+  echo "  EOF" >&2
+  exit 64
+else
+  # READ STDIN IN THE RIGHT BRANCH. 2026-08-14: a scripted replacement removed
+  # exactly this `else` line, so the whole reading block ended up INSIDE the tty
+  # branch AND after exit 64 — unreachable, and with no branch for the real case
+  # (no second argument, stdin not a terminal). `text` was then never set, set -u
+  # fired, and EVERY heredoc send from a session failed. A session's tool shell is
+  # non-tty, so the form was dead for exactly the users it was built for.
+  #
+  # The heredoc was tried against the HUB client, which was undamaged, and "the
+  # whole suite is green" was reported in the same breath. The reply: "you tested
+  # in the one environment where the fault is invisible."
+  #
+  # READ STDIN WITH A DEADLINE, never blindly. `cat` on a stdin that is open but
+  # silent blocks FOREVER — and a hung session looks like a working session, which
+  # is the most expensive failure shape here. The `-t 0` guard was not enough: it
+  # catches only the TTY. An inherited pipe with no writer, a /dev/null-like
+  # descriptor, or a job started with stdin open does not look like a terminal and
+  # blocks anyway. (This very tool hung its own test on exactly that, 2026-08-14,
+  # minutes after the comment about a hung session looking like a working one was
+  # written.)
+  #
+  # read -t returns nonzero both on DEADLINE and on EOF-without-data. Both mean
+  # "no text is coming" and both must produce the same loud usage error.
+  #
+  # read RETURNS NONZERO ON EOF-WITHOUT-DELIMITER — but it still ASSIGNS. The
+  # first version branched only on the return code, took the else branch and set
+  # text="" while the line already sat in _first. A line without a trailing
+  # newline was therefore discarded, with the message "empty text" although there
+  # WAS text. Multi-line input escaped: the first line ends with a newline, so
+  # read succeeds and cat picks up the rest. The bug hid behind the normal case.
+  # Realistic triggers, not contrived: printf without \n, echo -n, jq -r,
+  # tr -d '\n', or somebody rewriting `bus-send x "$(cmd)"` into a pipe.
+  #
+  # READ LINE BY LINE WITH A DEADLINE ON EACH — and REFUSE on deadline.
+  #
+  # Three fixes in a row traded one proxy for a nearer proxy, never for the
+  # question itself:
+  #   `-t 0`      asked "is this a terminal?"   — the question was "is text coming?"
+  #   `read -t 2` asked "is a LINE coming?"     — still the previous question
+  # A line-oriented reader cannot answer a byte question without letting its own
+  # framing leak into the message.
+  #
+  # WHAT LEAKED: `read -t` assigns partial data BOTH on EOF-without-delimiter and
+  # on DEADLINE. The condition `|| [ -n "$_first" ]` fired in both, and in the
+  # deadline case the content is a FRAGMENT, not a line — whereupon joining with a
+  # newline FABRICATED a line break that never existed in the input:
+  #     { printf 'FIRST-PART-'; sleep 3; printf 'THEN-PART\n'; } | bus-send x
+  #     -> the recipient got TWO lines. No byte lost, one newline invented.
+  # And it did NOT fail loudly: rc 0, a filename, all the text delivered. A test
+  # that checks the lines EXIST passes it; only a byte-exact comparison fails it.
+  #
+  # They are separable by exit code: rc > 128 is a DEADLINE (128+SIGALRM), rc 1 is
+  # EOF-without-delimiter. On deadline we do NOT know whether more was coming, and
+  # guessing is precisely what corrupts — hence refusal, not delivery.
+  #
+  # AND `cat` FOR THE REMAINDER WAS A HANG THAT SURVIVED THE PREVIOUS FIX: the
+  # first line succeeds, then the producer falls silent, and `$(cat)` blocks
+  # forever. Measured: rc 124 under `timeout 8`. Hence a loop with a deadline on
+  # EVERY line.
+  #
+  # $? AFTER `fi` IS THE IF STATEMENT'S STATUS, NOT THE CONDITION'S. The first
+  # version of this loop wrote `if read ...; then ...; fi` and then `_rc=$?` — and
+  # ALWAYS got 0, because an if statement whose condition fails and which has no
+  # else branch succeeds itself. Measured: read returned 142, _rc became 0, and
+  # the deadline refusal never fired. The symptom was SILENT TRUNCATION — exactly
+  # what the fix was built to make impossible. The code is therefore captured in
+  # the same command list as read, with ||.
+  #
+  # THE DEADLINE IS PER LINE, NOT ON THE WHOLE INPUT — and that is a CHOICE. A
+  # slow but LIVE producer gets through (measured: three lines 1.2 s apart, 4322 ms
+  # total, rc 0). One that falls SILENT is refused. The limit measures "is more
+  # text coming?", not "how long has this taken?". DO NOT REBUILD IT INTO A TOTAL
+  # LIMIT. That sounds like tidying and breaks every slow pipe, with no test to
+  # say so.
+  #
+  # A PLATFORM DIFFERENCE THAT CANNOT BE ENGINEERED AWAY, measured on two machines
+  # with the same input:
+  #     bash 5.2: rc 142 + fragment -> REFUSAL, 65
+  #     bash 3.2: rc 1   + empty var -> "empty text", 64
+  # On 3.2 read -t does not keep partial input, so a deadline is INDISTINGUISHABLE
+  # from EOF-without-data. The OUTCOME is safe on both — nothing is delivered — but
+  # the CODE and the DIAGNOSIS differ, and on 3.2 it says "empty text" when the
+  # input was in fact cut off.
+  #
+  # No timing measurement is added to smooth that over: SECONDS has one-second
+  # resolution, so the guard would sometimes be guessing, and a guard that guesses
+  # is worse than a documented difference. Anyone branching on 65 must know it
+  # exists only where bash >= 4. (The difference was DERIVED from the 3.2
+  # observation and sent as a PREDICTION to provoke, not as a finding. Provoked:
+  # it holds.)
+  _buf=""; _n=0
+  while :; do
+    _l=""; _rc=0
+    IFS= read -r -t 2 _l || _rc=$?
+    if [ "$_rc" -eq 0 ]; then
+      if [ "$_n" -eq 0 ]; then _buf="$_l"; else _buf="$_buf
+$_l"; fi
+      _n=$((_n + 1))
+      continue
+    fi
+    if [ "$_rc" -gt 128 ]; then
+      echo "bus-send: REFUSES — input stopped after 2 s without terminating." >&2
+      echo "  We do not know whether more was coming, and sending what arrived" >&2
+      echo "  would either truncate the message or invent a line break." >&2
+      echo "  Close the input (or give the text as an argument) and send again." >&2
+      exit 65
+    fi
+    if [ -n "$_l" ]; then
+      if [ "$_n" -eq 0 ]; then _buf="$_l"; else _buf="$_buf
+$_l"; fi
+      _n=$((_n + 1))
+    fi
+    break
+  done
+  text="$_buf"
+fi
+# WHITESPACE ONLY IS EMPTY TEXT. [ -n "$text" ] is true for three spaces and a
+# tab: the sender gets rc 0 AND a filename — two receipts for something that says
+# nothing — the recipient's ping fires, and if the message is not read within
+# fifteen minutes the unacknowledged-mail alarm reaches a human. For a message
+# with no content. The realistic trigger is not malice but indentation: a heredoc
+# whose body is merely indented, or a pipe whose output has been filtered down to
+# whitespace. (Provoked in the very function the reviewer had proposed:
+#  printf '   \t\n' | bus-send <me>  -> delivered, text= empty at the recipient.)
+[ -n "${text//[[:space:]]/}" ] || { echo "bus-send: empty text" >&2; exit 64; }
+
+# THE SECRET GUARD. The rule "secrets never travel over the bus" was written in
+# four instruction files — and was broken on 2026-08-14 by the party that wrote
+# it, in a message whose ONLY purpose was to be thorough. A password went in clear
+# text to four sessions and landed in four done/ archives plus one sent/, with
+# ninety days of retention.
+#
+# Four sessions caught it independently within minutes. NO MECHANISM DID. As one
+# of them put it: "this is not carelessness — a rule without a mechanism is a
+# memory."
+#
+# WHAT IS CAUGHT: a line that both NAMES a secret and carries something that
+# LOOKS LIKE a value. Requiring both cuts false positives sharply: checksums and
+# inode numbers are quoted all day without the line also saying "password", and
+# the word "password" appears constantly with no value beside it.
+# The value pattern requires an uppercase letter, a lowercase letter AND a digit
+# in the same run of at least eight characters — which excludes hex digests
+# (lowercase and digits only), and those are what we send most often.
+#
+# THE ESCAPE HATCH IS NAMED not-a-secret, NOT allow-secret. The difference is not
+# cosmetic: the rule is absolute, so there must be no flag granting permission to
+# break it. The flag exists for FALSE POSITIVES, and whoever sets it CLAIMS that
+# this is not a secret. Then it has been said out loud, and it stands in the
+# archive beside the message.
+# THE NOUN LIST IS DATA, NOT PROSE, and it must match what people actually write.
+# This fleet's operators write Swedish, so the Swedish word for password belongs
+# in the pattern — but the product's language guard forbids Swedish letters in
+# its files, and its own rule is that an exemption list which grows with every
+# file means the guard has failed. The letter is therefore built from an OCTAL
+# ESCAPE: the match is identical, the file carries no such letter.
+#
+# MEASURED, not assumed: both spellings are checked by the envelope suite. An
+# escape that silently stopped matching would be a secret guard that had quietly
+# lost half its vocabulary — the exact failure shape this guard exists to
+# prevent, one level up.
+_BUS_SECRET_NOUNS="l$(printf '\303\266')senord|losenord|password|passwd|secret|hemlighet|token|api[_-]?key|client[_-]?secret|private[_-]?key"
+
+bus_secret_guard() { # <text>
+  [ -n "${_NOT_A_SECRET:-}" ] && return 0
+  local _n=0 _line _tok
+  while IFS= read -r _line; do
+    _n=$((_n + 1))
+    # TWO WAYS IN. Noun plus value-like run is the main rule. But a BARE value
+    # with no noun passes deliberately (requiring both keeps false positives
+    # down), and the commonest human action is precisely to paste a value with no
+    # context. Hence also PREFIX PATTERNS: they catch the most common families
+    # without touching the character-class requirement, i.e. without killing
+    # checksum and inode reporting. (Proposed after measuring that lowercase plus
+    # digits — hex, base32 — passes and CANNOT be closed without also failing our
+    # own allow list. The permitted case and the hole are the same string shape.)
+    if printf '%s' "$_line" | grep -qE '(ghp_|gho_|ghs_|github_pat_|sk-[A-Za-z0-9]|xox[baprs]-|AKIA[A-Z0-9]{12}|-----BEGIN [A-Z ]*PRIVATE KEY|eyJ[A-Za-z0-9_-]{10})'; then
+      echo "bus-send: REFUSES — line $_n carries a known secret prefix." >&2
+      echo "  A POINTER does the same job. False positive: pass --not-a-secret." >&2
+      return 65
+    fi
+    # THE NOUN LIST IS DATA, NOT PROSE. It must match what people actually
+    # write, and this estate writes Swedish — so the Swedish word for password
+    # belongs in the pattern. It is spelled with an OCTAL ESCAPE rather than the
+    # letter itself: the product's language guard forbids Swedish letters in its
+    # files, and it has exactly two exemptions whose own rule is that an
+    # exemption list which grows with every file means the guard has failed.
+    # Escaping keeps the match identical and the file free of the letter.
+    printf '%s' "$_line" | grep -qiE "${_BUS_SECRET_NOUNS}" || continue
+    # THE CLASSES ARE TESTED SEPARATELY, NOT AS ONE PATTERN. The first version
+    # required an uppercase letter BEFORE a lowercase one BEFORE a digit — and so
+    # failed on its own test case, where the value began with a lowercase letter.
+    # A false negative in the guard against false negatives, found by provoking
+    # the test rather than reading it.
+    for _tok in $(printf '%s' "$_line" | grep -oE '[A-Za-z0-9/+=_-]{8,}'); do
+      printf '%s' "$_tok" | grep -q '[A-Z]' || continue
+      printf '%s' "$_tok" | grep -q '[a-z]' || continue
+      printf '%s' "$_tok" | grep -q '[0-9]' || continue
+      echo "bus-send: REFUSES — line $_n appears to carry a SECRET." >&2
+      echo "  The rule is absolute: the queue is archived in done/, and a key in an" >&2
+      echo "  archive is a key on disk forever — at EVERY recipient, for 90 days." >&2
+      echo "  A POINTER does the same job: 'the password is in <path>, rotate with X'." >&2
+      echo "  IF YOU ARE REPORTING A FALSE POSITIVE the flag is the right way — the" >&2
+      echo "  quoted text is then not a secret, and without it the fault cannot be" >&2
+      echo "  reported at all." >&2
+      echo "  If you are reporting a TEST of the guard: MASK the value instead." >&2
+      echo "  The flag claims the text is NOT a secret, and a string you built to" >&2
+      echo "  LOOK like one is not the occasion to claim that." >&2
+      echo "  If it is a false positive: --not-a-secret as the FIRST argument" >&2
+      echo "  — but then you have claimed it is NOT a secret, out loud and on record." >&2
+      return 65
+    done
+  done <<BUSGUARDEOF
+$1
+BUSGUARDEOF
+  return 0
+}
+
+bus_secret_guard "$text" || exit $?
+
+me="${BUS_FROM:-}"
+if [ -z "$me" ] && [ -n "${TMUX_PANE:-}" ]; then
+  me="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)"
+fi
+key="$HOME/.ssh/id_busrelay"
+[ -n "$me" ] && [ -f "$HOME/.ssh/id_busrelay_$me" ] && key="$HOME/.ssh/id_busrelay_$me"
+
+# A FAILED SEND MUST ALSO LEAVE A TRACE. sent/ archives AFTER ssh deliberately —
+# an archive written before the send would contain mail that never arrived. The
+# price of that correct design is that the archive is BLIND TO LOSS: it lists what
+# succeeded, and a failed send leaves nothing but an exit code in the moment it
+# happens. If nobody was watching, the question is unanswerable.
+#
+# From the review of a regression window on 2026-08-14: "my honest answer is that
+# nothing was lost in that window, but I know it because I SAW the exit codes, not
+# because the archive tells me."
+#
+# With failed/ the archive is complete without lying, and AN EMPTY failed/ BECOMES
+# A MEASUREMENT rather than an absence — the same reason the absence of a finding
+# is also a measurement.
+send_rc=0
+printf '%s\n%s' "$to" "$text" | \
+  ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 "$HUB_SSH_TARGET" || send_rc=$?
+
+# ARCHIVE AFTER SSH, NEVER BEFORE. set -e aborts on a failed send, so the line
+# below is reached only when the mail has actually left the machine. An archive
+# written before the send would contain messages that never arrived — and since
+# the archive is what one reviews afterwards, it would be a record that lies in
+# exactly the direction nobody checks.
+#
+# Until 2026-08-14 the bus archived only RECEIVED mail: one session's done/ held
+# 84 received and zero sent, so every volume measurement was one-sided and every
+# "who said what" depended on the counterparty's archive. A review of session
+# communication could count incoming exactly and had to ESTIMATE outgoing.
+#
+# Cleaned by bus-read (90 days) together with done/ — see the bus library's gc.
+if [ -n "$me" ] && [ "$send_rc" -ne 0 ]; then
+  failed="$HOME/.config/agent-bus/$me/failed"
+  if mkdir -p "$failed" 2>/dev/null; then
+    now="$(date +%s)"
+    safe_to="$(printf '%s' "$to" | tr -c 'A-Za-z0-9._-' '_')"
+    jq -n --arg from "$me" --arg to "$to" --argjson ts "$now" --arg text "$text" \
+      --argjson rc "$send_rc" \
+      '{from: $from, to: $to, ts: $ts, text: $text, delivered: false, ssh_rc: $rc}' \
+      > "$failed/${now}-${safe_to}-$$.json" 2>/dev/null || true
+  fi
+  echo "bus-send: THE SEND FAILED (ssh rc $send_rc). Saved in $HOME/.config/agent-bus/$me/failed/" >&2
+fi
+[ "$send_rc" -eq 0 ] || exit "$send_rc"
+
+if [ -n "$me" ]; then
+  sent="$HOME/.config/agent-bus/$me/sent"
+  if mkdir -p "$sent" 2>/dev/null; then
+    now="$(date +%s)"
+    safe_to="$(printf '%s' "$to" | tr -c 'A-Za-z0-9._-' '_')"
+    # Never blocking: the mail IS delivered by now. Failing on the archiving
+    # would report the wrong thing to the caller.
+    #
+    # HERE THE CLAIM ONLY TRAVELS HALFWAY: the field lands in the SENDER's sent/,
+    # but the RECIPIENT's copy is built by the hub after the relay, and the relay
+    # protocol carries only "<to>\n<text>". That a session bypassed the guard is
+    # therefore visible at the sender and NOT at the recipient. Closing that needs
+    # a protocol change and is not done in passing. Half is better than nothing,
+    # and saying so is better than letting it be assumed.
+    _nas="false"; [ -n "${_NOT_A_SECRET:-}" ] && _nas="true"
+    jq -n --arg from "$me" --arg to "$to" --argjson ts "$now" --arg text "$text" \
+      --argjson nas "$_nas" \
+      '{from: $from, to: $to, ts: $ts, text: $text, delivered: true} + (if $nas then {not_a_secret: true} else {} end)' \
+      > "$sent/${now}-${safe_to}-$$.json" 2>/dev/null || true
+  fi
+fi

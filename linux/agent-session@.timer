@@ -1,0 +1,30 @@
+# linux/agent-session@.timer — the supervision round: every three minutes, and
+# once at boot.
+#
+# THREE MINUTES IS A COMPROMISE WITH A NAMED COST. The supervisor's repair path
+# needs TWO consecutive rounds agreeing before it writes anything (see the
+# suspect marker in the supervisor), so the interval is also the latency of any
+# repair: a session that dies is noticed after one round and acted on after two.
+# Shorter would repair faster and re-read the world more often for nothing;
+# longer would leave a dead session unattended past the moment a human notices
+# first, which makes the supervision decorative.
+#
+# OnBootSec RATHER THAN AN IMMEDIATE START. A host that has just booted is still
+# assembling itself — the user manager, the network, the credential mounts — and
+# a supervisor that runs into that half-built state reads absence as death. The
+# delay is not politeness; it is the difference between observing a machine and
+# observing its startup.
+#
+# Persistent=true so a missed round after downtime runs once on return rather
+# than being silently skipped: supervision exists so that a gap in it is visible,
+# and a skipped round is exactly such a gap.
+[Unit]
+Description=agent-session %i — supervision timer
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

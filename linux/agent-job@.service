@@ -1,0 +1,53 @@
+# linux/agent-job@.service — one scheduled job on a Linux host.
+# The instance name is "<domain>-<job>": agent-job@<domain>-<job>.
+#
+# Runs the SAME job-runner.sh as the hub, with the same conf format and the same
+# delivery receipts. A shared runner is the whole idea: a job must behave
+# identically regardless of which machine it lives on, and the delivery
+# measurement must be able to read both without knowing the difference.
+[Unit]
+Description=agent-job %i
+
+[Service]
+Type=oneshot
+KillMode=process
+Environment=STEWARD_JOBS_SNAPSHOT_DIR=%h/scripts/jobs.d
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+
+# THE LOG DIRECTORY'S NAME BELONGS TO THE ESTATE, SO THE UNIT ASKS FOR IT.
+#
+# It used to be a literal in StandardOutput=append:… — and that single line was
+# what kept this file out of the product, because the name carried the estate's
+# own. systemd cannot help here: StandardOutput takes a static path and expands
+# no variables, only its own %-specifiers.
+#
+# But ExecStart is already a shell, and a shell can read a configuration file.
+# The redirect therefore resolves JOB_LOG_DIR from the estate's own conf at run
+# time. The VALUE is unchanged — the unit simply no longer knows it.
+#
+# REFUSAL, NOT A GUESS, and here it matters twice over: a guessed directory would
+# send the run's output somewhere the delivery measurement does not read, and a
+# job whose log is missing is reported as NEVER RUN. A silently misfiled log is
+# worse than no log, because it looks like evidence of a failure that did not
+# happen.
+#
+# Output before the redirect is established still reaches the journal, so a
+# refusal is visible rather than lost.
+#
+# NO ${VAR%%…} OR ${VAR#…} IN THIS COMMAND LINE. systemd performs its OWN
+# variable expansion on ExecStart before handing it to the shell, and it accepts
+# only plain $VAR and the ${VAR:-default} form. A shell prefix/suffix expansion
+# is parsed as a variable NAME containing punctuation and rejected outright:
+# "Invalid environment variable name evaluates to an empty string". Measured on a
+# live host 2026-08-20 — the redirect below worked and the argument split did
+# not, so the job started, logged to the right file, and failed on usage. The
+# instance name is therefore split with cut, as it always was.
+ExecStart=/bin/bash -c 'set -e; \
+  est=%h/scripts/estate/steward.conf; \
+  [ -f "$est" ] || { echo "agent-job %i: REFUSING — no estate conf at $est" >&2; exit 78; }; \
+  . "$est"; \
+  [ -n "${JOB_LOG_DIR:-}" ] || { echo "agent-job %i: REFUSING — JOB_LOG_DIR unset in $est" >&2; exit 78; }; \
+  case "$JOB_LOG_DIR" in */*) echo "agent-job %i: REFUSING — JOB_LOG_DIR is a directory NAME, not a path" >&2; exit 78 ;; esac; \
+  logdir=%h/Library/Logs/$JOB_LOG_DIR; \
+  mkdir -p "$logdir"; \
+  exec /bin/bash %h/scripts/job-runner.sh "$(echo '%i' | cut -d- -f1)" "$(echo '%i' | cut -d- -f2-)" >>"$logdir/%i.log" 2>&1'

@@ -1,0 +1,30 @@
+# linux/agent-session@.service — the systemd USER unit for one agent session on
+# a Linux host. The instance name is the session name: agent-session@example.
+#
+# Type=oneshot PLUS A TIMER, NOT A LONG-LIVED SERVICE. The tmux server owns the
+# processes; a Restart-driven service would fight tmux over that ownership and
+# lose in ways that look like flapping. This unit is a SUPERVISION ROUND: check
+# that the session is alive, repair it if not, exit.
+#
+# Requires linger (loginctl enable-linger <user>) so the user unit runs without
+# anyone logged in.
+[Unit]
+Description=agent-session %i — supervision of tmux+claude
+
+[Service]
+Type=oneshot
+# KillMode=process, AND THIS ONE IS LOAD-BEARING. Without it systemd tidies the
+# WHOLE cgroup when the round exits — including the tmux server the round just
+# started. MEASURED 2026-08-06: the supervisor exited 0, the session was
+# created, and it was dead 30 ms later. A green exit code described a session
+# that no longer existed.
+#
+# The property to preserve is that only the main process (this shell script) is
+# killed. Anything the round hands off to tmux must outlive the round.
+KillMode=process
+# NO REPO PATH HERE. The supervisor reads REPO_PATH from the registry entry for
+# %i. Hardcoding %h/Projects/%i assumed a repo named after its session, which
+# holds until it does not: one workspace turned out to be a subdirectory of a
+# container holding sibling repos, and a session rooted on the container finds
+# neither its instructions file nor its MCP configuration.
+ExecStart=/bin/bash %h/scripts/session-supervisor-linux.sh %i

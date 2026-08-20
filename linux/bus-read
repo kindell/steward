@@ -1,0 +1,240 @@
+#!/bin/bash
+# linux/bus-read — read and acknowledge a session's inbox on a session host.
+#
+# The original was deployed as a heredoc with broken python quoting; the fix
+# also uncovered that the script ended with [ found -eq 0 ] and therefore
+# returned 1 WHEN IT HAD ACTUALLY READ MAIL — a successful read looked like a
+# failure to every caller that checks the exit code (2026-08-06).
+set -uo pipefail
+# THE SESSION NAME ARRIVES AS AN ARGUMENT. The script once ignored $1 entirely
+# and fell back on a default — $(hostname) in the repository, a hardcoded
+# session name in the deployed copy — and neither is right when one machine runs
+# SEVERAL sessions as the same user. One session ran `bus-read <its own name>`,
+# got a DIFFERENT session's inbox, and read mail addressed to somebody else. The
+# other session's ping vanished along with it, because the message was
+# acknowledged away by the wrong reader (measured 2026-08-06).
+#
+# No silent default any more: without a name we do not know whose inbox this is,
+# and guessing is worse than asking.
+#
+# ...BUT THE ARGUMENT MUST NOT BE OBEYED BLINDLY. Measured 2026-08-14, twice in
+# one day for two INDEPENDENT reasons:
+#
+#   1. The tmux SERVER's global environment carried the FIRST session's systemd
+#      variables. Three new sessions all inherited a TRIGGER_UNIT naming a
+#      DIFFERENT session's timer. One of them read that environment, believed
+#      it, and ran `bus-read <the hub's name>` as its first command.
+#   2. The reading example in the machine-wide instructions named a REAL
+#      session, so another session copied it and did exactly the same thing.
+#
+# Both times we were saved by the hub's inbox happening to be empty. Luck, not
+# design. Had there been mail there it would have been read AND ACKNOWLEDGED by
+# the wrong session, vanished from the inbox, and the 15-minute alarm would
+# never have fired — it measures whether mail has LEFT the inbox, not whether
+# the RIGHT session read it.
+#
+# AND THE PROTECTION WE THOUGHT WE HAD DOES NOT EXIST. The reasoning used to be
+# that a wrong name yields "(empty)" plus a missing inbox directory, i.e. a
+# tell. That tell NEVER appears between sibling sessions: ~/.config/agent-bus/
+# already holds directories for all of them. The symptom disappears in precisely
+# the one case where the damage is greatest.
+#
+# So the identity is DERIVED FROM THE PANE — the only source that gave the right
+# answer in all four sessions — and an argument that says otherwise is REFUSED.
+# One step, no process-tree walk: the chain leads back to `tmux new-session -d -s
+# <hub>` and always finds an ancestor, and that ancestor is always the wrong
+# sender.
+#
+# TWO ENTIRELY DIFFERENT CASES THAT THE FIRST VERSION CONFLATED, and the
+# conflation was dangerous: if TMUX_PANE is UNSET we are running outside tmux
+# (ssh, cron, tests) and that is intended. If TMUX_PANE is SET but
+# display-message fails — a stale pane, an unresponsive tmux server — then
+# 2>/dev/null produced an empty string, SELF became empty, and the guard, which
+# stands behind [ -n "$SELF" ], was skipped ENTIRELY. What remained was blind
+# argument trust, with the message "no tmux pane" delivered to somebody SITTING
+# in one. The diagnosis pointed at the wrong cause in the same breath as the
+# protection disappeared.
+#
+# That is the recurring shape: when the safety mechanism breaks it looks exactly
+# like the legitimate case it is an exception for. (2026-08-14, provoked with
+# TMUX_PANE='%999'.)
+#
+# THE GUARD DISTRUSTS SILENCE, NOT ERROR MESSAGES — and that difference is the
+# whole reason it holds. Measured: `tmux display-message -p -t '%999' '#S'`
+# against a BROKEN PANE returns rc 0, empty output and EMPTY STDERR. tmux says
+# "nothing" cheerfully. Had the condition been "is there an error message" the
+# guard would have let through precisely the case it was built for.
+# DERIVE_ERR therefore only has content in the SECOND case — a dead server:
+#   tmux -S /nonexistent/sock ...  -> rc 1, "error connecting to ..."
+# Never rebuild this into an error check. The condition is AN EMPTY ANSWER.
+# (Both cases were measured by a reviewer who pointed out that the first
+# justification was weaker than the code — the next reader could have rebuilt it
+# down to the weaker one.)
+IN_TMUX=""; DERIVE_ERR=""
+if [ -n "${TMUX_PANE:-}" ]; then
+  IN_TMUX=1
+  SELF="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>&1)" || { DERIVE_ERR="$SELF"; SELF=""; }
+  # THE NAME RULE IS WORTH SAYING OUT LOUD. The bus namespace is lowercase,
+  # digits and hyphens — the same rule that validates $ME below. tmux, by
+  # contrast, allows uppercase, dots and underscores, so a LEGALLY named tmux
+  # session can fall outside the pattern, and then STEWARD_BUS_SELF is the only
+  # way in. Say what the rule IS; the first version said "unexpected answer",
+  # which reads as though tmux had misbehaved rather than as though the name has
+  # a capital letter.
+  # The characters are enumerated, never a range: a glob range follows the
+  # collation, and in UTF-8 the uppercase letters sit inside a-z. See the bus
+  # library at the subject guard.
+  case "$SELF" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+      DERIVE_ERR="the tmux session is named '$SELF' — bus names may contain only lowercase letters, digits and hyphens"
+      SELF="" ;;
+  esac
+else
+  SELF=""
+fi
+# STEWARD_BUS_SELF is the DELIBERATE emergency exit and must therefore override
+# the derived identity — otherwise the guard refuses even somebody who has
+# explicitly stated who they are. The first version did exactly that: the error
+# message pointed at a way out that did not work. An instruction that is false
+# belongs to the same failure class as everything else in this catalogue, and it
+# was found by the test rather than by reading.
+[ -n "${STEWARD_BUS_SELF:-}" ] && SELF="$STEWARD_BUS_SELF"
+
+# REFUSAL BEFORE THE ARGUMENT CHECK, not after. Placed after, the empty-ME case
+# took over: a session whose tmux name is legal but outside the bus namespace got
+# a generic "usage" instead of being told THAT THE NAME HAS A CAPITAL LETTER. The
+# protection worked and the diagnosis vanished — and a guard that refuses without
+# saying why sends people to debug the wrong thing. (Provoked 2026-08-14 with a
+# capitalised tmux name.)
+#
+# "REFUSES" IS A TOKEN, NOT PROSE — see the note at the second refusal.
+if [ -z "$SELF" ] && [ -n "$IN_TMUX" ]; then
+  echo "bus-read: REFUSES. You are in a tmux pane but the identity could not be derived." >&2
+  echo "  TMUX_PANE=$TMUX_PANE gave: ${DERIVE_ERR:-an empty answer}" >&2
+  echo "  Inside tmux the derivation SHOULD work. That it does not means the safety" >&2
+  echo "  net is gone — and then blind argument trust is the wrong answer." >&2
+  echo "  Fix the pane, or state explicitly who you are: STEWARD_BUS_SELF=<name>" >&2
+  exit 65
+fi
+
+ME="${1:-$SELF}"
+if [ -z "$ME" ]; then
+  echo "bus-read <your-session-name>" >&2
+  echo "  Inside a tmux session no argument is needed — the name is derived." >&2
+  exit 64
+fi
+case "$ME" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) echo "bus-read: invalid session name '$ME'" >&2; exit 64;; esac
+# "REFUSES" IS A TOKEN THE ACCEPTANCE CHECK GREPS FOR. session-approve.sh
+# criterion (b) provokes this exact refusal and asserts BOTH the exit code AND
+# this word — asserting only rc would pass a script that refuses for some other
+# reason. The token was in the estate's own language until 2026-08-20; renaming
+# it is a coordinated change across BOTH files, which is why the coupling is
+# stated in both. It is not prose: do not reword it in isolation.
+if [ -n "$SELF" ] && [ "$ME" != "$SELF" ]; then
+  echo "bus-read: REFUSES. You asked for the inbox of '$ME' but this pane is '$SELF'." >&2
+  echo "  Reading ACKNOWLEDGES. Had '$ME' held mail it would now be read, acknowledged" >&2
+  echo "  away and gone from their inbox — with no error and without their alarm firing." >&2
+  echo "  If you are trusting an environment variable or an example you copied: don't." >&2
+  echo "  The pane knows who you are. Run 'bus-read' with no argument." >&2
+  echo "  If you really must read somebody else's inbox: STEWARD_BUS_SELF=$ME bus-read $ME" >&2
+  echo "  — but then you have said so out loud, and that is the entire idea." >&2
+  exit 65
+fi
+# If we cannot derive (outside tmux: ssh, cron, tests) we go by the argument, but
+# we say so. Staying silent would let the dangerous case look like the safe one.
+if [ -z "$SELF" ] && [ -n "${1:-}" ]; then
+  echo "bus-read: outside tmux, no identity to derive — trusting the argument '$ME'" >&2
+fi
+inbox="$HOME/.config/agent-bus/$ME/inbox"; done_d="$HOME/.config/agent-bus/$ME/done"
+malformed_d="$HOME/.config/agent-bus/$ME/malformed"
+mkdir -p "$done_d"
+
+# ARCHIVE CLEANUP, 90 days — BEFORE the read, never after. Mirrors the hub
+# library's bus_gc; see it for the full reasoning.
+#
+# In short: since 2026-08-14 OUTGOING mail is archived in sent/ too, so the
+# archive is the audit record for "who said what". The retention is deliberately
+# long — the volume is negligible, measured across a whole fleet after two weeks
+# of operation — and the rule that secrets never travel over the bus becomes MORE
+# binding, not less: a mistake is now preserved in two archives instead of one.
+#
+# Two notes on the shape. The cleanup lives in the READ rather than in a job of
+# its own, because the hub's bus_gc sat for two weeks with no caller, a green
+# test, and cleaned nothing — a test that calls a function proves it WORKS, never
+# that it RUNS. And it sits BEFORE the loop: placed after, a message delivered
+# long ago would be deleted in the same breath as it was read, without ever
+# having existed in the archive.
+#
+# THE GC VALUE MUST BE DIGITS, AND 0 MEANS OFF. The natural reading of
+# STEWARD_BUS_GC_DAYS=0 is "turn the cleanup off". It did not work that way:
+# [ -n "0" ] is TRUE, and `find -mtime +0` matches everything older than a DAY —
+# so the off switch deleted the archive instead of preserving it. The find's root
+# is the whole ~/.config/agent-bus with no session filter: ONE misset variable in
+# ONE shell would have wiped the account's entire archive, not just its own.
+# (2026-08-14, found by reading the code — deliberately not by a test.)
+GCD="${STEWARD_BUS_GC_DAYS-90}"
+case "$GCD" in
+  ""|0|*[!0-9]*) GCD="" ;;
+esac
+if [ -n "$GCD" ]; then
+  find "$HOME/.config/agent-bus" -mindepth 2 -maxdepth 2 -type d \
+    \( -name done -o -name sent -o -name failed \) -print 2>/dev/null | while IFS= read -r d; do
+      find "$d" -maxdepth 1 -type f -name '*.json' -mtime "+$GCD" -delete 2>/dev/null
+    done
+fi
+found=0
+for f in "$inbox"/*.json; do
+  [ -e "$f" ] || continue
+  found=1
+  # THE ENVELOPE LINE: [CLASS] subject — headline, BEFORE the existing
+  # from/ts/text line. Built with jq -r from the same file so the shape is
+  # identical in both clients. The condition is has("klass") — if the field is
+  # absent (older archived messages without an envelope) no line is written, and
+  # the python output below is entirely unchanged.
+  kuvert="$(jq -r 'if has("klass") then "[" + .klass + "] " + .amne + " — " + .rubrik else empty end' "$f" 2>/dev/null)"
+  [ -n "$kuvert" ] && printf '%s\n' "$kuvert"
+  # AN UNREADABLE MESSAGE IS NOT A READ MESSAGE. The script used to run
+  # `python || cat` and THEN move the file to done regardless — so a file that
+  # could not be parsed left the inbox without a read_by stamp, and the alarm for
+  # unacknowledged mail fell silent (it measures whether mail LEFT the inbox, not
+  # whether it could be READ). Exactly the family read_by was added to cover, one
+  # level down. Found by reading the code, 2026-08-12. The relay writes
+  # atomically (mktemp + ln), so a truncated file cannot come from there — but a
+  # file corrupt for some other reason should still be SEEN, not buried in done.
+  if python3 - "$f" "$ME" <<'PY'
+import json, os, sys, time
+path, reader = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+print(f"from={d.get('from','?')} ts={d.get('ts','?')} text={d.get('text','')}")
+# THE ACKNOWLEDGEMENT CARRIES WHO READ IT. Proposed 2026-08-06 after one session
+# happened to read AND acknowledge another's mail: everything looked correct from
+# every angle — the message was read, the done directory agreed, and the alarm for
+# unacknowledged mail stayed quiet, because it measures WHETHER mail was read,
+# never BY WHOM. A misdelivery therefore vanished without a trace. Now it can be
+# seen afterwards.
+d["read_by"] = reader
+d["read_at"] = int(time.time())
+# PRESERVE MTIME ACROSS THE REWRITE. The file's mtime is set when the relay
+# WRITES it into the inbox — that is the DELIVERY TIME. Reading a file is an
+# audit, not a delivery, and it must not erase when the mail arrived. Measured
+# 2026-08-12: a latency test reported 139 s because the reader restamped the file
+# and measured reader time as arrival time. An audit function that overwrote the
+# only trace of the thing it was not measuring. Now the delivery time survives:
+# delivered_at = os.stat(path).st_mtime, forever, for anyone, with no coordinated
+# test.
+mt = os.stat(path).st_mtime
+json.dump(d, open(path, "w"), ensure_ascii=False)
+os.utime(path, (mt, mt))
+PY
+  then
+    mv "$f" "$done_d/"
+  else
+    # Unreadable: move to malformed/, NOT done. It looks unhandled because it is,
+    # it does not repeat on every run, and stderr says so.
+    mkdir -p "$malformed_d"
+    mv "$f" "$malformed_d/" 2>/dev/null
+    echo "bus-read: UNREADABLE message, moved to malformed/: $(basename "$f")" >&2
+  fi
+done
+[ "$found" -eq 0 ] && echo "(empty)"
+exit 0

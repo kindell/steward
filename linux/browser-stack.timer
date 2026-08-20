@@ -1,0 +1,8 @@
+[Unit]
+Description=browser stack supervision
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=3min
+Persistent=true
+[Install]
+WantedBy=timers.target

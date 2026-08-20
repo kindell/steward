@@ -1,0 +1,6 @@
+[Unit]
+Description=the browser stack (Xvfb + chromium + vnc)
+[Service]
+Type=oneshot
+KillMode=process
+ExecStart=/bin/bash %h/bin/browser-stack.sh

@@ -1,0 +1,90 @@
+#!/bin/bash
+# bus-send <to> "<text>" — CLI for agent-bus. Durably queues <text> for <to>
+# (validated against sessions.d/*.conf plus the hub session named by the
+# estate) and pings the recipient's tmux pane with a fixed, contentless string
+# if it's live and not busy. See lib.sh for the actual queue logic — this is a
+# thin CLI wrapper.
+#
+# from = $BUS_FROM if set, else the basename of the tmux session this is
+# running inside (falls back to "unknown" if neither is available — e.g. run
+# outside tmux with BUS_FROM unset).
+set -euo pipefail
+
+# THE PARENT DIRECTORY HERE IS DELIBERATE, AND IT LOOKS LIKE A BUG.
+#
+# The library is installed as a SIBLING of this file, so resolving the parent and
+# sourcing lib.sh from there finds nothing: the source line fails and none of the
+# guards below ever run. That is the intended outcome in the one window that
+# matters. This client belongs on the hub; on a session host it delivers into the
+# SENDER's own home, producing a queue nobody reads — measured on a live account
+# 2026-08-11. Self-refusal (above) covers every home that already has a relay
+# key, but the deploy runs BEFORE key creation, and an override exists.
+#
+# So during that window the only thing standing between a fresh home and a silent
+# misdelivery is that this file cannot load. "Repairing" the path turns a
+# non-delivering file into a delivering one exactly there.
+#
+# The envelope suite PINS the non-delivery for this reason. It caught this very
+# repair on 2026-08-20, made in good faith by somebody reading the line as an
+# oversight — which is what a guard that looks like a bug is for.
+#
+# Do not fix this without first closing the window it protects.
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib.sh
+# REFUSE TO RUN WHERE A DIFFERENT CLIENT OWNS THE BUS. A fleet has two bus
+# clients with different identity models. This one takes the sender from the
+# payload and delivers directly; it belongs on the HUB. On a session host the
+# other client applies (linux/bus-send, installed in ~/bin/), which takes the
+# sender from the relay key and routes everything through the hub.
+#
+# Running this one on a session host misdelivers the mail WITHOUT anything
+# complaining: bus_send compares the recipient's HOST against
+# STEWARD_BUS_LOCAL_HOST, which is set nowhere and defaults to the hub's name —
+# so a recipient whose HOST is the hub is judged LOCAL and the message is
+# written into the SENDER's own home. A queue nobody reads.
+#
+# Measured 2026-08-11 on a live account. The same file was later found dormant
+# in a second home under ~/scripts/bus/ — not on PATH, but in the directory one
+# browses when looking for tools. SELF-REFUSAL BEATS DELETION: something may
+# depend on the path, and a file that speaks up teaches something, while a file
+# that is simply missing only confuses.
+#
+# THE SIGNAL IS RELAY KEYS. A hub has none — it receives them as bound public
+# keys in authorized_keys. Every home that speaks the bus AS A SESSION has one.
+if [ -z "${STEWARD_BUS_ALLOW_HUB_CLIENT:-}" ] && compgen -G "$HOME/.ssh/id_busrelay*" >/dev/null 2>&1; then
+  echo "bus: wrong client for this machine — relay keys exist in $HOME/.ssh," >&2
+  echo "     so this home speaks the bus as a SESSION, not as the hub." >&2
+  echo "     Use ~/bin/bus-send (linux/bus-send), which binds the sender to the key." >&2
+  exit 78
+fi
+
+source "$here/lib.sh"
+
+to="${1:-}"
+text="${2:-}"
+if [ -z "$to" ] || [ -z "$text" ]; then
+  echo "usage: bus-send <to> <text>" >&2
+  exit 1
+fi
+
+from="${BUS_FROM:-}"
+if [ -z "$from" ]; then
+  # IT MUST ASK ABOUT ITS OWN PANE. Without -t, tmux answers with the MOST
+  # RECENTLY USED session on the machine, not the caller's. As long as each
+  # machine ran a single session that happened to be the right answer; on a
+  # host where two sessions run as the same user, one session's outgoing mail
+  # was stamped with the other's name (measured 2026-08-06:
+  # `tmux display-message -p '#S'` answered with the same session regardless of
+  # who asked).
+  #
+  # $TMUX_PANE is exported into every pane's environment and is unambiguous.
+  if [ -n "${TMUX_PANE:-}" ]; then
+    from="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)"
+  fi
+  # Fall back only when the pane cannot be asked — but never to the vague
+  # variant without a target, which would rather lie than admit it doesn't know.
+  [ -z "$from" ] && [ -n "${TMUX:-}" ] && from="$(tmux display-message -p '#S' 2>/dev/null || true)"
+fi
+: "${from:=unknown}"
+
+bus_send "$to" "$from" "$text"
