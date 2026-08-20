@@ -82,6 +82,14 @@ fi
 PROJEKT="${1:?bash ~/scripts/session-new.sh <project> <repo-path>}"
 REPO="${2:?bash ~/scripts/session-new.sh <project> <repo-path>}"
 
+# AN UNKNOWN FLAG MUST REFUSE AS A FLAG, NOT PASS AS A NAME. The project
+# charset allows dashes, so '--anything' sailed through as a project name and
+# the refusal blamed the SECOND argument ("not a git working copy") — a refusal
+# naming the wrong cause, measured live 2026-08-21 when the flag's old
+# pre-rename spelling was used against the renamed script.
+case "$PROJEKT" in
+  -*) fel "unknown flag '$PROJEKT' — the only flag is --activate <name>" 64 ;;
+esac
 case "$PROJEKT" in
   *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") echo "session-new: project may contain only [a-z0-9-]" >&2; exit 64 ;;
 esac
