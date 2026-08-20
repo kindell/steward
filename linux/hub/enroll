@@ -1,0 +1,244 @@
+#!/bin/bash
+# bus/bin/nav-enroll — the hub's half of the session command (direction doc,
+# pass 3, item 0). Reads ENROLL-REQUEST v1 on stdin, validates, and (Task 2)
+# executes: registry entry + authorized_keys line + proof in both directions.
+#
+# RUNS ON THE HUB (macOS today): bash 3.2-safe, no GNU-isms.
+#
+# THE IDENTITY COMES FROM THE ENVELOPE, NEVER FROM THE PAYLOAD. The controller
+# reads the inbox entry and sets STEWARD_ENROLL_FROM from its from field, which
+# is bound by the relay key in authorized_keys. A "from=" in the payload would
+# be a signature, and a signature is not a sender.
+# No -e: fel() gives exit 65, not 1. Every error is routed through the function.
+set -uo pipefail
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(CDPATH= cd -- "$here/.." && pwd)"
+# shellcheck source=../../lib/registry.sh
+# THE REGISTRY MAY LIVE IN THE PRODUCT. Manifest sources migrate one at a time,
+# and lib/registry.sh is one of them. The lookup is product-first-then-estate,
+# the same order the deploy uses — safe precisely because the double-life guard
+# forbids a source existing in both trees. STEWARD_REGISTRY_LIB overrides fully.
+# REFUSAL IF FOUND NOWHERE: a registry that cannot be read must not look like an
+# empty registry.
+_reg_lib() {
+  local rot="$1" c
+  [ -n "${STEWARD_REGISTRY_LIB:-}" ] && { printf '%s' "$STEWARD_REGISTRY_LIB"; return 0; }
+  for c in "$rot/../steward/lib/registry.sh" "$rot/lib/registry.sh" "$HOME/scripts/lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  echo "the registry library was found in neither the product nor the estate (root: $rot)" >&2
+  return 78
+}
+_REGROT="$repo"
+: "${STEWARD_ESTATE_ROOT:=$_REGROT}"; export STEWARD_ESTATE_ROOT
+_REGLIB="$(_reg_lib "$_REGROT")" || exit 78
+# shellcheck source=/dev/null
+source "$_REGLIB"
+
+KONTROLLERA=""; UTAN_SANDNING=""; SAND=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --kontrollera)   KONTROLLERA=1 ;;
+    --utan-sandning) UTAN_SANDNING=1 ;;
+    --sand)          SAND=1 ;;
+    *) echo "nav-enroll: unknown argument '$1'" >&2; exit 64 ;;
+  esac
+  shift
+done
+# A live send is NEVER a default. 2026-08-15 an implementation run reached the
+# real bus because the send path fell back silently — so the choice is
+# mandatory and tested BEFORE any reading or writing.
+if [ -z "$KONTROLLERA" ] && [ -z "$UTAN_SANDNING" ] && [ -z "$SAND" ]; then
+  echo "nav-enroll: choose a send path — --sand (live), --utan-sandning (test) or --kontrollera" >&2
+  exit 64
+fi
+
+# ── THE ESTATE'S NAMES COME FROM THE ESTATE ────────────────────────────────
+# Three values stood here as literals: the hub's machine name (the HOST
+# default), the RC label prefix and the hub's name on the bus — an owner's
+# namespace burned into code destined for the product. Each is looked up ONCE,
+# before use; a failed lookup REFUSES with rc 78 rather than guessing, for the
+# same reasons as in lib/registry.sh (a guessed default would silently
+# misroute the host check, the label or the proof's instruction).
+NAV_VARD="$(registry_hub_host)"       || exit 78
+RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
+NAV="$(registry_hub_session)"         || exit 78
+
+AUTH_KEYS="${STEWARD_AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"
+FROM="${STEWARD_ENROLL_FROM:-}"
+
+fel() { echo "nav-enroll: REFUSING — $1" >&2; exit 65; }
+
+NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""
+forsta=1; kuvertrad_provad=""
+# `|| [ -n "$rad" ]`: a final line WITHOUT a trailing newline is still a line.
+# read returns nonzero on EOF-without-delimiter but has already assigned — drop
+# the guard and the last field of a request built with printf '%s' is silently
+# discarded, and the refusal blames a MISSING field. The estate measured exactly
+# this shape in its bus client; the fix is the same one.
+while IFS= read -r rad || [ -n "$rad" ]; do
+  if [ -n "$forsta" ]; then
+    # THE ENVELOPE IS OPTIONAL HERE (Task 2, envelope v2). bus_send now demands
+    # that every SEND carries "CLASS subject: headline" on its first line (the
+    # requester's half now sends such a line before "ENROLL-REQUEST v1") — but
+    # READING must tolerate both presence and absence, the same
+    # backwards-compatibility rule as bus/lib.sh (only sending requires an
+    # envelope). A line that looks like an envelope is therefore skipped HERE,
+    # once, before the format check runs. "ENROLL-REQUEST v1" itself is NOT the
+    # envelope and is not touched — nav-enroll requires it verbatim; the
+    # envelope line sits BEFORE it, never in its place.
+    if [ -z "$kuvertrad_provad" ]; then
+      kuvertrad_provad=1
+      case "$rad" in
+        BESLUT\ *|FYND\ *|SAMORDNING\ *|DRIFT\ *) continue ;;
+      esac
+    fi
+    [ "$rad" = "ENROLL-REQUEST v1" ] || fel "unknown format: '$rad' (expected 'ENROLL-REQUEST v1')"
+    forsta=""
+    continue
+  fi
+  case "$rad" in
+    namn=*)    NAMN="${rad#namn=}" ;;
+    doman=*)   DOMAN="${rad#doman=}" ;;
+    projekt=*) PROJEKT="${rad#projekt=}" ;;
+    person=*)  PERSON="${rad#person=}" ;;
+    vard=*)    VARD="${rad#vard=}" ;;
+    repo=*)    REPO_S="${rad#repo=}" ;;
+    pubkey=*)  PUBKEY="${rad#pubkey=}" ;;
+    from=*)    fel "the payload carries a from field — the identity comes from the envelope, never from the text" ;;
+    "")        : ;;
+    *)         fel "unknown line in the request: '$rad'" ;;
+  esac
+done
+
+[ -n "$FROM" ]    || fel "STEWARD_ENROLL_FROM missing — the envelope's from field is mandatory"
+[ -n "$NAMN" ]    || fel "field NAMN missing"
+[ -n "$DOMAN" ]   || fel "field DOMAN missing"
+[ -n "$PROJEKT" ] || fel "field PROJEKT missing"
+[ -n "$PERSON" ]  || fel "field PERSON missing"
+[ -n "$VARD" ]    || fel "field VARD missing"
+[ -n "$REPO_S" ]  || fel "field REPO missing"
+[ -n "$PUBKEY" ]  || fel "field PUBKEY missing"
+
+# Enumeration, not a range — see the long explanation in bus/lib.sh at the
+# subject guard. A range here would have admitted a capitalised
+# <Domain>-<Person> name in a UTF-8 locale.
+case "$NAMN$DOMAN$PROJEKT$PERSON$VARD" in
+  *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "illegal characters — the namespace is [a-z0-9-]" ;;
+esac
+# The convention is CONSTRUCTED from the fields and compared. The name is never parsed.
+[ "$NAMN" = "${DOMAN}-${PROJEKT}-${PERSON}" ] || \
+  fel "the name '$NAMN' does not match the convention doman-projekt-person ('${DOMAN}-${PROJEKT}-${PERSON}')"
+
+# Private-key check BEFORE the format check: a genuine private key should get the PRIVATE text, not the generic format text
+case "$PUBKEY" in
+  *PRIVATE*|*private*|*-----BEGIN*) fel "the key field looks PRIVATE — private keys never travel" ;;
+esac
+case "$PUBKEY" in
+  ssh-ed25519\ *|ssh-rsa\ *) : ;;
+  *) fel "PUBKEY does not look like a public ssh key" ;;
+esac
+
+rdir="$(registry_dir)"
+[ -f "$rdir/$FROM.conf" ] || fel "requesting session '$FROM' is not in the registry"
+
+F_OWNER="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$rdir/$FROM.conf" | head -1)"
+F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROM.conf" | head -1)"
+[ "$F_OWNER" = "$PERSON" ] || \
+  fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}', the request names '$PERSON'"
+# A conf without HOST lives on the hub — the same default registry_load applies.
+[ "${F_HOST:-$NAV_VARD}" = "$VARD" ] || \
+  fel "host check: '$FROM' lives on '${F_HOST:-$NAV_VARD}', the request names '$VARD'"
+
+[ ! -f "$rdir/$NAMN.conf" ] || fel "name collision: '$NAMN' already exists in the registry"
+if grep -qF "bus-relay-in $NAMN\"" "$AUTH_KEYS" 2>/dev/null; then
+  fel "authorized_keys already carries a line for '$NAMN'"
+fi
+if grep -qF "$PUBKEY" "$AUTH_KEYS" 2>/dev/null; then
+  fel "the public key is already registered — one key, one identity"
+fi
+
+if [ -n "$KONTROLLERA" ]; then
+  echo "nav-enroll: OK — '$NAMN' can be registered (requested by $FROM; check only, nothing written)"
+  exit 0
+fi
+
+# ── EXECUTION ──────────────────────────────────────────────────────────────────
+BUS_SEND="${STEWARD_BUS_SEND:-$repo/bus/bin/bus-send}"
+
+conf="$rdir/$NAMN.conf"
+tmpc="$(mktemp)" || exit 70
+cat > "$tmpc" <<CONFEOF
+# $NAMN — registered by nav-enroll $(date -u +%Y-%m-%dT%H:%M:%SZ), requested by $FROM.
+# Trigger per the direction doc: a domain acquired a project.
+HOST="$VARD"
+REPO_PATH="$REPO_S"
+RC_LABEL="$RC_PREFIX$NAMN"
+PERMISSION_MODE="bypassPermissions"
+OWNER="$PERSON"
+DOMAIN="$DOMAN"
+CONFEOF
+mv "$tmpc" "$conf" || exit 70
+
+# THE GATE: the conf must SOURCE with every field set — otherwise everything is
+# withdrawn. A registry entry that does not load is a registry claiming
+# something that does not exist.
+if ! ( set -u; . "$conf"; : "$HOST" "$REPO_PATH" "$OWNER" "$DOMAIN" ) 2>/dev/null; then
+  rm -f "$conf"
+  echo "nav-enroll: the conf could not be sourced — NOTHING registered, nothing left behind" >&2
+  exit 70
+fi
+
+# authorized_keys: backup BEFORE the write, then exactly the restrict,command
+# form — the sender identity lives in the KEY, never in the message.
+cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
+printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
+  "$repo" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+
+# THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, Task 2
+# envelope v2): "DRIFT enroll: <headline>". bus_send now refuses every SEND
+# without it — without the line this live send path would have gone quiet as a
+# WARNING (the code below swallowed a failed send even before the envelope
+# existed) and neither ENROLL-CONFIRM nor ENROLL-PROOF would have arrived. The
+# ENROLL-CONFIRM/PROOF markers stay as the second line — the approval script
+# and nav-enroll.test.sh look for them in the TEXT, not specifically on line one.
+CONFIRM="DRIFT enroll: $NAMN registered
+ENROLL-CONFIRM v1
+namn=$NAMN
+status=registered
+activate=systemctl --user enable --now agent-session@$NAMN.timer
+gate=the approval runs FROM the new session: bash ~/scripts/session-approve.sh"
+PROOF="DRIFT enroll: $NAMN registered, run session-approve.sh
+ENROLL-PROOF v1
+namn=$NAMN
+from-hub=yes — that this entry reached your inbox proves the hub knows the name
+task=run: bash ~/scripts/session-approve.sh  and send the outcome to $NAV"
+
+if [ -n "$UTAN_SANDNING" ]; then
+  printf '=== to %s ===\n%s\n=== to %s ===\n%s\n' \
+    "$FROM" "$CONFIRM" "$NAMN" "$PROOF"
+else
+  # THE WARNING MUST SAY WHAT HAPPENED, not merely that something did not
+  # arrive. rc 65/78 are THE BUS'S OWN GUARDS refusing (paused subject,
+  # malformed envelope, secret guard) — not a flaky network. The difference
+  # decides what to do about it, and without it the hub's "registered" reads
+  # as if CONFIRM arrived.
+  bus_skicka() { # <vad> <mottagare> <text>
+    local vad="$1" mot="$2" txt="$3" rc=0
+    printf '%s\n' "$txt" | "$BUS_SEND" "$mot" || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      65|78)
+        echo "nav-enroll: WARNING — $vad REFUSED BY THE BUS'S OWN GUARD (rc $rc), not by the network." >&2
+        echo "nav-enroll:   The reason is in the guard's output above (paused subject? envelope? secret?)." >&2
+        echo "nav-enroll:   The registration stands, but $mot has NOT received the notice." >&2 ;;
+      *)
+        echo "nav-enroll: WARNING — $vad did not reach $mot (rc $rc). The registration stands." >&2 ;;
+    esac
+    return "$rc"
+  }
+  bus_skicka confirm "$FROM" "$CONFIRM" || true
+  bus_skicka proof   "$NAMN" "$PROOF"   || true
+fi
+echo "nav-enroll: '$NAMN' registered (requested by $FROM)"
+exit 0

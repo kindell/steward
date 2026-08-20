@@ -23,7 +23,7 @@ SESS_D=""
 # burned in, and a guessed hub name sends the report to a recipient that does not
 # exist — silently, until somebody wonders why the approval never arrived.
 # THE LIBRARY IS FOUND IN THE DEPLOYED LAYOUT FIRST, then relative to this
-# file. The order is the point: an existing installation must behave exactly as
+# file. The order is the whole idea: an existing installation must behave exactly as
 # before, so the deployed path wins whenever it exists. Only on a machine with
 # no deployment — a checkout, a fresh estate — do the siblings apply. The first
 # ordering tried was the reverse, and it made a supervisor in a product checkout

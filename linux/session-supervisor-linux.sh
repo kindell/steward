@@ -60,7 +60,7 @@ export PATH="$HOME/.local/bin:$PATH"
 # timer every three minutes for every paused session, which is exactly the
 # damage #112 measured.
 # THE LIBRARY IS FOUND IN THE DEPLOYED LAYOUT FIRST, then relative to this
-# file. The order is the point: an existing installation must behave exactly as
+# file. The order is the whole idea: an existing installation must behave exactly as
 # before, so the deployed path wins whenever it exists. Only on a machine with
 # no deployment — a checkout, a fresh estate — do the siblings apply. The first
 # ordering tried was the reverse, and it made a supervisor in a product checkout

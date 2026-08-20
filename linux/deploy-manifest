@@ -50,3 +50,4 @@ linux/browser-stack.timer          .config/systemd/user/browser-stack.timer     
 # guarded.
 linux/hub/bus-send             scripts/bus/bus-send                 755  scripts
 linux/hub/lib.sh               scripts/bus/lib.sh                   644  scripts
+linux/hub/enroll               scripts/bus/enroll                   755  scripts
