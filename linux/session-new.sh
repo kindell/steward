@@ -140,6 +140,51 @@ else
 fi
 PUB="$(cat "$NYCKEL.pub")" || fel "could not read the public key" 70
 
+# THE WIRE FORMAT IS THE SAME ON BOTH PATHS BELOW — one builder, so the two
+# can never drift apart. Field-name notes further down.
+bygg_begaran() {
+  printf 'DRIFT enroll: %s requests registration\nENROLL-REQUEST v1\nnamn=%s\ndoman=%s\nprojekt=%s\nperson=%s\nvard=%s\nrepo=%s\npubkey=%s\n' \
+    "$NAMN" "$NAMN" "$DOMAN" "$PROJEKT" "$PERSON" "$VARD" "$REPO" "$PUB"
+}
+
+# ── THE HUB ENROLS LOCALLY, WITHOUT THE BUS ─────────────────────────────────
+# When the requesting session IS the hub, the bus path defeats itself twice —
+# measured live 2026-08-21 on a single-machine estate: (1) this script wrote
+# the conf BEFORE sending, and the hub's enroll — reading the SAME registry —
+# refused its own request as a name collision; (2) the hub's bus client
+# refuses outright in a home that carries relay keys, which a single-machine
+# hub's home always does. Both are artifacts of assuming the requester and the
+# hub read different registries. So on the hub the request goes straight into
+# enroll's stdin, and enroll is the SOLE writer — no pre-written conf, no
+# collision, nothing to withdraw on failure.
+#
+# THE IDENTITY CLAIM IS AS STRONG AS THE BUS PATH'S: STEWARD_ENROLL_FROM is
+# normally set by the controller from the relay-key-bound envelope; here the
+# name comes from this script's OWN pane — the hub asserting itself to itself,
+# on the same machine, under the same account.
+if [ "$SJALV" = "$NAV" ]; then
+  ENROLL="${STEWARD_ENROLL:-}"
+  if [ -z "$ENROLL" ]; then
+    _d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    for _c in "$_d/bus/enroll" "$_d/hub/enroll"; do
+      [ -f "$_c" ] && { ENROLL="$_c"; break; }
+    done
+  fi
+  [ -n "$ENROLL" ] && [ -f "$ENROLL" ] || fel "the hub's enroll was not found beside this script — deployed as bus/enroll, in a checkout as hub/enroll" 78
+  # THE ESTATE ROOT TRAVELS WITH THE CALL. Enroll run bare defaults its estate
+  # to its own tree — for a checkout that is the PRODUCT, which either refuses
+  # (no estate file) or, worse, reads a stranger's. This script has already
+  # resolved the estate through the registry; the child must see the same one,
+  # not re-derive a different answer from somewhere else entirely.
+  bygg_begaran | STEWARD_ESTATE_ROOT="$(_registry_estate_root)" \
+    STEWARD_ENROLL_FROM="$SJALV" bash "$ENROLL" --sand
+  rc=$?
+  [ "$rc" -eq 0 ] || fel "enrolment refused — enroll wrote nothing (the key remains), the reason is above" "$rc"
+  echo "session-new: '$NAMN' registered hub-locally — no bus hop, enroll was the sole writer."
+  echo "  next: bash ${BASH_SOURCE[0]} --activate $NAMN"
+  exit 0
+fi
+
 tmpc="$(mktemp)" || fel mktemp 70
 cat > "$tmpc" <<CONFEOF
 # $NAMN — created by session-new $(date -u +%Y-%m-%dT%H:%M:%SZ) from $SJALV.
@@ -169,9 +214,7 @@ mv "$tmpc" "$SESS_D/$NAMN.conf" || fel "could not write the conf" 70
 # CLASS (DRIFT) and the SUBJECT SLUG (enroll) are structural — the subject is
 # the thread key. The headline after the colon is free text; measured across
 # both repositories, nothing matches on it.
-if ! printf 'DRIFT enroll: %s requests registration\nENROLL-REQUEST v1\nnamn=%s\ndoman=%s\nprojekt=%s\nperson=%s\nvard=%s\nrepo=%s\npubkey=%s\n' \
-      "$NAMN" "$NAMN" "$DOMAN" "$PROJEKT" "$PERSON" "$VARD" "$REPO" "$PUB" \
-      | "$BUS_SEND" "$NAV"; then
+if ! bygg_begaran | "$BUS_SEND" "$NAV"; then
   rm -f "$SESS_D/$NAMN.conf"
   fel "the request did not reach the hub — conf withdrawn (the key remains), re-run" 70
 fi
