@@ -72,10 +72,28 @@ if [ "${1:-}" = "--activate" ]; then
   [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
   systemctl --user cat agent-session@.timer >/dev/null 2>&1 \
     || fel "supervision template agent-session@.timer missing — per-user supervision is a precondition" 65
+  # THE ESTATE IS BOUND PER SESSION, NOT PER ACCOUNT. The template's environment
+  # names ONE estate root for every instance on the account, which made a second
+  # estate on the same account invisible to supervision — its sessions would
+  # start against the wrong registry, or refuse. Activation is the one moment
+  # that knows which estate a session belongs to (it just resolved it), so it
+  # writes a per-instance drop-in and reloads BEFORE the first start. On a
+  # single-estate account the drop-in states what the template already implied —
+  # harmless, and every session becomes self-describing.
+  _dropdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-session@$NAMN.service.d"
+  mkdir -p "$_dropdir" || fel "could not create $_dropdir" 70
+  # Canonicalized: the resolver's default form carries a trailing /.. — correct
+  # to cd through, wrong to burn into a unit file that outlives this call.
+  _eroot="$(CDPATH= cd -- "$(_registry_estate_root)" && pwd)" \
+    || fel "could not resolve the estate root to a real directory" 70
+  printf '[Service]\nEnvironment=STEWARD_ESTATE_ROOT=%s\n' "$_eroot" \
+    > "$_dropdir/50-estate.conf" || fel "could not write the estate drop-in" 70
+  systemctl --user daemon-reload
   systemctl --user enable --now "agent-session@$NAMN.timer" \
     || fel "could not enable the timer" 70
   echo "session-new: timer active for '$NAMN' — supervision will start the session within one period."
-  echo "  next: once the session is live it runs 'bash ~/scripts/session-approve.sh' (stated in its ENROLL-PROOF)."
+  echo "  estate bound per instance: $_dropdir/50-estate.conf"
+  echo "  next: once the session is live it runs the approval command stated in its ENROLL-PROOF."
   exit 0
 fi
 
@@ -220,4 +238,4 @@ if ! bygg_begaran | "$BUS_SEND" "$NAV"; then
 fi
 
 echo "session-new: request sent for '$NAMN'."
-echo "  next: wait for ENROLL-CONFIRM in your inbox, then run: bash ~/scripts/session-new.sh --activate $NAMN"
+echo "  next: wait for ENROLL-CONFIRM in your inbox, then run: bash ${BASH_SOURCE[0]} --activate $NAMN"
