@@ -227,6 +227,30 @@ say ""
 say "hub session: $HUB registered"
 
 # ── 7. SUPERVISION ─────────────────────────────────────────────────────────
+# EVERY SESSION IS BORN KNOWING ITS ESTATE. The first live estate answered
+# "which sessions can you see?" from an account-wide discovery layer that
+# crosses estate boundaries — because nothing had ever told it where its own
+# registry lived. The context block below loads into every session on this
+# account (user-level memory); the markers make the write idempotent, and an
+# existing file is appended to, never replaced.
+_CMD="$HOME/.claude/CLAUDE.md"
+if ! grep -q "steward:estate-context" "$_CMD" 2>/dev/null; then
+  mkdir -p "$HOME/.claude"
+  cat >> "$_CMD" <<CTX
+
+<!-- steward:estate-context begin -->
+# This machine's estate
+- Estate root: $ESTATE_DIR (registry: $ESTATE_DIR/sessions.d/)
+- Fleet questions ("which sessions exist / are alive?") are answered from the
+  estate's own data — run:
+      STEWARD_ESTATE_ROOT=$ESTATE_DIR bash $PRODUCT_DIR/linux/estate-status.sh
+  and read the table. Never guess, never use account-wide discovery.
+- Messages between sessions travel on the estate bus only.
+<!-- steward:estate-context end -->
+CTX
+  say "context: estate block appended to ~/.claude/CLAUDE.md"
+fi
+
 # The unit templates ship pointing at the deployed image (~/scripts). This
 # install runs from a CHECKOUT, so a drop-in override points ExecStart at the
 # checkout and carries the estate root — the same mechanism systemd offers for

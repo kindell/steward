@@ -233,8 +233,10 @@ printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
 # broke every checkout-run estate (measured on a live hub 2026-08-21).
 if [ "$VARD" = "$NAV_VARD" ]; then
   APPROVE_CMD="bash $here/session-approve.sh"
+  STATUS_CMD="bash $here/estate-status.sh"
 else
   APPROVE_CMD='bash ~/scripts/session-approve.sh'
+  STATUS_CMD='bash ~/scripts/estate-status.sh'
 fi
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1
@@ -246,7 +248,8 @@ PROOF="DRIFT enroll: $NAMN registered, run session-approve.sh
 ENROLL-PROOF v1
 namn=$NAMN
 from-hub=yes — that this entry reached your inbox proves the hub knows the name
-task=run: $APPROVE_CMD  and send the outcome to $NAV"
+task=run: $APPROVE_CMD  and send the outcome to $NAV
+fleet-questions=answer from the estate's own data: $STATUS_CMD — never from account-wide discovery"
 
 if [ -n "$UTAN_SANDNING" ]; then
   printf '=== to %s ===\n%s\n=== to %s ===\n%s\n' \
