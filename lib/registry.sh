@@ -314,6 +314,7 @@ registry_load() {
   # Reset before sourcing so a prior load never leaks into this one.
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
+  BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""
   # shellcheck source=/dev/null
   source "$conf"
   : "${PERMISSION_MODE:=bypassPermissions}"
@@ -356,6 +357,47 @@ registry_load() {
   case "$RC_LABEL" in
     *\'*) echo "registry: $project.conf RC_LABEL must not contain a single quote" >&2; return 1 ;;
   esac
+  # BROWSER_RIG=yes: this session wants a browser rig — an Xvfb screen, a
+  # Chromium with DevTools, and a VNC view of it. OPT-IN, never a default: a rig
+  # costs about 30 MB of screen plus a browser, and most sessions never need one.
+  #
+  # THE UNIT IS THE SESSION. One session = one rig = one profile, and the profile
+  # name IS the session name. The alternative — a rig per client or per profile —
+  # needs a second name to exist and a second place to keep it in step.
+  #
+  # THE THREE NUMBERS ARE ASSIGNED, NOT DERIVED. Deriving them from the session
+  # name has no way out of a collision (nobody renames a session because a port
+  # is taken) and, worse, FREES the number when a session is removed — while this
+  # tool's own rule is that a display number must never be reused, because a
+  # number that changes meaning makes old notes misleading. They are therefore
+  # written into the conf once and stay there.
+  #
+  # WHY THE ALLOCATOR MUST SEE EVERY HOME. Homes are 750: no account can list
+  # another's rigs, so an account that hands out its own numbers is guessing —
+  # which is how one host ended up with three rigs in one account's range and a
+  # fourth wedged inside it. The block scheme lives with whoever holds the
+  # registry; see the rig documentation for the ranges.
+  if [ -n "$BROWSER_RIG" ] && [ "$BROWSER_RIG" != "yes" ]; then
+    echo "registry: $project.conf BROWSER_RIG must be 'yes' or unset (got '$BROWSER_RIG')" >&2
+    return 1
+  fi
+  if [ -n "$BROWSER_RIG" ]; then
+    # ALL THREE OR REFUSE. A rig with two numbers starts on a screen nobody can
+    # see, or answers on a port nobody grants — and both look like a working rig
+    # from the outside.
+    local _f
+    for _f in BROWSER_DISPLAY BROWSER_CDP BROWSER_VNC; do
+      if ! [[ "${!_f}" =~ ^[0-9]+$ ]]; then
+        echo "registry: $project.conf BROWSER_RIG=yes needs a numeric $_f (got '${!_f}')" >&2
+        return 1
+      fi
+    done
+  elif [ -n "$BROWSER_DISPLAY$BROWSER_CDP$BROWSER_VNC" ]; then
+    # Numbers without the opt-in are the silent case: they look like a declared
+    # rig and start nothing. Say so rather than ignoring them.
+    echo "registry: $project.conf has BROWSER_* numbers but no BROWSER_RIG=yes — the rig will NOT start" >&2
+    return 1
+  fi
   OWNER_HOME="/Users/$OWNER"
   # Per-project secrets service account (a domain may have its own vault and account).
   local _optok; _optok="$(registry_op_token_name)" || return 78

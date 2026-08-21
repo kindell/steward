@@ -237,45 +237,70 @@ ensure_autocutsel() { # <display> <selection> — exactly ONE per screen and sel
 # The instances behind these lessons — who, which home, which date, which line
 # went wrong — belong in the estate's own documentation, not here.
 #
-# The format is four fields: <display> <profile> <cdp-port> <vnc-port>, one line
-# per rig. "#" is a comment, blank lines are skipped.
+# WHERE THE RIG LIST COMES FROM: THE SESSION REGISTRY, NOT A SECOND FILE.
 #
-# A FILE RATHER THAN A SECOND COPY OF THE SCRIPT: a second copy would have
-# become a decoy that answers, and this tree has measured instances of exactly
-# that.
+# Until 2026-08-21 this script read $HOME/.config/browser-stack/screens and
+# REFUSED (78) when it was missing. The refusal was loud and named its own path,
+# which is right — but nothing GENERATED that file. So when nobody wrote it the
+# service failed every three minutes for two days, orphaning an Xvfb per round,
+# and the failure was invisible because a service that has never worked looks
+# exactly like one that is not needed.
 #
-# NO BUILT-IN DEFAULT TABLE, NO SILENT FALLBACK. If the file is missing the
-# script refuses rather than guessing whose rigs it should start — a silent
-# fallback of the form "${DOMAIN:-$NAME}" is one of this codebase's scars.
+# The fix is not a better error. It is removing the second register: the sessions
+# already exist in sessions.d, and a rig belongs to a session. Reading them
+# directly means one register instead of two that can drift apart, and — the part
+# that fixes the CLASS rather than the instance — a home with no rigs is now
+# "nothing to do, exit 0" instead of a configuration error on a loop.
 #
-# THE PATH NAMES THE TOOL, NOT THE ESTATE. Until 2026-08-19 the directory
-# carried the estate's own name instead of the tool's — a name in a runtime
-# path, and that was what kept this file from moving into the product. The old
-# name is not written out here: the leak guard catches it, and a comment that
-# quotes what it abolishes makes the file impossible to approve. It is in the
-# history for anyone who wants it.
+# THE FILTER IS THREE-WAY and each part earns its place:
+#   HOST      — a conf may describe a session that lives on another machine.
+#   OWNER     — homes are 750; this script runs as one user and can only start
+#               that user's rigs. Someone else's rig here would fail silently.
+#   BROWSER_RIG=yes — opt-in. Most sessions never want a rig.
 #
-# NO SILENT FALLBACK TO THE OLD NAME, and that is a deliberate choice two lines
-# below the comment saying a silent fallback is one of this codebase's scars.
-# The reason is measured rather than assumed: the directory did NOT exist in any
-# home on either Linux host, their timers were `disabled` and `not-found`
-# respectively, and the journal had zero entries. There was nothing to migrate.
-#
-# Should an unmeasured machine still carry the old name, the outcome is a LOUD
-# refusal naming the path it looked for — the line below. That is the right
-# outcome: a fallback would instead have read a registry nobody maintains and
-# started rigs from it, silently.
-SCREENS="$HOME/.config/browser-stack/screens"
-if [ ! -f "$SCREENS" ]; then
-  echo "browser-stack: REFUSING — the rig registry is missing: $SCREENS" >&2
-  echo "  The format is four fields per line: <display> <profile> <cdp-port> <vnc-port>" >&2
-  echo "  ('#' is a comment, blank lines are skipped)." >&2
-  echo "  Create the file with one line per rig and run again." >&2
-  exit 78
+# NO FALLBACK TO THE OLD FILE. A fallback would read a register nobody maintains
+# and start rigs from it, silently — the exact shape this whole file is built
+# against. If an unmeasured machine still carries one, it is inert and the rigs
+# simply do not start until their sessions declare them.
+# THE REGISTRY LIBRARY IS RESOLVED, NOT ASSUMED — same lookup the enrollment
+# tools use, and the same refusal: a register that cannot be READ must never look
+# like a register that is EMPTY, because an empty one means "no rigs wanted" and
+# starts nothing while reporting success.
+_bs_reg_lib_default() {
+  local d c; d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for c in "$HOME/scripts/lib/registry.sh" "$d/lib/registry.sh" "$d/../lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  printf '%s' "$HOME/scripts/lib/registry.sh"
+}
+BS_REG_LIB="${STEWARD_REGISTRY_LIB:-$(_bs_reg_lib_default)}"
+if [ ! -f "$BS_REG_LIB" ]; then
+  echo "browser-stack: REFUSING — registry library missing: $BS_REG_LIB" >&2; exit 78
 fi
+# shellcheck source=/dev/null
+. "$BS_REG_LIB" || { echo "browser-stack: REFUSING — registry library unreadable: $BS_REG_LIB" >&2; exit 78; }
 
-while read -r _d _prof _cdp _vnc; do
-  case "${_d:-}" in ''|\#*) continue ;; esac
-  start_screen "$_d" "$_prof" "$_cdp" "$_vnc"
-done < "$SCREENS"
+_rig_host="$(hostname -s)"
+_rig_me="$(id -un)"
+_rig_started=0
+for _conf in "$(registry_dir)"/*.conf; do
+  [ -f "$_conf" ] || continue
+  _name="$(basename "$_conf" .conf)"
+  # A conf that does not load is NOT skipped quietly: an unreadable register must
+  # never look like an empty one.
+  if ! registry_load "$_name" >/dev/null; then
+    echo "browser-stack: REFUSING — $_name.conf could not be read (see above)" >&2
+    exit 78
+  fi
+  [ "$BROWSER_RIG" = "yes" ] || continue
+  [ "$HOST" = "$_rig_host" ] || continue
+  [ "$OWNER" = "$_rig_me" ] || continue
+  start_screen "$BROWSER_DISPLAY" "$_name" "$BROWSER_CDP" "$BROWSER_VNC"
+  _rig_started=$((_rig_started + 1))
+done
+
+# SAY THE NUMBER, INCLUDING ZERO. "Nothing to do" is a measurement and belongs in
+# the journal — otherwise a home whose rigs silently stopped being declared looks
+# identical to a home that never had any.
+echo "browser-stack: $_rig_started rig(s) started for $_rig_me on $_rig_host."
 exit 0
