@@ -353,6 +353,39 @@ me="${BUS_FROM:-}"
 if [ -z "$me" ] && [ -n "${TMUX_PANE:-}" ]; then
   me="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)"
 fi
+# A SENDER THAT CANNOT NAME ITSELF IS REFUSED — otherwise the send SWAPS
+# IDENTITY in silence.
+#
+# The line below picks a per-session key only when $me is known, and otherwise
+# falls back on the generic ~/.ssh/id_busrelay. That key is not neutral: it is
+# whichever session first lived in this home, and the hub still binds it to
+# THAT name (the 2026-08-06 story in the header, never fully closed — the key
+# stayed). A nameless send therefore arrives stamped as a DIFFERENT session,
+# and the hub cannot tell: attribution is by key, and the key is honest about
+# a name that is no longer the sender's.
+#
+# It strikes exactly where the sender is hardest to identify: cron, timers,
+# hooks — anything outside tmux without BUS_FROM. And in that same state both
+# the failed/ record and the THE SEND FAILED line are lost, because the failure
+# branch is guarded by [ -n "$me" ]. Without a name the TRACE and the IDENTITY
+# disappear together, which is why nobody noticed.
+#
+# Refusing is not a regression: every legitimate nameless caller already sets
+# BUS_FROM — the job runner does so explicitly, for this exact reason. Whoever
+# reaches this line was going to get the wrong sender, not a worse error.
+#
+# The refusal comes BEFORE key selection and before transport: a guard that
+# lets the mail through and merely complains would be worse than the silence it
+# replaces.
+if [ -z "$me" ]; then
+  echo "bus-send: REFUSES — the sender cannot be named." >&2
+  echo "  Neither BUS_FROM nor a tmux pane gave a name, and without one the send" >&2
+  echo "  would fall back on the generic ~/.ssh/id_busrelay — ANOTHER session's" >&2
+  echo "  key, which the hub stamps with that other session's name." >&2
+  echo "  Running headless (cron, timer, hook)? Set BUS_FROM=<session-name>." >&2
+  exit 78
+fi
+
 key="$HOME/.ssh/id_busrelay"
 [ -n "$me" ] && [ -f "$HOME/.ssh/id_busrelay_$me" ] && key="$HOME/.ssh/id_busrelay_$me"
 
