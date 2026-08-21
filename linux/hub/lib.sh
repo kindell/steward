@@ -84,7 +84,7 @@ bus_ping_msg() {
 # exercised for real against a fixture in the DEPLOYED layout, and the class list
 # and slug pattern are compared between the files. If they diverge, the test
 # fails.
-BUS_KLASSER='BESLUT FYND SAMORDNING DRIFT'
+BUS_KLASSER='BESLUT FYND SAMORDNING DRIFT FRAGA'
 
 bus_envelope_parse() {
   local text="$1" rad1 klass rest amne rubrik
