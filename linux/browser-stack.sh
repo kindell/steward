@@ -295,7 +295,19 @@ for _conf in "$(registry_dir)"/*.conf; do
   [ "$BROWSER_RIG" = "yes" ] || continue
   [ "$HOST" = "$_rig_host" ] || continue
   [ "$OWNER" = "$_rig_me" ] || continue
-  start_screen "$BROWSER_DISPLAY" "$_name" "$BROWSER_CDP" "$BROWSER_VNC"
+  # SAY WHETHER THE PROFILE IS OLD OR NEW, EVERY TIME. A rig pointed at a profile
+  # name that does not exist starts perfectly: window, VNC view, DevTools, all
+  # green — while the logged-in state it was supposed to carry sits in the
+  # directory next door. Nothing FAILS, so nothing reports. This line is the only
+  # place that difference becomes visible, and it costs one stat.
+  #
+  # It is not a refusal: a genuinely new rig must be able to start a first time.
+  # But "NEW" in the journal next to a session that has run for months is a
+  # question worth someone reading.
+  if [ -d "$HOME/chrome-profiles/$BROWSER_PROFILE" ]; then _rig_pstate="existing"
+  else _rig_pstate="NEW — no prior state"; fi
+  echo "browser-stack: $_name -> profile '$BROWSER_PROFILE' ($_rig_pstate), display :$BROWSER_DISPLAY, cdp $BROWSER_CDP, vnc $BROWSER_VNC"
+  start_screen "$BROWSER_DISPLAY" "$BROWSER_PROFILE" "$BROWSER_CDP" "$BROWSER_VNC"
   _rig_started=$((_rig_started + 1))
 done
 

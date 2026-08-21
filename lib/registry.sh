@@ -314,7 +314,7 @@ registry_load() {
   # Reset before sourcing so a prior load never leaks into this one.
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
-  BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""
+  BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
   # shellcheck source=/dev/null
   source "$conf"
   : "${PERMISSION_MODE:=bypassPermissions}"
@@ -392,10 +392,30 @@ registry_load() {
         return 1
       fi
     done
-  elif [ -n "$BROWSER_DISPLAY$BROWSER_CDP$BROWSER_VNC" ]; then
+    # BROWSER_PROFILE: which Chromium profile directory the rig opens. Defaults
+    # to the session name — that IS the rule — but a default is not the same
+    # thing as a rule, and this field exists because a fleet predates it.
+    #
+    # A PROFILE IS LOGGED-IN STATE AND THE MISMATCH IS SILENT. Aim a rig at a
+    # profile name that does not exist and the browser creates an empty one: the
+    # rig starts, the window opens, the VNC view shows it, everything reports
+    # success — and gigabytes of sessions and cookies sit untouched in the
+    # directory beside it with nobody looking for them. That is worse than
+    # losing the state; it is A SUCCESSFUL OUTCOME THAT HIDES THAT THE STATE DID
+    # NOT COME ALONG.
+    #
+    # Measured on one host 2026-08-21: five profile directories, only two named
+    # after a session. One held 1.6 GB of logins, last written the day its rig
+    # died — its session had been renamed since.
+    : "${BROWSER_PROFILE:=$project}"
+    if ! registry_valid_name "$BROWSER_PROFILE"; then
+      echo "registry: $project.conf invalid BROWSER_PROFILE '$BROWSER_PROFILE' (allowed: a-z 0-9 -)" >&2
+      return 1
+    fi
+  elif [ -n "$BROWSER_DISPLAY$BROWSER_CDP$BROWSER_VNC$BROWSER_PROFILE" ]; then
     # Numbers without the opt-in are the silent case: they look like a declared
     # rig and start nothing. Say so rather than ignoring them.
-    echo "registry: $project.conf has BROWSER_* numbers but no BROWSER_RIG=yes — the rig will NOT start" >&2
+    echo "registry: $project.conf has BROWSER_* settings but no BROWSER_RIG=yes — the rig will NOT start" >&2
     return 1
   fi
   OWNER_HOME="/Users/$OWNER"
