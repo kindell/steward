@@ -354,7 +354,27 @@ export GH_CONFIG_DIR="$CRED_HOME/gh"
 # time the convention is free.
 export CLOUDSDK_CONFIG="$CRED_HOME/gcloud"
 
-CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions --remote-control \"$RC_PREFIX$NAME\""
+# THE LABEL IS THE CONF'S TO DECIDE (design 2026-08-21: the label is the
+# nearest meaningful name — free data, never person, never construction).
+# Three cases, told apart by the CONF LINE's presence, not the value:
+#   RC_LABEL="Something"  -> that label, verbatim
+#   RC_LABEL=""           -> an RC-FREE session: no --remote-control at all,
+#                            never in anyone's app; aliveness is measured on
+#                            the pane-descendant check alone (the label was
+#                            only ever a FINDER of candidate pids — the pane
+#                            binding has carried identity since 2026-08-12)
+#   no RC_LABEL line      -> the old construction, prefix+name, so every
+#                            existing estate behaves exactly as before
+if grep -q '^RC_LABEL=' "$CONF" 2>/dev/null; then
+  RC_LABEL="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$CONF" | head -1)"
+else
+  RC_LABEL="$RC_PREFIX$NAME"
+fi
+if [ -n "$RC_LABEL" ]; then
+  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions --remote-control \"$RC_LABEL\""
+else
+  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions"
+fi
 
 # TMUX DOES NOT INHERIT THIS ENVIRONMENT. Measured 2026-08-14, and it is a
 # trap that made the whole credential isolation ineffective for two days
@@ -413,7 +433,9 @@ CRED_ENV_PREFIX="$(printf 'CRED_HOME=%q AZURE_CONFIG_DIR=%q GH_CONFIG_DIR=%q CLO
 # wider than the label and can match ANOTHER session's process. Wide matching
 # is the dangerous direction here — supervision would believe the session is
 # alive and never restart it.
-RC_PAT="$(printf '%s' "$RC_PREFIX" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+# THE PATTERN MEASURES THE LABEL THAT WAS DECIDED, not a construction — the
+# same RC_LABEL resolution as CLAUDE_CMD above, escaped whole (the label is
+# free data since 2026-08-21 and may carry any metacharacter).
 # ANCHORED AT BOTH ENDS. The front anchor (the claude binary) has its story
 # above. The END anchor is younger and was paid for live 2026-08-21: without
 # it, a session whose name is a strict PREFIX of a sibling's matched the
@@ -422,7 +444,17 @@ RC_PAT="$(printf '%s' "$RC_PREFIX" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
 # The label is always the command's last argument (CLAUDE_CMD above), so end
 # of line — with an optional closing quote — is exact. The same prefix trap
 # lives in tmux's -t matching, which is why every target below says =$NAME.
-CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_PAT$NAME\"?\$"
+#
+# AN RC-FREE SESSION (empty RC_LABEL) HAS NO LABEL TO FIND PIDS BY: the
+# pattern widens to "any claude", and the pane-descendant check below — which
+# has carried identity since 2026-08-12 — does ALL the disambiguation. The
+# label was only ever a finder of candidates.
+if [ -n "$RC_LABEL" ]; then
+  RC_LBL_PAT="$(printf '%s' "$RC_LABEL" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+  CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_LBL_PAT\"?\$"
+else
+  CLAUDE_PAT="^[^ ]*claude( |\$)"
+fi
 
 # ...BUT A PATTERN IS NOT ENOUGH: the process must belong to THIS session's
 # tmux pane. A claude the timer started before the owner had logged in, and
