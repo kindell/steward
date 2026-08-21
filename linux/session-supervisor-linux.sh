@@ -645,9 +645,19 @@ if claude_alive_in_session; then
     # The ping text itself is the estate's PING_MSG, resolved at the top — a
     # constant the whole fleet compares exactly, never a literal here.
     if [ "$OLDEST_FILE" != "$(cat "$PING_MARK" 2>/dev/null)" ]; then
-      if ! tmux capture-pane -p -t "=$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
-        tmux send-keys -t "=$NAME" -l "$PING_MSG" 2>/dev/null
-        tmux send-keys -t "=$NAME" Enter 2>/dev/null
+      # PANE-LEVEL COMMANDS TAKE THE PLAIN NAME, BEHIND THE EXACT GUARD. The
+      # =form is a SESSION-target notation: has-session and list-panes accept
+      # it, but capture-pane and send-keys parse their target as a pane and
+      # answer "can't find pane: =x" — measured on tmux 3.4 and 3.6b
+      # 2026-08-21, an hour after =everything was deployed; the suite's tmux
+      # stub cannot see the difference. Plain is safe HERE because this branch
+      # only runs for a session whose exact existence the alive check just
+      # established, and tmux resolves an existing exact name before any
+      # prefix match (also measured, against the sibling pair that found the
+      # original trap).
+      if ! tmux capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
+        tmux send-keys -t "$NAME" -l "$PING_MSG" 2>/dev/null
+        tmux send-keys -t "$NAME" Enter 2>/dev/null
         printf '%s' "$OLDEST_FILE" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
@@ -772,6 +782,8 @@ if [ ! -f "$SUSPECT" ]; then
   exit 0
 fi
 rm -f "$SUSPECT"
-tmux send-keys -t "=$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
-tmux send-keys -t "=$NAME" Enter 2>/dev/null
+# Plain name, exact-guarded: this line is only reached when has-session -t
+# "=$NAME" answered yes above — see the pane-vs-session note at the re-ping.
+tmux send-keys -t "$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
+tmux send-keys -t "$NAME" Enter 2>/dev/null
 exit 0

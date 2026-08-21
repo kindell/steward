@@ -12,6 +12,7 @@
 #   steward add <estate> <ssh-target> [estate-root] [product-dir]
 #   steward ls [<estate>]
 #   steward <estate> attach <session>
+#   steward <estate> peek <session>
 #   steward init <estate> <ssh-target>
 set -uo pipefail
 
@@ -67,21 +68,33 @@ EOF
   echo "steward: '$name' added ($target, estate at $remote_root)"
 }
 
+# The remote status command, both layouts: a checkout carries linux/, a
+# deployed image is flat under the estate root. Found in neither is a refusal
+# with the paths named — not a guess, and not a silent empty table.
+_status_cmd() { # <extra estate-status args...>
+  printf 'for c in "%s/linux/estate-status.sh" "%s/estate-status.sh"; do [ -f "$c" ] && exec env STEWARD_ESTATE_ROOT="%s" bash "$c" %s; done; echo "estate-status.sh found in neither layout (%s/linux/, %s/)" >&2; exit 78' \
+    "$PRODUCT_DIR" "$ESTATE_ROOT" "$ESTATE_ROOT" "$*" "$PRODUCT_DIR" "$ESTATE_ROOT"
+}
+
 # One estate's block for ls. Never lets a failure escape the block — the sweep
 # must survive an unreachable machine and SAY so, per estate.
 _ls_en() {
   local name="$1"
   estate_las "$name"
   echo "== $name ($SSH) =="
-  # Both layouts, remote side: a checkout carries linux/, a deployed image is
-  # flat under the estate root. Found in neither is a refusal with the paths
-  # named — not a guess, and not a silent empty table.
-  if ! "$SSH_BIN" "$SSH" \
-      "for c in \"$PRODUCT_DIR/linux/estate-status.sh\" \"$ESTATE_ROOT/estate-status.sh\"; do \
-         [ -f \"\$c\" ] && exec env STEWARD_ESTATE_ROOT=\"$ESTATE_ROOT\" bash \"\$c\"; done; \
-       echo \"estate-status.sh found in neither layout ($PRODUCT_DIR/linux/, $ESTATE_ROOT/)\" >&2; exit 78" 2>&1; then
+  if ! "$SSH_BIN" "$SSH" "$(_status_cmd)" 2>&1; then
     echo "  UNREACHABLE or refused — the rows above (if any) are partial."
   fi
+}
+
+cmd_peek() {
+  local name="$1" sess="${2:-}"
+  [ -n "$sess" ] || usage
+  case "$sess" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "session name: [a-z0-9-] only" 64 ;;
+  esac
+  estate_las "$name"
+  "$SSH_BIN" "$SSH" "$(_status_cmd peek "$sess")"
 }
 
 cmd_ls() {
@@ -125,6 +138,7 @@ case "${1:-}" in
     est="$1"; shift
     case "${1:-}" in
       attach) shift; cmd_attach "$est" "${1:-}" ;;
+      peek)   shift; cmd_peek "$est" "${1:-}" ;;
       ls)     cmd_ls "$est" ;;
       *) fel "unknown command '${1:-}' for estate '$est' — see steward --help" 64 ;;
     esac ;;
