@@ -73,8 +73,13 @@ _ls_en() {
   local name="$1"
   estate_las "$name"
   echo "== $name ($SSH) =="
+  # Both layouts, remote side: a checkout carries linux/, a deployed image is
+  # flat under the estate root. Found in neither is a refusal with the paths
+  # named — not a guess, and not a silent empty table.
   if ! "$SSH_BIN" "$SSH" \
-      "STEWARD_ESTATE_ROOT=\"$ESTATE_ROOT\" bash \"$PRODUCT_DIR/linux/estate-status.sh\"" 2>&1; then
+      "for c in \"$PRODUCT_DIR/linux/estate-status.sh\" \"$ESTATE_ROOT/estate-status.sh\"; do \
+         [ -f \"\$c\" ] && exec env STEWARD_ESTATE_ROOT=\"$ESTATE_ROOT\" bash \"\$c\"; done; \
+       echo \"estate-status.sh found in neither layout ($PRODUCT_DIR/linux/, $ESTATE_ROOT/)\" >&2; exit 78" 2>&1; then
     echo "  UNREACHABLE or refused — the rows above (if any) are partial."
   fi
 }
