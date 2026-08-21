@@ -163,6 +163,51 @@ bus_home() {
 #
 # The hub's name comes from the estate. It was a literal here, which is exactly
 # what kept this file out of the product.
+# bus_fraga_tillatet <fran> <till> — far <fran> stalla en FRAGA till <till>?
+#
+# REGELN: en persons egna sessioner far fraga varandra, och sessioner som jobbar
+# pa samma ENTITET far fraga varandra aven tvars personer.
+#
+#   samma OWNER   -> ja   (en persons egna sessioner ar ett lag)
+#   samma DOMAIN  -> ja   (entiteten: tva personers sessioner i den delar arbete)
+#   annars        -> nej
+#
+# VARFOR EN GRIND ALLS. FRAGA byggdes utan auktorisationsmodell och gav darmed
+# varje session ratt att fraga navet om HELA registret — alltsa en inventering av
+# en annan persons flotta, som hemmens 750 annars hindrar. Ingen hade beslutat
+# det; det var en delning implementerad som en avsaknad av grind, samma form som
+# CDP-porten bar innan sin vakt.
+#
+# ATT DOMANEN OPPNAR TVARS PERSONER AR AVSIKTEN, inte en lucka: tva sessioner som
+# jobbar pa samma entitet behover varandras lage, och det ar precis det fallet
+# regeln finns for.
+#
+# VAGRAN AR STANDARD. Gar agare eller doman inte att lasa for nagondera parten
+# svarar funktionen NEJ. Ett oläsbart register far aldrig bli ett tillatande.
+# Controllernamnet ar giltig MOTTAGARE aven utan conf (bus_valid_recipient), men
+# det gor det inte till en giltig FRAGE-mottagare: utan conf finns ingen agare
+# att jamfora med.
+bus_fraga_falt() { # <session> <FALT> -> vardet, eller tomt
+  local s="${1:-}" f="${2:-}" c
+  c="$(registry_dir)/$s.conf"
+  [ -f "$c" ] || return 1
+  sed -n "s/^$f=\"\(.*\)\"/\\1/p" "$c" | head -1
+}
+
+bus_fraga_tillatet() {
+  local fran="${1:-}" till="${2:-}"
+  [ -n "$fran" ] && [ -n "$till" ] || return 1
+  local fo ft do_ dt
+  fo="$(bus_fraga_falt "$fran" OWNER)"  || return 1
+  ft="$(bus_fraga_falt "$till" OWNER)"  || return 1
+  do_="$(bus_fraga_falt "$fran" DOMAIN)" || return 1
+  dt="$(bus_fraga_falt "$till" DOMAIN)" || return 1
+  [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
+  [ "$fo" = "$ft" ] && return 0
+  [ "$do_" = "$dt" ] && return 0
+  return 1
+}
+
 bus_valid_recipient() {
   local to="${1:-}"
   [ -z "$to" ] && return 1
@@ -386,6 +431,19 @@ bus_send() {
   esac
   if ! bus_valid_recipient "$to"; then
     echo "bus: unknown recipient '$to'" >&2
+    return 1
+  fi
+  # FRAGA-GRINDEN. Bara den har klassen ar begransad — vanliga meddelanden ar
+  # oforandrade. Skalet: en FRAGA besvaras MEKANISKT ur ett register, sa den ger
+  # fragaren nagot hen annars inte kunde se (hemmen ar 750). Ett vanligt
+  # meddelande ger bara det avsandaren sjalv skriver.
+  #
+  # VAGRAN AR HOGLJUDD OCH FORKLARAR REGELN. En grind som bara sager nej lar inte
+  # ut nagot, och nasta forsok blir identiskt.
+  if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
+    echo "bus: '$from' far inte stalla en FRAGA till '$to'." >&2
+    echo "     Regeln: samma AGARE, eller samma DOMAN (entiteten man jobbar pa)." >&2
+    echo "     Vanliga meddelanden (BESLUT FYND SAMORDNING DRIFT) ar oberorda." >&2
     return 1
   fi
   # If the recipient lives on another machine, deliver over ssh — the queue lands
