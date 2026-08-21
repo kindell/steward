@@ -414,7 +414,15 @@ CRED_ENV_PREFIX="$(printf 'CRED_HOME=%q AZURE_CONFIG_DIR=%q GH_CONFIG_DIR=%q CLO
 # is the dangerous direction here — supervision would believe the session is
 # alive and never restart it.
 RC_PAT="$(printf '%s' "$RC_PREFIX" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
-CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_PAT$NAME"
+# ANCHORED AT BOTH ENDS. The front anchor (the claude binary) has its story
+# above. The END anchor is younger and was paid for live 2026-08-21: without
+# it, a session whose name is a strict PREFIX of a sibling's matched the
+# sibling's process — supervision believed the shorter-named session was
+# alive as long as the longer-named one ran, and it could never be restarted.
+# The label is always the command's last argument (CLAUDE_CMD above), so end
+# of line — with an optional closing quote — is exact. The same prefix trap
+# lives in tmux's -t matching, which is why every target below says =$NAME.
+CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_PAT$NAME\"?\$"
 
 # ...BUT A PATTERN IS NOT ENOUGH: the process must belong to THIS session's
 # tmux pane. A claude the timer started before the owner had logged in, and
@@ -427,7 +435,7 @@ CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_PAT$NAME"
 # something ADJACENT (does a matching process exist?) instead of what it
 # wanted to know (is MY claude running, tied to MY tmux?).
 matching_claude_pids() { pgrep -u "$(id -u)" -f "$CLAUDE_PAT" 2>/dev/null; }
-session_pane_pid()     { tmux list-panes -t "$NAME" -F '#{pane_pid}' 2>/dev/null | head -1; }
+session_pane_pid()     { tmux list-panes -t "=$NAME" -F '#{pane_pid}' 2>/dev/null | head -1; }
 # Is $1 equal to or a descendant of $2? Follow ppid upwards until target, init
 # (1) or a ceiling is reached — the ceiling protects against a broken ps that
 # cycles.
@@ -455,7 +463,7 @@ claude_alive_in_session() {
 # live session the process belongs to it and is left alone (that is the
 # suspect flow's responsibility).
 reap_orphan_claude() {
-  tmux has-session -t "$NAME" 2>/dev/null && return 0
+  tmux has-session -t "=$NAME" 2>/dev/null && return 0
   local pid
   # STEWARD_KILL overrides only in the test — kill is a bash builtin and
   # cannot be stubbed via PATH, so the test aims it at a script of its own.
@@ -637,9 +645,9 @@ if claude_alive_in_session; then
     # The ping text itself is the estate's PING_MSG, resolved at the top — a
     # constant the whole fleet compares exactly, never a literal here.
     if [ "$OLDEST_FILE" != "$(cat "$PING_MARK" 2>/dev/null)" ]; then
-      if ! tmux capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
-        tmux send-keys -t "$NAME" -l "$PING_MSG" 2>/dev/null
-        tmux send-keys -t "$NAME" Enter 2>/dev/null
+      if ! tmux capture-pane -p -t "=$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
+        tmux send-keys -t "=$NAME" -l "$PING_MSG" 2>/dev/null
+        tmux send-keys -t "=$NAME" Enter 2>/dev/null
         printf '%s' "$OLDEST_FILE" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
@@ -747,7 +755,7 @@ fi
 
 # No tmux at all (e.g. after boot): creating anew is risk-free — there is no
 # live session to write into. No two-round rule here.
-if ! tmux has-session -t "$NAME" 2>/dev/null; then
+if ! tmux has-session -t "=$NAME" 2>/dev/null; then
   ensure_workspace_trusted
   reap_orphan_claude   # a killed tmux session may have left an orphaned claude
   rm -f "$SUSPECT"
@@ -764,6 +772,6 @@ if [ ! -f "$SUSPECT" ]; then
   exit 0
 fi
 rm -f "$SUSPECT"
-tmux send-keys -t "$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
-tmux send-keys -t "$NAME" Enter 2>/dev/null
+tmux send-keys -t "=$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
+tmux send-keys -t "=$NAME" Enter 2>/dev/null
 exit 0
