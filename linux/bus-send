@@ -347,8 +347,6 @@ BUSGUARDEOF
   return 0
 }
 
-bus_secret_guard "$text" || exit $?
-
 me="${BUS_FROM:-}"
 if [ -z "$me" ] && [ -n "${TMUX_PANE:-}" ]; then
   me="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)"
@@ -384,6 +382,56 @@ if [ -z "$me" ]; then
   echo "  key, which the hub stamps with that other session's name." >&2
   echo "  Running headless (cron, timer, hook)? Set BUS_FROM=<session-name>." >&2
   exit 78
+fi
+
+# THE SECRET GUARD RUNS HERE, NOT EARLIER, SO THAT ITS REFUSAL LEAVES A TRACE.
+#
+# It used to run before the sender was derived — and therefore before $me
+# existed, so there was no queue to write to. The consequence was an asymmetry
+# nobody could see from either end: a refusal from the HUB is archived in
+# failed/, while the client's OWN refusal left nothing at all. The sender saw a
+# message on stderr in the moment and, once that scrolled away, the send had
+# never happened. It is the read path's silence one direction over: the only
+# link in the chain that judges without recording.
+#
+# Measured 2026-08-21 by a session whose refused line could not be recovered:
+# their failed/ held the hub's refusals and nothing from the guard's.
+#
+# THE ARCHIVE RECORDS THE REFUSAL, NEVER THE TEXT. This is the whole design and
+# it must not be "improved" later: the guard fires because the text may hold a
+# key, and an archive is a key on disk forever — at every recipient, for ninety
+# days. Writing the flagged text into failed/ to make the trace complete would
+# do precisely what the guard exists to prevent. What is worth keeping is that a
+# refusal HAPPENED, when, to whom, and which line tripped it. The text is
+# reconstructable by whoever wrote it; a secret in an archive is not retractable
+# by anyone.
+#
+# A NAMELESS SENDER STILL LEAVES NOTHING, and that is not an oversight: the
+# refusal above fires when there is no $me, so there is no queue that belongs to
+# anybody. The trace in that case is the exit code and stderr, which is all a
+# nameless context can honestly own.
+# $? EFTER `if ! cmd` ÄR NEGATIONENS STATUS, INTE KOMMANDOTS — den är 0 när
+# kommandot föll. Skriven som `if ! …; then _sg_rc=$?` blev varje vägran rc 0:
+# meddelandet stoppades, felet trycktes, arkivposten skrevs — och anroparen fick
+# "det gick bra". Ett tyst fel inne i lagningen av ett tyst fel. Provsviten
+# fällde det direkt; utan den hade vakten sett ut att fungera i varje manuell
+# kontroll som läser stderr i stället för rc.
+_sg_rc=0
+bus_secret_guard "$text" || _sg_rc=$?
+if [ "$_sg_rc" -ne 0 ]; then
+  _sg_failed="$HOME/.config/agent-bus/$me/failed"
+  if mkdir -p "$_sg_failed" 2>/dev/null; then
+    _sg_now="$(date +%s)"
+    _sg_to="$(printf '%s' "$to" | tr -c 'A-Za-z0-9._-' '_')"
+    jq -n --arg from "$me" --arg to "$to" --argjson ts "$_sg_now" \
+      --argjson rc "$_sg_rc" \
+      '{from: $from, to: $to, ts: $ts, delivered: false, refused_by: "secret-guard",
+        rc: $rc, text: null,
+        note: "text deliberately NOT archived: the guard fired because it may carry a secret"}' \
+      > "$_sg_failed/${_sg_now}-${_sg_to}-$$.json" 2>/dev/null || true
+    echo "bus-send: the refusal is recorded (without the text) in $_sg_failed/" >&2
+  fi
+  exit "$_sg_rc"
 fi
 
 key="$HOME/.ssh/id_busrelay"
