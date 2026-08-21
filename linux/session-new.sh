@@ -26,6 +26,28 @@ SESS_D=""
 SSH_DIR="${STEWARD_SSH_DIR:-$HOME/.ssh}"
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
 
+# THE SENDER MUST BE NAMEABLE — CHECKED HERE, BEFORE ANYTHING IS CREATED.
+#
+# bus-send refuses a sender it cannot name, because the nameless fallback picks
+# another session's relay key and the hub stamps the mail with THAT name. This
+# script would hit that refusal at its LAST step, after a conf and a key already
+# exist — recoverable (the send failure withdraws them) but wasteful, and the
+# diagnosis arrives attached to the wrong action.
+#
+# The check is deliberately WEAKER than bus-send's own: a set TMUX_PANE may
+# still be stale. That is the right direction to be wrong in — this gate only
+# rejects the case where a name is CERTAINLY underivable, and bus-send remains
+# the authority on the rest. Duplicating the real derivation here would be two
+# copies to keep in step, which is how a guard drifts away from what it guards.
+if [ -z "${BUS_FROM:-}" ] && [ -z "${TMUX_PANE:-}" ]; then
+  echo "$(basename "$0"): REFUSES — the sender cannot be named." >&2
+  echo "  Not running in tmux and BUS_FROM is unset, so the request to the hub" >&2
+  echo "  would be sent under another session's key and stamped with its name." >&2
+  echo "  Set BUS_FROM=<your-session-name> and re-run." >&2
+  exit 78
+fi
+
+
 fel() { echo "session-new: $1" >&2; exit "${2:-65}"; }
 
 # ── THE ESTATE'S NAMES COME FROM THE ESTATE ────────────────────────────────
