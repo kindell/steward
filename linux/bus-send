@@ -327,7 +327,23 @@ bus_secret_guard() { # <text>
       printf '%s' "$_tok" | grep -q '[A-Z]' || continue
       printf '%s' "$_tok" | grep -q '[a-z]' || continue
       printf '%s' "$_tok" | grep -q '[0-9]' || continue
+      # NAME THE TOKEN THAT TRIPPED IT, REDACTED. The refusal used to say only
+      # WHICH LINE — and a line can hold a dozen tokens. The sender is then left
+      # guessing which one the matcher meant, and guesses badly in a predictable
+      # direction: they reconstruct what the line was ABOUT rather than what it
+      # SAID. Measured 2026-08-21 — a refusal was reported as "it rejected a path
+      # to an auth file", four faithful reconstructions of that description all
+      # passed, and the real trigger turned out to be a browser VERSION STRING on
+      # the same line. A summary discards exactly the background detail that
+      # caused it, and the better the summary the more certainly it omits it.
+      #
+      # REDACTED, NOT PRINTED. The token may genuinely be a key, and stderr lands
+      # in a terminal and a transcript. Four leading characters plus a length is
+      # enough to tell a version string from an opaque secret — which is the only
+      # question the sender needs answered — and not enough to be a credential.
+      _tok_hint="$(printf '%s' "$_tok" | cut -c1-4)"
       echo "bus-send: REFUSES — line $_n appears to carry a SECRET." >&2
+      echo "  The token that tripped it: '${_tok_hint}...' (${#_tok} chars)." >&2
       echo "  The rule is absolute: the queue is archived in done/, and a key in an" >&2
       echo "  archive is a key on disk forever — at EVERY recipient, for 90 days." >&2
       echo "  A POINTER does the same job: 'the password is in <path>, rotate with X'." >&2
