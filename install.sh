@@ -24,6 +24,30 @@ ESTATE_DIR="${STEWARD_ESTATE_ROOT:-$HOME/estate}"
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'install: %s\n' "$1" >&2; exit "${2:-70}"; }
 
+# ── 0. CLIENT MODE ─────────────────────────────────────────────────────────
+# --client installs the OPERATOR'S side: the `steward` command on the laptop.
+# No prerequisites, no estate, no supervision — the server half of this script
+# never runs. The clone is shared with any later server work on this machine.
+# Piped from curl the flag needs bash's arg form (`… "$(curl …)" bash --client`),
+# which nobody remembers — so the env form STEWARD_CLIENT=1 works too.
+if [ "${1:-}" = "--client" ] || [ -n "${STEWARD_CLIENT:-}" ]; then
+  if [ ! -d "$PRODUCT_DIR/.git" ]; then
+    say "product: cloning into $PRODUCT_DIR"
+    mkdir -p "$(dirname "$PRODUCT_DIR")" || die "could not create $(dirname "$PRODUCT_DIR")"
+    git clone --quiet "$STEWARD_REPO_URL" "$PRODUCT_DIR" || die "could not clone $STEWARD_REPO_URL"
+  fi
+  mkdir -p "$HOME/.local/bin" || die "could not create ~/.local/bin"
+  ln -sf "$PRODUCT_DIR/bin/steward" "$HOME/.local/bin/steward" || die "could not link steward"
+  say "client: steward linked into ~/.local/bin"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) : ;;
+    *) say "  NOTE: ~/.local/bin is not on your PATH — add it, or call it by path." ;;
+  esac
+  say "  start with:  steward add <estate> <ssh-target>     (adopt an existing estate)"
+  say "  or:          steward init <estate> <ssh-target>    (bootstrap a fresh machine)"
+  exit 0
+fi
+
 # ── 1. THE NAME ────────────────────────────────────────────────────────────
 # ORG is the only thing asked for. Everything else is derived from it, so a
 # fresh estate is internally consistent by construction rather than by the

@@ -1,0 +1,126 @@
+#!/bin/bash
+# bin/steward — the operator's laptop client. A personal estate list and four
+# verbs over plain ssh. Runs on macOS bash 3.2 as well as Linux — no arrays of
+# the modern kind, no mapfile.
+#
+# THE LIST IS PERSONAL, AND THAT IS THE DESIGN. Estates do not know about each
+# other; only the operator's own machine holds the list, and two operators of
+# the same estate each hold their own file under their own word for it. The
+# client never becomes a channel between estates — it fans out, one ssh at a
+# time, and failures are reported per estate rather than aborting the sweep.
+#
+#   steward add <estate> <ssh-target> [estate-root] [product-dir]
+#   steward ls [<estate>]
+#   steward <estate> attach <session>
+#   steward init <estate> <ssh-target>
+set -uo pipefail
+
+ESTATES_D="${STEWARD_ESTATES_D:-$HOME/.config/steward/estates.d}"
+SSH_BIN="${STEWARD_SSH:-ssh}"
+REPO_URL="${STEWARD_REPO_URL:-https://github.com/kindell/steward}"
+
+fel() { echo "steward: $1" >&2; exit "${2:-65}"; }
+
+usage() {
+  sed -n 's/^#   //p' "${BASH_SOURCE[0]}"
+  exit "${1:-64}"
+}
+
+# estate_las <name> — source the estate file into SSH/ESTATE_ROOT/PRODUCT_DIR,
+# refusing (not guessing) when a field is missing. A list entry that cannot be
+# read must not look like a reachable estate.
+estate_las() {
+  local f="$ESTATES_D/$1.conf"
+  [ -f "$f" ] || fel "unknown estate '$1' — nothing at $f (see: steward ls)"
+  SSH=""; ESTATE_ROOT=""; PRODUCT_DIR=""
+  # shellcheck source=/dev/null
+  . "$f" || fel "the estate file could not be read: $f" 78
+  [ -n "$SSH" ]         || fel "SSH missing in $f" 78
+  [ -n "$ESTATE_ROOT" ] || fel "ESTATE_ROOT missing in $f" 78
+  [ -n "$PRODUCT_DIR" ] || fel "PRODUCT_DIR missing in $f" 78
+}
+
+cmd_add() {
+  local name="${1:-}" target="${2:-}"
+  local root="${3:-\$HOME/estate}" prod="${4:-\$HOME/Projects/steward}"
+  [ -n "$name" ] && [ -n "$target" ] || usage
+  case "$name" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") fel "estate name: [a-z0-9-] only" 64 ;;
+  esac
+  [ ! -f "$ESTATES_D/$name.conf" ] || fel "'$name' is already in the list — remove $ESTATES_D/$name.conf deliberately first"
+  # ADOPTION READS BEFORE IT WRITES. The remote estate file is the proof that
+  # an estate actually lives there; a list entry written on faith would make
+  # every later 'ls' failure look like a network problem.
+  local remote_root remote_prod
+  remote_root="$("$SSH_BIN" "$target" "eval echo $root" 2>/dev/null)" \
+    || fel "could not reach $target over ssh" 70
+  "$SSH_BIN" "$target" "[ -f \"$remote_root/estate/steward.conf\" ]" 2>/dev/null \
+    || fel "no estate at $remote_root on $target (estate/steward.conf missing) — is the root right?"
+  remote_prod="$("$SSH_BIN" "$target" "eval echo $prod" 2>/dev/null)" || remote_prod="$prod"
+  mkdir -p "$ESTATES_D"
+  cat > "$ESTATES_D/$name.conf" <<EOF
+# $name — added by steward add $(date -u +%Y-%m-%dT%H:%M:%SZ), after reading the estate back.
+SSH="$target"
+ESTATE_ROOT="$remote_root"
+PRODUCT_DIR="$remote_prod"
+EOF
+  echo "steward: '$name' added ($target, estate at $remote_root)"
+}
+
+# One estate's block for ls. Never lets a failure escape the block — the sweep
+# must survive an unreachable machine and SAY so, per estate.
+_ls_en() {
+  local name="$1"
+  estate_las "$name"
+  echo "== $name ($SSH) =="
+  if ! "$SSH_BIN" "$SSH" \
+      "STEWARD_ESTATE_ROOT=\"$ESTATE_ROOT\" bash \"$PRODUCT_DIR/linux/estate-status.sh\"" 2>&1; then
+    echo "  UNREACHABLE or refused — the rows above (if any) are partial."
+  fi
+}
+
+cmd_ls() {
+  local one="${1:-}"
+  if [ -n "$one" ]; then _ls_en "$one"; return; fi
+  [ -d "$ESTATES_D" ] || fel "no estate list yet at $ESTATES_D — start with: steward add <estate> <ssh-target>"
+  local any="" f
+  for f in "$ESTATES_D"/*.conf; do
+    [ -f "$f" ] || continue
+    any=1
+    ( _ls_en "$(basename "$f" .conf)" )   # subshell: one estate's refusal must not kill the sweep
+  done
+  [ -n "$any" ] || fel "the estate list at $ESTATES_D is empty — start with: steward add <estate> <ssh-target>"
+}
+
+cmd_attach() {
+  local name="$1" sess="${2:-}"
+  [ -n "$sess" ] || usage
+  estate_las "$name"
+  # =name: tmux -t prefix-matches, and attaching to the wrong session because
+  # its name extends yours is exactly the trap measured 2026-08-21.
+  exec "$SSH_BIN" -t "$SSH" "tmux attach -t \"=$sess\""
+}
+
+cmd_init() {
+  local name="${1:-}" target="${2:-}"
+  [ -n "$name" ] && [ -n "$target" ] || usage
+  [ ! -f "$ESTATES_D/$name.conf" ] || fel "'$name' is already in the list — init creates, add adopts"
+  echo "steward: bootstrapping on $target — the run stops at the agent login, which is yours."
+  "$SSH_BIN" -t "$target" "/bin/bash -c \"\$(curl -fsSL $REPO_URL/raw/main/install.sh)\"" \
+    || fel "the bootstrap did not finish on $target — nothing added locally" 70
+  cmd_add "$name" "$target"
+}
+
+case "${1:-}" in
+  add)    shift; cmd_add "$@" ;;
+  ls)     shift; cmd_ls "${1:-}" ;;
+  init)   shift; cmd_init "$@" ;;
+  -h|--help|"") usage 0 ;;
+  *)
+    est="$1"; shift
+    case "${1:-}" in
+      attach) shift; cmd_attach "$est" "${1:-}" ;;
+      ls)     cmd_ls "$est" ;;
+      *) fel "unknown command '${1:-}' for estate '$est' — see steward --help" 64 ;;
+    esac ;;
+esac
