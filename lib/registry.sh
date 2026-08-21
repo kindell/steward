@@ -312,7 +312,7 @@ registry_load() {
     return 1
   fi
   # Reset before sourcing so a prior load never leaks into this one.
-  REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""
+  REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""; RC_FRI=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
   # shellcheck source=/dev/null
@@ -341,7 +341,29 @@ registry_load() {
   # materialized by ENV_REFRESH (e.g. via sops). OP_RUN already sources .env.
   : "${ENV_SOURCE:=}"
   if [ -z "$REPO_PATH" ]; then echo "registry: $project.conf missing REPO_PATH" >&2; return 1; fi
-  if [ -z "$RC_LABEL" ]; then echo "registry: $project.conf missing RC_LABEL" >&2; return 1; fi
+  # RC-FRI SESSION: MASKINSESSIONEN. En stående session per maskin under
+  # maskinstewardrollens konto, startad UTAN --remote-control — den existerar
+  # aldrig i modelleverantorens katalog och skrapar aldrig i apparna. Den nas via
+  # bussen och via klientens peek/attach.
+  #
+  # TOMT AR INTE SAKNAT, OCH SKILLNADEN AR RADENS NARVARO. Efter `source` ar en
+  # tom variabel och en utelamnad variabel identiska — darfor lases confen om
+  # har. Tre fall, och de ar de SAMMA som linux/session-supervisor-linux.sh
+  # redan implementerar; en andra mekanism for samma sak hade blivit tva
+  # sanningar om den, och den ouppdaterade svarar hellre an att vagra.
+  #
+  #   RC_LABEL="Nagot"   -> vanlig session (oforandrat)
+  #   RC_LABEL=""        -> RC-FRI maskinsession, ett VAL
+  #   ingen RC_LABEL-rad -> VAGRAN har (en GLOMD etikett far aldrig tyst bli
+  #                         en osynlig session; Linux-supervisorn konstruerar
+  #                         i stallet ett prefixnamn for gamla estates)
+  if grep -q '^RC_LABEL=' "$conf" 2>/dev/null; then
+    RC_FRI=""
+    [ -z "$RC_LABEL" ] && RC_FRI="yes"
+  else
+    echo "registry: $project.conf missing RC_LABEL (write RC_LABEL=\"\" for an RC-free machine session)" >&2
+    return 1
+  fi
   # OWNER: the macOS user the session runs as. Required and validated because the
   # installer runs as root and renders it into UserName and every path — never guess.
   if ! [[ "$OWNER" =~ ^[a-z][a-z0-9-]*$ ]]; then

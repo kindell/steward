@@ -194,6 +194,16 @@ bus_fraga_falt() { # <session> <FALT> -> vardet, eller tomt
   sed -n "s/^$f=\"\(.*\)\"/\\1/p" "$c" | head -1
 }
 
+# bus_ar_maskinsession <session> — RC-fri, alltsa maskinens egen session.
+# Skiljs pa RADENS NARVARO, aldrig pa varden efter source: tom och utelamnad ar
+# identiska i ett skal, och de betyder olika saker har.
+bus_ar_maskinsession() {
+  local s="${1:-}" c
+  c="$(registry_dir)/$s.conf"
+  [ -f "$c" ] || return 1
+  grep -q '^RC_LABEL=""[[:space:]]*$' "$c"
+}
+
 bus_fraga_tillatet() {
   local fran="${1:-}" till="${2:-}"
   [ -n "$fran" ] && [ -n "$till" ] || return 1
@@ -205,6 +215,21 @@ bus_fraga_tillatet() {
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
   [ "$fo" = "$ft" ] && return 0
   [ "$do_" = "$dt" ] && return 0
+  # MASKINSESSIONEN AR ALLAS SOM BOR PA MASKINEN. Den bar inte en entitet — den
+  # bar en MASKIN — sa agar/doman-regeln skulle stanga den for alla utom sitt
+  # eget konto, och da vore den oanvandbar for sitt enda syfte. Specens fall:
+  # en annan manniskas session skickar till maskinsessionen, som gor det
+  # sudo-scopade INOM maskinen.
+  #
+  # GRANSEN AR ATT MAN BOR DAR. Att ha en session pa maskinen ar redan att ha
+  # ett fotfaste pa den; att fa fraga dess maskinsession ger ingen ny yta.
+  # Nagon UTAN session dar far daremot inte fraga — annars vore maskinlagret en
+  # genvag forbi bade agar- och entitetsgransen.
+  if bus_ar_maskinsession "$till"; then
+    local mh fh
+    mh="$(bus_fraga_falt "$till" HOST)"; fh="$(bus_fraga_falt "$fran" HOST)"
+    [ -n "$mh" ] && [ -n "$fh" ] && [ "$mh" = "$fh" ] && return 0
+  fi
   return 1
 }
 
