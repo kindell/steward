@@ -314,5 +314,11 @@ done
 # SAY THE NUMBER, INCLUDING ZERO. "Nothing to do" is a measurement and belongs in
 # the journal — otherwise a home whose rigs silently stopped being declared looks
 # identical to a home that never had any.
-echo "browser-stack: $_rig_started rig(s) started for $_rig_me on $_rig_host."
+# "ENSURED", INTE "STARTED". start_screen ar idempotent — Xvfb, webblasaren och
+# vnc-servern ar var for sig pgrep-vaktade, sa en rigg som redan kor ror den inte.
+# Att da rapportera "started" vore att pasta en handling som inte utfordes, och en
+# loggrad som overdriver vad den gjorde ar samma familj som ett kvitto som
+# intygar fel sak. Raden sager vad som ar SANT: sa manga riggar ska finnas, och
+# efter korningen gor de det.
+echo "browser-stack: $_rig_started rig(s) ensured for $_rig_me on $_rig_host."
 exit 0
