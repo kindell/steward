@@ -315,7 +315,7 @@ if [ ! -d "$_rig_regdir" ]; then
   echo "browser-stack: REFUSING — the rig registry directory does not exist: $_rig_regdir" >&2
   echo "  It must hold one <session>.conf per session, each with OWNER, DOMAIN, HOST and" >&2
   echo "  BROWSER_RIG=\"yes\" for the sessions that want a rig." >&2
-  echo "  Point the resolver at the real location with STEWARD_REGISTRY_DIR if it lives elsewhere." >&2
+  echo "  Set STEWARD_REGISTRY_DIR to the real location if the registry lives elsewhere." >&2
   exit 78
 fi
 if [ ! -r "$_rig_regdir" ]; then
