@@ -66,12 +66,28 @@ start_screen() { # <display> <profile> <cdp-port> <vnc-port>
   # screen, which shows up as black bands around the window. Explicit
   # dimensions are also right WITH a WM: the screen holds only one window.
   #
-  # THE GPU FLAGS ARE NOT COSMETIC. Without them Chromium falls back on
-  # SwiftShader — software rendering — even though the machine has real GPU
-  # hardware and /dev/dri exists. Measured: one renderer sat at 70 % CPU while
-  # the GPU tool reported 0 % GPU load. A single heavy page could eat a whole
-  # core, and one orphaned renderer burned 57.7 hours of CPU before anyone
-  # noticed. Xvfb has no GLX, so the path to the card goes through EGL.
+  # THE GPU PATH IS VULKAN, AND THE ROUTE MATTERS MORE THAN THE FLAGS.
+#
+# This file used to claim the GPU flags were "not cosmetic" — while the launch
+# line carried NO GPU flags at all. Measured 2026-08-22 on a host with a real
+# card, a connected driver and the accounts in the render group: zero file
+# descriptors against the vendor device nodes, the card at 0 %, and the browser
+# reporting glRenderer "Disabled". The comment described an intention; the code
+# never implemented it, and nobody noticed because nothing failed — software
+# rasterisation just works, slower.
+#
+# WHY VULKAN AND NOT GL OR EGL. The screen is a virtual X server with no
+# accelerated GLX, so the GL route lands on a software rasteriser; forcing the
+# vendor's EGL vendor file made the browser disable GL entirely. Vulkan needs
+# neither: it talks to the device node directly. Measured, all three:
+#   (default, no flags)        -> glRenderer "Disabled", 0 device fds
+#   --use-gl=angle --use-angle=gl -> ANGLE (Mesa, llvmpipe)  — software
+#   --use-angle=vulkan         -> ANGLE (NVIDIA, Vulkan)     — 42 device fds
+#
+# THE SANDBOX STAYS ON. --disable-gpu-sandbox and --ignore-gpu-blocklist were in
+# the first working combination and BOTH turned out to be unnecessary; they were
+# removed and the result re-measured. A flag that weakens a sandbox has to earn
+# its place by being required, not by having been present when something worked.
   #
   # THE GROUPS ARE TAKEN EXPLICITLY, NOT INHERITED. An account can be put in
   # video+render to reach /dev/dri, but systemd's USER MANAGER keeps the
@@ -135,6 +151,7 @@ start_screen() { # <display> <profile> <cdp-port> <vnc-port>
     DISPLAY=":$d" TZ="${RIG_TZ:-Europe/Stockholm}" sg video -c "sg render -c \"exec chromium-browser --user-data-dir='$HOME/chrome-profiles/$prof' \
       --remote-debugging-port=$cdp --no-first-run \
       --force-prefers-reduced-motion \
+      --ozone-platform=x11 --use-gl=angle --use-angle=vulkan --enable-features=Vulkan \
       --window-position=0,0 --window-size=$W,$H\"" >/dev/null 2>&1 &
   pgrep -u "$(id -u)" -f "x11vnc -display :$d " >/dev/null || \
     x11vnc -display ":$d" -rfbport "$vnc" -localhost -rfbauth "$HOME/.vnc/passwd" \
