@@ -249,5 +249,30 @@ u="$(run --accept-drift "$FX/home1" --file bin/DOES-NOT-EXIST "$FX/home1")"; rc=
 check "valve for an unknown target: rc 64" [ "$rc" -eq 64 ]
 case "$u" in *"the valve was given for"*"bin/DOES-NOT-EXIST"*) ok ;; *) bad "the valve's error message does not name the file: $u" ;; esac
 
+# ── 19. THE VALVE HOLDS ONE HOME. Given twice it used to overwrite the first
+#         silently while --file kept accumulating, so a two-home run produced one
+#         OK and one refusal whose text was IDENTICAL to the run without any valve
+#         at all. Measured on basement 2026-08-22. The usage line's trailing "..."
+#         is what makes the repeated form look supported. ──
+rig
+run "$FX/home1" >/dev/null
+run "$FX/home2" >/dev/null
+printf 'HAND\n' > "$FX/home1/bin/tool-a"
+printf 'HAND\n' > "$FX/home2/bin/tool-a"
+u="$(run --accept-drift "$FX/home1" --file bin/tool-a --accept-drift "$FX/home2" --file bin/tool-a "$FX/home1" "$FX/home2")"; rc=$?
+check "the valve given twice: rc 64"        [ "$rc" -eq 64 ]
+case "$u" in *"given twice"*) ok ;; *) bad "the refusal does not say the valve was given twice: $u" ;; esac
+case "$u" in *"$FX/home1"*"$FX/home2"*) ok ;; *) bad "the refusal names neither home, so the dropped one is not visible: $u" ;; esac
+case "$u" in *RESULT=OK*) bad "it deployed anyway — a refusal that installs is worse than the silence it replaced: $u" ;; *) ok ;; esac
+
+# The usage line must not promise a repetition the parser refuses. This is the
+# half of the fix that lives in prose: the guard above only fires AFTER someone
+# wrote the form the documentation invited.
+case "$(sed -n '1,12p' "$A")" in
+  *'[--accept-drift <home> --file <target>]...'*)
+    bad "the usage line still promises a repeatable --accept-drift that the parser refuses" ;;
+  *) ok ;;
+esac
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -3,7 +3,8 @@
 # host, invoked by whichever entry point built the stage; the fixture suite runs
 # it unprivileged with STEWARD_DEPLOY_INSTALL_OWNER=off.
 #
-#   deploy-apply.sh <stage> <sha> [--accept-drift <home> --file <target>]... <home>...
+#   deploy-apply.sh <stage> <sha> [--accept-drift <home> --file <target> [--file <target>]...] <home>...
+#   ONE --accept-drift per run: the valve holds a single home. See the parser.
 #
 # Order per home: drift gate -> loneliness sweep -> install -> post-check ->
 # daemon-reload (only if a systemd unit changed) -> new last-good.
@@ -44,6 +45,16 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --accept-drift)
       [ $# -ge 2 ] || { echo "deploy-apply: --accept-drift requires a value (home root)" >&2; exit 64; }
+      # ETT HEM PER KORNING. ACCEPT_HOME ar en skalar: ett andra --accept-drift
+      # skrev fore 2026-08-22 over det forsta UTAN ETT ORD, medan --file fortsatte
+      # ackumulera. Uppmatt pa basement: tva hem i en korning gav det ena OK och det
+      # andra en vagran med ORDAGRANT samma text som forra gangen — ventilen som
+      # getts hade tyst forsvunnit, och inget i utskriften skilde det fallet fran
+      # att ingen ventil alls angetts. Anvandningsraden lovar upprepning med ett
+      # efterstallt "...", vilket gjorde den formen rimlig att skriva.
+      [ -z "$ACCEPT_HOME" ] || {
+        echo "deploy-apply: --accept-drift given twice ($ACCEPT_HOME, then $2) — the valve holds ONE home and the second would have replaced the first silently. Run one home per invocation." >&2
+        exit 64; }
       ACCEPT_HOME="$2"; shift 2 ;;
     --file)
       [ $# -ge 2 ] || { echo "deploy-apply: --file requires a value (target path)" >&2; exit 64; }
