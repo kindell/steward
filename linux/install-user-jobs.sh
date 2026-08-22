@@ -22,12 +22,14 @@
 # katalog: varje manniska driftar sina egna jobb, precis som sina egna sessioner.
 set -uo pipefail
 
-ENABLE=""
-case "${1:-}" in
-  --enable) ENABLE=1 ;;
-  "") ;;
-  *) echo "anvandning: install-user-jobs.sh [--enable]" >&2; exit 64 ;;
-esac
+ENABLE=""; ACCEPT_DRIFT=""
+for a in "$@"; do
+  case "$a" in
+    --enable)        ENABLE=1 ;;
+    --accept-drift)  ACCEPT_DRIFT=1 ;;
+    *) echo "anvandning: install-user-jobs.sh [--enable] [--accept-drift]" >&2; exit 64 ;;
+  esac
+done
 
 HOME_SCRIPTS="${STEWARD_HOME_SCRIPTS:-$HOME/scripts}"
 SOURCES="$HOME_SCRIPTS/jobs-sources.conf"
@@ -64,6 +66,40 @@ while IFS= read -r srcrepo; do
     echo "install-user-jobs: kallan '$srcrepo' har ingen jobs.d — hoppar" >&2
     continue
   fi
+  # HARKOMSTGRINDEN. Deployvagen kraver att kallfiler ar RENA: "deployen deployar
+  # HEAD, och last-good bar sha:n". Ogonblicksbilden hade ingen motsvarighet — en
+  # conf kunde kopieras fran ett OCOMMITTAT arbetstrad, och da finns ingen sha som
+  # binder det som KORS till nagot i historiken. Det upptacktes av domanen vars
+  # conf jag sjalv handkopierade sa: handkopieringen kringgick grinden, och
+  # generatorn arvde luckan tills den har raden fanns.
+  #
+  # VARFOR DET SPELAR ROLL: ett jobb som gar sont felsoks genom att lasa confen.
+  # Ar den ocommitterad gar det inte att veta VEM som andrade den, NAR, eller vad
+  # den sa forut — och last-good kan inte bara den. En ogonblicksbild utan
+  # harkomst ar en korande konfiguration utan historia.
+  #
+  # --accept-drift finns for att en grind man inte kan ta sig forbi kringgas med
+  # handkopiering i stallet, vilket ar precis vad som hande. Undantaget ar
+  # HOGLJUTT och namnger sha:n som saknas.
+  _repo_sha=""; _repo_smutsig=""
+  if git -C "$srcrepo" rev-parse --git-dir >/dev/null 2>&1; then
+    _repo_sha="$(git -C "$srcrepo" rev-parse --short HEAD 2>/dev/null)"
+    [ -n "$(git -C "$srcrepo" status --porcelain -- jobs.d 2>/dev/null)" ] && _repo_smutsig=1
+  else
+    _repo_smutsig=1; _repo_sha="(inget git-tra)"
+  fi
+  if [ -n "$_repo_smutsig" ]; then
+    if [ -n "$ACCEPT_DRIFT" ]; then
+      echo "install-user-jobs: DRIFT GODTAGEN for '$srcrepo' (jobs.d ar ocommitterad, harkomst=$_repo_sha+lokalt)" >&2
+      fel=1
+    else
+      echo "install-user-jobs: VAGRAR '$srcrepo' — jobs.d har ocommitterade andringar" >&2
+      echo "    Ogonblicksbilden skulle da kora utan en sha som binder den till historiken." >&2
+      echo "    Committa forst, eller kor med --accept-drift om du VET vad du gor." >&2
+      fel=1; continue
+    fi
+  fi
+
   for conf in "$srcrepo"/jobs.d/*.conf; do
     [ -e "$conf" ] || continue
     # EN OGILTIG CONF FALLER KORNINGEN, men stoppar inte de ovriga. Att avbryta
@@ -85,7 +121,11 @@ while IFS= read -r srcrepo; do
       oforandrade=$((oforandrade+1))
     else
       cp "$conf" "$SNAPDIR/$snapname" || { echo "install-user-jobs: kunde inte skriva $snapname" >&2; fel=1; continue; }
-      echo "  uppdaterad: $snapname"
+      echo "  uppdaterad: $snapname  (harkomst $_repo_sha)"
+      # HARKOMSTEN SKRIVS NED, inte bara ut. En rad i en terminal ar borta nasta
+      # dag; den som felsoker om tre veckor behover veta vilken sha confen kom ur.
+      printf '%s\t%s\t%s\t%s\n' "$snapname" "$srcrepo" "$_repo_sha${_repo_smutsig:++lokalt}" \
+        "$(date -u +%FT%TZ)" >> "$SNAPDIR/.harkomst" 2>/dev/null || true
       skrivna=$((skrivna+1))
     fi
   done
