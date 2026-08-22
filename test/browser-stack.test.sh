@@ -106,29 +106,73 @@ pgrep() {
 }
 export -f stat pgrep
 
-run_stack() { # runs the script in its own sandbox, captures rc/stdout/stderr
-  local homedir="$1"
+# THE REGISTRY MOVED, AND THIS SUITE DID NOT FOLLOW. Until 2026-08-21 the script
+# read one line per rig from $HOME/.config/browser-stack/screens, and every
+# fixture below wrote that file. The rigs now live in sessions.d, declared by the
+# session that owns them — so the old fixture set up a file nothing reads, the
+# script refused for want of a registry library, and eighteen checks failed
+# against a design that no longer exists.
+#
+# THAT IS NOT THE SAME THING AS A BUG, and the difference is worth naming: a red
+# suite whose subject was removed reports a defect in code that is behaving
+# exactly as designed. It stayed red from the migration until 2026-08-22, and
+# during that time it could not have caught a real fault either.
+#
+# WHAT THIS SUITE STILL OWNS, and why it was rewritten rather than deleted: the
+# registry's own validation is covered elsewhere (the estate's riggregister
+# suite). What lives only here is the SHAPE OF THE CALLS — that Xvfb, the browser
+# and x11vnc are invoked with the display, profile, ports and timezone the conf
+# asked for. No other suite runs the script against stubs and reads back what it
+# actually executed.
+mk_registry() { # <home> — an estate file plus an empty sessions.d, returns the dir
+  mkdir -p "$1/estate" "$1/sessions.d"
+  cat > "$1/estate/steward.conf" <<'CONF'
+HUB_HOST="navet"
+HUB_SSH="prov@navet"
+LABEL_PREFIX="com.prov"
+OP_TOKEN_FILE_NAME="prov-token"
+CONF
+  printf '%s' "$1/sessions.d"
+}
+mk_rig() { # <sessions.d> <name> <display> <profile> <cdp> <vnc>
+  # HOST and OWNER are the MACHINE'S OWN, deliberately. The script starts only
+  # rigs belonging to the account and host it runs on, so a fixture with invented
+  # values would be filtered out and the suite would pass having started nothing.
+  printf 'REPO_PATH="/x"\nRC_LABEL="P"\nDOMAIN="d"\nOWNER="%s"\nHOST="%s"\nBROWSER_RIG="yes"\nBROWSER_DISPLAY="%s"\nBROWSER_PROFILE="%s"\nBROWSER_CDP="%s"\nBROWSER_VNC="%s"\n' \
+    "$(id -un)" "$(hostname -s)" "$3" "$4" "$5" "$6" > "$1/$2.conf"
+}
+
+run_stack() { # <homedir> [registry-dir] — the script in its own sandbox
+  local homedir="$1" regdir="${2:-}"
   CALL_LOG="$homedir/calls.log"; touch "$CALL_LOG"
   export CALL_LOG
   ( export HOME="$homedir" PATH="$bin:/usr/bin:/bin"
+    export STEWARD_REGISTRY_LIB="$here/lib/registry.sh"
+    export STEWARD_ESTATE="$homedir/estate/steward.conf"
+    [ -n "$regdir" ] && export STEWARD_REGISTRY_DIR="$regdir"
     bash "$SCRIPT" )
 }
 
 # =============================================================================
-echo "A. PROVOKE — the rig registry is missing"
+echo "A. PROVOKE — the rig registry directory does not exist"
+# The guard this exercises was added 2026-08-22 after a host whose registry lived
+# where the resolver did not look reported "0 rig(s) ensured" with rc 0 — every
+# rig declared, none started, and a confident sentence saying so. A directory
+# that is not there must refuse, not read as an empty one.
 
 homeA="$work/homeA"; mkdir -p "$homeA"
-screensA="$homeA/.config/browser-stack/screens"   # deliberately never created
+mk_registry "$homeA" >/dev/null
+regA="$homeA/sessions.d-does-not-exist"   # deliberately never created
 
-out="$(run_stack "$homeA" 2>&1)"; rc=$?
-[ "$rc" -eq 78 ] && ok || bad "a missing registry => rc 78" "got rc=$rc"
+out="$(run_stack "$homeA" "$regA" 2>&1)"; rc=$?
+[ "$rc" -eq 78 ] && ok || bad "a missing registry => rc 78" "got rc=$rc, output: $out"
 case "$out" in
-  *"$screensA"*) ok ;;
+  *"$regA"*) ok ;;
   *) bad "the error names the path" "output: $out" ;;
 esac
 case "$out" in
-  *"<display> <profile> <cdp-port> <vnc-port>"*) ok ;;
-  *) bad "the error says what the file must contain" "output: $out" ;;
+  *"BROWSER_RIG"*) ok ;;
+  *) bad "the error says what the directory must contain" "output: $out" ;;
 esac
 if grep -qE '^Xvfb|^chromium-browser|^x11vnc' "$homeA/calls.log" 2>/dev/null; then
   bad "no rig was allowed to start" "calls.log: $(cat "$homeA/calls.log" 2>/dev/null)"
@@ -137,21 +181,22 @@ else
 fi
 
 # =============================================================================
-echo "B/C. CONTROL GROUP — four valid rows start four rigs; a comment and a blank line are skipped"
+echo "B/C. CONTROL GROUP — four declared rigs start four rigs; a conf without a rig is skipped"
 
-homeC="$work/homeC"; mkdir -p "$homeC/.config/browser-stack"
-screensC="$homeC/.config/browser-stack/screens"
-cat > "$screensC" <<'EOF'
-# a comment — must be skipped
+homeC="$work/homeC"; mkdir -p "$homeC"
+sdC="$(mk_registry "$homeC")"
+mk_rig "$sdC" alfa  5  alfa  9222 5900
+mk_rig "$sdC" beta  6  beta  9223 5901
+mk_rig "$sdC" gamma 8  gamma 9225 5902
+mk_rig "$sdC" delta 12 delta 9226 5903
+# A session with no rig at all — it must load cleanly and start nothing. This is
+# the row the old fixture expressed as a comment line, and it is the commoner
+# case in a real registry by a wide margin.
+printf 'REPO_PATH="/x"\nRC_LABEL="P"\nDOMAIN="d"\nOWNER="%s"\nHOST="%s"\n' \
+  "$(id -un)" "$(hostname -s)" > "$sdC/utan-rigg.conf"
 
-5 alfa 9222 5900
-6 beta 9223 5901
-8 gamma 9225 5902
-12 delta 9226 5903
-EOF
-
-out="$(run_stack "$homeC" 2>&1)"; rc=$?
-[ "$rc" -eq 0 ] && ok || bad "four valid rows => rc 0" "got rc=$rc, output: $out"
+out="$(run_stack "$homeC" "$sdC" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok || bad "four declared rigs => rc 0" "got rc=$rc, output: $out"
 
 log="$homeC/calls.log"
 check_rig() { # <name> <display> <cdp> <vnc>
@@ -168,18 +213,18 @@ check_rig beta  6  9223 5901
 check_rig gamma 8  9225 5902
 check_rig delta 12 9226 5903
 
-# exactly four — the comment row and the blank row must not have triggered a fifth
+# exactly four — the rig-less conf must not have triggered a fifth
 n_xvfb="$(grep -c '^Xvfb ' "$log")"
-[ "$n_xvfb" -eq 4 ] && ok || bad "exactly four Xvfb calls (comment/blank row skipped)" "got $n_xvfb, log: $(cat "$log")"
+[ "$n_xvfb" -eq 4 ] && ok || bad "exactly four Xvfb calls (the rig-less conf skipped)" "got $n_xvfb, log: $(cat "$log")"
 
 echo "== D. THE TIMEZONE — the rig shows human time, the host logs UTC =="
 # Rigs exist so that a person can look at them over VNC, and that audience reads
 # local time. Without TZ the browser reports the host's zone, and every clock
 # reading in a screenshot from it is wrong against the viewer's clock.
-homeD="$(mktemp -d)"; mkdir -p "$homeD/.config/browser-stack"
-printf '5 testprofile 9222 5900\n' > "$homeD/.config/browser-stack/screens"
-CALL_LOG="$homeD/calls.log" HOME="$homeD" PATH="$bin:$PATH" \
-  bash "$SCRIPT" >/dev/null 2>&1
+homeD="$(mktemp -d)"
+sdD="$(mk_registry "$homeD")"
+mk_rig "$sdD" testprofile 5 testprofile 9222 5900
+run_stack "$homeD" "$sdD" >/dev/null 2>&1
 if grep -q 'TZ=Europe/Stockholm' "$homeD/calls.log" 2>/dev/null; then ok "the rig starts with Europe/Stockholm"
 else bad "the rig starts with Europe/Stockholm" "$(grep -m1 chromium "$homeD/calls.log" 2>/dev/null || echo 'no rig started')"; fi
 # ONLY THE BROWSER CALL needs the zone. Xvfb, x11vnc and the keyboard tools draw
@@ -191,10 +236,9 @@ case "$(grep -E '^sg |chromium' "$homeD/calls.log" 2>/dev/null | grep -c 'TZ=<un
 esac
 
 # CONTROL GROUP: the value is not baked in — a host somewhere else can set its own.
-CALL_LOG="$homeD/calls2.log" HOME="$homeD" PATH="$bin:$PATH" RIG_TZ="Pacific/Auckland" \
-  bash "$SCRIPT" >/dev/null 2>&1
-if grep -q 'TZ=Pacific/Auckland' "$homeD/calls2.log" 2>/dev/null; then ok "CONTROL GROUP: RIG_TZ wins"
-else bad "CONTROL GROUP: RIG_TZ wins" "$(grep -m1 chromium "$homeD/calls2.log" 2>/dev/null)"; fi
+( export RIG_TZ="Pacific/Auckland"; run_stack "$homeD" "$sdD" >/dev/null 2>&1 )
+if grep -q 'TZ=Pacific/Auckland' "$homeD/calls.log" 2>/dev/null; then ok "CONTROL GROUP: RIG_TZ wins"
+else bad "CONTROL GROUP: RIG_TZ wins" "$(grep -m1 chromium "$homeD/calls.log" 2>/dev/null)"; fi
 rm -rf "$homeD"
 
 echo "pass=$pass fail=$fail"

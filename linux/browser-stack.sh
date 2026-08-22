@@ -296,7 +296,34 @@ fi
 _rig_host="$(hostname -s)"
 _rig_me="$(id -un)"
 _rig_started=0
-for _conf in "$(registry_dir)"/*.conf; do
+
+# THE DIRECTORY, NOT ONLY THE FILES IN IT. The per-conf guard below has always
+# refused a conf that will not load — but a registry DIRECTORY that does not
+# exist was never checked at all. The glob then matches nothing, the loop runs
+# zero times, and the run ends "0 rig(s) ensured" with rc 0: the exact shape the
+# comment below forbids, one level further up.
+#
+# MEASURED 2026-08-22 on a host whose registry lived somewhere the resolver did
+# not look. Every rig was declared and none started, and the tool reported zero
+# rigs in a confident sentence. It cost hours, because "0 rigs" reads as "you
+# have not declared any" and is indistinguishable from a correct empty host.
+#
+# The refusal names the path AND says what must be in it: an operator who is told
+# only that a directory is missing still has to guess what belongs there.
+_rig_regdir="$(registry_dir)"
+if [ ! -d "$_rig_regdir" ]; then
+  echo "browser-stack: REFUSING — the rig registry directory does not exist: $_rig_regdir" >&2
+  echo "  It must hold one <session>.conf per session, each with OWNER, DOMAIN, HOST and" >&2
+  echo "  BROWSER_RIG=\"yes\" for the sessions that want a rig." >&2
+  echo "  Point the resolver at the real location with STEWARD_REGISTRY_DIR if it lives elsewhere." >&2
+  exit 78
+fi
+if [ ! -r "$_rig_regdir" ]; then
+  echo "browser-stack: REFUSING — the rig registry directory is not readable: $_rig_regdir" >&2
+  exit 78
+fi
+
+for _conf in "$_rig_regdir"/*.conf; do
   [ -f "$_conf" ] || continue
   _name="$(basename "$_conf" .conf)"
   # A conf that does not load is NOT skipped quietly: an unreadable register must
