@@ -163,30 +163,30 @@ bus_home() {
 #
 # The hub's name comes from the estate. It was a literal here, which is exactly
 # what kept this file out of the product.
-# bus_fraga_tillatet <fran> <till> — far <fran> stalla en FRAGA till <till>?
+# bus_fraga_tillatet <from> <to> — may <from> put a FRAGA to <to>?
 #
-# REGELN: en persons egna sessioner far fraga varandra, och sessioner som jobbar
-# pa samma ENTITET far fraga varandra aven tvars personer.
+# THE RULE: one person's own sessions may ask each other, and sessions working on
+# the same ENTITY may ask each other even across people.
 #
-#   samma OWNER   -> ja   (en persons egna sessioner ar ett lag)
-#   samma DOMAIN  -> ja   (entiteten: tva personers sessioner i den delar arbete)
-#   annars        -> nej
+#   same OWNER   -> yes  (one person's own sessions are a team)
+#   same DOMAIN  -> yes  (the entity: two people's sessions in it share the work)
+#   otherwise    -> no
 #
-# VARFOR EN GRIND ALLS. FRAGA byggdes utan auktorisationsmodell och gav darmed
-# varje session ratt att fraga navet om HELA registret — alltsa en inventering av
-# en annan persons flotta, som hemmens 750 annars hindrar. Ingen hade beslutat
-# det; det var en delning implementerad som en avsaknad av grind, samma form som
-# CDP-porten bar innan sin vakt.
+# WHY A GATE AT ALL. FRAGA was built with no authorisation model, and so gave
+# every session the right to ask the hub about the WHOLE registry — an inventory
+# of another person's fleet, which the homes' 750 otherwise prevents. Nobody had
+# decided that; it was a sharing implemented as the absence of a gate, the same
+# shape the CDP port carried before it got its guard.
 #
-# ATT DOMANEN OPPNAR TVARS PERSONER AR AVSIKTEN, inte en lucka: tva sessioner som
-# jobbar pa samma entitet behover varandras lage, och det ar precis det fallet
-# regeln finns for.
+# THE DOMAIN OPENING ACROSS PEOPLE IS THE INTENT, not a hole: two sessions working
+# on the same entity need each other's state, and that is exactly the case the
+# rule exists for.
 #
-# VAGRAN AR STANDARD. Gar agare eller doman inte att lasa for nagondera parten
-# svarar funktionen NEJ. Ett oläsbart register far aldrig bli ett tillatande.
-# Controllernamnet ar giltig MOTTAGARE aven utan conf (bus_valid_recipient), men
-# det gor det inte till en giltig FRAGE-mottagare: utan conf finns ingen agare
-# att jamfora med.
+# REFUSAL IS THE DEFAULT. If owner or domain cannot be read for either party, the
+# function answers NO. An unreadable registry must never become a permit. The
+# controller name is a valid RECIPIENT even without a conf (bus_valid_recipient),
+# but that does not make it a valid FRAGA recipient: with no conf there is no
+# owner to compare against.
 bus_fraga_falt() { # <session> <FALT> -> vardet, eller tomt
   local s="${1:-}" f="${2:-}" c
   c="$(registry_dir)/$s.conf"
@@ -194,9 +194,9 @@ bus_fraga_falt() { # <session> <FALT> -> vardet, eller tomt
   sed -n "s/^$f=\"\(.*\)\"/\\1/p" "$c" | head -1
 }
 
-# bus_ar_maskinsession <session> — RC-fri, alltsa maskinens egen session.
-# Skiljs pa RADENS NARVARO, aldrig pa varden efter source: tom och utelamnad ar
-# identiska i ett skal, och de betyder olika saker har.
+# bus_ar_maskinsession <session> — RC-free, i.e. the machine's own session.
+# Told apart by WHETHER THE LINE IS THERE, never by the value after source: empty
+# and omitted are identical in a shell, and they mean different things here.
 bus_ar_maskinsession() {
   local s="${1:-}" c
   c="$(registry_dir)/$s.conf"
@@ -215,16 +215,16 @@ bus_fraga_tillatet() {
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
   [ "$fo" = "$ft" ] && return 0
   [ "$do_" = "$dt" ] && return 0
-  # MASKINSESSIONEN AR ALLAS SOM BOR PA MASKINEN. Den bar inte en entitet — den
-  # bar en MASKIN — sa agar/doman-regeln skulle stanga den for alla utom sitt
-  # eget konto, och da vore den oanvandbar for sitt enda syfte. Specens fall:
-  # en annan manniskas session skickar till maskinsessionen, som gor det
-  # sudo-scopade INOM maskinen.
+  # THE MACHINE SESSION BELONGS TO EVERYONE WHO LIVES ON THE MACHINE. It does not
+  # carry an entity — it carries a MACHINE — so the owner/domain rule would close
+  # it to everyone but its own account, and it would then be useless for its only
+  # purpose. The spec's case: another person's session sends to the machine
+  # session, which does the sudo-scoped work WITHIN the machine.
   #
-  # GRANSEN AR ATT MAN BOR DAR. Att ha en session pa maskinen ar redan att ha
-  # ett fotfaste pa den; att fa fraga dess maskinsession ger ingen ny yta.
-  # Nagon UTAN session dar far daremot inte fraga — annars vore maskinlagret en
-  # genvag forbi bade agar- och entitetsgransen.
+  # THE LIMIT IS LIVING THERE. Having a session on the machine is already having a
+  # foothold on it; being allowed to ask its machine session grants no new surface.
+  # Someone WITHOUT a session there may not ask — otherwise the machine layer would
+  # be a shortcut past both the owner and the entity boundary.
   if bus_ar_maskinsession "$till"; then
     local mh fh
     mh="$(bus_fraga_falt "$till" HOST)"; fh="$(bus_fraga_falt "$fran" HOST)"
@@ -458,13 +458,13 @@ bus_send() {
     echo "bus: unknown recipient '$to'" >&2
     return 1
   fi
-  # FRAGA-GRINDEN. Bara den har klassen ar begransad — vanliga meddelanden ar
-  # oforandrade. Skalet: en FRAGA besvaras MEKANISKT ur ett register, sa den ger
-  # fragaren nagot hen annars inte kunde se (hemmen ar 750). Ett vanligt
-  # meddelande ger bara det avsandaren sjalv skriver.
+  # THE FRAGA GATE. Only this class is restricted — ordinary messages are
+  # unchanged. The reason: a FRAGA is answered MECHANICALLY out of a registry, so
+  # it hands the asker something they could not otherwise see (homes are 750). An
+  # ordinary message conveys only what the sender writes themselves.
   #
-  # VAGRAN AR HOGLJUDD OCH FORKLARAR REGELN. En grind som bara sager nej lar inte
-  # ut nagot, och nasta forsok blir identiskt.
+  # THE REFUSAL IS LOUD AND EXPLAINS THE RULE. A gate that only says no teaches
+  # nothing, and the next attempt is identical.
   if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
     echo "bus: '$from' far inte stalla en FRAGA till '$to'." >&2
     echo "     Regeln: samma AGARE, eller samma DOMAN (entiteten man jobbar pa)." >&2

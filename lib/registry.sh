@@ -341,22 +341,23 @@ registry_load() {
   # materialized by ENV_REFRESH (e.g. via sops). OP_RUN already sources .env.
   : "${ENV_SOURCE:=}"
   if [ -z "$REPO_PATH" ]; then echo "registry: $project.conf missing REPO_PATH" >&2; return 1; fi
-  # RC-FRI SESSION: MASKINSESSIONEN. En stående session per maskin under
-  # maskinstewardrollens konto, startad UTAN --remote-control — den existerar
-  # aldrig i modelleverantorens katalog och skrapar aldrig i apparna. Den nas via
-  # bussen och via klientens peek/attach.
+  # RC-FREE SESSION: THE MACHINE SESSION. One standing session per machine under
+  # the machine steward's account, started WITHOUT --remote-control — it never
+  # appears in the model vendor's directory and never reaches into the apps. It
+  # is reached over the bus and through the client's peek/attach.
   #
-  # TOMT AR INTE SAKNAT, OCH SKILLNADEN AR RADENS NARVARO. Efter `source` ar en
-  # tom variabel och en utelamnad variabel identiska — darfor lases confen om
-  # har. Tre fall, och de ar de SAMMA som linux/session-supervisor-linux.sh
-  # redan implementerar; en andra mekanism for samma sak hade blivit tva
-  # sanningar om den, och den ouppdaterade svarar hellre an att vagra.
+  # EMPTY IS NOT MISSING, AND THE DIFFERENCE IS WHETHER THE LINE IS THERE. After
+  # `source`, an empty variable and an omitted one are indistinguishable — which
+  # is why the conf is re-read here. Three cases, and they are the SAME ones
+  # linux/session-supervisor-linux.sh already implements; a second mechanism for
+  # the same thing would have become two truths about it, and the stale one
+  # answers rather than refuses.
   #
-  #   RC_LABEL="Nagot"   -> vanlig session (oforandrat)
-  #   RC_LABEL=""        -> RC-FRI maskinsession, ett VAL
-  #   ingen RC_LABEL-rad -> VAGRAN har (en GLOMD etikett far aldrig tyst bli
-  #                         en osynlig session; Linux-supervisorn konstruerar
-  #                         i stallet ett prefixnamn for gamla estates)
+  #   RC_LABEL="Something" -> ordinary session (unchanged)
+  #   RC_LABEL=""          -> RC-FREE machine session, a CHOICE
+  #   no RC_LABEL line     -> REFUSAL here (a FORGOTTEN label must never quietly
+  #                           become an invisible session; the Linux supervisor
+  #                           instead builds a prefixed name for older estates)
   if grep -q '^RC_LABEL=' "$conf" 2>/dev/null; then
     RC_FRI=""
     [ -z "$RC_LABEL" ] && RC_FRI="yes"

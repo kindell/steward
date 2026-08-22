@@ -30,10 +30,10 @@ REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 RDIR="$(registry_dir)" || exit 78
 HUB_HOST="$(registry_hub_host)" || exit 78
 SELF_HOST="${STEWARD_SELF_HOST:-$(hostname -s)}"
-# VEM ÄR "JAG" I EN LISTA ÖVER FLERA MÄNNISKORS SESSIONER. Det unix-konto som
-# kör kommandot — inte en gissning ur sessionsnamnet, och inte $USER som en
-# systemd-timer kan lämna osatt. En felaktig självbild här är tyst: den gör bara
-# att fel rader saknar sin markör, vilket ser ut som att man inte äger något.
+# WHO IS "ME" IN A LIST OF SEVERAL PEOPLE'S SESSIONS. The unix account running
+# the command — not a guess from the session name, and not $USER, which a systemd
+# timer may leave unset. A wrong self-image here is silent: it only makes the
+# wrong rows lack their marker, which looks like owning nothing.
 SELF_USER="${STEWARD_SELF_USER:-$(id -un)}"
 
 # TMUX IS RESOLVED, NOT ASSUMED. Over ssh the PATH is bare (a package-manager
@@ -98,18 +98,18 @@ for conf in "$RDIR"/*.conf; do
   else
     tm="?($host)"; ti="?($host)"
   fi
-  # ÄGARSKAP SOM EGEN KOLUMN, INTE SOM NÅGOT LÄSAREN FÅR RÄKNA UT.
+  # OWNERSHIP AS ITS OWN COLUMN, NOT AS SOMETHING THE READER MUST WORK OUT.
   #
-  # Listan visade tidigare varje sessions OWNER och lät den som läste jämföra
-  # med sig själv. Det låter likvärdigt och är det inte: frågan som ställs inne
-  # i en session är nästan aldrig "vem äger den här raden" utan "vilka är MINA",
-  # och en lista som kräver att läsaren håller sitt eget användarnamn i huvudet
-  # besvarar den andra frågan medan den ser ut att besvara den första. I en
-  # flotta där en maskin bär FLERA människors sessioner är det skillnaden
-  # mellan att se sin grupp och att se ett register.
+  # The list used to print each session's OWNER and let whoever read it compare
+  # against themselves. That sounds equivalent and is not: the question asked
+  # from inside a session is almost never "who owns this row" but "which ones
+  # are MINE", and a list that requires the reader to hold their own username
+  # in their head answers the second question while looking like it answers the
+  # first. In a fleet where one machine carries SEVERAL people's sessions, that
+  # is the difference between seeing your group and seeing a registry.
   #
-  # Markören är '*' i en egen kolumn och sorteringen lägger dina först — samma
-  # svar, men läsbart utan att räkna.
+  # The marker is '*' in a column of its own and the sort puts yours first —
+  # the same answer, but readable without counting.
   if [ "${owner:-}" = "$SELF_USER" ]; then mine="*"; sortkey="0"; else mine=" "; sortkey="1"; fi
   rows="$rows$sortkey|$mine|$name|${owner:-?}|$host|$tm|$ti|${rc:-?}
 "
@@ -122,10 +122,11 @@ if [ -z "$have_confs" ]; then
   exit 0
 fi
 
-# --mine: bara dina. För den som vet vad hen frågar efter och inte vill läsa
-# förbi grannens rader. Utan flaggan visas allt, med dina först — att GRANNENS
-# sessioner syns är inte en läcka utan poängen: en maskin med flera människors
-# sessioner måste gå att förstå av var och en som bor där.
+# --mine: yours only. For the reader who knows what they are after and does not
+# want to read past the neighbour's rows. Without the flag everything is shown,
+# yours first — the NEIGHBOUR's sessions being visible is not a leak but the
+# point: a machine holding several people's sessions has to be understandable
+# by each of the people living on it.
 only_mine=""; want_remote=""
 for _a in "$@"; do
   case "$_a" in
@@ -136,22 +137,23 @@ for _a in "$@"; do
   esac
 done
 
-# --remote: FYLL I DE FRÅGETECKEN SOM ÄR DINA ATT FYLLA I.
+# --remote: FILL IN THE QUESTION MARKS THAT ARE YOURS TO FILL IN.
 #
-# Utan flaggan svarar listan bara för den här maskinen, och sessioner på andra
-# värdar står som ?(värd). Det är ärligt men otillräckligt för den vanligaste
-# frågan inifrån en session: lever mina syskon? På en flotta där de flesta av
-# dina sessioner bor någon annanstans är en lista med tio frågetecken inget svar.
+# Without the flag the list answers only for this machine, and sessions on other
+# hosts read as ?(host). That is honest but insufficient for the commonest
+# question from inside a session: are my siblings alive? In a fleet where most of
+# your sessions live elsewhere, a list of ten question marks is no answer.
 #
-# DEN SVARAR BARA FÖR DINA. Uppslaget sker som DITT unix-konto över ssh, så det
-# kan bara se din egen tmux-server på den andra maskinen. Grannens rader förblir
-# ?(värd) — inte av försiktighet utan för att det är sant: hemmen är 750 och ditt
-# konto ser inte deras server. En rad som påstod något om en annan människas
-# session hade varit en gissning i en kolumn som ser ut att vara en mätning.
+# IT ANSWERS ONLY FOR YOURS. The lookup runs as YOUR unix account over ssh, so it
+# can only see your own tmux server on the other machine. The neighbour's rows
+# stay ?(host) — not out of caution but because it is true: homes are 750 and your
+# account cannot see their server. A row that claimed something about another
+# person's session would be a guess in a column that looks like a measurement.
 #
-# EN OPÅLITLIG VÄRD GER ?(värd unreachable), ALDRIG "down". Skillnaden är hela
-# poängen: "down" är ett larm någon agerar på, "kan inte nå" är en fråga om
-# nätet. Att slå ihop dem är att göra ett tyst fel av ett synligt.
+# AN UNREACHABLE HOST GIVES ?(host unreachable), NEVER "down". The difference is
+# the whole point: "down" is an alarm somebody acts on, "cannot reach" is a
+# question about the network. Merging them turns a visible failure into a silent
+# one.
 if [ -n "$want_remote" ]; then
   _hosts="$(printf '%s' "$rows" | awk -F'|' -v me="$SELF_USER" -v self="$SELF_HOST" '$4==me && $5!=self {print $5}' | sort -u)"
   for _h in $_hosts; do
@@ -162,11 +164,11 @@ if [ -n "$want_remote" ]; then
               '{ if ($4==me && $5==h) { $6="?(" h " unreachable)"; $7=$6 } ; print }')"
       continue
     fi
-    # NYRADER FÅR INTE RESA I EN awk -v. En variabel med radbrytningar bryter
-    # awk:s egen tolkning av programtexten — den föll på det här en gång och
-    # felet såg ut som ett tomt register, alltså det enda utfall som absolut
-    # inte får uppstå av ett formateringsfel. Listan plattas därför till en
-    # mellanslagsseparerad rad före överlämningen.
+    # NEWLINES MUST NOT TRAVEL IN AN awk -v. A variable containing line breaks
+    # breaks awk's own parsing of the program text — this failed on it once, and
+    # the failure looked like an empty registry, which is precisely the outcome
+    # that must never arise from a formatting mistake. The list is therefore
+    # flattened to one space-separated line before being handed over.
     _live_flat="$(printf '%s' "$_live" | tr '\n' ' ')"
     rows="$(printf '%s' "$rows" | awk -F'|' -v OFS='|' -v me="$SELF_USER" -v h="$_h" -v live="$_live_flat" '
       BEGIN { n=split(live, a, " "); for (i=1;i<=n;i++) if (a[i]!="") up[a[i]]=1 }
@@ -178,8 +180,8 @@ _body="$(printf '%s' "$rows" | sort -t'|' -k1,1 -k3,3)"
 if [ -n "$only_mine" ]; then
   _body="$(printf '%s\n' "$_body" | awk -F'|' '$1=="0"')"
   if [ -z "$_body" ]; then
-    # NOLL ÄR ETT SVAR, inte en tom utskrift. En tom lista och ett trasigt
-    # uppslag ser annars likadana ut.
+    # ZERO IS AN ANSWER, not an empty printout. Otherwise an empty list and a
+    # broken lookup look exactly alike.
     echo "estate-status: inga sessioner ägs av '$SELF_USER' i registret på $SELF_HOST."
     echo "  (Kör utan --mine för att se hela registret: $(printf '%s' "$rows" | grep -c . ) rader.)"
     exit 0

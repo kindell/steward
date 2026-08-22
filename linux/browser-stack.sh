@@ -327,11 +327,11 @@ done
 # SAY THE NUMBER, INCLUDING ZERO. "Nothing to do" is a measurement and belongs in
 # the journal — otherwise a home whose rigs silently stopped being declared looks
 # identical to a home that never had any.
-# "ENSURED", INTE "STARTED". start_screen ar idempotent — Xvfb, webblasaren och
-# vnc-servern ar var for sig pgrep-vaktade, sa en rigg som redan kor ror den inte.
-# Att da rapportera "started" vore att pasta en handling som inte utfordes, och en
-# loggrad som overdriver vad den gjorde ar samma familj som ett kvitto som
-# intygar fel sak. Raden sager vad som ar SANT: sa manga riggar ska finnas, och
-# efter korningen gor de det.
+# "ENSURED", NOT "STARTED". start_screen is idempotent — Xvfb, the browser and
+# the VNC server are each pgrep-guarded, so a rig that is already running is left
+# alone. Reporting "started" would then claim an action that was not performed,
+# and a log line that overstates what it did belongs to the same family as a
+# receipt that certifies the wrong thing. The line says what is TRUE: this many
+# rigs are meant to exist, and after the run they do.
 echo "browser-stack: $_rig_started rig(s) ensured for $_rig_me on $_rig_host."
 exit 0

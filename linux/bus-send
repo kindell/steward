@@ -426,12 +426,13 @@ fi
 # refusal above fires when there is no $me, so there is no queue that belongs to
 # anybody. The trace in that case is the exit code and stderr, which is all a
 # nameless context can honestly own.
-# $? EFTER `if ! cmd` ÄR NEGATIONENS STATUS, INTE KOMMANDOTS — den är 0 när
-# kommandot föll. Skriven som `if ! …; then _sg_rc=$?` blev varje vägran rc 0:
-# meddelandet stoppades, felet trycktes, arkivposten skrevs — och anroparen fick
-# "det gick bra". Ett tyst fel inne i lagningen av ett tyst fel. Provsviten
-# fällde det direkt; utan den hade vakten sett ut att fungera i varje manuell
-# kontroll som läser stderr i stället för rc.
+# $? AFTER `if ! cmd` IS THE NEGATION'S STATUS, NOT THE COMMAND'S — it is 0 when
+# the command failed. Written as `if ! …; then _sg_rc=$?`, every refusal became
+# rc 0: the message was stopped, the error was printed, the archive entry was
+# written — and the caller was told it had gone fine. A silent failure inside the
+# repair of a silent failure. The test suite caught it immediately; without it the
+# guard would have looked correct in every manual check that reads stderr rather
+# than rc.
 _sg_rc=0
 bus_secret_guard "$text" || _sg_rc=$?
 if [ "$_sg_rc" -ne 0 ]; then
