@@ -66,28 +66,25 @@ start_screen() { # <display> <profile> <cdp-port> <vnc-port>
   # screen, which shows up as black bands around the window. Explicit
   # dimensions are also right WITH a WM: the screen holds only one window.
   #
-  # THE GPU PATH IS VULKAN, AND THE ROUTE MATTERS MORE THAN THE FLAGS.
+  # NO GPU FLAGS — MEASURED, NOT ASSUMED. The hardware path was made to work on
+# 2026-08-22 (ANGLE over Vulkan; the plain GL route lands on a software
+# rasteriser because a virtual screen has no accelerated GLX, and forcing the
+# vendor EGL disabled GL entirely). It was then turned back off the same day.
 #
-# This file used to claim the GPU flags were "not cosmetic" — while the launch
-# line carried NO GPU flags at all. Measured 2026-08-22 on a host with a real
-# card, a connected driver and the accounts in the render group: zero file
-# descriptors against the vendor device nodes, the card at 0 %, and the browser
-# reporting glRenderer "Disabled". The comment described an intention; the code
-# never implemented it, and nobody noticed because nothing failed — software
-# rasterisation just works, slower.
+# WHY OFF. The benefit was measured and there was none: page load, screenshot
+# capture and CPU-per-screenshot were identical with and without, because this
+# fleet's work is network- and parse-bound, not rasterisation-bound. The cost
+# was measured too: one rig's gpu-process span at 77 % in R state with a
+# [vkrt] Analysis thread, its DevTools websocket stopped answering while the
+# HTTP endpoint stayed up, and a scheduled job was blocked. Four sibling rigs
+# were healthy at the same moment, so the load was necessary and the driver
+# alone was not sufficient — but zero benefit against one demonstrated hang is
+# a bad trade whatever the mechanism.
 #
-# WHY VULKAN AND NOT GL OR EGL. The screen is a virtual X server with no
-# accelerated GLX, so the GL route lands on a software rasteriser; forcing the
-# vendor's EGL vendor file made the browser disable GL entirely. Vulkan needs
-# neither: it talks to the device node directly. Measured, all three:
-#   (default, no flags)        -> glRenderer "Disabled", 0 device fds
-#   --use-gl=angle --use-angle=gl -> ANGLE (Mesa, llvmpipe)  — software
-#   --use-angle=vulkan         -> ANGLE (NVIDIA, Vulkan)     — 42 device fds
-#
-# THE SANDBOX STAYS ON. --disable-gpu-sandbox and --ignore-gpu-blocklist were in
-# the first working combination and BOTH turned out to be unnecessary; they were
-# removed and the result re-measured. A flag that weakens a sandbox has to earn
-# its place by being required, not by having been present when something worked.
+# WHAT WOULD CHANGE IT: a workload that is actually rasterisation-bound
+# (WebGL, canvas, video decode), or a host with few enough cores that software
+# rasterisation competes for them. Measure before re-enabling; the flag set
+# that works is in the history of this file.
   #
   # THE GROUPS ARE TAKEN EXPLICITLY, NOT INHERITED. An account can be put in
   # video+render to reach /dev/dri, but systemd's USER MANAGER keeps the
@@ -151,7 +148,6 @@ start_screen() { # <display> <profile> <cdp-port> <vnc-port>
     DISPLAY=":$d" TZ="${RIG_TZ:-Europe/Stockholm}" sg video -c "sg render -c \"exec chromium-browser --user-data-dir='$HOME/chrome-profiles/$prof' \
       --remote-debugging-port=$cdp --no-first-run \
       --force-prefers-reduced-motion \
-      --ozone-platform=x11 --use-gl=angle --use-angle=vulkan --enable-features=Vulkan \
       --window-position=0,0 --window-size=$W,$H\"" >/dev/null 2>&1 &
   pgrep -u "$(id -u)" -f "x11vnc -display :$d " >/dev/null || \
     x11vnc -display ":$d" -rfbport "$vnc" -localhost -rfbauth "$HOME/.vnc/passwd" \
