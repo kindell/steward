@@ -45,13 +45,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --accept-drift)
       [ $# -ge 2 ] || { echo "deploy-apply: --accept-drift requires a value (home root)" >&2; exit 64; }
-      # ETT HEM PER KORNING. ACCEPT_HOME ar en skalar: ett andra --accept-drift
-      # skrev fore 2026-08-22 over det forsta UTAN ETT ORD, medan --file fortsatte
-      # ackumulera. Uppmatt pa basement: tva hem i en korning gav det ena OK och det
-      # andra en vagran med ORDAGRANT samma text som forra gangen — ventilen som
-      # getts hade tyst forsvunnit, och inget i utskriften skilde det fallet fran
-      # att ingen ventil alls angetts. Anvandningsraden lovar upprepning med ett
-      # efterstallt "...", vilket gjorde den formen rimlig att skriva.
+      # ONE HOME PER RUN. ACCEPT_HOME is a scalar: before 2026-08-22 a second
+      # --accept-drift overwrote the first WITHOUT A WORD, while --file went on
+      # accumulating into a shared list. Measured on basement: two homes in one run
+      # gave one OK and one refusal whose text was IDENTICAL to the run with no
+      # valve at all — the valve that had been given vanished, and nothing in the
+      # output told the two cases apart. The usage line promised repetition with a
+      # trailing "...", which is what made that form reasonable to write.
       [ -z "$ACCEPT_HOME" ] || {
         echo "deploy-apply: --accept-drift given twice ($ACCEPT_HOME, then $2) — the valve holds ONE home and the second would have replaced the first silently. Run one home per invocation." >&2
         exit 64; }
