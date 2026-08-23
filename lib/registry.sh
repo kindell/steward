@@ -285,9 +285,29 @@ registry_dir() {
   fi
 }
 
+# A MISSING DIRECTORY IS NOT AN EMPTY ONE, and the difference is the whole
+# reason this line changed. `sessions.d` absent means the estate is broken or
+# the resolver is pointed somewhere wrong; `sessions.d` present and empty means
+# nobody has declared a session yet. Both used to print nothing and return 0.
+#
+# MEASURED 2026-08-23. The same shape, one level up, made browser-stack report
+# "0 rig(s) ensured" with rc 0 on a host where every rig was declared — it cost
+# hours, because "0 rigs" reads as "none declared". And the estate's
+# verify-rendered-plists.sh iterates this list: with nothing returned its loop
+# ran zero times, `fail` stayed 0, and the gate that protects live sessions from
+# a bad deploy certified safety WITHOUT COMPARING ANYTHING.
+#
+# stdout stays empty either way — callers that pipe cannot see a status. The
+# signal is the exit code plus a line on stderr, so a caller that checks gets
+# the truth and a caller that does not is at least visibly told.
 registry_list() {
   local dir; dir="$(registry_dir)"
-  [ -d "$dir" ] || return 0
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING to list — the registry directory does not exist: $dir" >&2
+    echo "  An empty sessions.d means zero sessions; a missing one means the estate" >&2
+    echo "  is broken, or STEWARD_REGISTRY_DIR is aimed at the wrong place." >&2
+    return 78
+  fi
   local f name
   for f in "$dir"/*.conf; do
     [ -e "$f" ] || continue
@@ -822,9 +842,13 @@ registry_host_dir() {
   fi
 }
 
+# Same distinction as registry_list above, same reason.
 registry_host_list() {
   local dir; dir="$(registry_host_dir)"
-  [ -d "$dir" ] || return 0
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING to list hosts — the host registry does not exist: $dir" >&2
+    return 78
+  fi
   local f
   for f in "$dir"/*.conf; do
     [ -e "$f" ] || continue
