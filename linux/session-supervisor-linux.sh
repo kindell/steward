@@ -676,7 +676,28 @@ if claude_alive_in_session; then
     # session is sent when the session becomes idle, and NEW mail pings anew.
     # The ping text itself is the estate's PING_MSG, resolved at the top — a
     # constant the whole fleet compares exactly, never a literal here.
-    if [ "$OLDEST_FILE" != "$(cat "$PING_MARK" 2>/dev/null)" ]; then
+    # MÄRKET ÅLDRAS. Det registrerar att pingen SKICKADES, aldrig att den kom
+    # fram — och tangenttryck tappas (CLAUDE.md, bussens två klienter). Rutans
+    # ledighetsprov är en heuristik: en session kan arbeta utan att visa
+    # "esc to interrupt", och då går pingen, tangenterna faller bort, märket
+    # sätts, och ingen ompingning sker någonsin igen.
+    #
+    # UPPMÄTT 2026-08-23: chalmers bar en oläst post i 1628 minuter. Märket var
+    # satt, inkorgen icke-tom, och tillsynen tyst i varannan minut i 27 timmar.
+    # Det som till slut nådde en människa var sessionens EGEN utgående signal
+    # nedan — en reservväg som råkade finnas.
+    #
+    # Därför bär märket nu en tidsstämpel och gäller bara en stund. Samma post
+    # pingas om när den fortfarande ligger kvar efter BUS_REPING_AFTER_SEC. En
+    # märkesfil utan tidsstämpel (skriven av en äldre version) läses som
+    # utgången — det ska leda till en extra ping, aldrig till evig tystnad.
+    _pm_file=""; _pm_ts=0
+    if [ -r "$PING_MARK" ]; then
+      read -r _pm_file _pm_ts < "$PING_MARK" 2>/dev/null || true
+      case "${_pm_ts:-}" in ''|*[!0-9]*) _pm_ts=0 ;; esac
+    fi
+    _pm_age=$(( $(date +%s) - _pm_ts ))
+    if [ "$OLDEST_FILE" != "$_pm_file" ] || [ "$_pm_age" -ge "${BUS_REPING_AFTER_SEC:-600}" ]; then
       # PANE-LEVEL COMMANDS TAKE THE PLAIN NAME, BEHIND THE EXACT GUARD. The
       # =form is a SESSION-target notation: has-session and list-panes accept
       # it, but capture-pane and send-keys parse their target as a pane and
@@ -690,7 +711,7 @@ if claude_alive_in_session; then
       if ! tmux capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
         tmux send-keys -t "$NAME" -l "$PING_MSG" 2>/dev/null
         tmux send-keys -t "$NAME" Enter 2>/dev/null
-        printf '%s' "$OLDEST_FILE" > "$PING_MARK"
+        printf '%s %s' "$OLDEST_FILE" "$(date +%s)" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
     fi
