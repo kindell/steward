@@ -82,7 +82,22 @@ for conf in "$RDIR"/*.conf; do
   name="$(basename "$conf" .conf)"
   host="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$conf" | head -1)"
   owner="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$conf" | head -1)"
-  rc="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$conf" | head -1)"
+  # A DELIBERATE EMPTY IS NOT AN UNREADABLE ONE. RC_LABEL="" is a CHOICE — the
+  # machine session runs without --remote-control so nobody can steer it
+  # remotely. A conf with no RC_LABEL line at all is a forgotten label, which the
+  # registry refuses to load. Rendering both as "?" made the two indistinguishable
+  # in the one place a reader looks to tell them apart.
+  #
+  # Reported 2026-08-23 by the session it concerned. The distinction is the line's
+  # PRESENCE, never the value after it — the same rule the registry and the Linux
+  # supervisor already use, because after `source` an empty variable and an
+  # omitted one are identical in a shell.
+  if grep -q '^RC_LABEL=' "$conf" 2>/dev/null; then
+    rc="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$conf" | head -1)"
+    rc="${rc:-(RC-free)}"
+  else
+    rc="(no label line)"
+  fi
   host="${host:-$HUB_HOST}"
   if [ "$host" = "$SELF_HOST" ]; then
     # =name, the exact form — tmux -t prefix-matches, and a session whose name
@@ -111,7 +126,7 @@ for conf in "$RDIR"/*.conf; do
   # The marker is '*' in a column of its own and the sort puts yours first —
   # the same answer, but readable without counting.
   if [ "${owner:-}" = "$SELF_USER" ]; then mine="*"; sortkey="0"; else mine=" "; sortkey="1"; fi
-  rows="$rows$sortkey|$mine|$name|${owner:-?}|$host|$tm|$ti|${rc:-?}
+  rows="$rows$sortkey|$mine|$name|${owner:-?}|$host|$tm|$ti|${rc}
 "
 done
 

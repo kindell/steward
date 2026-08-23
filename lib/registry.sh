@@ -362,9 +362,19 @@ registry_load() {
   : "${ENV_SOURCE:=}"
   if [ -z "$REPO_PATH" ]; then echo "registry: $project.conf missing REPO_PATH" >&2; return 1; fi
   # RC-FREE SESSION: THE MACHINE SESSION. One standing session per machine under
-  # the machine steward's account, started WITHOUT --remote-control — it never
-  # appears in the model vendor's directory and never reaches into the apps. It
-  # is reached over the bus and through the client's peek/attach.
+  # the machine steward's account, started WITHOUT --remote-control. It is reached
+  # over the bus and through the client's peek/attach.
+  #
+  # RC-FREE MEANS UNSTEERABLE, NOT INVISIBLE — and this comment claimed the
+  # opposite until 2026-08-23. MEASURED that day on a machine session: no process
+  # in the tree carries --remote-control, and the session is registered with the
+  # vendor's bridge anyway. ~/.claude/sessions/<pid>.json holds a bridgeSessionId,
+  # written live, over a separate connection from the API host.
+  #
+  # The bridge registers every interactive CLI session regardless of the flag. So
+  # an empty label buys exactly one thing: nobody can drive the session remotely.
+  # It does not hide it. Anyone choosing RC-free for discretion rather than for
+  # control is getting half of what they asked for, and should know which half.
   #
   # EMPTY IS NOT MISSING, AND THE DIFFERENCE IS WHETHER THE LINE IS THERE. After
   # `source`, an empty variable and an omitted one are indistinguishable — which
