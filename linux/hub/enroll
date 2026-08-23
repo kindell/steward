@@ -38,9 +38,14 @@ source "$_REGLIB"
 KONTROLLERA=""; UTAN_SANDNING=""; SAND=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --kontrollera)   KONTROLLERA=1 ;;
-    --utan-sandning) UTAN_SANDNING=1 ;;
-    --sand)          SAND=1 ;;
+    # THE FLAG NAMES CHANGED LANGUAGE 2026-08-23, not meaning. The old names are
+    # NOT accepted as aliases: the product's language guard greps the whole file,
+    # so an alias would hold the suite red forever — and an alias no guard permits
+    # is an alias nobody maintains. Every caller was corrected in the same change:
+    # linux/session-new.sh here, and three test files in the estate.
+    --check)     KONTROLLERA=1 ;;
+    --dry-run)   UTAN_SANDNING=1 ;;
+    --send)      SAND=1 ;;
     *) echo "nav-enroll: unknown argument '$1'" >&2; exit 64 ;;
   esac
   shift
@@ -49,7 +54,7 @@ done
 # real bus because the send path fell back silently — so the choice is
 # mandatory and tested BEFORE any reading or writing.
 if [ -z "$KONTROLLERA" ] && [ -z "$UTAN_SANDNING" ] && [ -z "$SAND" ]; then
-  echo "nav-enroll: choose a send path — --sand (live), --utan-sandning (test) or --kontrollera" >&2
+  echo "nav-enroll: choose a send path — --send (live), --dry-run (test) or --check" >&2
   exit 64
 fi
 

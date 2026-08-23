@@ -47,15 +47,15 @@ REG="${STEWARD_REGISTRY_LIB:-$(_reg_lib)}" || REG=""
 # A REGISTRY THAT CANNOT BE READ MUST NEVER LOOK LIKE AN EMPTY ONE. Without the
 # library no conf can be VALIDATED, and copying unvalidated confs would move the
 # fault closer to the run instead of catching it.
-[ -n "$REG" ] && [ -f "$REG" ] || { echo "install-user-jobs: VAGRAR — registerbiblioteket saknas" >&2; exit 78; }
+[ -n "$REG" ] && [ -f "$REG" ] || { echo "install-user-jobs: REFUSING — the registry library is missing" >&2; exit 78; }
 # shellcheck source=/dev/null
-. "$REG" || { echo "install-user-jobs: VAGRAR — registerbiblioteket gick inte att lasa" >&2; exit 78; }
+. "$REG" || { echo "install-user-jobs: REFUSING — the registry library could not be read" >&2; exit 78; }
 
 if [ ! -f "$SOURCES" ]; then
   # THE DIFFERENCE BETWEEN "NO SOURCES" AND "NO SOURCE LIST" is the whole point of
   # this file: the first is an answer, the second is a broken installation.
-  echo "install-user-jobs: VAGRAR — kallistan saknas: $SOURCES" >&2
-  echo "  En rad per domanrepo. Utan den vet ingen VILKA jobb som ska finnas." >&2
+  echo "install-user-jobs: REFUSING — the source list is missing: $SOURCES" >&2
+  echo "  One line per domain repo. Without it nothing knows WHICH jobs should exist." >&2
   exit 78
 fi
 mkdir -p "$SNAPDIR" || exit 78
@@ -64,7 +64,7 @@ fel=0; skrivna=0; oforandrade=0; seen=""
 while IFS= read -r srcrepo; do
   case "$srcrepo" in ''|\#*) continue ;; esac
   if [ ! -d "$srcrepo/jobs.d" ]; then
-    echo "install-user-jobs: kallan '$srcrepo' har ingen jobs.d — hoppar" >&2
+    echo "install-user-jobs: the source '$srcrepo' has no jobs.d — skipping" >&2
     continue
   fi
   # THE PROVENANCE GATE. The deploy path requires source files to be CLEAN: "the
@@ -82,20 +82,20 @@ while IFS= read -r srcrepo; do
   # --accept-drift exists because a gate nobody can get past gets bypassed by
   # hand-copying instead, which is exactly what happened. The exemption is LOUD and
   # names the sha that is missing.
-  _repo_sha=""; _repo_smutsig=""
+  _repo_sha=""; _repo_dirty=""
   if git -C "$srcrepo" rev-parse --git-dir >/dev/null 2>&1; then
     _repo_sha="$(git -C "$srcrepo" rev-parse --short HEAD 2>/dev/null)"
-    [ -n "$(git -C "$srcrepo" status --porcelain -- jobs.d 2>/dev/null)" ] && _repo_smutsig=1
+    [ -n "$(git -C "$srcrepo" status --porcelain -- jobs.d 2>/dev/null)" ] && _repo_dirty=1
   else
-    _repo_smutsig=1; _repo_sha="(inget git-tra)"
+    _repo_dirty=1; _repo_sha="(inget git-tra)"
   fi
-  if [ -n "$_repo_smutsig" ]; then
+  if [ -n "$_repo_dirty" ]; then
     if [ -n "$ACCEPT_DRIFT" ]; then
-      echo "install-user-jobs: DRIFT GODTAGEN for '$srcrepo' (jobs.d ar ocommitterad, harkomst=$_repo_sha+lokalt)" >&2
+      echo "install-user-jobs: DRIFT ACCEPTED for '$srcrepo' (jobs.d is uncommitted, provenance=$_repo_sha+local)" >&2
       fel=1
     else
-      echo "install-user-jobs: VAGRAR '$srcrepo' — jobs.d har ocommitterade andringar" >&2
-      echo "    Ogonblicksbilden skulle da kora utan en sha som binder den till historiken." >&2
+      echo "install-user-jobs: REFUSING '$srcrepo' — jobs.d has uncommitted changes" >&2
+      echo "    The snapshot would then run with no sha binding it to the history." >&2
       echo "    Committa forst, eller kor med --accept-drift om du VET vad du gor." >&2
       fel=1; continue
     fi
@@ -114,20 +114,20 @@ while IFS= read -r srcrepo; do
     snapname="$DOMAIN-$JOB_NAME.conf"
     case " $seen " in
       *" $snapname "*)
-        echo "install-user-jobs: DUBBLETT $snapname fran flera kallor — behaller den forsta" >&2
+        echo "install-user-jobs: DUPLICATE $snapname from several sources — keeping the first" >&2
         fel=1; continue ;;
     esac
     seen="$seen $snapname"
     if cmp -s "$conf" "$SNAPDIR/$snapname"; then
       oforandrade=$((oforandrade+1))
     else
-      cp "$conf" "$SNAPDIR/$snapname" || { echo "install-user-jobs: kunde inte skriva $snapname" >&2; fel=1; continue; }
-      echo "  uppdaterad: $snapname  (harkomst $_repo_sha)"
+      cp "$conf" "$SNAPDIR/$snapname" || { echo "install-user-jobs: could not write $snapname" >&2; fel=1; continue; }
+      echo "  updated: $snapname  (provenance $_repo_sha)"
       # THE PROVENANCE IS WRITTEN DOWN, not just printed. A line in a terminal is
       # gone the next day; whoever debugs this in three weeks needs to know which
       # sha the conf came out of.
-      printf '%s\t%s\t%s\t%s\n' "$snapname" "$srcrepo" "$_repo_sha${_repo_smutsig:++lokalt}" \
-        "$(date -u +%FT%TZ)" >> "$SNAPDIR/.harkomst" 2>/dev/null || true
+      printf '%s\t%s\t%s\t%s\n' "$snapname" "$srcrepo" "$_repo_sha${_repo_dirty:++local}" \
+        "$(date -u +%FT%TZ)" >> "$SNAPDIR/.provenance" 2>/dev/null || true
       skrivna=$((skrivna+1))
     fi
   done
@@ -162,7 +162,7 @@ if [ -n "$saknade" ]; then
   if [ -n "$ENABLE" ]; then
     for u in $saknade; do
       if systemctl --user enable --now "$u" >/dev/null 2>&1; then echo "  timer aktiverad: $u"
-      else echo "  KUNDE INTE aktivera: $u" >&2; fel=1; fi
+      else echo "  COULD NOT enable: $u" >&2; fel=1; fi
     done
   else
     echo "  TIMER SAKNAS (confen finns, ingenting kor den):$saknade"

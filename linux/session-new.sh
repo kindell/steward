@@ -217,7 +217,7 @@ if [ "$SJALV" = "$NAV" ]; then
   # resolved the estate through the registry; the child must see the same one,
   # not re-derive a different answer from somewhere else entirely.
   bygg_begaran | STEWARD_ESTATE_ROOT="$(_registry_estate_root)" \
-    STEWARD_ENROLL_FROM="$SJALV" bash "$ENROLL" --sand
+    STEWARD_ENROLL_FROM="$SJALV" bash "$ENROLL" --send
   rc=$?
   [ "$rc" -eq 0 ] || fel "enrolment refused — enroll wrote nothing (the key remains), the reason is above" "$rc"
   echo "session-new: '$NAMN' registered hub-locally — no bus hop, enroll was the sole writer."

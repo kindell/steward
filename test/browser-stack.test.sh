@@ -127,8 +127,8 @@ export -f stat pgrep
 mk_registry() { # <home> — an estate file plus an empty sessions.d, returns the dir
   mkdir -p "$1/estate" "$1/sessions.d"
   cat > "$1/estate/steward.conf" <<'CONF'
-HUB_HOST="navet"
-HUB_SSH="prov@navet"
+HUB_HOST="testhub"
+HUB_SSH="test@testhub"
 LABEL_PREFIX="com.prov"
 OP_TOKEN_FILE_NAME="prov-token"
 CONF
@@ -193,7 +193,7 @@ mk_rig "$sdC" delta 12 delta 9226 5903
 # the row the old fixture expressed as a comment line, and it is the commoner
 # case in a real registry by a wide margin.
 printf 'REPO_PATH="/x"\nRC_LABEL="P"\nDOMAIN="d"\nOWNER="%s"\nHOST="%s"\n' \
-  "$(id -un)" "$(hostname -s)" > "$sdC/utan-rigg.conf"
+  "$(id -un)" "$(hostname -s)" > "$sdC/no-rig.conf"
 
 out="$(run_stack "$homeC" "$sdC" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok || bad "four declared rigs => rc 0" "got rc=$rc, output: $out"

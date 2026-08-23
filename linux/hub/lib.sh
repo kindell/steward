@@ -205,12 +205,12 @@ bus_ar_maskinsession() {
 }
 
 bus_fraga_tillatet() {
-  local fran="${1:-}" till="${2:-}"
-  [ -n "$fran" ] && [ -n "$till" ] || return 1
+  local from_="${1:-}" to_="${2:-}"
+  [ -n "$from_" ] && [ -n "$to_" ] || return 1
   local fo ft do_ dt
-  fo="$(bus_fraga_falt "$fran" OWNER)"  || return 1
+  fo="$(bus_fraga_falt "$from_" OWNER)"  || return 1
   ft="$(bus_fraga_falt "$till" OWNER)"  || return 1
-  do_="$(bus_fraga_falt "$fran" DOMAIN)" || return 1
+  do_="$(bus_fraga_falt "$from_" DOMAIN)" || return 1
   dt="$(bus_fraga_falt "$till" DOMAIN)" || return 1
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
   [ "$fo" = "$ft" ] && return 0
@@ -225,9 +225,9 @@ bus_fraga_tillatet() {
   # foothold on it; being allowed to ask its machine session grants no new surface.
   # Someone WITHOUT a session there may not ask — otherwise the machine layer would
   # be a shortcut past both the owner and the entity boundary.
-  if bus_ar_maskinsession "$till"; then
+  if bus_ar_maskinsession "$to_"; then
     local mh fh
-    mh="$(bus_fraga_falt "$till" HOST)"; fh="$(bus_fraga_falt "$fran" HOST)"
+    mh="$(bus_fraga_falt "$to_" HOST)"; fh="$(bus_fraga_falt "$from_" HOST)"
     [ -n "$mh" ] && [ -n "$fh" ] && [ "$mh" = "$fh" ] && return 0
   fi
   return 1
@@ -466,7 +466,7 @@ bus_send() {
   # THE REFUSAL IS LOUD AND EXPLAINS THE RULE. A gate that only says no teaches
   # nothing, and the next attempt is identical.
   if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
-    echo "bus: '$from' far inte stalla en FRAGA till '$to'." >&2
+    echo "bus: '$from' may not put a FRAGA to '$to'." >&2
     echo "     Regeln: samma AGARE, eller samma DOMAN (entiteten man jobbar pa)." >&2
     echo "     Vanliga meddelanden (BESLUT FYND SAMORDNING DRIFT) ar oberorda." >&2
     return 1

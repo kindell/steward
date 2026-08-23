@@ -182,8 +182,8 @@ if [ -n "$only_mine" ]; then
   if [ -z "$_body" ]; then
     # ZERO IS AN ANSWER, not an empty printout. Otherwise an empty list and a
     # broken lookup look exactly alike.
-    echo "estate-status: inga sessioner ägs av '$SELF_USER' i registret på $SELF_HOST."
-    echo "  (Kör utan --mine för att se hela registret: $(printf '%s' "$rows" | grep -c . ) rader.)"
+    echo "estate-status: no sessions are owned by '$SELF_USER' in the registry on $SELF_HOST."
+    echo "  (Run without --mine to see the whole registry: $(printf '%s' "$rows" | grep -c . ) rows.)"
     exit 0
   fi
 fi
@@ -196,5 +196,5 @@ printf '%s\n' "$_body" | cut -d'|' -f2- | {
 if [ -z "$only_mine" ]; then
   _n_mine="$(printf '%s' "$rows" | awk -F'|' '$1=="0"' | grep -c .)"
   _n_all="$(printf '%s' "$rows" | grep -c .)"
-  printf '\n  * = dina (%s av %s). Andras sessioner visas för att maskinen delas.\n' "$_n_mine" "$_n_all"
+  printf '\n  * = yours (%s of %s). Other people'"'"'s sessions are shown because the machine is shared.\n' "$_n_mine" "$_n_all"
 fi
