@@ -676,21 +676,22 @@ if claude_alive_in_session; then
     # session is sent when the session becomes idle, and NEW mail pings anew.
     # The ping text itself is the estate's PING_MSG, resolved at the top — a
     # constant the whole fleet compares exactly, never a literal here.
-    # MÄRKET ÅLDRAS. Det registrerar att pingen SKICKADES, aldrig att den kom
-    # fram — och tangenttryck tappas (CLAUDE.md, bussens två klienter). Rutans
-    # ledighetsprov är en heuristik: en session kan arbeta utan att visa
-    # "esc to interrupt", och då går pingen, tangenterna faller bort, märket
-    # sätts, och ingen ompingning sker någonsin igen.
+    # THE MARKER AGES. It records that the ping was SENT, never that it ARRIVED —
+    # and keystrokes get lost, which is the whole reason the bus exists instead
+    # of send-keys. The idle test is a heuristic: `grep "esc to interrupt"`. A
+    # session can be working without showing that string. The ping then goes, the
+    # keystrokes fall away while the marker is written, and the dedup — which
+    # exists to avoid a ping storm — becomes permanent silence.
     #
-    # UPPMÄTT 2026-08-23: chalmers bar en oläst post i 1628 minuter. Märket var
-    # satt, inkorgen icke-tom, och tillsynen tyst i varannan minut i 27 timmar.
-    # Det som till slut nådde en människa var sessionens EGEN utgående signal
-    # nedan — en reservväg som råkade finnas.
+    # MEASURED 2026-08-23: a session carried unread mail for 1628 minutes. The
+    # marker was set, the inbox was not empty, and supervision ran silently every
+    # three minutes for twenty-seven hours. What finally reached a human was the
+    # session's OWN outgoing signal below — a fallback that happened to exist.
     #
-    # Därför bär märket nu en tidsstämpel och gäller bara en stund. Samma post
-    # pingas om när den fortfarande ligger kvar efter BUS_REPING_AFTER_SEC. En
-    # märkesfil utan tidsstämpel (skriven av en äldre version) läses som
-    # utgången — det ska leda till en extra ping, aldrig till evig tystnad.
+    # So the marker now carries a timestamp and holds for a while only. The same
+    # message is pinged again while it is still queued after BUS_REPING_AFTER_SEC.
+    # A marker file WITHOUT a timestamp, written by an older version, reads as
+    # expired: that shape must produce one extra ping, never eternal silence.
     _pm_file=""; _pm_ts=0
     if [ -r "$PING_MARK" ]; then
       read -r _pm_file _pm_ts < "$PING_MARK" 2>/dev/null || true
