@@ -1,5 +1,5 @@
 # linux/agent-session@.timer — the supervision round: every three minutes, and
-# once at boot.
+# once shortly after the user manager starts.
 #
 # THREE MINUTES IS A COMPROMISE WITH A NAMED COST. The supervisor's repair path
 # needs TWO consecutive rounds agreeing before it writes anything (see the
@@ -15,14 +15,35 @@
 # delay is not politeness; it is the difference between observing a machine and
 # observing its startup.
 #
-# Persistent=true so a missed round after downtime runs once on return rather
-# than being silently skipped: supervision exists so that a gap in it is visible,
-# and a skipped round is exactly such a gap.
+# OnActiveSec, NOT OnBootSec — MEASURED 2026-08-23 AFTER A POWER CUT.
+# OnBootSec counts from the SYSTEM's boot, but a user timer cannot arm until the
+# user manager has started. On the host that came back that day:
+#
+#   system boot        12:37:02
+#   user@1001 started  12:38:13   — 71 seconds later
+#   OnBootSec=45s      elapse at 12:37:47, twenty-six seconds ALREADY PAST
+#
+# The trigger was therefore missed, and OnUnitActiveSec had no anchor because the
+# unit had never been active this boot. `NextElapseUSecMonotonic=infinity`:
+# eleven sessions stayed down until someone started them by hand, and nothing was
+# scheduled to try again. The timer reported `active` throughout.
+#
+# OnActiveSec counts from when the TIMER is activated, which is when the user
+# manager reaches timers.target. It cannot be in the past, so it cannot be
+# missed — however long the machine takes to assemble itself. The 45 seconds keep
+# their original purpose: let the host finish starting before a supervisor reads
+# its half-built state as death.
+#
+# OnUnitActiveSec then chains every round to the last one. OnActiveSec bootstraps
+# that chain; without it the chain has no first link after a reboot.
+#
+# Persistent=true is kept although it governs calendar timers only — removing it
+# is a separate change and this one is about the boot anchor.
 [Unit]
 Description=agent-session %i — supervision timer
 
 [Timer]
-OnBootSec=45s
+OnActiveSec=45s
 OnUnitActiveSec=3min
 Persistent=true
 
