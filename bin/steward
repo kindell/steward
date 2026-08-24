@@ -78,11 +78,53 @@ _status_cmd() { # <extra estate-status args...>
 
 # One estate's block for ls. Never lets a failure escape the block — the sweep
 # must survive an unreachable machine and SAY so, per estate.
+# THE ESTATE IS A COLUMN, NOT ONLY A HEADING.
+#
+# Measured 2026-08-24: reading a row in `steward ls` does not tell you what to
+# type as ARGUMENT ONE to reach that session. The estate stands in the section
+# heading, and the SAME session can appear under two estates — a session on a
+# Linux host shows up under the hub's estate and under the host's. The heading
+# answers the question only until you have scrolled past it.
+#
+# THE PREFIX IS FIXED-WIDTH AND GOES ON EVERY ROW. The far side sends a
+# `column -t`-aligned table; prefixing rows unevenly would break the alignment
+# and make the table harder to read than it was without the column.
+#
+# ONLY THE TABLE IS PREFIXED. estate-status ends with a blank line and a note
+# ("* = yours ..."); prefixing prose with an estate name would read as a row.
+# The first blank line is the boundary, which is the format's own structure
+# rather than a guess about the text.
+_prefix_estate() { # <estate-name>
+  awk -v e="$1" '
+    BEGIN { intable = 1 }
+    /^[[:space:]]*$/ { intable = 0; print; next }
+    { if (intable) printf "%-10s %s\n", (NR == 1 ? "ESTATE" : e), $0; else print }
+  '
+}
+
 _ls_en() {
   local name="$1"
   estate_las "$name"
   echo "== $name ($SSH) =="
-  if ! "$SSH_BIN" "$SSH" "$(_status_cmd)" 2>&1; then
+  # THE STATUS IS CAPTURED, THEN PREFIXED — not piped.
+  #
+  # `if ! ssh ... | _prefix_estate` tests the PIPELINE's status, which is awk's.
+  # It happens to work because this file sets `pipefail`, and that is exactly the
+  # kind of dependency that dies silently: remove the option for any other reason
+  # and an unreachable estate renders as a section with no rows and no warning —
+  # a dead machine that reads as an empty one. Capturing makes the status the
+  # one thing it is about.
+  local _out _rc
+  _out="$("$SSH_BIN" "$SSH" "$(_status_cmd)" 2>&1)"; _rc=$?
+  # ONLY A SUCCESSFUL ANSWER IS A TABLE. A failed call returns ssh's error
+  # lines, and prefixing those makes an error look like data: the first line
+  # gets the ESTATE heading and the rest line up as rows. Measured 2026-08-24
+  # against an estate whose key could not be used — "ESTATE  Permission denied,
+  # please try again." A reader skims that as a session list.
+  if [ "$_rc" -eq 0 ]; then
+    printf '%s\n' "$_out" | _prefix_estate "$name"
+  else
+    [ -z "$_out" ] || printf '%s\n' "$_out"
     echo "  UNREACHABLE or refused — the rows above (if any) are partial."
   fi
 }
