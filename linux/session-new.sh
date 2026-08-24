@@ -132,11 +132,11 @@ fi
 # PARSED BEFORE THE POSITIONALS so the flag never reaches the project-charset
 # guard, and so an unknown flag still refuses AS a flag (2026-08-21).
 # The gate that keeps it narrow lives further down, where the host is known.
-DOMAN_FLAGGA=""
+DOMAIN_FLAG=""
 if [ "${1:-}" = "--domain" ]; then
-  DOMAN_FLAGGA="${2:-}"
-  [ -n "$DOMAN_FLAGGA" ] || fel "--domain requires a domain name" 64
-  case "$DOMAN_FLAGGA" in
+  DOMAIN_FLAG="${2:-}"
+  [ -n "$DOMAIN_FLAG" ] || fel "--domain requires a domain name" 64
+  case "$DOMAIN_FLAG" in
     *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "domain may contain only [a-z0-9-]" 64 ;;
   esac
   shift 2
@@ -185,18 +185,19 @@ VARD="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$EGEN" | head -1)"
 # THE HOST IS NEVER TAKEN FROM A FLAG. A domain can only be opened on the host
 # you already stand on; otherwise the flag would be a way to register sessions
 # on machines you hold no account on.
-if [ -n "$DOMAN_FLAGGA" ]; then
-  _krock=""
+if [ -n "$DOMAIN_FLAG" ]; then
+  _existing=""
   for _c in "$SESS_D"/*.conf; do
     [ -e "$_c" ] || continue
-    [ "$(sed -n 's/^DOMAIN="\(.*\)"/\1/p' "$_c" | head -1)" = "$DOMAN_FLAGGA" ] || continue
+    [ "$(sed -n 's/^DOMAIN="\(.*\)"/\1/p' "$_c" | head -1)" = "$DOMAIN_FLAG" ] || continue
     [ "$(sed -n 's/^HOST="\(.*\)"/\1/p' "$_c" | head -1)" = "$VARD" ] || continue
-    _krock="$(basename "$_c" .conf)"; break
+    _existing="$(basename "$_c" .conf)"; break
   done
-  # NAMNGE DEN BEFINTLIGA. En vägran som bara säger "domänen finns" lämnar
-  # läsaren att leta; namnet säger direkt varifrån man kan begära utan flagga.
-  [ -z "$_krock" ] || fel "--domain is only for a domain's FIRST session on $VARD; '$DOMAN_FLAGGA' already has '$_krock' there — drop the flag and request from it" 64
-  DOMAN="$DOMAN_FLAGGA"
+  # NAME THE EXISTING ONE. A refusal that only says "the domain is already
+  # here" leaves the reader to go looking; the name says straight away which
+  # session to request from without the flag.
+  [ -z "$_existing" ] || fel "--domain is only for a domain's FIRST session on $VARD; '$DOMAIN_FLAG' already has '$_existing' there — drop the flag and request from it" 64
+  DOMAN="$DOMAIN_FLAG"
 fi
 
 NAMN="${DOMAN}-${PROJEKT}-${PERSON}"
