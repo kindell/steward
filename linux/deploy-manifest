@@ -28,6 +28,7 @@
 
 # scripts
 linux/session-supervisor-linux.sh  scripts/session-supervisor-linux.sh  755  scripts
+runtime/opencode-session.sh  scripts/runtime/opencode-session.sh  755  scripts
 linux/session-new.sh                scripts/session-new.sh                755  scripts
 linux/session-approve.sh           scripts/session-approve.sh           755  scripts
 linux/estate-status.sh             scripts/estate-status.sh             755  scripts

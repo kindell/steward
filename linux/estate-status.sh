@@ -98,6 +98,24 @@ for conf in "$RDIR"/*.conf; do
   else
     rc="(no label line)"
   fi
+  # WHICH RUNTIME, AND ON WHICH MODEL. Until a second runtime existed the answer
+  # was implicit and right by accident; with two, a reader cannot tell a Claude
+  # session that died from an OpenCode session that was never dispatched, and
+  # those need different repairs.
+  #
+  # SAME NON-EXECUTING READ as host and owner above. A read-only status command
+  # must not source estate session files — they may contain anything, on a
+  # machine that carries several people's sessions.
+  #
+  # THE DEFAULTS ARE THE CONTRACT. A conf with no RUNTIME line is a Claude
+  # session: every conf that exists today predates the field, and rendering
+  # them unknown would make a healthy estate look unmeasured. A missing MODEL
+  # renders "-" rather than empty, because a blank cell in a column-aligned
+  # table reads as a rendering fault instead of "this runtime has no model".
+  runtime="$(sed -n 's/^RUNTIME="\(.*\)"/\1/p' "$conf" | head -1)"
+  model="$(sed -n 's/^MODEL="\(.*\)"/\1/p' "$conf" | head -1)"
+  runtime="${runtime:-claude-code}"
+  model="${model:--}"
   host="${host:-$HUB_HOST}"
   if [ "$host" = "$SELF_HOST" ]; then
     # =name, the exact form — tmux -t prefix-matches, and a session whose name
@@ -126,7 +144,10 @@ for conf in "$RDIR"/*.conf; do
   # The marker is '*' in a column of its own and the sort puts yours first —
   # the same answer, but readable without counting.
   if [ "${owner:-}" = "$SELF_USER" ]; then mine="*"; sortkey="0"; else mine=" "; sortkey="1"; fi
-  rows="$rows$sortkey|$mine|$name|${owner:-?}|$host|$tm|$ti|${rc}
+  # APPENDED, NOT INSERTED. The reachability pass below rewrites fields by
+  # index ($3 name, $4 owner, $5 host, $6 tmux, $7 timer); a column added in the
+  # middle would silently shift what those assignments touch.
+  rows="$rows$sortkey|$mine|$name|${owner:-?}|$host|$tm|$ti|${rc}|$runtime|$model
 "
 done
 
@@ -204,7 +225,7 @@ if [ -n "$only_mine" ]; then
 fi
 
 printf '%s\n' "$_body" | cut -d'|' -f2- | {
-  printf ' |SESSION|OWNER|HOST|TMUX|TIMER|RC_LABEL\n'
+  printf ' |SESSION|OWNER|HOST|TMUX|TIMER|RC_LABEL|RUNTIME|MODEL\n'
   cat
 } | column -t -s '|'
 
