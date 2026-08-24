@@ -320,6 +320,28 @@ registry_valid_name() {
   [[ "${1:-}" =~ ^[a-z0-9-]+$ ]]
 }
 
+registry_validate_runtime_set() {
+  local project port projects seen_ports="" seen_port seen_project
+  projects="$(registry_list)" || return 1
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    port="$(
+      registry_load "$project" || exit $?
+      if [ "$RUNTIME" = "opencode" ]; then printf '%s' "$OPENCODE_PORT"; fi
+    )" || return 1
+    [ -n "$port" ] || continue
+    while IFS=: read -r seen_port seen_project; do
+      [ -n "$seen_port" ] || continue
+      if [ "$seen_port" = "$port" ]; then
+        echo "registry: OpenCode port $port conflicts between $seen_project and $project" >&2
+        return 1
+      fi
+    done <<< "$seen_ports"
+    seen_ports="${seen_ports}${port}:${project}
+"
+  done <<< "$projects"
+}
+
 registry_load() {
   local project="${1:-}"
   if ! registry_valid_name "$project"; then
@@ -335,9 +357,24 @@ registry_load() {
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""; RC_FRI=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
+  RUNTIME=""; MODEL=""; OPENCODE_VERSION=""; OPENCODE_PORT=""; AUTO_APPROVE=""; CLAUDE_MEMORY_ROOT=""
   # shellcheck source=/dev/null
   source "$conf"
   : "${PERMISSION_MODE:=bypassPermissions}"
+  : "${RUNTIME:=claude-code}"
+  case "$RUNTIME" in claude-code|opencode) ;; *) return 1 ;; esac
+  case "$RUNTIME" in
+    opencode)
+      [[ "$MODEL" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$ ]] || return 1
+      [[ "$OPENCODE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+      [[ "$OPENCODE_PORT" =~ ^[0-9]+$ ]] && [ "$OPENCODE_PORT" -ge 1024 ] && [ "$OPENCODE_PORT" -le 65535 ] || return 1
+      case "$AUTO_APPROVE" in true|false) ;; *) return 1 ;; esac
+      [[ "$CLAUDE_MEMORY_ROOT" = /* ]] && [[ "$CLAUDE_MEMORY_ROOT" != *".."* ]] || return 1
+      ;;
+    claude-code)
+      [ -z "$OPENCODE_VERSION$OPENCODE_PORT" ] || return 1
+      ;;
+  esac
   # HOST: which machine the session LIVES on (2026-08-06). Defaults to the hub
   # from the estate — every existing conf is unchanged. A session with a
   # different HOST is owned by the registry but NEVER rendered to launchd here:
@@ -488,7 +525,11 @@ registry_load() {
   LAUNCHD_LABEL="$_prefix.$project"
   # Owner-home-based (not $HOME) so paths stay correct when the installer runs as
   # root (where $HOME is /var/root).
-  LOG_PATH="$OWNER_HOME/.claude/claude-$project.log"
+  if [ "$RUNTIME" = "opencode" ]; then
+    LOG_PATH="$OWNER_HOME/.local/state/$(registry_state_dir_name)/$project.log"
+  else
+    LOG_PATH="$OWNER_HOME/.claude/claude-$project.log"
+  fi
 }
 
 registry_render_plist() {
