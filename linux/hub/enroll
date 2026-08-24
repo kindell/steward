@@ -43,8 +43,19 @@ while [ $# -gt 0 ]; do
     # so an alias would hold the suite red forever — and an alias no guard permits
     # is an alias nobody maintains. Every caller was corrected in the same change:
     # linux/session-new.sh here, and three test files in the estate.
+    #
+    # --dry-run BECAME --no-send 2026-08-24, and this one was a LIE, not a
+    # translation. The flag never meant "touch nothing": it writes the registry
+    # entry AND the authorized_keys line, and skips only the SEND. The suite has
+    # always demanded exactly that, so the behaviour was intended — but the name
+    # said otherwise, and the hub ran it against a live request believing it was
+    # safe. A session got registered; the next run answered "name collision" for
+    # an entry nobody thought existed. Only --check writes nothing.
+    #
+    # NO ALIAS, deliberately. Whoever types the old name must meet a refusal
+    # rather than a silent registration — which is the whole failure being fixed.
     --check)     KONTROLLERA=1 ;;
-    --dry-run)   UTAN_SANDNING=1 ;;
+    --no-send)   UTAN_SANDNING=1 ;;
     --send)      SAND=1 ;;
     *) echo "nav-enroll: unknown argument '$1'" >&2; exit 64 ;;
   esac
@@ -54,7 +65,7 @@ done
 # real bus because the send path fell back silently — so the choice is
 # mandatory and tested BEFORE any reading or writing.
 if [ -z "$KONTROLLERA" ] && [ -z "$UTAN_SANDNING" ] && [ -z "$SAND" ]; then
-  echo "nav-enroll: choose a send path — --send (live), --dry-run (test) or --check" >&2
+  echo "nav-enroll: choose a send path — --send (live), --no-send (execute, print instead of send) or --check (validate only, writes nothing)" >&2
   exit 64
 fi
 
