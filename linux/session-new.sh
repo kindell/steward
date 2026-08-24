@@ -119,8 +119,31 @@ if [ "${1:-}" = "--activate" ]; then
   exit 0
 fi
 
-PROJEKT="${1:?bash ~/scripts/session-new.sh <project> <repo-path>}"
-REPO="${2:?bash ~/scripts/session-new.sh <project> <repo-path>}"
+# --domain <d>: BOOTSTRAP OF A DOMAIN'S FIRST SESSION ON THIS HOST.
+#
+# The gap it closes, measured 2026-08-24: the domain is derived from the
+# CALLER's conf, so a domain that does not yet live on the host cannot get its
+# first session there. Requesting from a session of some OTHER domain does not
+# fail — it silently names the new session after that other domain, which is
+# also the wrong credential space. The comment above says "the trigger is a
+# domain acquiring a project", which quietly assumes the domain is already
+# there. The first one has to arrive somehow, and this is how.
+#
+# PARSED BEFORE THE POSITIONALS so the flag never reaches the project-charset
+# guard, and so an unknown flag still refuses AS a flag (2026-08-21).
+# The gate that keeps it narrow lives further down, where the host is known.
+DOMAN_FLAGGA=""
+if [ "${1:-}" = "--domain" ]; then
+  DOMAN_FLAGGA="${2:-}"
+  [ -n "$DOMAN_FLAGGA" ] || fel "--domain requires a domain name" 64
+  case "$DOMAN_FLAGGA" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "domain may contain only [a-z0-9-]" 64 ;;
+  esac
+  shift 2
+fi
+
+PROJEKT="${1:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
+REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
 
 # AN UNKNOWN FLAG MUST REFUSE AS A FLAG, NOT PASS AS A NAME. The project
 # charset allows dashes, so '--anything' sailed through as a project name and
@@ -150,6 +173,31 @@ VARD="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$EGEN" | head -1)"
 # everything else looks healthy.
 [ -n "$DOMAN" ] || fel "DOMAIN missing in $EGEN — set it"
 [ -n "$VARD" ]  || fel "HOST missing in $EGEN"
+
+# THE GATE THAT KEEPS --domain NARROW. It is accepted ONLY while the host has no
+# session in that domain. Once one exists, the derivation above is already the
+# right answer, and a flag would let someone quietly file a session under the
+# wrong domain — which is the wrong CREDENTIAL SPACE, not just a wrong name.
+# That is the same damage measured 2026-08-14, when DOMAIN fell back to the
+# session name and one session silently got a private credential store instead
+# of the domain's shared one.
+#
+# THE HOST IS NEVER TAKEN FROM A FLAG. A domain can only be opened on the host
+# you already stand on; otherwise the flag would be a way to register sessions
+# on machines you hold no account on.
+if [ -n "$DOMAN_FLAGGA" ]; then
+  _krock=""
+  for _c in "$SESS_D"/*.conf; do
+    [ -e "$_c" ] || continue
+    [ "$(sed -n 's/^DOMAIN="\(.*\)"/\1/p' "$_c" | head -1)" = "$DOMAN_FLAGGA" ] || continue
+    [ "$(sed -n 's/^HOST="\(.*\)"/\1/p' "$_c" | head -1)" = "$VARD" ] || continue
+    _krock="$(basename "$_c" .conf)"; break
+  done
+  # NAMNGE DEN BEFINTLIGA. En vägran som bara säger "domänen finns" lämnar
+  # läsaren att leta; namnet säger direkt varifrån man kan begära utan flagga.
+  [ -z "$_krock" ] || fel "--domain is only for a domain's FIRST session on $VARD; '$DOMAN_FLAGGA' already has '$_krock' there — drop the flag and request from it" 64
+  DOMAN="$DOMAN_FLAGGA"
+fi
 
 NAMN="${DOMAN}-${PROJEKT}-${PERSON}"
 [ -d "$REPO/.git" ] || fel "'$REPO' is not a git working copy — clone the project first"
