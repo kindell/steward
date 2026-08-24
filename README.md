@@ -22,6 +22,12 @@ already use — it starts it, watches it, addresses it, and updates it.
   reachable for a machine to update.
 - **Bus** — durable, acknowledged messages between sessions, delivered to the
   recipient's own queue rather than typed into a terminal.
+- **Selectable runtimes** — a session declares which agent runtime it runs on.
+  The default is Claude Code, and a conf that says nothing about runtime keeps
+  behaving exactly as before: every conf written before runtimes existed is a
+  Claude conf, and rendering it as anything else would make a healthy estate
+  look unmeasured. The second runtime is OpenCode; the contract for adding
+  another is in [docs/opencode-runtime.md](docs/opencode-runtime.md).
 
 ## Design rules
 

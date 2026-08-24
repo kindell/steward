@@ -16,129 +16,128 @@
 #
 # THE DEFAULTS ARE PART OF THE CONTRACT. A conf without RUNTIME is a Claude
 # session — every existing conf predates the field, and rendering them as "?"
-# would make seventeen healthy rows look unknown. A missing MODEL is "-" and not
-# empty, because an empty cell in a column-aligned table reads as a rendering
+# would make a healthy estate look unmeasured. A missing MODEL renders "-" and
+# not empty, because a blank cell in a column-aligned table reads as a rendering
 # fault rather than as "this runtime has no model".
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
-har()    { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "saknade '$3' i:\n$2" ;; esac; }
-saknar() { case "$2" in *"$3"*) bad "$1" "hittade oväntat '$3'" ;; *) ok "$1" ;; esac; }
+has()     { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in:\n$2" ;; esac; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/sessions.d" "$T/estate" "$T/bin" "$T/home/.tmux"
 
 cat > "$T/estate/steward.conf" <<'EOF'
-LABEL_PREFIX="com.prov.claude"
-RC_LABEL_PREFIX="Prov: "
-HUB_SESSION="provnav"
-HUB_HOST="provvard"
-STATE_DIR_NAME="prov-tillsyn"
-PAUSED_DIR_NAME="prov-pausad"
-JOB_LOG_DIR="prov-jobb"
-TMUX_SOCKET="prov.sock"
+LABEL_PREFIX="com.example.claude"
+RC_LABEL_PREFIX="Example: "
+HUB_SESSION="examplehub"
+HUB_HOST="examplehost"
+STATE_DIR_NAME="example-supervisor"
+PAUSED_DIR_NAME="example-paused"
+JOB_LOG_DIR="example-jobs"
+TMUX_SOCKET="example.sock"
 EOF
 
-# NAMNEN BÄR INTE SVARET. Fixturen hette först claudesess/opencodesess, och då
-# passerade "raden bär sin runtime" på att NAMNET innehöll ordet — ett prov som
-# mäter sin egen fixtur. Neutrala namn tvingar checken att läsa kolumnen.
-# En DEFAULT Claude-conf: ingen RUNTIME-rad alls, som varenda befintlig conf.
+# THE NAMES DO NOT CARRY THE ANSWER. The fixture first named these sessions
+# after their runtimes, and "the row carries its runtime" then passed because the
+# NAME contained the word — a test measuring its own fixture. Neutral names force
+# the check to read the column.
+#
+# A DEFAULT CLAUDE CONF: no RUNTIME line at all, like every conf that exists.
 cat > "$T/sessions.d/alfa.conf" <<'EOF'
-HOST="provvard"
-OWNER="provuser"
-DOMAIN="prov"
-RC_LABEL="Prov Claude"
+HOST="examplehost"
+OWNER="exampleuser"
+DOMAIN="example"
+RC_LABEL="Example Claude"
 EOF
 
-# En OpenCode-conf med modell.
+# An OpenCode conf with a model.
 cat > "$T/sessions.d/beta.conf" <<'EOF'
-HOST="provvard"
-OWNER="provuser"
-DOMAIN="prov"
-RC_LABEL="Prov OpenCode"
+HOST="examplehost"
+OWNER="exampleuser"
+DOMAIN="example"
+RC_LABEL="Example OpenCode"
 RUNTIME="opencode"
 MODEL="openai/gpt-5.3-codex"
 EOF
 
-# tmux-stubb: bada sessionerna ar uppe. Exaktformen =namn maste bevaras.
+# tmux stub: both sessions are up. The exact form =name must be preserved.
 cat > "$T/bin/tmux" <<'EOF'
 #!/bin/bash
-echo "$@" >> "${TMUX_LOGG:?}"
+echo "$@" >> "${TMUX_LOG:?}"
 case "$*" in *has-session*) exit 0 ;; esac
 exit 0
 EOF
 chmod +x "$T/bin/tmux"
 
-: > "$T/tmuxlogg"
-ut="$( STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
-       STEWARD_SELF_HOST="provvard" STEWARD_SELF_USER="provuser" \
-       STEWARD_TMUX_BIN="$T/bin/tmux" TMUX_LOGG="$T/tmuxlogg" \
-       HOME="$T/home" PATH="$T/bin:$PATH" \
-       bash "$here/linux/estate-status.sh" 2>&1 )"; rc=$?
+: > "$T/tmuxlog"
+out="$( STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+        STEWARD_SELF_HOST="examplehost" STEWARD_SELF_USER="exampleuser" \
+        STEWARD_TMUX_BIN="$T/bin/tmux" TMUX_LOG="$T/tmuxlog" \
+        HOME="$T/home" PATH="$T/bin:$PATH" \
+        bash "$here/linux/estate-status.sh" 2>&1 )"; rc=$?
 
-echo "estate-status: runtime och modell"
-[ "$rc" -eq 0 ] && ok "kommandot lyckas" || bad "kommandot lyckas" "rc=$rc:\n$ut"
+echo "estate-status: runtime and model"
+[ "$rc" -eq 0 ] && ok "the command succeeds" || bad "the command succeeds" "rc=$rc:\n$out"
 
-har "rubriken bär RUNTIME"        "$ut" "RUNTIME"
-har "rubriken bär MODEL"          "$ut" "MODEL"
-har "opencode-raden bär modellen" "$ut" "openai/gpt-5.3-codex"
+has "the header carries RUNTIME"     "$out" "RUNTIME"
+has "the header carries MODEL"       "$out" "MODEL"
+has "the OpenCode row carries model" "$out" "openai/gpt-5.3-codex"
 
-# DEFAULTEN: en conf UTAN RUNTIME-rad är en Claude-session, inte en okänd.
-rad_claude="$(printf '%s\n' "$ut" | grep alfa || true)"
-case "$rad_claude" in
-  *claude-code*) ok "conf utan RUNTIME renderas som claude-code" ;;
-  *) bad "conf utan RUNTIME renderas inte som claude-code" "rad: '$rad_claude'" ;;
+# THE DEFAULT: a conf with no RUNTIME line is a Claude session, not an unknown.
+row_claude="$(printf '%s\n' "$out" | grep alfa || true)"
+case "$row_claude" in
+  *claude-code*) ok "a conf without RUNTIME renders as claude-code" ;;
+  *) bad "a conf without RUNTIME does not render as claude-code" "row: '$row_claude'" ;;
 esac
-case "$rad_claude" in
-  *"?"*) bad "conf utan RUNTIME renderas som okänd — defaulten är kontraktet" "rad: '$rad_claude'" ;;
-  *) ok "conf utan RUNTIME är inte okänd" ;;
+case "$row_claude" in
+  *"?"*) bad "a conf without RUNTIME renders as unknown — the default is the contract" "row: '$row_claude'" ;;
+  *) ok "a conf without RUNTIME is not unknown" ;;
 esac
-# SAKNAD MODELL ÄR "-", INTE TOMT. En tom cell i en kolumnjusterad tabell läses
-# som ett renderingsfel, inte som "den här runtimen har ingen modell".
-# MODELLKOLUMNEN, INTE VILKET BINDESTRECK SOM HELST. Timerkolumnen bär redan
-# "-", så en naken sökning efter bindestreck passerade innan kolumnen fanns.
-case "$rad_claude" in
-  *"claude-code"*" - "*|*"claude-code"*" -") ok "saknad modell renderas som - EFTER runtime" ;;
-  *) bad "saknad modell renderas inte som - efter runtime" "rad: '$rad_claude'" ;;
+# THE MODEL COLUMN, NOT ANY DASH. The timer column already carries "-", so a bare
+# search for a dash passed before the column existed.
+case "$row_claude" in
+  *"claude-code"*" - "*|*"claude-code"*" -") ok "a missing model renders as - AFTER the runtime" ;;
+  *) bad "a missing model does not render as - after the runtime" "row: '$row_claude'" ;;
 esac
 
-rad_oc="$(printf '%s\n' "$ut" | grep beta || true)"
-case "$rad_oc" in
-  *opencode*) ok "opencode-raden bär sin runtime" ;;
-  *) bad "opencode-raden bär inte sin runtime" "rad: '$rad_oc'" ;;
+row_oc="$(printf '%s\n' "$out" | grep beta || true)"
+case "$row_oc" in
+  *opencode*) ok "the OpenCode row carries its runtime" ;;
+  *) bad "the OpenCode row does not carry its runtime" "row: '$row_oc'" ;;
 esac
 
-# DE BEFINTLIGA KOLUMNERNA FÅR INTE TAPPAS. Nya fält som knuffar bort gamla är
-# en tyst regression: tabellen ser komplett ut och saknar det man kom för.
-har "ägarskap markeras fortfarande" "$ut" "*"
-har "tmux-läget finns kvar"         "$ut" "up"
-har "RC_LABEL finns kvar"           "$ut" "Prov Claude"
+# THE EXISTING COLUMNS MUST NOT BE LOST. New fields that push old ones out are a
+# silent regression: the table looks complete and lacks what one came for.
+has "ownership is still marked" "$out" "*"
+has "the tmux state remains"    "$out" "up"
+has "RC_LABEL remains"          "$out" "Example Claude"
 
-# EXAKTFORMEN =namn ÄR EN INVARIANT, inte en detalj: tmux prefixmatchar, och en
-# session vars namn är prefix av en systers lånar annars systerns svar.
-har "tmux frågas med exaktformen" "$(cat "$T/tmuxlogg")" "has-session -t =alfa"
+# THE EXACT FORM =name IS AN INVARIANT, not a detail: tmux prefix-matches, and a
+# session whose name prefixes a sibling's would borrow the sibling's answer.
+has "tmux is asked with the exact form" "$(cat "$T/tmuxlog")" "has-session -t =alfa"
 
-# CONFEN FÅR INTE KÖRAS. Ett kommando som bara läser status ska inte exekvera
-# estatets sessionsfiler — de kan innehålla vad som helst och maskinen bär
-# flera människors sessioner.
-cat > "$T/sessions.d/farlig.conf" <<'EOF'
-HOST="provvard"
-OWNER="provuser"
-DOMAIN="prov"
-RC_LABEL="Farlig"
+# THE CONF MUST NOT BE EXECUTED. A command that only reads status must not run
+# estate session files — they may contain anything, and the machine carries
+# several people's sessions.
+cat > "$T/sessions.d/dangerous.conf" <<'EOF'
+HOST="examplehost"
+OWNER="exampleuser"
+DOMAIN="example"
+RC_LABEL="Dangerous"
 RUNTIME="claude-code"
 EOF
-printf 'touch "%s/KORDES"\n' "$T" >> "$T/sessions.d/farlig.conf"
+printf 'touch "%s/WAS_EXECUTED"\n' "$T" >> "$T/sessions.d/dangerous.conf"
 STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
-  STEWARD_SELF_HOST="provvard" STEWARD_SELF_USER="provuser" \
-  STEWARD_TMUX_BIN="$T/bin/tmux" TMUX_LOGG="$T/tmuxlogg" \
+  STEWARD_SELF_HOST="examplehost" STEWARD_SELF_USER="exampleuser" \
+  STEWARD_TMUX_BIN="$T/bin/tmux" TMUX_LOG="$T/tmuxlog" \
   HOME="$T/home" PATH="$T/bin:$PATH" \
   bash "$here/linux/estate-status.sh" >/dev/null 2>&1
-[ -f "$T/KORDES" ] && bad "confen KÖRDES — status får bara läsa" \
-                   || ok "confen lästes utan att köras"
+[ -f "$T/WAS_EXECUTED" ] && bad "the conf WAS EXECUTED — status must only read" \
+                         || ok "the conf was read without being executed"
 
 echo
-printf '%s klarade, %s föll\n' "$pass" "$fail"
+printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
