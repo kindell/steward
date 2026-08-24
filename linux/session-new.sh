@@ -132,6 +132,21 @@ fi
 # PARSED BEFORE THE POSITIONALS so the flag never reaches the project-charset
 # guard, and so an unknown flag still refuses AS a flag (2026-08-21).
 # The gate that keeps it narrow lives further down, where the host is known.
+# --label <text>: THE NAME THE SESSION SHOULD CARRY, sent with the request.
+#
+# The requester knows it; the protocol dropped it, and the hub then filled the
+# hole with prefix+name. Measured 2026-08-24: a session ran for a minute under
+# an invented label, and an RC label a session has RUN under becomes a pairing
+# on the server that stays in a human's list afterwards — a name nobody asked
+# for, which cannot be removed from the machines. Absent flag keeps the hub's
+# construction, so an un-updated caller behaves exactly as before.
+RC_ONSKAD=""
+if [ "${1:-}" = "--label" ]; then
+  RC_ONSKAD="${2:-}"
+  [ -n "$RC_ONSKAD" ] || fel "--label requires a label" 64
+  shift 2
+fi
+
 DOMAIN_FLAG=""
 if [ "${1:-}" = "--domain" ]; then
   DOMAIN_FLAG="${2:-}"
@@ -232,8 +247,13 @@ PUB="$(cat "$NYCKEL.pub")" || fel "could not read the public key" 70
 # THE WIRE FORMAT IS THE SAME ON BOTH PATHS BELOW — one builder, so the two
 # can never drift apart. Field-name notes further down.
 bygg_begaran() {
-  printf 'DRIFT enroll: %s requests registration\nENROLL-REQUEST v1\nnamn=%s\ndoman=%s\nprojekt=%s\nperson=%s\nvard=%s\nrepo=%s\npubkey=%s\n' \
-    "$NAMN" "$NAMN" "$DOMAN" "$PROJEKT" "$PERSON" "$VARD" "$REPO" "$PUB"
+  printf 'DRIFT enroll: %s requests registration\nENROLL-REQUEST v1\nnamn=%s\ndoman=%s\nprojekt=%s\nperson=%s\nvard=%s\nrepo=%s\n' \
+    "$NAMN" "$NAMN" "$DOMAN" "$PROJEKT" "$PERSON" "$VARD" "$REPO"
+  # BEFORE pubkey: the key must stay the LAST line. A stored payload without
+  # a trailing newline once lost its final line, and that line is the one
+  # registration hangs on (suite case 8b2).
+  [ -n "$RC_ONSKAD" ] && printf 'rc_label=%s\n' "$RC_ONSKAD"
+  printf 'pubkey=%s\n' "$PUB"
 }
 
 # ── THE HUB ENROLS LOCALLY, WITHOUT THE BUS ─────────────────────────────────

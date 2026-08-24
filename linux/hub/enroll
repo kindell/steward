@@ -85,7 +85,7 @@ FROM="${STEWARD_ENROLL_FROM:-}"
 
 fel() { echo "nav-enroll: REFUSING — $1" >&2; exit 65; }
 
-NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""
+NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""
 forsta=1; kuvertrad_provad=""
 # `|| [ -n "$rad" ]`: a final line WITHOUT a trailing newline is still a line.
 # read returns nonzero on EOF-without-delimiter but has already assigned — drop
@@ -121,6 +121,9 @@ while IFS= read -r rad || [ -n "$rad" ]; do
     vard=*)    VARD="${rad#vard=}" ;;
     repo=*)    REPO_S="${rad#repo=}" ;;
     pubkey=*)  PUBKEY="${rad#pubkey=}" ;;
+    # OPTIONAL. The requester knows what the session should be CALLED; the
+    # protocol used to drop it, and the hub then invented prefix+name.
+    rc_label=*) RC_ONSKAD="${rad#rc_label=}" ;;
     from=*)    fel "the payload carries a from field — the identity comes from the envelope, never from the text" ;;
     "")        : ;;
     *)         fel "unknown line in the request: '$rad'" ;;
@@ -200,12 +203,27 @@ fi
 
 conf="$rdir/$NAMN.conf"
 tmpc="$(mktemp)" || exit 70
+# THE LABEL COMES FROM THE REQUEST WHEN THE REQUEST CARRIES ONE.
+#
+# Measured 2026-08-24: this wrote prefix+name unconditionally, so a session was
+# registered as "<prefix>: <name>" although the requester had stated what it
+# should be called. The protocol had no field for it, so the knowledge was
+# dropped between the two halves and the hub filled the hole with a guess.
+#
+# THE COST IS NOT COSMETIC. The session ran for a minute under the invented
+# label, and an RC label a session has RUN under becomes a pairing on the
+# server that stays in a human's list afterwards — a name nobody asked for,
+# which cannot be removed from the machines.
+#
+# The construction remains the fallback, so a requester that has not been
+# updated behaves exactly as before.
+RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
 cat > "$tmpc" <<CONFEOF
 # $NAMN — registered by nav-enroll $(date -u +%Y-%m-%dT%H:%M:%SZ), requested by $FROM.
 # Trigger per the direction doc: a domain acquired a project.
 HOST="$VARD"
 REPO_PATH="$REPO_S"
-RC_LABEL="$RC_PREFIX$NAMN"
+RC_LABEL="$RC_ETIKETT"
 PERMISSION_MODE="bypassPermissions"
 OWNER="$PERSON"
 DOMAIN="$DOMAN"
