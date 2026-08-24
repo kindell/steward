@@ -1,8 +1,55 @@
+# linux/browser-stack.timer — the browser stack's supervision round.
+#
+# OnActiveSec, NOT OnBootSec — THE SAME ANCHOR BUG, MEASURED TWICE.
+# agent-session@.timer was fixed on 2026-08-23 after a power cut left eleven
+# sessions down. This file kept OnBootSec, and the identical failure hit the
+# very next reboot: the host came up 2026-08-23 12:37, the timer reported ACTIVE
+# and enabled, and NextElapse was EMPTY. Every browser rig in EVERY domain was
+# down for an hour and a half — noticed only because a session happened to be
+# measuring something else.
+#
+# WHY THE ANCHOR IS MISSED. OnBootSec counts from the SYSTEM's boot, but a user
+# timer cannot arm until the user manager has started — 71 seconds later on that
+# host. The trigger was already in the past when the timer came into existence,
+# and OnUnitActiveSec had nothing to chain from because the unit had never been
+# active this boot. The chain therefore has no first link, and a monotonic timer
+# with no anchor has no next elapse at all: permanently dead until a human runs
+# the service by hand. Persistent=true does not save it — that governs
+# OnCalendar, not monotonic timers.
+#
+# OnActiveSec counts from when the TIMER is activated, which is when the user
+# manager reaches timers.target. It cannot be in the past, so it cannot be
+# missed, however long the machine takes to assemble itself.
+#
+# THE DELAY KEEPS ITS ORIGINAL PURPOSE: a host that has just booted is still
+# assembling itself, and a supervision round that reads that half-built state
+# treats absence as death. Zero would be a different bug from the one fixed here.
+# AND A HEARTBEAT THAT CANNOT LOSE ITS ANCHOR.
+#
+# OnActiveSec fixed the BOOT case. It is not enough. Measured 2026-08-24 from
+# the user journal: the chain also died IN NORMAL OPERATION. The service ran at
+# 14:19, 14:22, 14:25, 14:28 — four correct rounds three minutes apart — and
+# then nothing for 26 hours. No reboot in between, no OOM, no crash trace in
+# either the user journal or the kernel log, 53 GB free of 62. The timer stood
+# active and enabled with an EMPTY NextElapse: the same dead state as after the
+# missed boot shot, reached by a different route.
+#
+# THE CAUSE IS NOT DIAGNOSED. So the trigger added here does not depend on the
+# diagnosis: OnCalendar counts against the wall clock and needs no previous
+# activation to chain from, which is the property both failures destroyed. The
+# monotonic lines stay — this is a floor under them, not a replacement, and
+# whichever comes first wins.
+#
+# Persistent=true finally earns its keep: it governs calendar timers, so a
+# missed heartbeat is caught up rather than skipped.
 [Unit]
 Description=browser stack supervision
+
 [Timer]
-OnBootSec=30s
+OnActiveSec=30s
 OnUnitActiveSec=3min
+OnCalendar=*:0/3
 Persistent=true
+
 [Install]
 WantedBy=timers.target

@@ -43,8 +43,19 @@ while [ $# -gt 0 ]; do
     # so an alias would hold the suite red forever — and an alias no guard permits
     # is an alias nobody maintains. Every caller was corrected in the same change:
     # linux/session-new.sh here, and three test files in the estate.
+    #
+    # --dry-run BECAME --no-send 2026-08-24, and this one was a LIE, not a
+    # translation. The flag never meant "touch nothing": it writes the registry
+    # entry AND the authorized_keys line, and skips only the SEND. The suite has
+    # always demanded exactly that, so the behaviour was intended — but the name
+    # said otherwise, and the hub ran it against a live request believing it was
+    # safe. A session got registered; the next run answered "name collision" for
+    # an entry nobody thought existed. Only --check writes nothing.
+    #
+    # NO ALIAS, deliberately. Whoever types the old name must meet a refusal
+    # rather than a silent registration — which is the whole failure being fixed.
     --check)     KONTROLLERA=1 ;;
-    --dry-run)   UTAN_SANDNING=1 ;;
+    --no-send)   UTAN_SANDNING=1 ;;
     --send)      SAND=1 ;;
     *) echo "nav-enroll: unknown argument '$1'" >&2; exit 64 ;;
   esac
@@ -54,7 +65,7 @@ done
 # real bus because the send path fell back silently — so the choice is
 # mandatory and tested BEFORE any reading or writing.
 if [ -z "$KONTROLLERA" ] && [ -z "$UTAN_SANDNING" ] && [ -z "$SAND" ]; then
-  echo "nav-enroll: choose a send path — --send (live), --dry-run (test) or --check" >&2
+  echo "nav-enroll: choose a send path — --send (live), --no-send (execute, print instead of send) or --check (validate only, writes nothing)" >&2
   exit 64
 fi
 
@@ -74,7 +85,7 @@ FROM="${STEWARD_ENROLL_FROM:-}"
 
 fel() { echo "nav-enroll: REFUSING — $1" >&2; exit 65; }
 
-NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""
+NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""
 forsta=1; kuvertrad_provad=""
 # `|| [ -n "$rad" ]`: a final line WITHOUT a trailing newline is still a line.
 # read returns nonzero on EOF-without-delimiter but has already assigned — drop
@@ -110,6 +121,9 @@ while IFS= read -r rad || [ -n "$rad" ]; do
     vard=*)    VARD="${rad#vard=}" ;;
     repo=*)    REPO_S="${rad#repo=}" ;;
     pubkey=*)  PUBKEY="${rad#pubkey=}" ;;
+    # OPTIONAL. The requester knows what the session should be CALLED; the
+    # protocol used to drop it, and the hub then invented prefix+name.
+    rc_label=*) RC_ONSKAD="${rad#rc_label=}" ;;
     from=*)    fel "the payload carries a from field — the identity comes from the envelope, never from the text" ;;
     "")        : ;;
     *)         fel "unknown line in the request: '$rad'" ;;
@@ -189,12 +203,27 @@ fi
 
 conf="$rdir/$NAMN.conf"
 tmpc="$(mktemp)" || exit 70
+# THE LABEL COMES FROM THE REQUEST WHEN THE REQUEST CARRIES ONE.
+#
+# Measured 2026-08-24: this wrote prefix+name unconditionally, so a session was
+# registered as "<prefix>: <name>" although the requester had stated what it
+# should be called. The protocol had no field for it, so the knowledge was
+# dropped between the two halves and the hub filled the hole with a guess.
+#
+# THE COST IS NOT COSMETIC. The session ran for a minute under the invented
+# label, and an RC label a session has RUN under becomes a pairing on the
+# server that stays in a human's list afterwards — a name nobody asked for,
+# which cannot be removed from the machines.
+#
+# The construction remains the fallback, so a requester that has not been
+# updated behaves exactly as before.
+RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
 cat > "$tmpc" <<CONFEOF
 # $NAMN — registered by nav-enroll $(date -u +%Y-%m-%dT%H:%M:%SZ), requested by $FROM.
 # Trigger per the direction doc: a domain acquired a project.
 HOST="$VARD"
 REPO_PATH="$REPO_S"
-RC_LABEL="$RC_PREFIX$NAMN"
+RC_LABEL="$RC_ETIKETT"
 PERMISSION_MODE="bypassPermissions"
 OWNER="$PERSON"
 DOMAIN="$DOMAN"
@@ -215,12 +244,30 @@ fi
 cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
 # $here, NOT $repo: in a deployed hub home the relay lives at
 # <home>/scripts/bus/bin/bus-relay-in and $here IS <home>/scripts; $repo is one
-# step too high and was correct only in this file's previous home. In a
-# checkout-run hub the relay has not migrated to the product yet, so the line
-# names a path that will exist when it does — an inbound relay that
-# refuses loudly (no such file) rather than a key line that must be rewritten.
+# step too high and was correct only in this file's previous home.
+#
+# AND THE PATH IS CHECKED BEFORE THE LINE IS WRITTEN. This used to write the
+# derived path unconditionally, and the comment here called that deliberate: an
+# inbound relay that "refuses loudly (no such file)" rather than a key line to
+# rewrite later. LOUDLY was the word that did not hold.
+#
+# Measured 2026-08-24 by the newly registered session itself: the hub was run
+# from a checkout where the relay does not live, so the line named a path that
+# did not exist. The refusal lands on the NEW session, and the one thing it
+# cannot do is report it — all three of its attempts failed with rc 127,
+# INCLUDING the automatic alarm about unacknowledged mail. So the escalation
+# that would have told somebody died too. Inbound worked throughout, so the
+# registration looked complete from the hub and the session merely looked quiet.
+# Its outbound channel stayed dead for an hour until a human rewrote the line.
+#
+# A refusal only the victim can see is not a refusal; it is a silent loss.
+RELAY_ROOT="${STEWARD_RELAY_ROOT:-$here}"
+if [ ! -f "$RELAY_ROOT/bus/bin/bus-relay-in" ]; then
+  rm -f "$conf"
+  fel "the relay is missing at $RELAY_ROOT/bus/bin/bus-relay-in — the key line would name a path that does not exist, and the new session's outbound channel would be dead without it being able to say so. Run the hub from the tree where the relay lives." 78
+fi
 printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
-  "$here" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+  "$RELAY_ROOT" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
 
 # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, Task 2
 # envelope v2): "DRIFT enroll: <headline>". bus_send now refuses every SEND

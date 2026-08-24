@@ -119,8 +119,46 @@ if [ "${1:-}" = "--activate" ]; then
   exit 0
 fi
 
-PROJEKT="${1:?bash ~/scripts/session-new.sh <project> <repo-path>}"
-REPO="${2:?bash ~/scripts/session-new.sh <project> <repo-path>}"
+# --domain <d>: BOOTSTRAP OF A DOMAIN'S FIRST SESSION ON THIS HOST.
+#
+# The gap it closes, measured 2026-08-24: the domain is derived from the
+# CALLER's conf, so a domain that does not yet live on the host cannot get its
+# first session there. Requesting from a session of some OTHER domain does not
+# fail — it silently names the new session after that other domain, which is
+# also the wrong credential space. The comment above says "the trigger is a
+# domain acquiring a project", which quietly assumes the domain is already
+# there. The first one has to arrive somehow, and this is how.
+#
+# PARSED BEFORE THE POSITIONALS so the flag never reaches the project-charset
+# guard, and so an unknown flag still refuses AS a flag (2026-08-21).
+# The gate that keeps it narrow lives further down, where the host is known.
+# --label <text>: THE NAME THE SESSION SHOULD CARRY, sent with the request.
+#
+# The requester knows it; the protocol dropped it, and the hub then filled the
+# hole with prefix+name. Measured 2026-08-24: a session ran for a minute under
+# an invented label, and an RC label a session has RUN under becomes a pairing
+# on the server that stays in a human's list afterwards — a name nobody asked
+# for, which cannot be removed from the machines. Absent flag keeps the hub's
+# construction, so an un-updated caller behaves exactly as before.
+RC_ONSKAD=""
+if [ "${1:-}" = "--label" ]; then
+  RC_ONSKAD="${2:-}"
+  [ -n "$RC_ONSKAD" ] || fel "--label requires a label" 64
+  shift 2
+fi
+
+DOMAIN_FLAG=""
+if [ "${1:-}" = "--domain" ]; then
+  DOMAIN_FLAG="${2:-}"
+  [ -n "$DOMAIN_FLAG" ] || fel "--domain requires a domain name" 64
+  case "$DOMAIN_FLAG" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "domain may contain only [a-z0-9-]" 64 ;;
+  esac
+  shift 2
+fi
+
+PROJEKT="${1:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
+REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
 
 # AN UNKNOWN FLAG MUST REFUSE AS A FLAG, NOT PASS AS A NAME. The project
 # charset allows dashes, so '--anything' sailed through as a project name and
@@ -150,6 +188,32 @@ VARD="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$EGEN" | head -1)"
 # everything else looks healthy.
 [ -n "$DOMAN" ] || fel "DOMAIN missing in $EGEN — set it"
 [ -n "$VARD" ]  || fel "HOST missing in $EGEN"
+
+# THE GATE THAT KEEPS --domain NARROW. It is accepted ONLY while the host has no
+# session in that domain. Once one exists, the derivation above is already the
+# right answer, and a flag would let someone quietly file a session under the
+# wrong domain — which is the wrong CREDENTIAL SPACE, not just a wrong name.
+# That is the same damage measured 2026-08-14, when DOMAIN fell back to the
+# session name and one session silently got a private credential store instead
+# of the domain's shared one.
+#
+# THE HOST IS NEVER TAKEN FROM A FLAG. A domain can only be opened on the host
+# you already stand on; otherwise the flag would be a way to register sessions
+# on machines you hold no account on.
+if [ -n "$DOMAIN_FLAG" ]; then
+  _existing=""
+  for _c in "$SESS_D"/*.conf; do
+    [ -e "$_c" ] || continue
+    [ "$(sed -n 's/^DOMAIN="\(.*\)"/\1/p' "$_c" | head -1)" = "$DOMAIN_FLAG" ] || continue
+    [ "$(sed -n 's/^HOST="\(.*\)"/\1/p' "$_c" | head -1)" = "$VARD" ] || continue
+    _existing="$(basename "$_c" .conf)"; break
+  done
+  # NAME THE EXISTING ONE. A refusal that only says "the domain is already
+  # here" leaves the reader to go looking; the name says straight away which
+  # session to request from without the flag.
+  [ -z "$_existing" ] || fel "--domain is only for a domain's FIRST session on $VARD; '$DOMAIN_FLAG' already has '$_existing' there — drop the flag and request from it" 64
+  DOMAN="$DOMAIN_FLAG"
+fi
 
 NAMN="${DOMAN}-${PROJEKT}-${PERSON}"
 [ -d "$REPO/.git" ] || fel "'$REPO' is not a git working copy — clone the project first"
@@ -183,8 +247,13 @@ PUB="$(cat "$NYCKEL.pub")" || fel "could not read the public key" 70
 # THE WIRE FORMAT IS THE SAME ON BOTH PATHS BELOW — one builder, so the two
 # can never drift apart. Field-name notes further down.
 bygg_begaran() {
-  printf 'DRIFT enroll: %s requests registration\nENROLL-REQUEST v1\nnamn=%s\ndoman=%s\nprojekt=%s\nperson=%s\nvard=%s\nrepo=%s\npubkey=%s\n' \
-    "$NAMN" "$NAMN" "$DOMAN" "$PROJEKT" "$PERSON" "$VARD" "$REPO" "$PUB"
+  printf 'DRIFT enroll: %s requests registration\nENROLL-REQUEST v1\nnamn=%s\ndoman=%s\nprojekt=%s\nperson=%s\nvard=%s\nrepo=%s\n' \
+    "$NAMN" "$NAMN" "$DOMAN" "$PROJEKT" "$PERSON" "$VARD" "$REPO"
+  # BEFORE pubkey: the key must stay the LAST line. A stored payload without
+  # a trailing newline once lost its final line, and that line is the one
+  # registration hangs on (suite case 8b2).
+  [ -n "$RC_ONSKAD" ] && printf 'rc_label=%s\n' "$RC_ONSKAD"
+  printf 'pubkey=%s\n' "$PUB"
 }
 
 # ── THE HUB ENROLS LOCALLY, WITHOUT THE BUS ─────────────────────────────────
