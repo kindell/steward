@@ -80,7 +80,7 @@ dupes="$(grep -v '^#' "$M" | awk 'NF>=4 {print $2}' | sort | uniq -d)"
 # that matters. The rename swapped the estate's name for a function name
 # (`agent-`), and until a host has been switched over by hand it still RUNS the
 # old unit — the manifest describes what the deploy writes, not what runs.
-for required in bin/bus-send scripts/session-supervisor-linux.sh scripts/lib/registry.sh \
+for required in bin/bus-send scripts/session-supervisor-linux.sh scripts/runtime/opencode-session.sh scripts/lib/registry.sh \
             .config/systemd/user/agent-session@.timer scripts/docs/tysta-fel.md; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"
 done
