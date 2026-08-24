@@ -22,7 +22,13 @@ ESTATE_ROOT="${STEWARD_ESTATE_ROOT:-}"
 unverified=0
 M="$(mktemp)"; trap 'rm -f "$M"' EXIT
 cat "$here/linux/deploy-manifest" > "$M"
-[ -f "${ESTATE_ROOT:-$here}/estate/deploy-manifest" ] && { printf '\n' >> "$M"; cat "${ESTATE_ROOT:-$here}/estate/deploy-manifest" >> "$M"; }
+ESTATE_MANIFEST=""
+if [ -n "$ESTATE_ROOT" ] && [ -f "$ESTATE_ROOT/estate/deploy-manifest" ]; then
+  ESTATE_MANIFEST="$ESTATE_ROOT/estate/deploy-manifest"
+elif [ -z "$ESTATE_ROOT" ] && [ -f "$here/estate/deploy-manifest" ]; then
+  ESTATE_MANIFEST="$here/estate/deploy-manifest"
+fi
+[ -n "$ESTATE_MANIFEST" ] && { printf '\n' >> "$M"; cat "$ESTATE_MANIFEST" >> "$M"; }
 pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
@@ -66,7 +72,9 @@ while read -r src target mode kind extra; do
   # a rollout rewrite its own instructions.
   case "$target" in sessions.d/*|*/sessions.d/*|*jobs.d/*|*jobs-sources*) bad "instance target in the manifest: $target" ;; esac
 done < "$M"
-[ "$rows" -ge 20 ] && ok || bad "suspiciously short manifest: $rows rows"
+min_rows=17
+[ -n "$ESTATE_MANIFEST" ] && min_rows=20
+[ "$rows" -ge "$min_rows" ] && ok || bad "suspiciously short manifest: $rows rows"
 
 # 7. No duplicate targets (two sources must not write the same target)
 dupes="$(grep -v '^#' "$M" | awk 'NF>=4 {print $2}' | sort | uniq -d)"
@@ -80,8 +88,14 @@ dupes="$(grep -v '^#' "$M" | awk 'NF>=4 {print $2}' | sort | uniq -d)"
 # that matters. The rename swapped the estate's name for a function name
 # (`agent-`), and until a host has been switched over by hand it still RUNS the
 # old unit — the manifest describes what the deploy writes, not what runs.
-for required in bin/bus-send scripts/session-supervisor-linux.sh scripts/runtime/opencode-session.sh scripts/lib/registry.sh \
-            .config/systemd/user/agent-session@.timer scripts/docs/tysta-fel.md; do
+# THE ADAPTER IS A PRODUCT ROW; tysta-fel.md is an ESTATE row. That difference
+# decides which list they belong to: runtime/opencode-session.sh lives in
+# linux/deploy-manifest and must therefore be required EVEN WHEN NO ESTATE IS
+# PRESENT - which is the whole point of the suite running standalone. The
+# estate's row is required only when the estate manifest was read.
+REQUIRED_TARGETS="bin/bus-send scripts/session-supervisor-linux.sh scripts/runtime/opencode-session.sh scripts/lib/registry.sh .config/systemd/user/agent-session@.timer"
+[ -n "$ESTATE_MANIFEST" ] && REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/docs/tysta-fel.md"
+for required in $REQUIRED_TARGETS; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"
 done
 
@@ -111,5 +125,6 @@ for t in $TOOLS; do
 done
 
 [ "$unverified" -gt 0 ] && echo "NOTE: $unverified estate rows could not be verified (no estate checkout found)"
+[ -z "$ESTATE_MANIFEST" ] && echo "NOTE: estate manifest not found; product rows only checked"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

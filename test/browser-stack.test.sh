@@ -104,7 +104,15 @@ pgrep() {
   echo "pgrep $*" >> "$CALL_LOG"
   return 1   # "nothing is running" — deterministic: the script must always TRY to start
 }
-export -f stat pgrep
+hostname() {
+  printf '%s\n' testhost
+}
+export -f stat pgrep hostname
+
+# The registry's HOST field is an ssh-alias-shaped, lowercase machine name. The
+# test owns that value: using the developer machine's real hostname made the
+# fixture invalid on hosts like "MacBookPro" before the browser logic was
+# reached.
 
 # THE REGISTRY MOVED, AND THIS SUITE DID NOT FOLLOW. Until 2026-08-21 the script
 # read one line per rig from $HOME/.config/browser-stack/screens, and every
