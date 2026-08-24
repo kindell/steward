@@ -370,10 +370,28 @@ if grep -q '^RC_LABEL=' "$CONF" 2>/dev/null; then
 else
   RC_LABEL="$RC_PREFIX$NAME"
 fi
+# SESSION_NAME (optional) -> --name, the DISPLAY name in the app's session list.
+#
+# INDEPENDENT OF RC_LABEL, and the separation is deliberate: an RC-FREE session
+# is still registered by the bridge and still appears in the list. Without
+# --name the shown name is DERIVED from the working directory and carries a
+# per-process suffix that changes on EVERY restart, so the same session appears
+# under a new name each time. Nobody can recognise a session by that, and an
+# RC-free one has no label to fall back on.
+#
+# ABSENT FIELD -> NO FLAG. Every existing session must keep the command line it
+# already has; this adds a name where one is asked for and changes nothing
+# where it is not.
+SESSION_NAME="$(sed -n 's/^SESSION_NAME="\(.*\)"/\1/p' "$CONF" 2>/dev/null | head -1)"
+NAME_ARG=""
+[ -n "$SESSION_NAME" ] && NAME_ARG=" --name \"$SESSION_NAME\""
+# PLACED BEFORE --remote-control ON PURPOSE. The label has to stay the command's
+# LAST argument: the pid-finding pattern further down anchors on it, so a --name
+# appended after it would break aliveness measurement without failing loudly.
 if [ -n "$RC_LABEL" ]; then
-  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions --remote-control \"$RC_LABEL\""
+  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions$NAME_ARG --remote-control \"$RC_LABEL\""
 else
-  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions"
+  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions$NAME_ARG"
 fi
 
 # TMUX DOES NOT INHERIT THIS ENVIRONMENT. Measured 2026-08-14, and it is a
