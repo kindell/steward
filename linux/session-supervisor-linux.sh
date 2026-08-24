@@ -382,7 +382,16 @@ fi
 # ABSENT FIELD -> NO FLAG. Every existing session must keep the command line it
 # already has; this adds a name where one is asked for and changes nothing
 # where it is not.
+# FALLS BACK TO THE LABEL, exactly as the macOS supervisor does. Measured
+# 2026-08-24, right after this field was introduced: on the hub every session
+# carried an explicit name, on the Linux host five of six carried MACHINE-DERIVED
+# ones that change suffix on every restart — because that supervisor defaults
+# --name to the label while this one demanded a field of its own. Two
+# supervisors, two behaviours, and the difference showed up only in a human's
+# session list. An RC-free session with no field has nothing to fall back on,
+# and only there is a derived name the correct outcome.
 SESSION_NAME="$(sed -n 's/^SESSION_NAME="\(.*\)"/\1/p' "$CONF" 2>/dev/null | head -1)"
+[ -n "$SESSION_NAME" ] || SESSION_NAME="$RC_LABEL"
 NAME_ARG=""
 [ -n "$SESSION_NAME" ] && NAME_ARG=" --name \"$SESSION_NAME\""
 # PLACED BEFORE --remote-control ON PURPOSE. The label has to stay the command's
