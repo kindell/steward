@@ -244,12 +244,30 @@ fi
 cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
 # $here, NOT $repo: in a deployed hub home the relay lives at
 # <home>/scripts/bus/bin/bus-relay-in and $here IS <home>/scripts; $repo is one
-# step too high and was correct only in this file's previous home. In a
-# checkout-run hub the relay has not migrated to the product yet, so the line
-# names a path that will exist when it does — an inbound relay that
-# refuses loudly (no such file) rather than a key line that must be rewritten.
+# step too high and was correct only in this file's previous home.
+#
+# AND THE PATH IS CHECKED BEFORE THE LINE IS WRITTEN. This used to write the
+# derived path unconditionally, and the comment here called that deliberate: an
+# inbound relay that "refuses loudly (no such file)" rather than a key line to
+# rewrite later. LOUDLY was the word that did not hold.
+#
+# Measured 2026-08-24 by the newly registered session itself: the hub was run
+# from a checkout where the relay does not live, so the line named a path that
+# did not exist. The refusal lands on the NEW session, and the one thing it
+# cannot do is report it — all three of its attempts failed with rc 127,
+# INCLUDING the automatic alarm about unacknowledged mail. So the escalation
+# that would have told somebody died too. Inbound worked throughout, so the
+# registration looked complete from the hub and the session merely looked quiet.
+# Its outbound channel stayed dead for an hour until a human rewrote the line.
+#
+# A refusal only the victim can see is not a refusal; it is a silent loss.
+RELAY_ROOT="${STEWARD_RELAY_ROOT:-$here}"
+if [ ! -f "$RELAY_ROOT/bus/bin/bus-relay-in" ]; then
+  rm -f "$conf"
+  fel "the relay is missing at $RELAY_ROOT/bus/bin/bus-relay-in — the key line would name a path that does not exist, and the new session's outbound channel would be dead without it being able to say so. Run the hub from the tree where the relay lives." 78
+fi
 printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
-  "$here" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+  "$RELAY_ROOT" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
 
 # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, Task 2
 # envelope v2): "DRIFT enroll: <headline>". bus_send now refuses every SEND
