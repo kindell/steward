@@ -296,6 +296,7 @@ fi
 _rig_host="$(hostname -s)"
 _rig_me="$(id -un)"
 _rig_started=0
+_rig_failed=0
 
 # THE DIRECTORY, NOT ONLY THE FILES IN IT. The per-conf guard below has always
 # refused a conf that will not load — but a registry DIRECTORY that does not
@@ -347,8 +348,21 @@ for _conf in "$_rig_regdir"/*.conf; do
   if [ -d "$HOME/chrome-profiles/$BROWSER_PROFILE" ]; then _rig_pstate="existing"
   else _rig_pstate="NEW — no prior state"; fi
   echo "browser-stack: $_name -> profile '$BROWSER_PROFILE' ($_rig_pstate), display :$BROWSER_DISPLAY, cdp $BROWSER_CDP, vnc $BROWSER_VNC"
-  start_screen "$BROWSER_DISPLAY" "$BROWSER_PROFILE" "$BROWSER_CDP" "$BROWSER_VNC"
-  _rig_started=$((_rig_started + 1))
+  # THE RETURN CODE IS THE MEASUREMENT. Until 2026-08-25 this call threw it away
+  # and the counter below was incremented unconditionally, so start_screen's own
+  # guards — the 700 profile-mode refusal above all — were loud on stderr and
+  # completely absent from the verdict: rc 0 and "N rig(s) ensured" over a rig
+  # that never started.
+  #
+  # ONE RIG'S FAILURE MUST NOT ABORT THE OTHERS. A `set -e`-style exit here would
+  # turn one bad profile into a home with no browsers at all, which is worse than
+  # the fault being fixed. The refusal is per rig; the verdict is for the run.
+  if start_screen "$BROWSER_DISPLAY" "$BROWSER_PROFILE" "$BROWSER_CDP" "$BROWSER_VNC"; then
+    _rig_started=$((_rig_started + 1))
+  else
+    _rig_failed=$((_rig_failed + 1))
+    echo "browser-stack: $_name did NOT start — see the refusal above." >&2
+  fi
 done
 
 # SAY THE NUMBER, INCLUDING ZERO. "Nothing to do" is a measurement and belongs in
@@ -361,4 +375,13 @@ done
 # receipt that certifies the wrong thing. The line says what is TRUE: this many
 # rigs are meant to exist, and after the run they do.
 echo "browser-stack: $_rig_started rig(s) ensured for $_rig_me on $_rig_host."
+
+# A RUN IN WHICH A DECLARED RIG DID NOT START IS NOT A SUCCESSFUL RUN. The timer
+# that calls this reports through the exit code, so rc 0 here is the only thing a
+# journal reader has; a home whose rig has been refused for days must not look
+# identical to one where everything came up.
+if [ "$_rig_failed" -gt 0 ]; then
+  echo "browser-stack: $_rig_failed of $((_rig_started + _rig_failed)) declared rig(s) did NOT start." >&2
+  exit 1
+fi
 exit 0

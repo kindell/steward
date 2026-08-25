@@ -249,6 +249,66 @@ if grep -q 'TZ=Pacific/Auckland' "$homeD/calls.log" 2>/dev/null; then ok "CONTRO
 else bad "CONTROL GROUP: RIG_TZ wins" "$(grep -m1 chromium "$homeD/calls.log" 2>/dev/null)"; fi
 rm -rf "$homeD"
 
+# =============================================================================
+echo "E. A RIG THAT REFUSED TO START MUST NOT BE COUNTED AS ENSURED"
+# THE HOLE: the loop calls start_screen and throws its return code away, then
+# increments the counter unconditionally, then exits 0. start_screen refuses on
+# a profile directory whose mode is not 700 — a real guard, added because an
+# unstarted profile can sit world-readable for hours and then be handed real
+# logins. The refusal is loud on stderr and completely invisible in the verdict.
+#
+# The line above the counter argues, at length and correctly, that "ensured" is
+# the honest word because it claims only that "this many rigs are meant to exist,
+# AND AFTER THE RUN THEY DO". Nothing in the code measures the second half. A
+# comment that reasons that carefully about not overstating, sitting on top of
+# code that overstates, is the worst version of this fault: it reads as though
+# somebody already checked.
+#
+# Measured on a live host 2026-08-25: one account had a rig declared and no rig
+# running, and every signal available said the run was fine.
+
+homeE="$work/homeE"; mkdir -p "$homeE"
+sdE="$(mk_registry "$homeE")"
+mk_rig "$sdE" ok1     5 ok1     9222 5900
+mk_rig "$sdE" broken  6 broken  9223 5901
+
+# The refusal needs a profile directory that already exists with the wrong mode:
+# `mkdir -m 700 -p` leaves an existing directory's mode alone, which is exactly
+# the case the guard was written for — a directory SOMEBODY ELSE created.
+mkdir -p "$homeE/chrome-profiles/broken"
+chmod 755 "$homeE/chrome-profiles/broken"
+
+outE="$(run_stack "$homeE" "$sdE" 2>&1)"; rcE=$?
+
+# The guard must have fired at all — if it did not, everything below measures
+# nothing, and this control assertion is what tells us so.
+case "$outE" in
+  *"REFUSING to start broken"*) ok "the 700 guard refused the bad profile" ;;
+  *) bad "the 700 guard refused the bad profile" "output: $outE" ;;
+esac
+
+# THE FINDING, first half: the count must not include a rig that never started.
+case "$outE" in
+  *"2 rig(s) ensured"*) bad "the count excludes the refused rig" "claimed 2 ensured; one refused" ;;
+  *"1 rig(s) ensured"*) ok "the count excludes the refused rig" ;;
+  *) bad "the count excludes the refused rig" "output: $outE" ;;
+esac
+
+# THE FINDING, second half: a run in which a declared rig did not start is not a
+# successful run. Zero must mean "everything that was meant to exist does".
+[ "$rcE" -ne 0 ] && ok "a refused rig makes the run fail" \
+                 || bad "a refused rig makes the run fail" "rc=0 with a refusal in the output"
+
+# AND THE GOOD RIG MUST STILL HAVE STARTED. A failure that aborts the loop would
+# turn one broken profile into a whole home with no browsers — worse than the
+# bug. The refusal is per rig; the verdict is for the run.
+if grep -q 'user-data-dir=.*chrome-profiles/ok1' "$homeE/calls.log" 2>/dev/null; then
+  ok "the healthy rig started anyway"
+else
+  bad "the healthy rig started anyway" "calls.log: $(cat "$homeE/calls.log" 2>/dev/null)"
+fi
+rm -rf "$homeE"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
 
