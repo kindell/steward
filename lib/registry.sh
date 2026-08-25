@@ -197,6 +197,68 @@ registry_schema_check() {
   return 0
 }
 
+# ── ENTITIES: ONE NODE TYPE, TWO RELATIONS ─────────────────────────────────
+#
+# A team and a client are NOT two types. The register that came before this
+# proved it three independent times: projects hang under both, sessions sit
+# under both, and hosts are owned by both. Two types would have forced every
+# edge to be written twice.
+#
+# So there is one node — an entity — and the difference is the RELATION:
+#   MEMBERS     the people who belong to it   -> it functions as a team
+#   MANAGED_BY  the team that manages it      -> it functions as a client
+#
+# BOTH AT ONCE IS LEGAL AND IS THE POINT. The day a client has its own people
+# with their own sessions, it gets members. No new type, no migration.
+registry_entity_dir() {
+  if [ -n "${STEWARD_ENTITY_DIR:-}" ]; then printf '%s\n' "$STEWARD_ENTITY_DIR"; return 0; fi
+  local estate; estate="$(registry_estate_file)" || return 78
+  printf '%s\n' "$(dirname "$estate")/../entities.d"
+}
+
+# registry_entity_list: one id per line, or REFUSE with 78.
+# A register that cannot be READ must never look like a register that is EMPTY:
+# empty means "no entities exist", which is a claim, and an unreadable directory
+# supports no claim at all.
+registry_entity_list() {
+  local d; d="$(registry_entity_dir)" || return 78
+  if [ ! -d "$d" ]; then
+    echo "registry: REFUSING — the entity register is not readable: $d" >&2
+    return 78
+  fi
+  local f
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    basename "$f" .conf
+  done
+}
+
+# registry_entity_load <id>: set ENTITY_ID, ENTITY_NAME, ENTITY_MEMBERS,
+# ENTITY_MANAGED_BY. rc 1 on an invalid row.
+registry_entity_load() {
+  local id="${1:-}" d f
+  [ -n "$id" ] || return 1
+  d="$(registry_entity_dir)" || return 78
+  f="$d/$id.conf"
+  [ -f "$f" ] || { echo "registry: no such entity: $id" >&2; return 1; }
+  local NAME="" MEMBERS="" MANAGED_BY=""
+  # shellcheck source=/dev/null
+  source "$f" || return 1
+  if [ -z "$NAME" ]; then
+    echo "registry: $id.conf missing NAME (the display name a human reads)" >&2
+    return 1
+  fi
+  # A RELATION POINTING AT NOTHING IS WORSE THAN NO RELATION: it reads as
+  # structure and carries none. Resolve it here, where the reader can still be
+  # told which row is wrong.
+  if [ -n "$MANAGED_BY" ] && [ ! -f "$d/$MANAGED_BY.conf" ]; then
+    echo "registry: $id.conf MANAGED_BY names an entity that does not exist: $MANAGED_BY" >&2
+    return 1
+  fi
+  ENTITY_ID="$id"; ENTITY_NAME="$NAME"
+  ENTITY_MEMBERS="$MEMBERS"; ENTITY_MANAGED_BY="$MANAGED_BY"
+}
+
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
 # The same shape as the prefix lookup above, and for the same reasons: `local`
 # before `source` so the estate file never leaks a global to the caller, form

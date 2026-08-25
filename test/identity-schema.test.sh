@@ -279,5 +279,66 @@ estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION=
 [ "$(ladda gated ID)" = "gated" ] && ok "at a known schema the load is unaffected" \
                                   || bad "at a known schema the load is unaffected" "got '$(ladda gated ID)'"
 
+echo "entities — one node type, two relations"
+
+mkdir -p "$FX/entities.d"
+ent() { # <id> <line...>
+  local id="$1"; shift
+  printf '%s\n' "$@" > "$FX/entities.d/$id.conf"
+}
+lad_ent() { # <id> <field>
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/entities.d"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_entity_load "$1" >/dev/null 2>&1 || exit 1
+    printf '%s' "${!2}" )
+}
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"'
+
+# A TEAM IS AN ENTITY WITH MEMBERS.
+ent alfa 'NAME="Alfa"' 'MEMBERS="ada bo"'
+[ "$(lad_ent alfa ENTITY_MEMBERS)" = "ada bo" ] && ok "a team carries its members" \
+  || bad "a team carries its members" "got '$(lad_ent alfa ENTITY_MEMBERS)'"
+
+# A CLIENT IS AN ENTITY MANAGED BY ONE. Same file shape, different relation —
+# that is the whole claim the spec makes, so the test must load both from the
+# same loader and see them differ.
+ent beta 'NAME="Beta"' 'MANAGED_BY="alfa"'
+[ "$(lad_ent beta ENTITY_MANAGED_BY)" = "alfa" ] && ok "a client carries its managing team" \
+  || bad "a client carries its managing team" "got '$(lad_ent beta ENTITY_MANAGED_BY)'"
+[ -z "$(lad_ent beta ENTITY_MEMBERS)" ] && ok "a client has no members by default" \
+  || bad "a client has no members by default" "got '$(lad_ent beta ENTITY_MEMBERS)'"
+
+# THE ID COMES FROM THE FILE NAME, like sessions. One name, keyed on.
+[ "$(lad_ent alfa ENTITY_ID)" = "alfa" ] && ok "the entity id is its file name" \
+  || bad "the entity id is its file name" "got '$(lad_ent alfa ENTITY_ID)'"
+
+# A DISPLAY NAME IS REQUIRED and free-form: it is what a human reads, and an
+# entity with no readable name is a row nobody can act on.
+ent gamma 'MEMBERS="ada"'
+lad_ent gamma ENTITY_NAME >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "an entity without NAME refuses" || bad "an entity without NAME refuses" "accepted"
+
+# BOTH RELATIONS AT ONCE IS LEGAL, and the spec says so explicitly: the day a
+# client has its own people it gets members, with no new type and no migration.
+ent delta 'NAME="Delta"' 'MEMBERS="ada"' 'MANAGED_BY="alfa"'
+[ "$(lad_ent delta ENTITY_MEMBERS)" = "ada" ] && [ "$(lad_ent delta ENTITY_MANAGED_BY)" = "alfa" ] \
+  && ok "an entity may have members AND a managing team" \
+  || bad "an entity may have members AND a managing team" "one of them was lost"
+
+# MANAGED_BY MUST RESOLVE. A relation pointing at nothing is worse than no
+# relation: it reads as structure and carries none.
+ent epsilon 'NAME="Epsilon"' 'MANAGED_BY="no-such-entity"'
+lad_ent epsilon ENTITY_ID >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "MANAGED_BY pointing at nothing refuses" \
+               || bad "MANAGED_BY pointing at nothing refuses" "accepted"
+
+# THE LIST REFUSES RATHER THAN LOOKING EMPTY — the house rule.
+utE="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/no-such-dir"
+          . "$here/lib/registry.sh"; registry_entity_list ) 2>&1 )"
+rc=$?
+[ "$rc" -eq 78 ] && ok "an unreadable entity register refuses with 78" \
+                 || bad "an unreadable entity register refuses with 78" "rc=$rc: $utE"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
