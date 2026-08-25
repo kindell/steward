@@ -160,6 +160,43 @@ registry_estate_name() {
   printf '%s\n' "$ESTATE_NAME"
 }
 
+# REGISTRY_SCHEMA_MAX — the newest register schema this checkout understands.
+# Bump it in the same commit that teaches the library a new field, never before:
+# the number is a promise about what the code can read, not a label on what the
+# estate happens to contain.
+REGISTRY_SCHEMA_MAX=2
+
+# registry_schema_check: rc 0 if this checkout understands the estate's schema,
+# rc 78 if the estate is NEWER than the code reading it.
+#
+# WHY IT REFUSES RATHER THAN DEGRADES. A checkout that is behind reads a
+# register carrying fields it does not know and treats them as absent — and
+# absent means something specific here: no rig wanted, no lifecycle, no kind. It
+# would act confidently on a half-understood truth, which is worse than stopping.
+#
+# AN ABSENT VERSION IS 1. Every estate that exists when this lands predates the
+# key. Refusing them would make the guard's first act an outage — but a
+# MALFORMED version is not 1: a typo must not be quietly read as the oldest
+# schema by the very gate that exists to stop half-understood estates.
+registry_schema_check() {
+  local estate; estate="$(registry_estate_file)"
+  [ -f "$estate" ] || return 0
+  local SCHEMA_VERSION=""
+  # shellcheck source=/dev/null
+  source "$estate" 2>/dev/null || return 0
+  [ -n "$SCHEMA_VERSION" ] || return 0
+  if ! [[ "$SCHEMA_VERSION" =~ ^[0-9]+$ ]]; then
+    echo "registry: REFUSING — SCHEMA_VERSION in $estate is not a number: '$SCHEMA_VERSION'" >&2
+    return 78
+  fi
+  if [ "$SCHEMA_VERSION" -gt "$REGISTRY_SCHEMA_MAX" ]; then
+    echo "registry: REFUSING — the estate is schema $SCHEMA_VERSION, this checkout reads up to $REGISTRY_SCHEMA_MAX." >&2
+    echo "registry: pull the product before reading this register; do not guess at fields you cannot see." >&2
+    return 78
+  fi
+  return 0
+}
+
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
 # The same shape as the prefix lookup above, and for the same reasons: `local`
 # before `source` so the estate file never leaks a global to the caller, form
