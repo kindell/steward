@@ -214,5 +214,70 @@ out="$(
   && ok "a polluted ID/KIND/LIFECYCLE never survives a fresh load" \
   || bad "a polluted ID/KIND/LIFECYCLE never survives a fresh load" "$out"
 
+echo "the schema gate is WIRED — a checkout that is behind refuses to load"
+
+# THE GATE THAT GUARDS NOTHING. Until this task registry_schema_check had exactly
+# one caller: this test file. The estate declared a version, the library knew how
+# to compare it, and nothing ever asked. A gate with no caller is not a gate that
+# passes — it is a gate that is not there, and it looks identical from outside.
+#
+# The next task raises the estate to schema 3. Wiring must come FIRST: the moment
+# a version is raised past an unwired gate, every older checkout reads the new
+# number without objection and the key becomes decoration permanently.
+#
+# THE FULL FIELD SET STANDS HERE TOO, WITH ONLY SCHEMA_VERSION RAISED. A
+# minimal estate (three keys) would ALSO make registry_load return 78 later,
+# from the unrelated HUB_HOST lookup — indistinguishable from the schema gate
+# firing. Only a fully valid estate isolates the gate: everything else this
+# load would need is present, so 78 can only come from the version check.
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="999"' \
+  'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+  'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+  'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+  'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+  'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"'
+konf gated 'REPO_PATH="/x"' 'RC_LABEL="G"' 'OWNER="ada"' 'DOMAIN="d"'
+( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_load gated >/dev/null 2>&1 )
+rc=$?
+[ "$rc" -eq 78 ] && ok "a newer estate makes registry_load refuse with 78" \
+                 || bad "a newer estate makes registry_load refuse with 78" "rc=$rc"
+
+# THE REFUSAL COMES FIRST. A conf that is ALSO malformed must still fail on the
+# schema, not on its own fields: the point of the gate is that a checkout which
+# cannot understand the register must not start interpreting it. A test that only
+# uses a valid conf cannot tell the two orders apart. Same fully valid estate as
+# above (still schema 999) — the only thing wrong here is the conf's own KIND.
+konf broken 'REPO_PATH="/x"' 'RC_LABEL="B"' 'OWNER="ada"' 'DOMAIN="d"' 'KIND="nonsense"'
+( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_load broken >/dev/null 2>&1 )
+rc=$?
+[ "$rc" -eq 78 ] && ok "the schema refusal precedes field validation" \
+                 || bad "the schema refusal precedes field validation" "rc=$rc, expected 78 not 1"
+
+# CONTROL GROUP: at the version this checkout understands, loading works exactly
+# as before. Without this the two assertions above would also pass against a
+# registry_load that refused everything.
+#
+# THE FULL FIELD SET IS RESTORED HERE, NOT JUST SCHEMA_VERSION. The two
+# refusal assertions above ran against a deliberately minimal estate (three
+# keys) because the schema gate is meant to fire before any other field is
+# even looked at. registry_load, once past the gate, still resolves HUB_HOST,
+# the label prefixes and the op token name — so a control group that wants to
+# prove "the load is unaffected" must give it everything a real load needs,
+# the same full set used earlier in this file.
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
+  'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+  'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+  'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+  'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+  'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"'
+[ "$(ladda gated ID)" = "gated" ] && ok "at a known schema the load is unaffected" \
+                                  || bad "at a known schema the load is unaffected" "got '$(ladda gated ID)'"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -415,6 +415,16 @@ registry_validate_runtime_set() {
 }
 
 registry_load() {
+  # THE SCHEMA GATE, WIRED. Until 2026-08-25 registry_schema_check existed and
+  # nothing called it: the estate declared a version, the library knew how to
+  # compare it, and no path ever asked. A gate with no caller is indistinguishable
+  # from no gate at all, and the difference only shows up as damage.
+  #
+  # IT COMES FIRST, before the conf is even located. A checkout that cannot
+  # understand this register must not begin interpreting it — refusing on a field
+  # it half-knows would report the wrong cause and send the reader after the
+  # wrong bug.
+  registry_schema_check || return 78
   local project="${1:-}"
   if ! registry_valid_name "$project"; then
     echo "registry: invalid project name '$project' (allowed: a-z 0-9 -)" >&2
@@ -537,6 +547,14 @@ registry_load() {
   # THE SET IS CLOSED. A typo that read as a fourth kind would be treated as
   # "none of the three" by everything that branches on it — a silent half
   # behaviour rather than a refusal.
+  # NAMESPACE WARNING: KIND IS OWNED TWICE IN THIS FILE. registry_job_load below
+  # uses the same global for a DIFFERENT closed set (claude|command). Nothing
+  # breaks today because both loaders reset their globals before sourcing — the
+  # safety comes from that reset, not from design. Anything that starts BRANCHING
+  # on KIND across both loaders must rename one of them first.
+  #
+  # ID has the same shape of problem: it is the name /etc/os-release sets, and
+  # this library is sourced into scripts that read it that way.
   : "${KIND:=work}"
   case "$KIND" in
     work|infra|advisor) ;;
@@ -727,6 +745,8 @@ registry_job_load() {
   PRE_CMD=""; POST_CMD=""; COMMAND=""
   # shellcheck source=/dev/null
   source "$conf"
+  # NAMESPACE WARNING: see the note at the session loader's KIND validation. The
+  # same global name carries a different closed set there (work|infra|advisor).
   case "$KIND" in claude|command) ;; *)
     echo "registry: $JOB_NAME: KIND must be claude|command (got '$KIND')" >&2; return 1 ;;
   esac
