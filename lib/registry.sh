@@ -181,7 +181,14 @@ REGISTRY_SCHEMA_MAX=3
 registry_schema_check() {
   local estate; estate="$(registry_estate_file)"
   [ -f "$estate" ] || return 0
-  local SCHEMA_VERSION=""
+  # Every OTHER key the estate file may define is cleared locally too, for the
+  # same reason _registry_estate_value below clears its thirteen: this is the
+  # FIRST line of registry_load, so a leak here reaches every caller's shell —
+  # every session on the machine — not just this function's own callers.
+  local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
+        RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
+        TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
+        BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" PAUSED_DIR_NAME=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0
@@ -252,11 +259,35 @@ registry_entity_load() {
     return 1
   fi
   # A RELATION POINTING AT NOTHING IS WORSE THAN NO RELATION: it reads as
-  # structure and carries none. Resolve it here, where the reader can still be
-  # told which row is wrong.
-  if [ -n "$MANAGED_BY" ] && [ ! -f "$d/$MANAGED_BY.conf" ]; then
-    echo "registry: $id.conf MANAGED_BY names an entity that does not exist: $MANAGED_BY" >&2
-    return 1
+  # structure and carries none. THE MANAGER IS RESOLVED THROUGH THE ENTITY
+  # LOADER, not by looking for a file — the same distinction
+  # registry_project_load makes for PARENT below: the check is "does this
+  # resolve", not "is there something with that name". A file test alone
+  # accepted a MANAGED_BY pointing at a row with no NAME, which is not a row
+  # that resolves.
+  if [ -n "$MANAGED_BY" ]; then
+    # A CHAIN, NOT JUST A SELF-CHECK. MANAGED_BY="$id" is the one-step case of
+    # a cycle, but a two-step cycle (a managed by b, b managed by a) recurses
+    # through this same function forever without a general guard — the
+    # subshell below hides ENTITY_* from this caller but does not, on its
+    # own, make the recursion bottom out. The chain of ids visited on the way
+    # here is carried through the environment because each hop is a fresh
+    # subshell invocation of this function, not a nested call in one shell.
+    local _chain="${_REGISTRY_MANAGED_BY_CHAIN:- }$id "
+    case "$_chain" in
+      *" $MANAGED_BY "*)
+        echo "registry: $id.conf MANAGED_BY forms a cycle at: $MANAGED_BY" >&2
+        return 1
+        ;;
+    esac
+    # SUBSHELL: registry_project_load already does this for PARENT, for the
+    # same reason — a recursive load must not overwrite the caller's own
+    # ENTITY_* globals with the manager's.
+    if ! ( export _REGISTRY_MANAGED_BY_CHAIN="$_chain"
+           registry_entity_load "$MANAGED_BY" >/dev/null 2>&1 ); then
+      echo "registry: $id.conf MANAGED_BY does not resolve to a valid entity: $MANAGED_BY" >&2
+      return 1
+    fi
   fi
   ENTITY_ID="$id"; ENTITY_NAME="$NAME"
   ENTITY_MEMBERS="$MEMBERS"; ENTITY_MANAGED_BY="$MANAGED_BY"

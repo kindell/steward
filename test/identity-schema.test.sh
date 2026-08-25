@@ -65,10 +65,30 @@ out="$(lade registry_schema_check 2>&1)"; rc=$?
 case "$out" in *999*) ok "the refusal names both versions" ;;
   *) bad "the refusal names both versions" "$out" ;; esac
 
-# CONTROL GROUP: the version this checkout was written for passes.
-estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"'
+# THE BOUNDARY THE LIVE FLEET STANDS ON. Read REGISTRY_SCHEMA_MAX out of the
+# library itself rather than hardcoding a number here — a hardcoded "2" once
+# stood for "the version this checkout was written for", stayed true only
+# until the max was next raised to 3, and from then on covered NOTHING: the
+# live fleet's actual boundary (estate schema == REGISTRY_SCHEMA_MAX) went
+# untested while every assertion still read green. Mutating registry_schema_check's
+# `-gt` to `-ge` proved it: pass=53 fail=0 here, rc=78 for every session on
+# the real estate.
+max="$( ( . "$here/lib/registry.sh"; printf '%s' "$REGISTRY_SCHEMA_MAX" ) )"
+
+# CONTROL GROUP: exactly at the maximum this checkout understands, the load
+# succeeds — this IS the boundary the live fleet stands on today.
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' "SCHEMA_VERSION=\"$max\""
 lade registry_schema_check >/dev/null 2>&1
-[ "$?" -eq 0 ] && ok "the current schema passes" || bad "the current schema passes" "it refused"
+[ "$?" -eq 0 ] && ok "a schema exactly at REGISTRY_SCHEMA_MAX passes" \
+               || bad "a schema exactly at REGISTRY_SCHEMA_MAX passes" "it refused"
+
+# ONE STEP OVER THE BOUNDARY: refuses with 78. Together with the assertion
+# above, this pins the exact edge instead of a value that will drift the next
+# time REGISTRY_SCHEMA_MAX is raised.
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' "SCHEMA_VERSION=\"$((max + 1))\""
+out="$(lade registry_schema_check 2>&1)"; rc=$?
+[ "$rc" -eq 78 ] && ok "one step over REGISTRY_SCHEMA_MAX refuses with 78" \
+                 || bad "one step over REGISTRY_SCHEMA_MAX refuses with 78" "rc=$rc: $out"
 
 # AN ABSENT VERSION IS VERSION 1, not an error. Every estate that exists today
 # predates the key; refusing them would make the guard's first act an outage.
@@ -96,6 +116,39 @@ ladda() { # <session> -> load it against the fixture registry, print a field
     registry_load "$1" >/dev/null 2>&1 || exit 1
     printf '%s' "${!2}" )
 }
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
+  'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+  'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+  'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+  'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+  'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"'
+
+# registry_schema_check IS THE FIRST LINE OF registry_load: any key it does not
+# clear with `local` before its `source "$estate"` reaches every registry_load
+# CALLER'S shell — every session on a live machine — not merely its own return
+# value. AGENT_INSTRUCTIONS is used nowhere else in this library, so it can
+# only appear in the caller's shell by leaking through this one `source`.
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
+  'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+  'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+  'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+  'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+  'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"' \
+  'AGENT_INSTRUCTIONS="leaked-instructions"'
+konf leaky 'REPO_PATH="/x"' 'RC_LABEL="Leaky"' 'OWNER="ada"' 'DOMAIN="d"'
+out="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+  unset AGENT_INSTRUCTIONS
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_load leaky >/dev/null 2>&1
+  if [ -z "${AGENT_INSTRUCTIONS+x}" ]; then printf 'unset'; else printf 'set=%s' "$AGENT_INSTRUCTIONS"; fi
+)"
+[ "$out" = "unset" ] && ok "registry_load does not leak AGENT_INSTRUCTIONS into the caller's shell" \
+  || bad "registry_load does not leak AGENT_INSTRUCTIONS into the caller's shell" "$out"
+
+# CONTROL GROUP RESTORED: the estate that the rest of this section's ID/KIND/
+# LIFECYCLE assertions rely on, without the leak probe's extra key.
 estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
   'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
   'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
@@ -332,6 +385,21 @@ ent epsilon 'NAME="Epsilon"' 'MANAGED_BY="no-such-entity"'
 lad_ent epsilon ENTITY_ID >/dev/null 2>&1
 [ "$?" -ne 0 ] && ok "MANAGED_BY pointing at nothing refuses" \
                || bad "MANAGED_BY pointing at nothing refuses" "accepted"
+
+# MANAGED_BY MUST RESOLVE, NOT MERELY EXIST AS A FILE. gamma's row (above) has
+# no NAME, so it does not resolve through registry_entity_load even though
+# gamma.conf is right there on disk. A file test alone would accept this; the
+# loader must not.
+ent zeta 'NAME="Zeta"' 'MANAGED_BY="gamma"'
+lad_ent zeta ENTITY_ID >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "MANAGED_BY pointing at a broken entity refuses" \
+               || bad "MANAGED_BY pointing at a broken entity refuses" "accepted"
+
+# SELF-MANAGEMENT REFUSES. An entity managing itself is a cycle of length one,
+# and a file test alone would accept it (the file plainly exists).
+ent eta 'NAME="Eta"' 'MANAGED_BY="eta"'
+lad_ent eta ENTITY_ID >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "self-management refuses" || bad "self-management refuses" "accepted"
 
 # THE LIST REFUSES RATHER THAN LOOKING EMPTY — the house rule.
 utE="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/no-such-dir"
