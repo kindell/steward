@@ -340,5 +340,19 @@ rc=$?
 [ "$rc" -eq 78 ] && ok "an unreadable entity register refuses with 78" \
                  || bad "an unreadable entity register refuses with 78" "rc=$rc: $utE"
 
+# A FAILED LOAD MUST NOT LEAK THE PREVIOUS ENTITY'S DATA. lad_ent runs each
+# load in its own throwaway subshell, which hides exactly this bug: the leak
+# only shows up when a successful load and a failed load share ONE shell, so
+# this assertion makes its own subshell that does both loads itself instead
+# of calling lad_ent twice.
+leaked="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/entities.d"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_entity_load alfa >/dev/null 2>&1
+  registry_entity_load gamma >/dev/null 2>&1
+  printf '%s' "$ENTITY_MEMBERS" ) )"
+[ -z "$leaked" ] && ok "a failed load does not leak the previous entity's data" \
+  || bad "a failed load does not leak the previous entity's data" "got '$leaked'"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

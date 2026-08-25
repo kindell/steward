@@ -212,8 +212,7 @@ registry_schema_check() {
 # with their own sessions, it gets members. No new type, no migration.
 registry_entity_dir() {
   if [ -n "${STEWARD_ENTITY_DIR:-}" ]; then printf '%s\n' "$STEWARD_ENTITY_DIR"; return 0; fi
-  local estate; estate="$(registry_estate_file)" || return 78
-  printf '%s\n' "$(dirname "$estate")/../entities.d"
+  printf '%s\n' "$(_registry_estate_root)/entities.d"
 }
 
 # registry_entity_list: one id per line, or REFUSE with 78.
@@ -236,6 +235,10 @@ registry_entity_list() {
 # registry_entity_load <id>: set ENTITY_ID, ENTITY_NAME, ENTITY_MEMBERS,
 # ENTITY_MANAGED_BY. rc 1 on an invalid row.
 registry_entity_load() {
+  # Reset before sourcing so a prior load never leaks into this one — a caller
+  # that gets rc 1 for a missing or invalid entity must not still see the last
+  # entity that loaded successfully.
+  ENTITY_ID=""; ENTITY_NAME=""; ENTITY_MEMBERS=""; ENTITY_MANAGED_BY=""
   local id="${1:-}" d f
   [ -n "$id" ] || return 1
   d="$(registry_entity_dir)" || return 78
