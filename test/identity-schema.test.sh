@@ -186,5 +186,33 @@ konf gone 'REPO_PATH="/x"' 'RC_LABEL="Gone"' 'OWNER="ada"' 'DOMAIN="d"' 'LIFECYC
 [ "$(ladda gone LIFECYCLE)" = "retired" ] && ok "a retired session still loads (recorded, not enforced)" \
   || bad "a retired session still loads" "loading it failed"
 
+echo "RESET — a polluted shell must never leak into a fresh load"
+
+# THIS TEST GUARDS ONE LINE: the "Reset before sourcing" statement in
+# registry_load that clears ID, KIND and LIFECYCLE before the conf is read.
+# Every assertion above this one runs registry_load in ladda's own subshell,
+# so that line's absence is invisible to them — there is nothing stray in the
+# parent shell for it to leak from. Delete the reset line and every test above
+# stays green; only a load that starts from an ALREADY-POLLUTED shell can
+# catch it. Without this assertion, the next hand to touch registry.sh could
+# drop that one line and nothing here would say so — a real session would
+# then be able to inherit a stray ID, KIND or LIFECYCLE from whatever
+# environment launched it.
+konf clean 'REPO_PATH="/x"' 'RC_LABEL="Clean"' 'OWNER="ada"' 'DOMAIN="d"'
+out="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+  # Pollute the shell registry_load is about to run in with values that would
+  # each be REFUSED if they survived: ID="hijack" is well-formed but wrong,
+  # KIND="claude" and LIFECYCLE="dead" both fall outside their closed sets.
+  export ID="hijack" KIND="claude" LIFECYCLE="dead"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_load clean >/dev/null 2>&1
+  printf 'rc=%s ID=%s KIND=%s LIFECYCLE=%s' "$?" "$ID" "$KIND" "$LIFECYCLE"
+)"
+[ "$out" = "rc=0 ID=clean KIND=work LIFECYCLE=active" ] \
+  && ok "a polluted ID/KIND/LIFECYCLE never survives a fresh load" \
+  || bad "a polluted ID/KIND/LIFECYCLE never survives a fresh load" "$out"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
