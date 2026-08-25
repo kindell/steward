@@ -427,6 +427,7 @@ registry_load() {
   fi
   # Reset before sourcing so a prior load never leaks into this one.
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""; RC_FRI=""
+  ID=""; KIND=""; LIFECYCLE=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
   RUNTIME=""; MODEL=""; OPENCODE_VERSION=""; OPENCODE_PORT=""; AUTO_APPROVE=""; CLAUDE_MEMORY_ROOT=""
@@ -502,6 +503,23 @@ registry_load() {
     [ -z "$RC_LABEL" ] && RC_FRI="yes"
   else
     echo "registry: $project.conf missing RC_LABEL (write RC_LABEL=\"\" for an RC-free machine session)" >&2
+    return 1
+  fi
+  # ID: the name that is KEYED ON, as opposed to RC_LABEL which is DISPLAYED.
+  #
+  # WHY THEY ARE TWO. A displayed name must be free to change — a project gets
+  # renamed, a client rebrands. A keyed name must never change, because history,
+  # credentials, mailboxes and installed daemons hang off it. Until 2026-08-25
+  # they were one string, and the day the two needs pulled apart neither could
+  # move without breaking the other.
+  #
+  # THE FALLBACK IS A MIGRATION, NOT A DEFAULT. Today's file name is already
+  # unique, already stable and already what everything keys on, so adopting it
+  # changes nothing and makes an existing truth explicit. It stays only until
+  # every conf carries the line.
+  : "${ID:=$project}"
+  if ! [[ "$ID" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    echo "registry: $project.conf invalid ID (lower-case a-z 0-9 and hyphen)" >&2
     return 1
   fi
   # OWNER: the macOS user the session runs as. Required and validated because the

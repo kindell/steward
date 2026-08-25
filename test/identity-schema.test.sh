@@ -86,5 +86,52 @@ lade registry_schema_check >/dev/null 2>&1
                || bad "a malformed SCHEMA_VERSION refuses" "it was accepted as 1"
 
 echo
+echo "ID — the immutable key, separate from the display name"
+
+konf() { printf '%s\n' "$@" > "$FX/sessions.d/$1.conf"; }
+ladda() { # <session> -> load it against the fixture registry, print a field
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_load "$1" >/dev/null 2>&1 || exit 1
+    printf '%s' "${!2}" )
+}
+estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
+  'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+  'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+  'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+  'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+  'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"'
+
+# AN EXPLICIT ID IS USED VERBATIM.
+konf one 'REPO_PATH="/x"' 'RC_LABEL="One"' 'OWNER="ada"' 'DOMAIN="d"' 'ID="frozen-one"'
+[ "$(ladda one ID)" = "frozen-one" ] && ok "an explicit ID is loaded" \
+  || bad "an explicit ID is loaded" "got '$(ladda one ID)'"
+
+# AN ABSENT ID FALLS BACK TO THE FILE NAME — and that is a MIGRATION, not a
+# default to keep. Today's session name is already unique and already what
+# everything keys on, so freezing it changes nothing and makes an existing
+# truth explicit.
+konf two 'REPO_PATH="/x"' 'RC_LABEL="Two"' 'OWNER="ada"' 'DOMAIN="d"'
+[ "$(ladda two ID)" = "two" ] && ok "an absent ID falls back to the file name" \
+  || bad "an absent ID falls back to the file name" "got '$(ladda two ID)'"
+
+# THE ID IS NOT THE DISPLAY NAME. A conf may carry both, and they may differ —
+# that is the entire point of the split, so a test that never sees them differ
+# proves nothing.
+konf three 'REPO_PATH="/x"' 'RC_LABEL="Renamed Yesterday"' 'OWNER="ada"' 'DOMAIN="d"' 'ID="three"'
+[ "$(ladda three ID)" = "three" ] && [ "$(ladda three RC_LABEL)" = "Renamed Yesterday" ] \
+  && ok "ID and display name are independent" \
+  || bad "ID and display name are independent" "ID='$(ladda three ID)' label='$(ladda three RC_LABEL)'"
+
+# THE FORM IS THE GUARD: an ID is keyed on, so it must never carry a path
+# separator, whitespace or a glob character.
+for bad_id in 'a b' 'a/b' 'a*' 'A'; do
+  konf four 'REPO_PATH="/x"' 'RC_LABEL="Four"' 'OWNER="ada"' 'DOMAIN="d"' "ID=\"$bad_id\""
+  ladda four ID >/dev/null 2>&1
+  [ "$?" -ne 0 ] && ok "refuses the malformed ID '$bad_id'" \
+                 || bad "refuses the malformed ID '$bad_id'" "it was accepted"
+done
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
