@@ -164,7 +164,7 @@ registry_estate_name() {
 # Bump it in the same commit that teaches the library a new field, never before:
 # the number is a promise about what the code can read, not a label on what the
 # estate happens to contain.
-REGISTRY_SCHEMA_MAX=2
+REGISTRY_SCHEMA_MAX=3
 
 # registry_schema_check: rc 0 if this checkout understands the estate's schema,
 # rc 78 if the estate is NEWER than the code reading it.
