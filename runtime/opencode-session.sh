@@ -73,6 +73,38 @@ source_after="$(source_hash)" || refuse 65 "could not re-hash Claude memory sour
 [ "$source_before" = "$source_after" ] || refuse 65 "Claude memory changed while its snapshot was copied"
 chmod -R a-w "$SNAPSHOT_DIR" || refuse 70 "could not lock memory snapshot read-only"
 
+# THE ESTATE'S BASE INSTRUCTION — NAMED BY THE ESTATE, PASSED THROUGH BY US.
+#
+# Measured 2026-08-25 on the first live session: the generated text said "Use
+# the Steward bus instructions already present in the user's global agent
+# instructions" and NO SUCH FILE EXISTED anywhere. The session was pointed at a
+# document that had never been written. It answered correctly anyway, but by
+# luck — it found the authority rule in the read-only memory snapshot. A runtime
+# that depends on luck for its ground rules has none.
+#
+# THE SPLIT: the product knows that a runtime HAS a base instruction and where
+# it is read from. The estate owns what it SAYS — envelope format, authority,
+# commit routine are an estate's rules, not a mechanism's. So we pass a path
+# through and never invent content.
+#
+# NAMED BUT ABSENT IS A REFUSAL. An estate that names a file it did not ship has
+# a broken estate; starting anyway would hide it behind a session that merely
+# behaves oddly. Unset is silence — no promise of a file that is not there,
+# because a reader who goes looking and finds nothing learns to distrust the rest.
+ESTATE_CONF="$(registry_estate_file)" || refuse 78 "could not resolve the estate file"
+ESTATE_ROOT_DIR="$(CDPATH= cd -- "$(dirname "$ESTATE_CONF")/.." && pwd)" \
+  || refuse 70 "could not resolve the estate root"
+BASE_INSTRUCTIONS="$(sed -n 's/^AGENT_INSTRUCTIONS="\(.*\)"/\1/p' "$ESTATE_CONF" 2>/dev/null | head -1)"
+BASE_INSTRUCTIONS_PATH=""
+if [ -n "$BASE_INSTRUCTIONS" ]; then
+  case "$BASE_INSTRUCTIONS" in
+    /*) BASE_INSTRUCTIONS_PATH="$BASE_INSTRUCTIONS" ;;
+    *)  BASE_INSTRUCTIONS_PATH="$ESTATE_ROOT_DIR/$BASE_INSTRUCTIONS" ;;
+  esac
+  [ -f "$BASE_INSTRUCTIONS_PATH" ] || refuse 78 \
+    "the estate names AGENT_INSTRUCTIONS=$BASE_INSTRUCTIONS but no such file exists at $BASE_INSTRUCTIONS_PATH"
+fi
+
 cat > "$INSTRUCTIONS_FILE" <<EOF
 You are the OpenCode Steward bootstrap session named $SESSION_NAME.
 Read the memory snapshot supplied in OpenCode instructions before planning work.
@@ -80,7 +112,6 @@ The snapshot is derived from Claude memory and must never be edited.
 Snapshot: $SNAPSHOT_DIR
 Write durable-memory proposals as separate Markdown files in the configured memory-proposals directory.
 Memory proposals: $PROPOSALS_DIR
-Use the Steward bus instructions already present in the user's global agent instructions.
 Work only in the current git worktree; never switch another agent's checkout.
 EOF
 chmod 600 "$INSTRUCTIONS_FILE" || refuse 70 "could not secure OpenCode instructions"
@@ -88,7 +119,7 @@ chmod 600 "$INSTRUCTIONS_FILE" || refuse 70 "could not secure OpenCode instructi
 cat > "$CONFIG_FILE" <<EOF
 {
   "model": "$MODEL",
-  "instructions": ["$INSTRUCTIONS_FILE"],
+  "instructions": [$( [ -n "$BASE_INSTRUCTIONS_PATH" ] && printf '"%s", ' "$BASE_INSTRUCTIONS_PATH" )"$INSTRUCTIONS_FILE"],
   "permission": {
     "*": "allow",
     "external_directory": {

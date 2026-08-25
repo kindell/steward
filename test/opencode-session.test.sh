@@ -159,6 +159,48 @@ check_file_contains "config denies snapshot edits" "$config_file" '"edit"'
 check_file_contains "config denial wins beneath broad allowance" "$config_file" '"deny"'
 check_file_contains "instructions name snapshot" "$instructions_file" "$snapshot"
 check_file_contains "instructions name proposals" "$instructions_file" "$proposals"
+
+# ── THE BASE INSTRUCTION MUST EXIST, OR NOT BE PROMISED ────────────────────
+# Measured 2026-08-25 on the first live OpenCode session: the generated
+# instructions said "Use the Steward bus instructions already present in the
+# user's global agent instructions" — and no such file existed anywhere. Not in
+# the config directory, not in the home, not in the worktree. The session was
+# pointed at a document that had never been written.
+#
+# It answered correctly anyway, but by luck: it found the authority rule in the
+# read-only memory snapshot and applied it. A runtime that depends on luck for
+# its ground rules has none.
+#
+# THE PRODUCT KNOWS THAT A RUNTIME HAS A BASE INSTRUCTION AND WHERE IT IS READ.
+# The estate owns what it SAYS — envelope format, authority, commit routine are
+# an estate's rules, not a mechanism's. So the estate names its file and the
+# adapter passes it through; it never invents the content and never claims a
+# file it has not seen.
+#
+# A PROMISE THAT CANNOT BE KEPT IS WORSE THAN SILENCE. Without the field the
+# generated text must say nothing about global instructions, because a reader
+# who goes looking for a file that is not there learns to distrust the rest.
+printf 'AGENT_INSTRUCTIONS="agent-rules.md"\n' >> "$estate/estate/steward.conf"
+printf 'Estate rules: envelope is KLASS amne: rubrik.\n' > "$estate/agent-rules.md"
+run_adapter >/dev/null 2>&1 || true
+if grep -q "$estate/agent-rules.md" "$config_file" 2>/dev/null; then ok "base instruction reaches the OpenCode config"
+else bad "base instruction is not passed to OpenCode" "$(cat "$config_file" 2>/dev/null | head -5)"; fi
+
+# NAMED BUT ABSENT IS A REFUSAL, not a shrug. An estate that names a file it did
+# not ship has a broken estate, and starting anyway would hide it.
+rm -f "$estate/agent-rules.md"
+out_missing="$(run_adapter 2>&1)"; rc_missing=$?
+[ "$rc_missing" -ne 0 ] && ok "named-but-missing base instruction refuses" \
+                        || bad "named-but-missing base instruction started anyway" "rc=$rc_missing"
+case "$out_missing" in *agent-rules.md*) ok "the refusal names the missing file" ;;
+  *) bad "the refusal does not name the missing file" "$out_missing" ;; esac
+
+# UNSET: silence, not a false promise.
+sed -i.bak '/^AGENT_INSTRUCTIONS=/d' "$estate/estate/steward.conf"; rm -f "$estate/estate/steward.conf.bak"
+run_adapter >/dev/null 2>&1 || true
+if grep -qi "global agent instructions" "$instructions_file" 2>/dev/null; then
+  bad "unset: the text still promises a global instruction file"
+else ok "unset: no promise of a file that does not exist"; fi
 check_arg "TUI receives exact session" "ses_bootstrap123"
 check_arg "TUI receives auto approval" "--auto"
 check_arg "TUI receives loopback hostname" "127.0.0.1"
