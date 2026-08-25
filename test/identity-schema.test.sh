@@ -133,5 +133,34 @@ for bad_id in 'a b' 'a/b' 'a*' 'A'; do
                  || bad "refuses the malformed ID '$bad_id'" "it was accepted"
 done
 
+echo "KIND — work, infra or advisor, stated once"
+
+# THE DEFAULT IS work BECAUSE THAT IS WHAT ALMOST EVERY SESSION IS. A default
+# that covers the common case is not a guess; a default that covers the rare one
+# would be.
+konf plain 'REPO_PATH="/x"' 'RC_LABEL="Plain"' 'OWNER="ada"' 'DOMAIN="d"'
+[ "$(ladda plain KIND)" = "work" ] && ok "an absent KIND reads as work" \
+  || bad "an absent KIND reads as work" "got '$(ladda plain KIND)'"
+
+for k in work infra advisor; do
+  konf kk 'REPO_PATH="/x"' 'RC_LABEL="K"' 'OWNER="ada"' 'DOMAIN="d"' "KIND=\"$k\""
+  [ "$(ladda kk KIND)" = "$k" ] && ok "KIND=$k is accepted" || bad "KIND=$k is accepted" "it was not"
+done
+
+# AN UNKNOWN KIND REFUSES. The set is closed on purpose: a typo that reads as a
+# fourth kind would be treated as "not any of the three" by everything that
+# branches on it, which is the silent half-behaviour this library refuses.
+konf kk 'REPO_PATH="/x"' 'RC_LABEL="K"' 'OWNER="ada"' 'DOMAIN="d"' 'KIND="machine"'
+ladda kk KIND >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "an unknown KIND refuses" || bad "an unknown KIND refuses" "it was accepted"
+
+# KIND IS INDEPENDENT OF RC-FREENESS. Being RC-free is how the bus tells a
+# machine session apart TODAY — one fact in three encodings. KIND states it
+# once, and the test proves the two are not the same axis by combining them
+# against the grain.
+konf rcfree 'REPO_PATH="/x"' 'RC_LABEL=""' 'OWNER="ada"' 'DOMAIN="d"' 'KIND="work"'
+[ "$(ladda rcfree KIND)" = "work" ] && ok "an RC-free session may still be work" \
+  || bad "an RC-free session may still be work" "got '$(ladda rcfree KIND)'"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

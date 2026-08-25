@@ -522,6 +522,26 @@ registry_load() {
     echo "registry: $project.conf invalid ID (lower-case a-z 0-9 and hyphen)" >&2
     return 1
   fi
+  # KIND: what sort of session this is, stated ONCE.
+  #
+  #   work     — the ordinary case: a session doing a project's work.
+  #   infra    — its subject is the MACHINE. No entity, no project.
+  #   advisor  — it reviews on request. One or two in a whole fleet.
+  #
+  # ONE FACT, THREE ENCODINGS was the state before this line. A machine session
+  # was recognisable by an owner that was a service account, by a domain that
+  # said "machine", and by being RC-free — and the bus read the third. None of
+  # them was authoritative, and the two machine sessions in the estate this was
+  # written for encoded it in two different ways.
+  #
+  # THE SET IS CLOSED. A typo that read as a fourth kind would be treated as
+  # "none of the three" by everything that branches on it — a silent half
+  # behaviour rather than a refusal.
+  : "${KIND:=work}"
+  case "$KIND" in
+    work|infra|advisor) ;;
+    *) echo "registry: $project.conf invalid KIND '$KIND' (work, infra or advisor)" >&2; return 1 ;;
+  esac
   # OWNER: the macOS user the session runs as. Required and validated because the
   # installer runs as root and renders it into UserName and every path — never guess.
   if ! [[ "$OWNER" =~ ^[a-z][a-z0-9-]*$ ]]; then
