@@ -209,9 +209,9 @@ bus_fraga_tillatet() {
   [ -n "$from_" ] && [ -n "$to_" ] || return 1
   local fo ft do_ dt
   fo="$(bus_fraga_falt "$from_" OWNER)"  || return 1
-  ft="$(bus_fraga_falt "$till" OWNER)"  || return 1
+  ft="$(bus_fraga_falt "$to_" OWNER)"  || return 1
   do_="$(bus_fraga_falt "$from_" DOMAIN)" || return 1
-  dt="$(bus_fraga_falt "$till" DOMAIN)" || return 1
+  dt="$(bus_fraga_falt "$to_" DOMAIN)" || return 1
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
   [ "$fo" = "$ft" ] && return 0
   [ "$do_" = "$dt" ] && return 0
