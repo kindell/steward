@@ -67,5 +67,5 @@ refused work-a nosuch    "recipient with no conf: refused"
 refused ""     work-b    "empty sender: refused"
 
 echo
-printf '%s passed, %s failed\n' "$pass" "$fail"
+printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

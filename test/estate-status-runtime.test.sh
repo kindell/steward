@@ -139,5 +139,5 @@ STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
                          || ok "the conf was read without being executed"
 
 echo
-printf '%s passed, %s failed\n' "$pass" "$fail"
+printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
