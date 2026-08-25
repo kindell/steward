@@ -125,6 +125,41 @@ registry_label_prefix() {
   printf '%s\n' "$LABEL_PREFIX"
 }
 
+# registry_estate_name: print the estate's own name, or REFUSE with rc 78.
+#
+# THE ESTATE HAD NO NAME. Its identity was spread across four keys with two
+# values — the daemon prefix said one thing, the hub session and host said
+# another, and the job prefix a third. Nothing could be derived from it, which
+# is why the advisory session had no name the product could construct.
+#
+# NEVER GUESSED FROM A NEIGHBOUR. The hub session and the hub host happen to
+# carry the same string in the estate this was written for; a product that
+# assumes they always do breaks the first time someone names their machine
+# after the room it stands in and their session after what it does.
+registry_estate_name() {
+  local estate; estate="$(registry_estate_file)"
+  if [ ! -f "$estate" ]; then
+    echo "registry: REFUSING — the estate file is missing: $estate" >&2
+    echo "registry: it must contain the line ESTATE_NAME=\"<name>\"." >&2
+    return 78
+  fi
+  local ESTATE_NAME=""
+  # shellcheck source=/dev/null
+  if ! source "$estate"; then
+    echo "registry: REFUSING — the estate file could not be read: $estate" >&2
+    return 78
+  fi
+  # Lower-case, digits and hyphen. The name is rendered into derived session
+  # names, so anything that could act as a path separator or a glob is refused
+  # at the source rather than escaped at every use.
+  if ! [[ "$ESTATE_NAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    echo "registry: REFUSING — ESTATE_NAME missing or invalid in $estate" >&2
+    echo "registry: got '${ESTATE_NAME}', expected lower-case a-z 0-9 and hyphen" >&2
+    return 78
+  fi
+  printf '%s\n' "$ESTATE_NAME"
+}
+
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
 # The same shape as the prefix lookup above, and for the same reasons: `local`
 # before `source` so the estate file never leaks a global to the caller, form
