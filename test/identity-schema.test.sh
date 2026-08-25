@@ -162,5 +162,29 @@ konf rcfree 'REPO_PATH="/x"' 'RC_LABEL=""' 'OWNER="ada"' 'DOMAIN="d"' 'KIND="wor
 [ "$(ladda rcfree KIND)" = "work" ] && ok "an RC-free session may still be work" \
   || bad "an RC-free session may still be work" "got '$(ladda rcfree KIND)'"
 
+echo "LIFECYCLE — retirement can be written down"
+
+konf live 'REPO_PATH="/x"' 'RC_LABEL="Live"' 'OWNER="ada"' 'DOMAIN="d"'
+[ "$(ladda live LIFECYCLE)" = "active" ] && ok "an absent LIFECYCLE reads as active" \
+  || bad "an absent LIFECYCLE reads as active" "got '$(ladda live LIFECYCLE)'"
+
+for l in active suspended retired; do
+  konf ll 'REPO_PATH="/x"' 'RC_LABEL="L"' 'OWNER="ada"' 'DOMAIN="d"' "LIFECYCLE=\"$l\""
+  [ "$(ladda ll LIFECYCLE)" = "$l" ] && ok "LIFECYCLE=$l is accepted" \
+    || bad "LIFECYCLE=$l is accepted" "it was not"
+done
+
+konf ll 'REPO_PATH="/x"' 'RC_LABEL="L"' 'OWNER="ada"' 'DOMAIN="d"' 'LIFECYCLE="dead"'
+ladda ll LIFECYCLE >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "an unknown LIFECYCLE refuses" || bad "an unknown LIFECYCLE refuses" "accepted"
+
+# A RETIRED SESSION STILL LOADS. This task records the fact and acts on nothing:
+# refusing to load a retired conf would BE the behaviour change, and it would
+# arrive without anyone choosing it. The test pins that boundary so a later plan
+# has to move it deliberately.
+konf gone 'REPO_PATH="/x"' 'RC_LABEL="Gone"' 'OWNER="ada"' 'DOMAIN="d"' 'LIFECYCLE="retired"'
+[ "$(ladda gone LIFECYCLE)" = "retired" ] && ok "a retired session still loads (recorded, not enforced)" \
+  || bad "a retired session still loads" "loading it failed"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

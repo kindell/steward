@@ -542,6 +542,25 @@ registry_load() {
     work|infra|advisor) ;;
     *) echo "registry: $project.conf invalid KIND '$KIND' (work, infra or advisor)" >&2; return 1 ;;
   esac
+  # LIFECYCLE: whether this session is meant to be running.
+  #
+  #   active     — the ordinary case.
+  #   suspended  — deliberately off. Status must say so, never "healthy".
+  #   retired    — gone for good; the row is a tombstone.
+  #
+  # WHY A TOMBSTONE AND NOT A DELETION. Removing a row from git stops no timer,
+  # revokes no bus key, frees no port and cleans no disk — and it can come back
+  # from an old clone. A retirement that is only an absence cannot be told from
+  # a row nobody has written yet.
+  #
+  # RECORDED HERE, ACTED ON NOWHERE. Refusing to load a retired conf would be a
+  # behaviour change arriving without anyone choosing it, with live
+  # conversations in the room. A later plan moves that boundary deliberately.
+  : "${LIFECYCLE:=active}"
+  case "$LIFECYCLE" in
+    active|suspended|retired) ;;
+    *) echo "registry: $project.conf invalid LIFECYCLE '$LIFECYCLE' (active, suspended or retired)" >&2; return 1 ;;
+  esac
   # OWNER: the macOS user the session runs as. Required and validated because the
   # installer runs as root and renders it into UserName and every path — never guess.
   if ! [[ "$OWNER" =~ ^[a-z][a-z0-9-]*$ ]]; then
