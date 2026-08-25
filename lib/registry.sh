@@ -262,6 +262,61 @@ registry_entity_load() {
   ENTITY_MEMBERS="$MEMBERS"; ENTITY_MANAGED_BY="$MANAGED_BY"
 }
 
+# ── PROJECTS: THE WORK, UNDER WHICHEVER PARENT IT BELONGS TO ───────────────
+#
+# ENTITY answers WHO the work is for. PROJECT answers WHICH BOUNDED WORK. A
+# client can have several projects with different repos, participants,
+# credentials, deploy targets and lifecycles — aim a session at the client and
+# the overbroad grouping this model replaces comes straight back.
+#
+# OWN WORK VERSUS CLIENT WORK IS THE EDGE, NOT A LABEL. A project hanging
+# directly under a team is the team's own; one hanging under a client is client
+# work. A field repeating that distinction could only ever contradict the edge.
+registry_project_dir() {
+  if [ -n "${STEWARD_PROJECT_DIR:-}" ]; then printf '%s\n' "$STEWARD_PROJECT_DIR"; return 0; fi
+  printf '%s\n' "$(_registry_estate_root)/projects.d"
+}
+
+# registry_project_list: one id per line, or REFUSE with 78.
+registry_project_list() {
+  local d; d="$(registry_project_dir)" || return 78
+  if [ ! -d "$d" ]; then
+    echo "registry: REFUSING — the project register is not readable: $d" >&2
+    return 78
+  fi
+  local f
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    basename "$f" .conf
+  done
+}
+
+# registry_project_load <id>: set PROJECT_ID, PROJECT_NAME, PROJECT_PARENT.
+# rc 1 on an invalid row.
+registry_project_load() {
+  # Reset before the file lookup — not just before sourcing — so a caller
+  # that gets rc 1 never still sees the previous project's data.
+  PROJECT_ID=""; PROJECT_NAME=""; PROJECT_PARENT=""
+  local id="${1:-}" d f
+  [ -n "$id" ] || return 1
+  d="$(registry_project_dir)" || return 78
+  f="$d/$id.conf"
+  [ -f "$f" ] || { echo "registry: no such project: $id" >&2; return 1; }
+  local NAME="" PARENT=""
+  # shellcheck source=/dev/null
+  source "$f" || return 1
+  [ -n "$NAME" ]   || { echo "registry: $id.conf missing NAME" >&2; return 1; }
+  [ -n "$PARENT" ] || { echo "registry: $id.conf missing PARENT (a project always hangs under an entity)" >&2; return 1; }
+  # THE PARENT IS RESOLVED THROUGH THE ENTITY LOADER, not by looking for a file.
+  # A parent whose own row is invalid must not silently count as present — the
+  # check is "does this resolve", not "is there something with that name".
+  if ! ( registry_entity_load "$PARENT" >/dev/null 2>&1 ); then
+    echo "registry: $id.conf PARENT does not resolve to a valid entity: $PARENT" >&2
+    return 1
+  fi
+  PROJECT_ID="$id"; PROJECT_NAME="$NAME"; PROJECT_PARENT="$PARENT"
+}
+
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
 # The same shape as the prefix lookup above, and for the same reasons: `local`
 # before `source` so the estate file never leaks a global to the caller, form

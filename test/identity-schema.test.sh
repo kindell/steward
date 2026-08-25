@@ -354,5 +354,71 @@ leaked="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/entities.d
 [ -z "$leaked" ] && ok "a failed load does not leak the previous entity's data" \
   || bad "a failed load does not leak the previous entity's data" "got '$leaked'"
 
+echo "projects — the work, under whichever parent it belongs to"
+
+mkdir -p "$FX/projects.d"
+proj() { local id="$1"; shift; printf '%s\n' "$@" > "$FX/projects.d/$id.conf"; }
+load_proj() {
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/entities.d" \
+           STEWARD_PROJECT_DIR="$FX/projects.d"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_project_load "$1" >/dev/null 2>&1 || exit 1
+    printf '%s' "${!2}" )
+}
+
+# A PROJECT UNDER A TEAM — own work.
+proj egen 'NAME="Egen"' 'PARENT="alfa"'
+[ "$(load_proj egen PROJECT_PARENT)" = "alfa" ] && ok "a project may hang under a team" \
+  || bad "a project may hang under a team" "got '$(load_proj egen PROJECT_PARENT)'"
+
+# A PROJECT UNDER A CLIENT — client work. SAME FIELD, different parent. That is
+# the spec's claim: own-work versus client-work is the EDGE, not a label, so a
+# test that only ever uses one kind of parent proves nothing about it.
+proj kund 'NAME="Kund"' 'PARENT="beta"'
+[ "$(load_proj kund PROJECT_PARENT)" = "beta" ] && ok "a project may hang under a client" \
+  || bad "a project may hang under a client" "got '$(load_proj kund PROJECT_PARENT)'"
+
+[ "$(load_proj egen PROJECT_ID)" = "egen" ] && ok "the project id is its file name" \
+  || bad "the project id is its file name" "got '$(load_proj egen PROJECT_ID)'"
+
+# THE PARENT MUST EXIST AND MUST BE AN ENTITY. A project whose parent is missing
+# is an orphan that reads as placed.
+proj stray 'NAME="Stray"' 'PARENT="no-such-id"'
+load_proj stray PROJECT_ID >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "a project with an unresolvable parent refuses" \
+               || bad "a project with an unresolvable parent refuses" "accepted"
+
+# A PARENT IS REQUIRED. A project under nothing is exactly the overbroad grouping
+# the whole model exists to replace.
+proj parentless 'NAME="Parentless"'
+load_proj parentless PROJECT_ID >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "a project without PARENT refuses" || bad "a project without PARENT refuses" "accepted"
+
+proj nameless 'PARENT="alfa"'
+load_proj nameless PROJECT_ID >/dev/null 2>&1
+[ "$?" -ne 0 ] && ok "a project without NAME refuses" || bad "a project without NAME refuses" "accepted"
+
+utP="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_PROJECT_DIR="$FX/no-such-id"
+          . "$here/lib/registry.sh"; registry_project_list ) 2>&1 )"
+rc=$?
+[ "$rc" -eq 78 ] && ok "an unreadable project register refuses with 78" \
+                 || bad "an unreadable project register refuses with 78" "rc=$rc: $utP"
+
+# A FAILED LOAD MUST NOT LEAK THE PREVIOUS PROJECT'S DATA. load_proj runs each
+# load in its own throwaway subshell, which hides exactly this bug: the leak
+# only shows up when a successful load and a failed load share ONE shell, so
+# this assertion makes its own subshell that does both loads itself instead
+# of calling load_proj twice.
+leakedP="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/entities.d" \
+                     STEWARD_PROJECT_DIR="$FX/projects.d"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_project_load egen >/dev/null 2>&1
+  registry_project_load nameless >/dev/null 2>&1
+  printf '%s|%s|%s' "$PROJECT_ID" "$PROJECT_NAME" "$PROJECT_PARENT" ) )"
+[ "$leakedP" = "||" ] && ok "a failed load does not leak the previous project's data" \
+  || bad "a failed load does not leak the previous project's data" "got '$leakedP'"
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
