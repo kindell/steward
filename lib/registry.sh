@@ -208,7 +208,7 @@ registry_schema_check() {
 #   MEMBERS     the people who belong to it   -> it functions as a team
 #   MANAGED_BY  the team that manages it      -> it functions as a client
 #
-# BOTH AT ONCE IS LEGAL AND IS THE POINT. The day a client has its own people
+# BOTH AT ONCE IS LEGAL, AND DELIBERATELY SO. The day a client has its own people
 # with their own sessions, it gets members. No new type, no migration.
 registry_entity_dir() {
   if [ -n "${STEWARD_ENTITY_DIR:-}" ]; then printf '%s\n' "$STEWARD_ENTITY_DIR"; return 0; fi
