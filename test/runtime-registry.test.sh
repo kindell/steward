@@ -1,11 +1,57 @@
 #!/bin/bash
-# Runtime registry contract. Run with the Butler estate root.
+# Runtime registry contract. Estate-independent: it builds its own.
+#
+# THIS FILE USED TO SAY "run with the <that estate>'s root" — and meant it. It
+# set STEWARD_REGISTRY_DIR but never STEWARD_ESTATE_ROOT, so registry_load fell
+# back to <product>/estate/steward.conf, which does not exist in a product
+# checkout. Three assertions failed for anyone without that one estate on disk;
+# they passed here only because the runner was always handed its root.
+#
+# A PRODUCT SUITE THAT NEEDS ONE PARTICULAR INSTALLATION IS NOT A PRODUCT SUITE.
+# The sibling identity-schema suite already builds its own estate; this one now
+# does the same, and the two together are the pattern for every suite after.
+#
+# THE FIX IS NOT TO SHIP AN estate/steward.conf WITH THE PRODUCT. That path is
+# the FALLBACK, so a file there would turn "the estate file is missing" — a
+# correct, loud refusal — into a silent success against an example. A real
+# installation with a lost estate would then run against the sample instead of
+# stopping. The refusal is the feature; the fixture belongs in the test.
 set -u
 
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixtures="$(mktemp -d)"
 set_fixtures="$(mktemp -d)"
-trap 'rm -rf "$fixtures" "$set_fixtures"' EXIT
+estate_root="$(mktemp -d)"
+trap 'rm -rf "$fixtures" "$set_fixtures" "$estate_root"' EXIT
+
+# The estate the registry resolves against. Values are deliberately unlike any
+# real installation: a fixture that borrows a live estate's names is a fixture
+# that stops failing when the live estate changes.
+mkdir -p "$estate_root/estate"
+# ALL FIFTEEN FIELDS, not the four this suite happens to reach. Each one is a
+# refusal waiting to happen: the registry validates the estate as a whole before
+# it loads anything, so a fixture missing a field the suite never reads still
+# fails every load. Writing them out makes this file double as the contract —
+# what an estate must supply before the product will run at all.
+cat > "$estate_root/estate/steward.conf" <<'ESTATE'
+ESTATE_NAME="fixture"
+LABEL_PREFIX="com.fixture.claude"
+SCHEMA_VERSION="3"
+HUB_HOST="fixturehost"
+HUB_SESSION="fixturehub"
+HUB_SSH="fixtureuser@fixturehost"
+RC_LABEL_PREFIX="Fixture: "
+JOB_LABEL_PREFIX="com.fixture.job"
+SERVICE_LABEL_PREFIX="com.fixture.service"
+BROWSER_LABEL_PREFIX="com.fixture.browser"
+OP_TOKEN_FILE_NAME="fixture-token"
+STATE_DIR_NAME="fixture-state"
+PAUSED_DIR_NAME="fixture-paused"
+JOB_LOG_DIR="fixture-logs"
+TMUX_SOCKET="fixture-socket"
+PING_MSG="fixture ping"
+ESTATE
+export STEWARD_ESTATE_ROOT="$estate_root"
 
 pass=0; fail=0
 ok() { pass=$((pass+1)); }
