@@ -218,6 +218,13 @@ tmpc="$(mktemp)" || exit 70
 # The construction remains the fallback, so a requester that has not been
 # updated behaves exactly as before.
 RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
+# ID IS WRITTEN OUT, never left implied. The registry defaults ID to the file's
+# basename, so a conf without the line WORKS — but then the immutable key is
+# bound to a file name, and renaming the file moves the identity silently. The
+# whole point of ID is that it outlives both the display name and the file name.
+# Measured 2026-08-26: the first session this tool wrote after the identity
+# model landed failed the estate's registry suite with a missing ID. The tool
+# did not produce what the model requires, and nothing here noticed.
 cat > "$tmpc" <<CONFEOF
 # $NAMN — registered by nav-enroll $(date -u +%Y-%m-%dT%H:%M:%SZ), requested by $FROM.
 # Trigger per the direction doc: a domain acquired a project.
@@ -227,6 +234,7 @@ RC_LABEL="$RC_ETIKETT"
 PERMISSION_MODE="bypassPermissions"
 OWNER="$PERSON"
 DOMAIN="$DOMAN"
+ID="$NAMN"
 CONFEOF
 mv "$tmpc" "$conf" || exit 70
 
