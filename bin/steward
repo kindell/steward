@@ -161,10 +161,11 @@ cmd_ls() {
 # The remote attach command. TMUX IS RESOLVED, NOT ASSUMED — the same lesson
 # estate-status.sh carries, and attach was written without it. Over ssh the PATH
 # is bare (a package-manager prefix is a login-shell luxury) and the estate may
-# run its server on a NAMED socket under ~/.tmux. Measured 2026-08-21 against
-# butler: plain `tmux attach` found neither the binary (zsh: command not found:
-# tmux) nor, once given the binary, the server (/tmp/tmux-501/default missing)
-# although the session was up on butler.sock the whole time.
+# run its server on a NAMED socket under ~/.tmux. Measured 2026-08-21 against a
+# hub: plain `tmux attach` found neither the binary (zsh: command not found:
+# tmux) nor, once given the binary, the server (the default socket path was
+# missing) although the session was up on the estate's named socket the whole
+# time.
 #
 # TMUX_SOCKET is READ, not sourced: the estate file is configuration, and a
 # client that executes a remote conf to learn a filename has made every estate
@@ -309,7 +310,7 @@ cmd_assets() {
   . "$HERE/lib/assets.sh"
   # PRODUCTION WIRING. asset_probe reads STEWARD_ASSET_PROBE_CMD and reports
   # `unknown no-probe-command` when it is unset — correct as a contract, useless
-  # as a product. Point it at the dispatcher unless a caller (or the suite) has
+  # as a product. Aim it at the dispatcher unless a caller (or the suite) has
   # already chosen one; an explicit setting always wins.
   : "${STEWARD_ASSET_PROBE_CMD:=$HERE/bin/probe-dispatch}"
   export STEWARD_ASSET_PROBE_CMD

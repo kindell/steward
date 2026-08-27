@@ -22,7 +22,7 @@ FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate/probes"
 
 # The product's own probes directory is a real path inside the checkout, so the
-# suite cannot write to it. Point the product half at a fixture too, through the
+# suite cannot write to it. Aim the product half at a fixture too, through the
 # same override the dispatcher offers for testing.
 mkdir -p "$FX/product/probes"
 
