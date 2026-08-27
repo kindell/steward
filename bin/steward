@@ -261,14 +261,50 @@ cmd_scaffold() {
 # cmd_assets <session> [--json] — the declared list joined with probed health.
 # Presentation-free: json or one line per asset, never ANSI.
 cmd_assets() {
-  local want_json="" session="" a
+  local want_json="" session="" a err_msg
+
+  # Detect --json anywhere in argv before validating other arguments
   for a in "$@"; do
-    case "$a" in --json) want_json=1 ;; -*) echo "steward: unknown flag '$a'" >&2; return 64 ;;
-                 *) [ -n "$session" ] && { echo "steward: one session at a time" >&2; return 64; }
-                    session="$a" ;;
+    [ "$a" = "--json" ] && want_json=1
+  done
+
+  # Parse and validate arguments
+  for a in "$@"; do
+    case "$a" in
+      --json) ;; # Already detected above
+      -*)
+        err_msg="steward: unknown flag '$a'"
+        if [ -n "$want_json" ]; then
+          jq -cn --arg reason "$err_msg" '{ok:false, reason:$reason}'
+        else
+          printf '%s\n' "$err_msg" >&2
+        fi
+        return 64
+        ;;
+      *)
+        [ -n "$session" ] && {
+          err_msg="steward: one session at a time"
+          if [ -n "$want_json" ]; then
+            jq -cn --arg reason "$err_msg" '{ok:false, reason:$reason}'
+          else
+            printf '%s\n' "$err_msg" >&2
+          fi
+          return 64
+        }
+        session="$a"
+        ;;
     esac
   done
-  [ -n "$session" ] || { echo "steward: assets requires a session name" >&2; return 64; }
+
+  [ -n "$session" ] || {
+    err_msg="steward: assets requires a session name"
+    if [ -n "$want_json" ]; then
+      jq -cn --arg reason "$err_msg" '{ok:false, reason:$reason}'
+    else
+      printf '%s\n' "$err_msg" >&2
+    fi
+    return 64
+  }
   # shellcheck source=lib/assets.sh
   . "$HERE/lib/assets.sh"
   local list rc

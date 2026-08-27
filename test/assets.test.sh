@@ -154,6 +154,37 @@ plain="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ASSET_PROBE_CMD="$FX/pro
 check "plain output has three lines" [ "$(printf '%s\n' "$plain" | grep -c .)" -eq 3 ]
 check "plain output carries no escape codes" bash -c '! printf "%s" "$1" | grep -q "$(printf "\033")"' _ "$plain"
 
+echo "== usage errors with --json are structured on stdout =="
+
+# NO SESSION NAME: --json BEFORE the error
+no_sess="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" "$here/bin/steward" assets --json 2>/dev/null )"
+no_sess_rc=$?
+check "no session with --json gives rc 64" [ "$no_sess_rc" -eq 64 ]
+check "no session with --json gives valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$no_sess"
+check "no session json has ok false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$no_sess"
+check "no session json includes reason" bash -c 'printf "%s" "$1" | jq -e ".reason" >/dev/null 2>&1' _ "$no_sess"
+
+# TWO SESSION NAMES: --json BEFORE the error
+two_sess="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" "$here/bin/steward" assets --json with-assets no-assets 2>/dev/null )"
+two_sess_rc=$?
+check "two sessions with --json gives rc 64" [ "$two_sess_rc" -eq 64 ]
+check "two sessions with --json gives valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$two_sess"
+check "two sessions json has ok false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$two_sess"
+
+# UNKNOWN FLAG: --json BEFORE the error
+unknown_flag="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" "$here/bin/steward" assets --json --bogus 2>/dev/null )"
+unknown_flag_rc=$?
+check "unknown flag with --json gives rc 64" [ "$unknown_flag_rc" -eq 64 ]
+check "unknown flag with --json gives valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$unknown_flag"
+check "unknown flag json has ok false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$unknown_flag"
+
+# UNKNOWN FLAG: --json AFTER the error (test argv ordering)
+unknown_flag_after="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" "$here/bin/steward" assets --bogus --json 2>/dev/null )"
+unknown_flag_after_rc=$?
+check "unknown flag after --json gives rc 64" [ "$unknown_flag_after_rc" -eq 64 ]
+check "unknown flag after --json gives valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$unknown_flag_after"
+check "unknown flag after --json json has ok false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$unknown_flag_after"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
