@@ -86,6 +86,7 @@ check "output is valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1
 check "json names the estate" bash -c 'printf "%s" "$1" | jq -e ".estate == \"acme\"" >/dev/null 2>&1' _ "$out"
 check "json names the session" bash -c 'printf "%s" "$1" | jq -e ".session == \"home-alice\"" >/dev/null 2>&1' _ "$out"
 check "json reports loadable true" bash -c 'printf "%s" "$1" | jq -e ".loadable == true" >/dev/null 2>&1' _ "$out"
+check "json reports ok true" bash -c 'printf "%s" "$1" | jq -e ".ok == true" >/dev/null 2>&1' _ "$out"
 
 # A REFUSAL IS STRUCTURED TOO, never a bare non-zero. A bad org must produce
 # json with ok=false and a reason, so the TUI can render it.
