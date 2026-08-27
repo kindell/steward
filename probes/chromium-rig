@@ -209,6 +209,22 @@ if ! port_listening "$cdp" "$binds"; then
   # NO CDP AT ALL, though VNC is reachable: you can watch the rig but not drive
   # it, and an agent cannot use a rig it cannot drive. A separate detail from
   # the VNC row so the reader knows which port is missing.
+  #
+  # AN EMPTY PROFILE LIST IS DELIBERATELY *NOT* TREATED THE WAY AN EMPTY BIND OR
+  # GATE LIST IS, and the asymmetry is a decision, not an oversight. PROFILE
+  # comes off `sudo -n`, so a denied sudo empties it the same silent way — but
+  # unlike the other two, an empty PROFILE is ALSO what a host with no other
+  # browser honestly reports, and that host is exactly this branch's `down`.
+  # Separating the two would mean knowing that PROFILE covers the loopback CDP
+  # port space, i.e. teaching this prober a port-range policy that belongs to an
+  # estate, not to the product; every looser test also matches another session's
+  # loopback VNC on a shared host. Inferring "sudo worked" from a non-empty gate
+  # list would be inference, not measurement.
+  #
+  # What that leaves: the DANGEROUS half of a denied sudo — the false ungated-CDP
+  # alarm — is caught below. The residual is a `down` here for a rig that may be
+  # alive on a drifted port. Whoever narrows this must bring a measurement that
+  # separates "sudo was refused" from "there is nothing else running".
   answer down cdp-not-listening
 fi
 
