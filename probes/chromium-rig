@@ -1,0 +1,155 @@
+#!/bin/bash
+# probes/chromium-rig — is this session's browser rig answering, and how?
+#
+# WHY THE PRODUCT OWNS THIS ONE. A rig measurement reads ports and firewall
+# rules. It knows no accounts, no tokens and no customers, so it can be
+# domain-agnostic — which is exactly the line that decides what lives here and
+# what lives in an estate's own probes directory.
+#
+# THE MEASUREMENT IS INJECTABLE, and that is not a testing convenience: a prober
+# that can only be run against a live machine is a prober that is run once by
+# hand and then rots. STEWARD_RIG_MEASURE_CMD takes a host and prints three key
+# lines; the default below asks over ssh.
+#
+# FIVE RIG OUTCOMES, FOUR STATUS WORDS. The asset vocabulary is closed on
+# purpose — every consumer would otherwise have to learn each new word — so two
+# of the outcomes are `up` with a warning carried in the detail field:
+#
+#   cdp-open-to-all-local-users  CDP is full remote control of the browser with
+#                                NO authentication: every tab, every cookie,
+#                                every logged-in session, and the ability to act
+#                                as the user. The port binds loopback, which
+#                                sounds safe and is not — loopback has no user
+#                                boundary, so every account on the machine
+#                                reaches it. The real boundary is a firewall
+#                                rule matching on UID. Without it, any other
+#                                account on that machine can drive this browser.
+#
+#   cdp-on-port-N-not-D          The profile runs on a port the registry does
+#                                not declare. The rig works; declared and
+#                                measured truth have come apart. The fix is to
+#                                sync the registry, not to touch the rig.
+#
+# Both are `up` because the status word answers "can the session use this
+# asset", and in both cases it can. They are a security problem and a
+# bookkeeping problem respectively — real, but not that question.
+#
+# READS ONLY.
+set -uo pipefail
+
+# ── the session, which does not travel in the arguments ────────────────────
+#
+# asset_probe hands a prober <type> <arg>, and `chromium-rig` carries no arg —
+# there is nothing in the signature that says WHOSE rig to measure. The session
+# name rides in the environment instead. Declaring `chromium-rig:<session>` in
+# the registry would have worked too, and was rejected: it repeats the session
+# name in every conf and turns a derivation (a rig implies a rig asset) into a
+# transcription that can drift.
+answer() { printf '%s %s\n' "$1" "$2"; exit 0; }
+
+session="${STEWARD_PROBE_SESSION:-}"
+[ -n "$session" ] || answer unknown no-session-context
+
+HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/registry.sh
+. "$HERE/lib/registry.sh" 2>/dev/null || answer unknown no-registry
+registry_load "$session" >/dev/null 2>&1 || answer unknown unloadable-session
+
+[ "${BROWSER_RIG:-}" = "yes" ] || answer unknown no-rig-declared
+host="${HOST:-$(hostname -s 2>/dev/null)}"
+cdp="${BROWSER_CDP:-}"
+vnc="${BROWSER_VNC:-}"
+profile="${BROWSER_PROFILE:-$session}"
+
+# ── the measurement ────────────────────────────────────────────────────────
+#
+# ONE ROUND TRIP, not three. The host is asked once for everything: what is
+# listening, which CDP ports carry a gate rule, and which profile each listener
+# belongs to. Splitting it would make two answers that can disagree about the
+# same instant.
+#
+# sudo -n for iptables and ss -p: a listener's process is only visible to the
+# account that owns it, and whoever measures rarely owns the rig. Without it
+# every profile reads empty and every drift is invisible, which looks exactly
+# like a dead rig.
+default_measure() {
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$1" '
+    printf "BIND %s\n" "$(ss -ltn 2>/dev/null | tr -s " " | cut -d" " -f4 | grep -E ":(59[0-9][0-9]|9[0-9]{3})$" | sort -u | tr "\n" " ")"
+    printf "GRINDAD %s\n" "$(sudo -n iptables -L OUTPUT -n 2>/dev/null | grep -oE "dpt:9[0-9]{3}" | cut -d: -f2 | sort -u | tr "\n" " ")"
+    printf "PROFIL "
+    for _p in $(ss -ltn 2>/dev/null | grep -oE "127\.0\.0\.1:9[0-9]{3}" | cut -d: -f2 | sort -u); do
+      _pid="$(sudo -n ss -ltnp 2>/dev/null | grep "127.0.0.1:$_p " | grep -oE "pid=[0-9]+" | cut -d= -f2 | head -1)"
+      [ -n "$_pid" ] || continue
+      _pr="$(sudo -n ps -o args= -p "$_pid" 2>/dev/null | grep -oE "user-data-dir=[^ ]+" | head -1 | sed "s|.*/||" | tr -d "\x27\"")"
+      [ -n "$_pr" ] && printf "%s=%s " "$_p" "$_pr"
+    done
+    printf "\n"' 2>/dev/null
+}
+
+measure_cmd="${STEWARD_RIG_MEASURE_CMD:-}"
+if [ -n "$measure_cmd" ]; then
+  raw="$("$measure_cmd" "$host" 2>/dev/null)" || raw=""
+else
+  raw="$(default_measure "$host")" || raw=""
+fi
+
+# A HOST THAT DID NOT ANSWER IS UNKNOWN, NOT DOWN. Not knowing whether a rig
+# lives is not the same as knowing it is dead — and the second sends whoever
+# reads it off to restart a machine that was fine.
+[ -n "$raw" ] || answer unknown host-unreachable
+
+binds="$(printf '%s' "$raw" | sed -n 's/^BIND //p')"
+gates="$(printf '%s' "$raw" | sed -n 's/^GRINDAD //p')"
+profiles="$(printf '%s' "$raw" | sed -n 's/^PROFIL //p')"
+
+# ── reading the bind list ──────────────────────────────────────────────────
+#
+# THE BIND LIST CARRIES THE ADDRESS, and the two ports ask OPPOSITE questions of
+# it. CDP should be loopback-bound (it is gated per owner); VNC should be
+# reachable over the tailnet, or "connect here" is a lie. A measurement that
+# throws the address away and keeps the port answers neither: it once reported
+# two rigs of seven as up at an address nobody could reach.
+port_listening() { local p="$1" b; [ -n "$p" ] || return 1
+  for b in $2; do case "$b" in *":$p") return 0 ;; esac; done; return 1; }
+port_outward() { local p="$1" b a; [ -n "$p" ] || return 1
+  for b in $2; do case "$b" in *":$p")
+    a="${b%:*}"
+    case "$a" in 127.0.0.1|"[::1]"|::1|localhost) ;; *) return 0 ;; esac ;;
+  esac; done; return 1; }
+in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# ── the mapping, in precedence order ───────────────────────────────────────
+#
+# VNC FIRST, because it answers whether the rig can be reached at all. A rig
+# nobody can connect to is not made usable by a well-gated CDP port.
+if ! port_listening "$vnc" "$binds"; then
+  answer down not-listening
+fi
+if ! port_outward "$vnc" "$binds"; then
+  # LISTENING BUT NOT OUTWARD is neither up nor down. The port is alive, so
+  # restarting the rig fixes nothing — it must be rebound. Two faults with two
+  # different actions must not share one word.
+  answer local-only vnc-loopback-only
+fi
+
+if ! port_listening "$cdp" "$binds"; then
+  # DRIFT IS NOT DOWN. Before calling a rig dead, look for the profile running
+  # somewhere else: declared and measured truth coming apart is a different
+  # problem with a different fix, and "down" sends the reader hunting a corpse
+  # that is walking around on another port.
+  other=""
+  for kv in $profiles; do
+    case "$kv" in *"=$profile") other="${kv%%=*}"; break ;; esac
+  done
+  [ -n "$other" ] && answer up "cdp-on-port-${other}-not-${cdp}"
+  # NO CDP AT ALL, though VNC is reachable: you can watch the rig but not drive
+  # it, and an agent cannot use a rig it cannot drive. A separate detail from
+  # the VNC row so the reader knows which port is missing.
+  answer down cdp-not-listening
+fi
+
+if ! in_list "$cdp" "$gates"; then
+  answer up cdp-open-to-all-local-users
+fi
+
+answer up "vnc:${vnc} cdp:${cdp}"
