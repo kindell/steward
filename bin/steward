@@ -307,6 +307,18 @@ cmd_assets() {
   }
   # shellcheck source=lib/assets.sh
   . "$HERE/lib/assets.sh"
+  # PRODUCTION WIRING. asset_probe reads STEWARD_ASSET_PROBE_CMD and reports
+  # `unknown no-probe-command` when it is unset — correct as a contract, useless
+  # as a product. Point it at the dispatcher unless a caller (or the suite) has
+  # already chosen one; an explicit setting always wins.
+  : "${STEWARD_ASSET_PROBE_CMD:=$HERE/bin/probe-dispatch}"
+  export STEWARD_ASSET_PROBE_CMD
+  # THE PROBER NEEDS TO KNOW WHOSE ASSET IT IS MEASURING. asset_probe's signature
+  # carries the asset, not the session, and a rig prober cannot measure a rig
+  # without knowing which session declares it. The name rides in the environment
+  # rather than in the asset string so the registry stays a derivation
+  # (BROWSER_RIG implies chromium-rig) instead of a transcription.
+  export STEWARD_PROBE_SESSION="$session"
   local list rc
   list="$(session_assets "$session" 2>&1)"; rc=$?
   if [ "$rc" -ne 0 ]; then

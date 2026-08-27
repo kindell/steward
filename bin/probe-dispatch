@@ -1,0 +1,60 @@
+#!/bin/bash
+# bin/probe-dispatch — which prober answers for an asset type?
+#
+# WHY IT EXISTS. `asset_probe` in lib/assets.sh calls one command per asset and
+# hands it <type> <arg>. Something has to turn a type into a prober, and that
+# something must not be a case statement inside the product: the estate owns the
+# account-specific probes (whose mail, whose token) and the product owns the
+# mechanical ones (ports, firewall rules). A lookup keeps that boundary; a case
+# statement would drag the estate's knowledge into the product and break the
+# domain-agnosticism the leak guard exists to protect.
+#
+# THE ESTATE IS SEARCHED FIRST, and that ordering is the feature. An estate can
+# replace a generic prober with one that knows more about its own machines by
+# dropping a file in its own directory — no product change, no fork.
+#
+# THE FILENAME IS THE TYPE. probes/chromium-rig answers for `chromium-rig`.
+# There is no registration step and no manifest to keep in sync, because a
+# second place to declare a prober is a second place for it to be wrong.
+#
+# rc 0 WITH A LINE, or the prober's own rc. This script adds no judgement of its
+# own beyond "no prober found" — asset_probe already downgrades a failing prober
+# to `unknown`, and two layers judging the same measurement is how a verdict
+# becomes untraceable.
+set -uo pipefail
+
+type="${1:-}"
+arg="${2:-}"
+
+# The estate root resolves exactly as it does everywhere else in the product.
+# A probe must never fail merely because the root is unset — that would be an
+# unmeasurable dressed as an error, and this whole model exists to keep those
+# apart.
+HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/registry.sh
+. "$HERE/lib/registry.sh" 2>/dev/null || true
+
+estate_dir=""
+if command -v _registry_estate_root >/dev/null 2>&1; then
+  estate_dir="$(_registry_estate_root)/probes"
+fi
+# STEWARD_PRODUCT_PROBE_DIR exists for the suite: the product's real probes
+# directory lives inside the checkout and a test cannot write there.
+product_dir="${STEWARD_PRODUCT_PROBE_DIR:-$HERE/probes}"
+
+if [ -n "$type" ]; then
+  for dir in "$estate_dir" "$product_dir"; do
+    [ -n "$dir" ] || continue
+    cand="$dir/$type"
+    # A FILE THAT EXISTS BUT IS NOT EXECUTABLE COUNTS AS NO HIT. Taking it for a
+    # prober would run nothing and print nothing, and an empty measurement reads
+    # as a healthy one at every layer above.
+    [ -f "$cand" ] && [ -x "$cand" ] || continue
+    exec "$cand" "$type" "$arg"
+  done
+fi
+
+# NOT KNOWING IS AN ANSWER, and it is the one the closed vocabulary reserves for
+# exactly this. Silence here would be indistinguishable from health.
+printf 'unknown unknown-asset-type\n'
+exit 0
