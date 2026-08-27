@@ -126,6 +126,34 @@ check "timed-out probe reports unknown" bash -c '[[ "$1" == "mail:kindell unknow
 check "timed-out probe names the timeout" bash -c '[[ "$1" == *"probe-timeout"* ]]' _ "$line"
 check "timed-out probe returns well inside the stub's sleep" [ "$elapsed" -lt "$STUB_SLEEP" ]
 
+echo "== the steward command joins both layers as json =="
+out="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ASSET_PROBE_CMD="$FX/probe-stub" \
+        "$here/bin/steward" assets with-assets --json 2>/dev/null )"
+rc=$?
+check "assets --json rc 0" [ "$rc" -eq 0 ]
+check "output is valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$out"
+check "json names the session" bash -c 'printf "%s" "$1" | jq -e ".session == \"with-assets\"" >/dev/null 2>&1' _ "$out"
+check "json reports ok true" bash -c 'printf "%s" "$1" | jq -e ".ok == true" >/dev/null 2>&1' _ "$out"
+check "three assets in the array" bash -c 'printf "%s" "$1" | jq -e ".assets | length == 3" >/dev/null 2>&1' _ "$out"
+check "each entry carries a status" \
+  bash -c 'printf "%s" "$1" | jq -e "[.assets[].status] | all(. != null and . != \"\")" >/dev/null 2>&1' _ "$out"
+check "the rig entry is local-only" \
+  bash -c 'printf "%s" "$1" | jq -e "[.assets[] | select(.asset==\"chromium-rig\") | .status] == [\"local-only\"]" >/dev/null 2>&1' _ "$out"
+
+# A REFUSAL IS STRUCTURED TOO — the cockpit renders it, so it cannot be a bare
+# non-zero with a message on stderr only.
+bad_out="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" "$here/bin/steward" assets does-not-exist --json 2>/dev/null )"
+bad_rc=$?
+check "unknown session rc non-zero" [ "$bad_rc" -ne 0 ]
+check "refusal is json with ok false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$bad_out"
+
+# WITHOUT --json THE DATA IS THE SAME, just line-oriented. No ANSI: the engine
+# never renders.
+plain="$( STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ASSET_PROBE_CMD="$FX/probe-stub" \
+          "$here/bin/steward" assets with-assets 2>/dev/null )"
+check "plain output has three lines" [ "$(printf '%s\n' "$plain" | grep -c .)" -eq 3 ]
+check "plain output carries no escape codes" bash -c '! printf "%s" "$1" | grep -q "$(printf "\033")"' _ "$plain"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
