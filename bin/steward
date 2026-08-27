@@ -1,7 +1,10 @@
 #!/bin/bash
-# bin/steward — the operator's laptop client. A personal estate list and four
-# verbs over plain ssh. Runs on macOS bash 3.2 as well as Linux — no arrays of
-# the modern kind, no mapfile.
+# bin/steward — the operator's laptop client (a personal estate list and four
+# verbs over plain ssh) PLUS a thin dispatcher onto the local bash engine for
+# commands that build an estate rather than reach one. Runs on macOS bash 3.2
+# as well as Linux — no arrays of the modern kind, no mapfile. A bare
+# invocation (no subcommand) is reserved for the interactive cockpit (a Rust
+# TUI, not built yet) and refuses rather than guessing.
 #
 # THE LIST IS PERSONAL, AND THAT IS THE DESIGN. Estates do not know about each
 # other; only the operator's own machine holds the list, and two operators of
@@ -14,8 +17,10 @@
 #   steward <estate> attach <session>
 #   steward <estate> peek <session>
 #   steward init <estate> <ssh-target>
+#   steward scaffold <dir> org=<> team=<> owner=<> session=<> [assets=<>] [--json]
 set -uo pipefail
 
+HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ESTATES_D="${STEWARD_ESTATES_D:-$HOME/.config/steward/estates.d}"
 SSH_BIN="${STEWARD_SSH:-ssh}"
 REPO_URL="${STEWARD_REPO_URL:-https://github.com/kindell/steward}"
@@ -199,11 +204,72 @@ cmd_init() {
   cmd_add "$name" "$target"
 }
 
+# emit a one-line JSON object from key=value pairs; values are strings, bools
+# are the literals true/false. Uses jq so quoting is correct for any value
+# (spaces, embedded quotes — a refusal reason is free text).
+_json() { # <k> <v> [<k> <v> ...]  — bools are the literals true/false
+  local args=() k v
+  while [ "$#" -ge 2 ]; do
+    k="$1"; v="$2"; shift 2
+    case "$v" in true|false) args+=(--argjson "$k" "$v") ;; *) args+=(--arg "$k" "$v") ;; esac
+  done
+  jq -cn "${args[@]}" '$ARGS.named'
+}
+
+# `steward scaffold <dir> org=... team=... owner=... session=... [assets=...] [--json]`
+# runs the local scaffold engine (lib/scaffold.sh) — no ssh, no remote estate;
+# this is the command that BUILDS an estate, as opposed to the verbs above
+# that operate on one already reachable over ssh. --json makes the report
+# structured (estate, team, session, assets, loadable) so a future front end
+# can consume it instead of scraping stderr prose. A refusal is JSON too, with
+# ok=false and a reason — never a bare non-zero the caller has to interpret.
+cmd_scaffold() {
+  local want_json="" eng_args=() a
+  for a in "$@"; do
+    case "$a" in --json) want_json=1 ;; *) eng_args+=("$a") ;; esac
+  done
+  # shellcheck source=lib/scaffold.sh
+  . "$HERE/lib/scaffold.sh"
+  local err rc
+  err="$(estate_scaffold "${eng_args[@]}" 2>&1 >/dev/null)"; rc=$?
+  # recover the parsed values for the report by re-reading the same args —
+  # the engine does not hand them back, and re-parsing is cheaper than
+  # threading a second return channel through it.
+  local dir="" org="" team="" owner="" session="" assets=""
+  dir="${eng_args[0]:-}"
+  for a in "${eng_args[@]:1}"; do case "$a" in
+    org=*) org="${a#org=}";; team=*) team="${a#team=}";; owner=*) owner="${a#owner=}";;
+    session=*) session="${a#session=}";; assets=*) assets="${a#assets=}";; esac
+  done
+  if [ -n "$want_json" ]; then
+    if [ "$rc" -eq 0 ]; then
+      local loadable=false
+      ( export STEWARD_ESTATE_ROOT="$dir"; . "$HERE/lib/registry.sh"; registry_estate_name >/dev/null 2>&1 ) \
+        && loadable=true
+      _json ok true estate "$org" team "$team" owner "$owner" session "$session" \
+            assets "$assets" loadable "$loadable"
+    else
+      _json ok false reason "$err"
+    fi
+  else
+    [ "$rc" -ne 0 ] && printf '%s\n' "$err" >&2
+  fi
+  return "$rc"
+}
+
 case "${1:-}" in
-  add)    shift; cmd_add "$@" ;;
-  ls)     shift; cmd_ls "${1:-}" ;;
-  init)   shift; cmd_init "$@" ;;
-  -h|--help|"") usage 0 ;;
+  add)      shift; cmd_add "$@" ;;
+  ls)       shift; cmd_ls "${1:-}" ;;
+  init)     shift; cmd_init "$@" ;;
+  scaffold) shift; cmd_scaffold "$@" ;;
+  -h|--help) usage 0 ;;
+  "")
+    # No subcommand at all is the bare invocation reserved for the interactive
+    # cockpit (a Rust TUI, not built yet) — say so rather than guess and fall
+    # into --help.
+    echo "steward: interactive cockpit not built yet — use a subcommand (add, ls, init, scaffold; see steward --help)" >&2
+    exit 64
+    ;;
   *)
     est="$1"; shift
     case "${1:-}" in

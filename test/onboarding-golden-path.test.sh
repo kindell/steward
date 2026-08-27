@@ -77,6 +77,21 @@ check "session owner is alice" [ "$owner" = "alice" ]
 check "session declares its assets" \
   grep -q 'ASSETS="mail:kindell chromium-rig"' "$FX/e/sessions.d/home-alice.conf"
 
+echo "== the steward command exposes scaffold as --json =="
+out="$( "$here/bin/steward" scaffold "$FX/j" org=acme team=kindell owner=alice \
+        session=home-alice assets="mail:kindell" --json 2>/dev/null )"
+rc=$?
+check "steward scaffold rc 0" [ "$rc" -eq 0 ]
+check "output is valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$out"
+check "json names the estate" bash -c 'printf "%s" "$1" | jq -e ".estate == \"acme\"" >/dev/null 2>&1' _ "$out"
+check "json names the session" bash -c 'printf "%s" "$1" | jq -e ".session == \"home-alice\"" >/dev/null 2>&1' _ "$out"
+check "json reports loadable true" bash -c 'printf "%s" "$1" | jq -e ".loadable == true" >/dev/null 2>&1' _ "$out"
+
+# A REFUSAL IS STRUCTURED TOO, never a bare non-zero. A bad org must produce
+# json with ok=false and a reason, so the TUI can render it.
+bad_out="$( "$here/bin/steward" scaffold "$FX/bad" org=ACME team=kindell owner=alice session=s --json 2>/dev/null )"
+check "a refusal is json with ok=false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$bad_out"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
