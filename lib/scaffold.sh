@@ -63,7 +63,29 @@ estate_scaffold() {
   } > "$dir/estate/steward.conf" || { echo "scaffold: could not write estate file" >&2; return 70; }
   chmod 600 "$dir/estate/steward.conf" || { echo "scaffold: could not set mode" >&2; return 70; }
 
-  # The team and session are written in Task 2; this task establishes a loadable
-  # estate skeleton. The variables team/owner/session/assets are already parsed.
+  # THE FIRST TEAM. An entity with the owner as its sole member. This is what
+  # makes the session belong to a team rather than to a bare domain.
+  {
+    printf '# %s — team, written by estate_scaffold.\n' "$team"
+    printf 'NAME="%s"\n' "$team"
+    printf 'MEMBERS="%s"\n' "$owner"
+  } > "$dir/entities.d/$team.conf" || { echo "scaffold: could not write team" >&2; return 70; }
+
+  # THE FIRST SESSION. It belongs to the team via DOMAIN=<team>; ID is the
+  # immutable key (equal to the session name here). ASSETS is the declaration
+  # subsystem B will read.
+  {
+    printf '# %s — first session, written by estate_scaffold.\n' "$session"
+    printf 'HOST="%s"\n' "$(hostname -s)"
+    printf 'REPO_PATH="%s"\n' "$dir"
+    printf 'RC_LABEL="%s: %s"\n' "$org" "$session"
+    printf 'PERMISSION_MODE="bypassPermissions"\n'
+    printf 'OWNER="%s"\n' "$owner"
+    printf 'DOMAIN="%s"\n' "$team"
+    printf 'ID="%s"\n' "$session"
+    printf 'ASSETS="%s"\n' "$assets"
+  } > "$dir/sessions.d/$session.conf" || { echo "scaffold: could not write session" >&2; return 70; }
+  chmod 600 "$dir/sessions.d/$session.conf" "$dir/entities.d/$team.conf" 2>/dev/null
+
   return 0
 }

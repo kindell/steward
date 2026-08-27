@@ -59,6 +59,24 @@ check "org with leading digit rejected" [ "$?" -eq 64 ]
 estate_scaffold "$FX/bad-leading-dash" org=-acme team=kindell owner=alice session=home-alice >/dev/null 2>&1
 check "org with leading dash rejected" [ "$?" -eq 64 ]
 
+echo "== the first team is registered =="
+tm="$( export STEWARD_ESTATE_ROOT="$FX/e" STEWARD_REGISTRY_DIR="$FX/e/sessions.d"
+       . "$here/lib/registry.sh"; registry_entity_load kindell >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS" )"
+check "team kindell has member alice" bash -c 'case " $1 " in *" alice "*) exit 0;; *) exit 1;; esac' _ "$tm"
+
+echo "== the first session loads and belongs to the team =="
+( export STEWARD_ESTATE_ROOT="$FX/e" STEWARD_REGISTRY_DIR="$FX/e/sessions.d"
+  . "$here/lib/registry.sh"; registry_load home-alice >/dev/null 2>&1 )
+check "session home-alice loads (rc 0)" [ "$?" -eq 0 ]
+owner="$( export STEWARD_ESTATE_ROOT="$FX/e" STEWARD_REGISTRY_DIR="$FX/e/sessions.d"
+          . "$here/lib/registry.sh"; registry_load home-alice >/dev/null 2>&1; printf '%s' "$OWNER" )"
+check "session owner is alice" [ "$owner" = "alice" ]
+
+# ASSETS is written but not read by registry_load here (that reader is subsystem
+# B) — the declaration lives in the conf, so assert on the file.
+check "session declares its assets" \
+  grep -q 'ASSETS="mail:kindell chromium-rig"' "$FX/e/sessions.d/home-alice.conf"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
