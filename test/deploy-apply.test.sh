@@ -8,6 +8,10 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 check() { local d="$1"; shift; if "$@"; then ok; else bad "$d"; fi }
+# -e alone is not enough to prove a symlink is gone: -e resolves the link and
+# is FALSE for a broken symlink whether or not the link itself was removed.
+# -L checks the link entry itself, independent of its target.
+gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 
 # Fixture: a stage, two homes and a state directory. A small manifest with two
 # kinds of row.
@@ -74,7 +78,7 @@ check "interruption: rc 65"                [ "$rc" -eq 65 ]
 case "$u" in *"interrupted run"*--accept-drift*) ok ;; *) bad "interruption diagnosis + advice missing: $u" ;; esac
 
 # ── 5. A REGISTRY ROW RECONCILES ITS DIRECTORY ──
-# THE PRUNE IS THE WHOLE POINT. Without it, a conf removed in the hub keeps
+# THE PRUNE IS WHY THIS ROW TYPE EXISTS. Without it, a conf removed in the hub keeps
 # being loaded on the host: the session stays registered locally, the
 # supervisor keeps starting it, and nothing says why. This is the oldest
 # failure shape in the house — absence that looks like health — on the one
@@ -117,6 +121,68 @@ u="$(run "$FX/home1")"; rc=$?
 check "empty delivery: rc 0"               [ "$rc" -eq 0 ]
 check "empty delivery prunes the conf"     [ ! -e "$FX/home1/scripts/empty.d/old.conf" ]
 check "but keeps the directory"            [ -d "$FX/home1/scripts/empty.d" ]
+
+# A MISSING SOURCE DIRECTORY IS NOT AN EMPTY DELIVERY. "Exists and is empty"
+# and "does not exist" are different states, and a measurement that cannot be
+# made must REFUSE, never silently report empty — that is the difference
+# between pruning a register down to nothing on purpose and a stage that
+# never staged the directory at all wiping out a whole host's register with
+# rc 0 and no REFUSAL.
+rig
+mkdir -p "$FX/home1/scripts/missing.d"     # on the host already, never re-staged
+printf 'missing.d scripts/missing.d 644 registry\n' >> "$FX/stage/deploy-manifest"
+printf 'NAME="Untouched"\nPARENT="t"\n' > "$FX/home1/scripts/missing.d/keep.conf"
+u="$(run "$FX/home1")"; rc=$?
+check "a missing source directory: rc 70, not 0"    [ "$rc" -eq 70 ]
+case "$u" in *"missing.d"*) ok ;; *) bad "the missing directory is not named in the output: $u" ;; esac
+check "the target directory is left untouched"      [ -f "$FX/home1/scripts/missing.d/keep.conf" ]
+
+# THE DELIMITER MUST NOT BE ABLE TO APPEAR IN WHAT IT DELIMITS. POSIX allows
+# '|' in a filename. Delivering "a|b.conf" must not make an UNRELATED,
+# undelivered "b.conf" look delivered just because the delivered-name string
+# contains "b.conf" as a substring.
+rig
+mkdir -p "$FX/stage/src/pipe.d" "$FX/home1/scripts/pipe.d"
+printf 'NAME="Pipe"\n' > "$FX/stage/src/pipe.d/a|b.conf"
+printf 'pipe.d scripts/pipe.d 644 registry\n' >> "$FX/stage/deploy-manifest"
+printf 'NAME="Stale"\n' > "$FX/home1/scripts/pipe.d/b.conf"
+u="$(run "$FX/home1")"; rc=$?
+check "delimiter-safety: rc 0"                        [ "$rc" -eq 0 ]
+check "the delivered pipe-name conf is installed"      [ -f "$FX/home1/scripts/pipe.d/a|b.conf" ]
+check "an unrelated undelivered conf is still pruned, even though its basename is a substring of a delivered name" \
+  [ ! -e "$FX/home1/scripts/pipe.d/b.conf" ]
+
+# A BROKEN SYMLINK IS STILL A *.conf FOR PRUNING PURPOSES. "[ -f ]" is false
+# for a broken symlink, so a stale, undelivered *.conf that happens to be a
+# dangling symlink was neither installed nor pruned — it sat there forever,
+# which breaks the interface requirement that an undelivered *.conf is
+# removed.
+rig
+mkdir -p "$FX/stage/src/link.d" "$FX/home1/scripts/link.d"
+printf 'link.d scripts/link.d 644 registry\n' >> "$FX/stage/deploy-manifest"
+ln -s /does-not-exist "$FX/home1/scripts/link.d/broken.conf"
+u="$(run "$FX/home1")"; rc=$?
+check "a broken symlink conf: rc 0"                   [ "$rc" -eq 0 ]
+check "an undelivered broken symlink is pruned, not left forever" \
+  gone "$FX/home1/scripts/link.d/broken.conf"
+
+# A REGISTRY ROW WRITES ATOMICALLY, LIKE EVERY OTHER ROW TYPE IN THIS FILE.
+# Force the install of a delivered conf to fail AFTER its content would have
+# already overwritten the target if written in place (an invalid mode makes
+# chmod fail, deterministically, on a file that a straight `cp` would already
+# have truncated). Written atomically (temp name + rename), the original
+# survives the failed install untouched.
+rig
+mkdir -p "$FX/stage/src/atomic.d" "$FX/home1/scripts/atomic.d"
+printf 'NAME="New"\n' > "$FX/stage/src/atomic.d/x.conf"
+printf 'atomic.d scripts/atomic.d 999 registry\n' >> "$FX/stage/deploy-manifest"
+printf 'NAME="Original"\n' > "$FX/home1/scripts/atomic.d/x.conf"
+u="$(run "$FX/home1")"; rc=$?
+check "an invalid mode: refused, not rc 0"            [ "$rc" -ne 0 ]
+check "a failed install leaves the original conf untouched, not truncated in place" \
+  grep -q 'NAME="Original"' "$FX/home1/scripts/atomic.d/x.conf"
+check "no leftover temp file after a failed install" \
+  bash -c '! ls "$1"/.deploy-tmp.* >/dev/null 2>&1' _ "$FX/home1/scripts/atomic.d"
 
 # ── 6. TWO HOMES: a refusal in one does not stop the other; rc is still 65 ──
 rig

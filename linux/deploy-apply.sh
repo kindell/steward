@@ -49,11 +49,29 @@ manifest_rows() { grep -v '^#' "$MANIFEST" | awk 'NF>=4'; }
 # THE DIRECTORY ITSELF SURVIVES AN EMPTY DELIVERY. "Exists and is empty" and
 # "is missing" are different states — the register's own list function refuses
 # on the second and returns nothing on the first.
+#
+# A MISSING SOURCE DIRECTORY REFUSES, IT DOES NOT PRUNE. Without this check an
+# unstaged directory looked exactly like an empty delivery: the glob below
+# expanded to nothing, the delivered list stayed empty, and the prune loop
+# removed every conf a host had — silently, at rc 0. A measurement that
+# cannot be made must refuse, never report empty.
+# A DELIVERED-NAME LIST WAS TRIED AND DROPPED. It joined basenames with a '|'
+# delimiter and matched with `case ... *"|$base|"*`, but POSIX allows '|' in a
+# filename: delivering "a|b.conf" made the delivered string "|a|b.conf|",
+# which contains "|b.conf|" as a substring — so an unrelated, undelivered
+# "b.conf" matched and survived the prune. Asking the source directory
+# directly, per candidate, has no delimiter to break.
+#
+# A BROKEN SYMLINK IS STILL A *.conf. "[ -f ]" is false for one (it resolves
+# the link), so a stale, undelivered *.conf that is a dangling symlink was
+# skipped by BOTH loops below and never installed or pruned. "[ -e ] || [ -L ]"
+# catches it either way.
 apply_registry_row() { # <stage-dir> <target-dir> <mode>
-  local SRCD="$1" DSTD="$2" MODE="$3" c base delivered="|"
+  local SRCD="$1" DSTD="$2" MODE="$3" c base tmp
+  [ -d "$SRCD" ] || { echo "deploy: registry source directory missing: $SRCD" >&2; return 70; }
   mkdir -p "$DSTD" || { echo "deploy: cannot create $DSTD" >&2; return 70; }
   for c in "$SRCD"/*.conf; do
-    [ -f "$c" ] || continue
+    [ -e "$c" ] || [ -L "$c" ] || continue
     base="$(basename "$c")"
     # AN OVERWRITE OF A DIFFERING FILE IS ANNOUNCED. A registry row is the only
     # place in the deploy that changes files without passing the drift gate, so
@@ -62,14 +80,19 @@ apply_registry_row() { # <stage-dir> <target-dir> <mode>
     if [ -f "$DSTD/$base" ] && ! cmp -s "$c" "$DSTD/$base"; then
       echo "RECONCILED $DSTD/$base"
     fi
-    cp "$c" "$DSTD/$base" || { echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
-    chmod "$MODE" "$DSTD/$base" || { echo "deploy: cannot set mode on $DSTD/$base" >&2; return 70; }
-    delivered="$delivered$base|"
+    # WRITE ATOMICALLY, LIKE EVERY OTHER ROW TYPE IN THIS FILE — see the
+    # tmp_dst comment further down for the measured truncation bug this
+    # avoids: install to a sibling name in the same directory, set its mode
+    # before it is visible, then rename over the target.
+    tmp="$DSTD/.deploy-tmp.$base.$$"
+    cp "$c" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
+    chmod "$MODE" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot set mode on $DSTD/$base" >&2; return 70; }
+    mv -f "$tmp" "$DSTD/$base" || { rm -f "$tmp"; echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
   done
   for c in "$DSTD"/*.conf; do
-    [ -f "$c" ] || continue
+    [ -e "$c" ] || [ -L "$c" ] || continue
     base="$(basename "$c")"
-    case "$delivered" in *"|$base|"*) continue ;; esac
+    if [ -e "$SRCD/$base" ] || [ -L "$SRCD/$base" ]; then continue; fi
     rm -f "$c" || { echo "deploy: cannot prune $c" >&2; return 70; }
     echo "PRUNED $DSTD/$base"
   done
@@ -353,7 +376,8 @@ ROWS
   COMPONENT_REFUSED=""
   while read -r src target mode kind; do
     if [ "$kind" = "registry" ]; then
-      apply_registry_row "$STAGE/src/$src" "$HOME_ROOT/$target" "$mode" || { INSTALL_ERROR=1; break; }
+      apply_registry_row "$STAGE/src/$src" "$HOME_ROOT/$target" "$mode" \
+        || { INSTALL_ERROR="$target (registry row failed to reconcile $src)"; break; }
       continue
     fi
     srcfile="$STAGE/src/$src"
