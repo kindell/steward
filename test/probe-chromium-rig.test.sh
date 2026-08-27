@@ -54,7 +54,18 @@ printf 'HOST="h1"\nOWNER="a"\nDOMAIN="d"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="
 cat > "$FX/bin/measure" <<'EOF'
 #!/bin/bash
 [ -n "${MEASURE_SILENT:-}" ] && exit 255
-echo "BIND 10.0.0.1:5910 10.0.0.1:5911 10.0.0.1:5912 10.0.0.1:5913 127.0.0.1:5914 127.0.0.1:9320 127.0.0.1:9321 127.0.0.1:9399"
+BIND="10.0.0.1:5910 10.0.0.1:5911 10.0.0.1:5912 10.0.0.1:5913 127.0.0.1:5914 127.0.0.1:9320 127.0.0.1:9321 127.0.0.1:9399"
+# A HOST THAT CONNECTED BUT MEASURED NOTHING. `printf "BIND %s\n" "$(...)"`
+# prints the label whether or not the subshell produced anything, so ssh merely
+# CONNECTING is enough to make the output non-empty. This is what the real
+# default_measure emits when `ss` is missing from the remote PATH and `sudo -n`
+# is denied — three labels, nothing after them.
+[ -n "${MEASURE_BLANK:-}" ] && { printf 'BIND \nGATED \nPROFILE \n'; exit 0; }
+# THE GATE HALF ALONE FAILED. `sudo -n iptables` is denied (the probing account
+# is not the one with the NOPASSWD rule) while plain `ss` still works: binds and
+# profiles are real, the gate list is empty.
+[ -n "${MEASURE_NOGATES:-}" ] && { printf 'BIND %s\nGATED \nPROFILE 9320=healthy 9321=ungated 9399=drifted\n' "$BIND"; exit 0; }
+echo "BIND $BIND"
 echo "GATED 9320 9399"
 echo "PROFILE 9320=healthy 9321=ungated 9399=drifted"
 EOF
@@ -121,6 +132,24 @@ echo "chromium-rig — what cannot be measured"
 out="$(MEASURE_SILENT=1 run healthy)"
 is  "an unreachable host is unknown" "$(word "$out")" "unknown"
 is  "the detail says the host could not be asked" "$(det "$out")" "host-unreachable"
+
+# A HOST THAT ANSWERED BUT MEASURED NOTHING IS ALSO UNKNOWN, and this is the
+# case the prober got wrong for its whole first life. A non-empty `raw` proves
+# the host CONNECTED, not that it was measured — the labels are printed
+# unconditionally. Reading the empty bind list as "nothing is listening" turns a
+# missing `ss` into `down not-listening` for every rig on the host, which tells
+# the reader to go restart machines that were fine.
+out="$(MEASURE_BLANK=1 run healthy)"
+is  "a host that connected but measured nothing is unknown" "$(word "$out")" "unknown"
+is  "the detail says the listeners were never measured" "$(det "$out")" "no-listeners-measured"
+
+# AN EMPTY GATE LIST IS NOT A "NO". The ungated-CDP row is the most serious line
+# in the mapping table, and it is derived from the ABSENCE of the port in the
+# gate list — so an unmeasured gate list produces that alarm for every rig on the
+# host. Not being able to answer the gate question is `unknown`, not an alarm.
+out="$(MEASURE_NOGATES=1 run healthy)"
+is  "an unmeasured gate list is unknown, not an open port" "$(word "$out")" "unknown"
+is  "the detail says the gates were never measured" "$(det "$out")" "gates-not-measured"
 
 # NO SESSION CONTEXT. The prober is handed a type and an arg; the session rides
 # in the environment. Without it there is nothing to measure — and nothing to

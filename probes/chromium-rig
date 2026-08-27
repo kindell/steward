@@ -102,6 +102,19 @@ binds="$(printf '%s' "$raw" | sed -n 's/^BIND //p')"
 gates="$(printf '%s' "$raw" | sed -n 's/^GATED //p')"
 profiles="$(printf '%s' "$raw" | sed -n 's/^PROFILE //p')"
 
+# A HOST THAT CONNECTED IS NOT A HOST THAT WAS MEASURED. The check above only
+# proves `raw` is non-empty, and `raw` is non-empty as soon as ssh gets a shell:
+# default_measure prints `BIND %s` whether or not the subshell inside it produced
+# anything, so a host with no `ss` on its PATH answers the bare label `BIND `.
+#
+# AN EMPTY BIND LIST IS THEREFORE A MEASUREMENT THAT DID NOT HAPPEN, not a host
+# with nothing listening. Read as the second, it makes every rig on that host
+# `down not-listening` — which tells the reader to go restart machines that were
+# never asked. A host really has to have SOMETHING in the 59xx/9xxx range for
+# this prober to have anything to say about it; nothing at all means the question
+# went unanswered.
+[ -n "$binds" ] || answer unknown no-listeners-measured
+
 # ── reading the bind list ──────────────────────────────────────────────────
 #
 # THE BIND LIST CARRIES THE ADDRESS, and the two ports ask OPPOSITE questions of
@@ -149,6 +162,17 @@ if ! port_listening "$cdp" "$binds"; then
 fi
 
 if ! in_list "$cdp" "$gates"; then
+  # THE ALARM IS DERIVED FROM AN ABSENCE, so the list it is absent from has to
+  # have been read. `sudo -n iptables` is denied whenever the probing account is
+  # not the one carrying the NOPASSWD rule, and it fails the same silent way the
+  # bind list does: the label prints, the list behind it is empty. An empty gate
+  # list would then raise the table's most serious row for every rig on the host
+  # — a false alarm that costs the alarm its credibility the first time someone
+  # checks and finds the rule in place.
+  #
+  # The gate question is only ASKED here, on the branch where CDP is listening,
+  # so this is the only place an empty list can be mistaken for a "no".
+  [ -n "$gates" ] || answer unknown gates-not-measured
   answer up cdp-open-to-all-local-users
 fi
 
