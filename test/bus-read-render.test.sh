@@ -21,6 +21,16 @@ mkdir -p "$FX/reg"
 export STEWARD_REGISTRY_DIR="$FX/reg"
 printf 'OWNER="alice"\nDOMAIN="acme"\n' > "$FX/reg/reader.conf"
 
+# bus_valid_recipient calls registry_hub_session UNCONDITIONALLY (even for a
+# recipient that is not the hub), which reads the estate file. Without an
+# estate fixture, running under `env -u STEWARD_ESTATE_ROOT` falls back to
+# this checkout's own (nonexistent) estate/steward.conf, the recipient is
+# refused, and bus_read writes zero bytes. The minimum field is HUB_SESSION —
+# the only one the unconditional call chain actually reads.
+mkdir -p "$FX/estate/estate"
+printf 'HUB_SESSION="fixturehub"\n' > "$FX/estate/estate/steward.conf"
+export STEWARD_ESTATE_ROOT="$FX/estate"
+
 # shellcheck source=/dev/null
 . "$here/linux/hub/lib.sh"
 
