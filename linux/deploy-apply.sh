@@ -36,6 +36,46 @@ mkdir -p "$STATE" 2>/dev/null || { echo "deploy-apply: cannot write $STATE" >&2;
 # validation below needs it.
 manifest_rows() { grep -v '^#' "$MANIFEST" | awk 'NF>=4'; }
 
+# ── A REGISTRY ROW RECONCILES A DIRECTORY ──────────────────────────
+# Install every delivered *.conf, then remove every *.conf in the target that
+# was NOT delivered. The prune is the reason the row type exists: without it a
+# conf removed in the hub keeps being loaded on the host, the supervisor keeps
+# starting the session, and nothing says why.
+#
+# ONLY *.conf IS TOUCHED, in both directions. A live home carries backups
+# beside its confs (measured: six .bak-omdop siblings in one home), and a
+# deploy that eats them destroys the only copy of what a rename replaced.
+#
+# THE DIRECTORY ITSELF SURVIVES AN EMPTY DELIVERY. "Exists and is empty" and
+# "is missing" are different states — the register's own list function refuses
+# on the second and returns nothing on the first.
+apply_registry_row() { # <stage-dir> <target-dir> <mode>
+  local SRCD="$1" DSTD="$2" MODE="$3" c base delivered="|"
+  mkdir -p "$DSTD" || { echo "deploy: cannot create $DSTD" >&2; return 70; }
+  for c in "$SRCD"/*.conf; do
+    [ -f "$c" ] || continue
+    base="$(basename "$c")"
+    # AN OVERWRITE OF A DIFFERING FILE IS ANNOUNCED. A registry row is the only
+    # place in the deploy that changes files without passing the drift gate, so
+    # without this line it would also be the only place that changes them
+    # silently. A NEW file is not a reconciliation and says nothing.
+    if [ -f "$DSTD/$base" ] && ! cmp -s "$c" "$DSTD/$base"; then
+      echo "RECONCILED $DSTD/$base"
+    fi
+    cp "$c" "$DSTD/$base" || { echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
+    chmod "$MODE" "$DSTD/$base" || { echo "deploy: cannot set mode on $DSTD/$base" >&2; return 70; }
+    delivered="$delivered$base|"
+  done
+  for c in "$DSTD"/*.conf; do
+    [ -f "$c" ] || continue
+    base="$(basename "$c")"
+    case "$delivered" in *"|$base|"*) continue ;; esac
+    rm -f "$c" || { echo "deploy: cannot prune $c" >&2; return 70; }
+    echo "PRUNED $DSTD/$base"
+  done
+  return 0
+}
+
 # --accept-drift <home> --file <target> [--file <target>]... — the valve, with a
 # name and a trace: the files are enumerated one by one, and the overwrite is
 # recorded in last-good. Parsed here; its effect lives in the drift gate.
@@ -312,6 +352,10 @@ ROWS
   INSTALL_ERROR=""
   COMPONENT_REFUSED=""
   while read -r src target mode kind; do
+    if [ "$kind" = "registry" ]; then
+      apply_registry_row "$STAGE/src/$src" "$HOME_ROOT/$target" "$mode" || { INSTALL_ERROR=1; break; }
+      continue
+    fi
     srcfile="$STAGE/src/$src"
     dst="$HOME_ROOT/$target"
     [ -f "$srcfile" ] || { echo "REFUSAL $HOME_ROOT the source is missing from the stage: $src" ; REFUSED=1; break; }

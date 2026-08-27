@@ -73,7 +73,52 @@ u="$(run "$FX/home1")"; rc=$?
 check "interruption: rc 65"                [ "$rc" -eq 65 ]
 case "$u" in *"interrupted run"*--accept-drift*) ok ;; *) bad "interruption diagnosis + advice missing: $u" ;; esac
 
-# ── 5. TWO HOMES: a refusal in one does not stop the other; rc is still 65 ──
+# ── 5. A REGISTRY ROW RECONCILES ITS DIRECTORY ──
+# THE PRUNE IS THE WHOLE POINT. Without it, a conf removed in the hub keeps
+# being loaded on the host: the session stays registered locally, the
+# supervisor keeps starting it, and nothing says why. This is the oldest
+# failure shape in the house — absence that looks like health — on the one
+# spot where the hub BELIEVES it has spoken.
+rig                                    # fresh fixture; $FX is rebuilt
+mkdir -p "$FX/stage/src/projects.d" "$FX/home1/scripts/projects.d"
+printf 'NAME="Kept"\nPARENT="team"\n'  > "$FX/stage/src/projects.d/kept.conf"
+printf 'NAME="Fresh"\nPARENT="team"\n' > "$FX/stage/src/projects.d/fresh.conf"
+printf 'projects.d scripts/projects.d 644 registry\n' >> "$FX/stage/deploy-manifest"
+# already on the host, still delivered -> gets updated
+printf 'NAME="Stale"\nPARENT="old"\n'  > "$FX/home1/scripts/projects.d/kept.conf"
+# already on the host, NOT delivered -> gets removed
+printf 'NAME="Gone"\nPARENT="team"\n'  > "$FX/home1/scripts/projects.d/gone.conf"
+# not a conf -> must survive; a live home carries six .bak-omdop siblings
+printf 'backup\n'                       > "$FX/home1/scripts/projects.d/gone.conf.bak-omdop"
+
+u="$(run "$FX/home1")"; rc=$?
+check "registry row: rc 0"                 [ "$rc" -eq 0 ]
+check "a delivered conf is installed"      [ -f "$FX/home1/scripts/projects.d/fresh.conf" ]
+check "a delivered conf is updated"        grep -q 'PARENT="team"' "$FX/home1/scripts/projects.d/kept.conf"
+check "an undelivered conf is pruned"      [ ! -e "$FX/home1/scripts/projects.d/gone.conf" ]
+check "a non-conf survives the prune"      [ -f "$FX/home1/scripts/projects.d/gone.conf.bak-omdop" ]
+
+# NOTHING HAPPENS SILENTLY. Both the prune and an overwrite of a conf that
+# DIFFERED must show up in the output — otherwise a registry row would be the
+# one place in the whole deploy where files change without the report saying
+# so.
+case "$u" in *"PRUNED"*gone.conf*) ok ;; *) bad "the prune is not visible in the output: $u" ;; esac
+case "$u" in *"RECONCILED"*kept.conf*) ok ;; *) bad "the overwrite is not visible in the output: $u" ;; esac
+case "$u" in *"RECONCILED"*fresh.conf*) bad "a NEW file is not a reconciliation: $u" ;; *) ok ;; esac
+
+# AN EMPTY DELIVERY EMPTIES THE REGISTRY — but must not delete the directory.
+# "Exists and is empty" and "is missing" are different states: the register's
+# own list function refuses on the second and returns nothing on the first.
+rig
+mkdir -p "$FX/stage/src/empty.d" "$FX/home1/scripts/empty.d"
+printf 'empty.d scripts/empty.d 644 registry\n' >> "$FX/stage/deploy-manifest"
+printf 'NAME="Old"\nPARENT="t"\n' > "$FX/home1/scripts/empty.d/old.conf"
+u="$(run "$FX/home1")"; rc=$?
+check "empty delivery: rc 0"               [ "$rc" -eq 0 ]
+check "empty delivery prunes the conf"     [ ! -e "$FX/home1/scripts/empty.d/old.conf" ]
+check "but keeps the directory"            [ -d "$FX/home1/scripts/empty.d" ]
+
+# ── 6. TWO HOMES: a refusal in one does not stop the other; rc is still 65 ──
 rig
 run "$FX/home1" >/dev/null; run "$FX/home2" >/dev/null
 printf 'HAND\n' > "$FX/home1/bin/tool-a"
@@ -82,11 +127,11 @@ check "two homes: rc 65"                   [ "$rc" -eq 65 ]
 case "$u" in *"HOME $FX/home1 RESULT=REFUSED"*) ok ;; *) bad "home1 is not REFUSED in the report" ;; esac
 case "$u" in *"HOME $FX/home2 RESULT=OK"*) ok ;; *) bad "home2 is not OK in the report" ;; esac
 
-# ── 6. A missing stage/manifest => 78 ──
+# ── 7. A missing stage/manifest => 78 ──
 u="$( STEWARD_DEPLOY_STATE="$FX/state" bash "$A" "$FX/does-not-exist" sha 2>&1 )"; rc=$?
 check "missing stage: rc 78"               [ "$rc" -eq 78 ]
 
-# ── 7. THE LONELINESS SWEEP: a duplicate on a PATH location is caught, BEFORE install ──
+# ── 8. THE LONELINESS SWEEP: a duplicate on a PATH location is caught, BEFORE install ──
 rig
 mkdir -p "$FX/home1/old-place"
 printf 'old content\n' > "$FX/home1/old-place/tool-a"   # the decoy
@@ -98,7 +143,7 @@ check "sweep: rc 65"                       [ "$rc" -eq 65 ]
 case "$u" in *DECOY*old-place/tool-a*) ok ;; *) bad "the decoy is not named: $u" ;; esac
 check "sweep: BEFORE install (the target was not written)" [ ! -f "$FX/home1/bin/tool-a" ]
 
-# ── 8. A symlink TO THE TARGET passes (same inode/realpath = harmless) ──
+# ── 9. A symlink TO THE TARGET passes (same inode/realpath = harmless) ──
 rig
 run "$FX/home1" >/dev/null    # install + last-good
 mkdir -p "$FX/home1/linkplace"
@@ -109,7 +154,7 @@ u="$( export PATH="$FX/bin:$PATH" STEWARD_DEPLOY_STATE="$FX/state" \
   bash "$A" "$FX/stage" fakesha1 "$FX/home1" 2>&1 )"; rc=$?
 check "symlink to the target: rc 0"        [ "$rc" -eq 0 ]
 
-# ── 9. A git working copy is exempt (a clone is a source, not a decoy) ──
+# ── 10. A git working copy is exempt (a clone is a source, not a decoy) ──
 rig
 mkdir -p "$FX/home1/Projects/clone/.git" "$FX/home1/Projects/clone/linux"
 printf 'source code\n' > "$FX/home1/Projects/clone/linux/tool-a"
