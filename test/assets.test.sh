@@ -57,6 +57,52 @@ leak="$( . "$here/lib/registry.sh"
          printf '%s' "$ASSETS" )"
 check "ASSETS is empty after loading a session without it" [ -z "$leak" ]
 
+echo "== probing reports health, and never guesses =="
+
+# THE PROBES ARE INJECTABLE. A probe that shells out to a real mail client or a
+# real socket cannot run in a suite, so each type's measurement goes through an
+# overridable command. The test drives stubs; production drives the real thing.
+# Without this the probe layer would be untestable and would therefore be untested.
+export STEWARD_ASSET_PROBE_CMD="$FX/probe-stub"
+cat > "$FX/probe-stub" <<'STUB'
+#!/bin/bash
+# stub: <type> <arg> -> prints a status word, exits 0; exit 3 = cannot measure
+case "$1" in
+  mail)          echo "up logged-in" ;;
+  slack)         echo "down no-token" ;;
+  chromium-rig)  echo "local-only 127.0.0.1-only" ;;
+  *)             exit 3 ;;
+esac
+STUB
+chmod +x "$FX/probe-stub"
+
+line="$(asset_probe mail:kindell)"
+check "mail probes up"        bash -c '[[ "$1" == "mail:kindell up "* ]]' _ "$line"
+line="$(asset_probe slack:acme)"
+check "slack probes down"     bash -c '[[ "$1" == "slack:acme down "* ]]' _ "$line"
+line="$(asset_probe chromium-rig)"
+check "rig probes local-only" bash -c '[[ "$1" == "chromium-rig local-only "* ]]' _ "$line"
+
+# AN UNMEASURABLE ASSET IS 'unknown', NEVER 'up' AND NEVER SILENT. This is the
+# rule the whole house runs on: a measurement that cannot be made must say so.
+line="$(asset_probe teams:acme)"
+check "unmeasurable type is unknown" bash -c '[[ "$1" == "teams:acme unknown "* ]]' _ "$line"
+check "unmeasurable is never up"     bash -c '[[ "$1" != *" up "* ]]' _ "$line"
+
+# A MISSING PROBE COMMAND IS ALSO 'unknown' — not a crash, not silence. The
+# cockpit must be able to render a fleet where probing is unavailable.
+unset STEWARD_ASSET_PROBE_CMD
+line="$(STEWARD_ASSET_PROBE_CMD=/nonexistent-probe asset_probe mail:kindell)"
+check "missing probe command is unknown" bash -c '[[ "$1" == "mail:kindell unknown "* ]]' _ "$line"
+export STEWARD_ASSET_PROBE_CMD="$FX/probe-stub"
+
+# THE STATUS VOCABULARY IS CLOSED. Four words, no others — the cockpit renders
+# on them and an unexpected word would render as nothing.
+for a in mail:kindell slack:acme chromium-rig teams:acme; do
+  w="$(asset_probe "$a" | awk '{print $2}')"
+  case "$w" in up|local-only|down|unknown) ok ;; *) bad "unexpected status word '$w' for $a" ;; esac
+done
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
