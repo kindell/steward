@@ -88,6 +88,16 @@ out3="$(STEWARD_REGISTRY_DIR="$FX/does-not-exist" session_identity_rows 2>/dev/n
 is "rc is non-zero" "$( [ "$rc3" -ne 0 ] && echo yes || echo no )" "yes"
 is "and nothing was printed" "$out3" ""
 
+# AN EMPTY MANAGED_BY VALUE IS NOT A RELATION. Matching the key's presence
+# rather than a non-empty value would classify a stale/template
+# MANAGED_BY="" as "client" instead of falling through to MEMBERS.
+echo "== an empty MANAGED_BY value falls through to MEMBERS =="
+printf 'NAME="Odd"\nMANAGED_BY=""\nMEMBERS="carol"\n' > "$FX/entities.d/odd.conf"
+printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="odd"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="oddsession"\n' \
+  > "$FX/sessions.d/oddsession.conf"
+out4="$(session_identity_rows)"
+is "empty MANAGED_BY reads as team, not client" "$(field "$out4" oddsession 7)" "team"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

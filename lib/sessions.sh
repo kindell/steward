@@ -51,9 +51,15 @@ session_identity_rows() {
       [ -n "$ent_name" ] || ent_name="-"
       # TWO RELATIONS, READ AS THEMSELVES. MEMBERS names the people who work FOR
       # this entity; MANAGED_BY names the entity this one is a client of. They
-      # answer different questions and must not collapse into one word.
-      if grep -q '^MANAGED_BY=' "$ent_conf"; then ent_rel="client"
-      elif grep -q '^MEMBERS=' "$ent_conf"; then ent_rel="team"
+      # answer different questions and must not collapse into one word. A
+      # non-empty VALUE is required, not just the key's presence — a stale or
+      # template MANAGED_BY="" must fall through to MEMBERS, not read as
+      # "client" because the line happens to exist.
+      local ent_managed_by ent_members
+      ent_managed_by="$(sed -n 's/^MANAGED_BY="\(.*\)"/\1/p' "$ent_conf" | head -1)"
+      ent_members="$(sed -n 's/^MEMBERS="\(.*\)"/\1/p' "$ent_conf" | head -1)"
+      if [ -n "$ent_managed_by" ]; then ent_rel="client"
+      elif [ -n "$ent_members" ]; then ent_rel="team"
       fi
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
