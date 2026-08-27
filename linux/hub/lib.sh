@@ -560,7 +560,17 @@ bus_read() {
     from="$(jq -r '.from // empty' "$f" 2>/dev/null)"
     ts="$(jq -r '.ts // empty' "$f" 2>/dev/null)"
     text="$(jq -r '.text // empty' "$f" 2>/dev/null)"
-    printf 'from=%s ts=%s text=%s\n' "$from" "$ts" "$text"
+    # QUOTE FENCE: the renderer owns the only unindented lines. The text is
+    # sender-controlled, so every line of it is prefixed '  │ ' without
+    # exception. A body containing 'from=...' or its own '└─' lands inside the
+    # fence and can never look like a second envelope. The char count exposes a
+    # body carrying more than one visible line. Demonstrated forgery 2026-08-27.
+    printf 'from=%s ts=%s\n' "$from" "$ts"
+    printf '  ┌─ text (%s tecken) ─\n' "${#text}"
+    printf '%s' "$text" | while IFS= read -r _line || [ -n "$_line" ]; do
+      printf '  │ %s\n' "$_line"
+    done
+    printf '  └─\n'
     mv -f "$f" "$done_dir/$(basename "$f")" 2>/dev/null
   done < <(find "$inbox" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null | sort)
 }
