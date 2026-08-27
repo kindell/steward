@@ -52,7 +52,20 @@ while read -r src target mode kind extra; do
   # The estate is OPTIONAL, and its absence is not silently forgiven: rows that
   # cannot be checked are counted and printed at the end. A test that quietly
   # skips what it cannot see reports a clean tree it never looked at.
-  if [ -f "$here/$src" ]; then
+  if [ "$kind" = "registry" ]; then
+    # A REGISTRY ROW'S SOURCE IS REQUIRED TO BE A DIRECTORY, never a file —
+    # the row type reconciles a whole directory of *.conf, and a file source
+    # would be staged, then silently never matched by anything apply does.
+    if [ -d "$here/$src" ]; then
+      ok
+    elif [ -n "${ESTATE_ROOT:-}" ] && [ -d "$ESTATE_ROOT/$src" ]; then
+      ok
+    elif [ -z "${ESTATE_ROOT:-}" ]; then
+      unverified=$((unverified+1))
+    else
+      bad "registry source missing, or not a directory, in both product and estate: $src"
+    fi
+  elif [ -f "$here/$src" ]; then
     ok
   elif [ -n "${ESTATE_ROOT:-}" ] && [ -f "$ESTATE_ROOT/$src" ]; then
     ok
@@ -66,12 +79,31 @@ while read -r src target mode kind extra; do
   # 4. The mode is three octal digits
   case "$mode" in [0-7][0-7][0-7]) : ;; *) bad "mode: $mode ($src)" ;; esac
   # 5. The kind is one we know
-  case "$kind" in scripts|bin|systemd|lib|docs) : ;; *) bad "kind: $kind ($src)" ;; esac
+  case "$kind" in scripts|bin|systemd|lib|docs|registry) : ;; *) bad "kind: $kind ($src)" ;; esac
   # 6. Forbidden targets: instance configuration is never deployed. The registry
   # is what the deploy READS to decide where to write; writing it back would let
   # a rollout rewrite its own instructions.
   case "$target" in sessions.d/*|*/sessions.d/*|*jobs.d/*|*jobs-sources*) bad "instance target in the manifest: $target" ;; esac
 done < "$M"
+
+# 5b. PROOF: for kind=registry, a FILE source is REJECTED, never silently
+# accepted as if it were a directory. Built from this very suite file — a
+# path guaranteed to exist and guaranteed to be a file, never a directory —
+# so the demonstration cannot depend on anything else being present. Only
+# meaningful with an estate root: without one, check 2's own "unverified"
+# branch fires first for EITHER a file or a directory source, and there is
+# nothing left to prove.
+if [ -n "${ESTATE_ROOT:-}" ]; then
+  proof_src="test/deploy-manifest.test.sh"
+  if [ -d "$here/$proof_src" ] || [ -d "$ESTATE_ROOT/$proof_src" ]; then
+    bad "PROOF FAILED: a registry row with a FILE source was accepted as a directory: $proof_src"
+  else
+    ok
+  fi
+else
+  echo "NOTE: registry file-source-rejection proof skipped — no ESTATE_ROOT (check 2 falls to 'unverified' for either a file or a directory, so there is nothing to prove)"
+fi
+
 min_rows=17
 [ -n "$ESTATE_MANIFEST" ] && min_rows=20
 [ "$rows" -ge "$min_rows" ] && ok || bad "suspiciously short manifest: $rows rows"

@@ -66,10 +66,27 @@ manifest_rows() { grep -v '^#' "$MANIFEST" | awk 'NF>=4'; }
 # the link), so a stale, undelivered *.conf that is a dangling symlink was
 # skipped by BOTH loops below and never installed or pruned. "[ -e ] || [ -L ]"
 # catches it either way.
-apply_registry_row() { # <stage-dir> <target-dir> <mode>
-  local SRCD="$1" DSTD="$2" MODE="$3" c base tmp
+#
+# THE TARGET DIRECTORY GOES THROUGH ensure_dir, LIKE EVERY OTHER ROW TYPE.
+# A registry row is the only row type that PRUNES, so a raw `mkdir -p` here
+# was the one path with no symlink vault at all: with the target a symlink
+# out of the home, install wrote outside the home as root (rc 0), and the
+# prune loop DELETED foreign files outside the home as root (rc 0). ensure_dir
+# refuses (rc 65) on ANY symlinked path component, exactly as it does for
+# file rows — see its own comment above.
+apply_registry_row() { # <home root> <stage-dir> <target-dir> <mode>
+  local HOME_ROOT="$1" SRCD="$2" DSTD="$3" MODE="$4" c base tmp
   [ -d "$SRCD" ] || { echo "deploy: registry source directory missing: $SRCD" >&2; return 70; }
-  mkdir -p "$DSTD" || { echo "deploy: cannot create $DSTD" >&2; return 70; }
+  SYMLINK_COMPONENT=""
+  ensure_dir "$HOME_ROOT" "$DSTD"
+  local dirrc=$?
+  if [ "$dirrc" -eq 65 ]; then
+    echo "deploy: refusing to follow symlinked directory component: $SYMLINK_COMPONENT (registry target $DSTD)" >&2
+    return 65
+  elif [ "$dirrc" -ne 0 ]; then
+    echo "deploy: cannot create $DSTD ($SYMLINK_COMPONENT)" >&2
+    return 70
+  fi
   for c in "$SRCD"/*.conf; do
     [ -e "$c" ] || [ -L "$c" ] || continue
     base="$(basename "$c")"
@@ -86,6 +103,13 @@ apply_registry_row() { # <stage-dir> <target-dir> <mode>
     # before it is visible, then rename over the target.
     tmp="$DSTD/.deploy-tmp.$base.$$"
     cp "$c" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
+    # OWNER, LIKE THE FILE ROW BRANCH. Without this every registry conf landed
+    # root:root on a real host (this function only ever cp+chmod'd). Respects
+    # STEWARD_DEPLOY_INSTALL_OWNER=off the same way `ensure_dir` and the file
+    # branch's `install -o/-g` do, so the unprivileged fixture keeps working.
+    if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" != "off" ]; then
+      chown "$USERNAME:$USERNAME" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot set owner on $DSTD/$base" >&2; return 70; }
+    fi
     chmod "$MODE" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot set mode on $DSTD/$base" >&2; return 70; }
     mv -f "$tmp" "$DSTD/$base" || { rm -f "$tmp"; echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
   done
@@ -376,8 +400,14 @@ ROWS
   COMPONENT_REFUSED=""
   while read -r src target mode kind; do
     if [ "$kind" = "registry" ]; then
-      apply_registry_row "$STAGE/src/$src" "$HOME_ROOT/$target" "$mode" \
-        || { INSTALL_ERROR="$target (registry row failed to reconcile $src)"; break; }
+      apply_registry_row "$HOME_ROOT" "$STAGE/src/$src" "$HOME_ROOT/$target" "$mode"
+      regrc=$?
+      if [ "$regrc" -eq 65 ]; then
+        COMPONENT_REFUSED="symlink in the target path: $SYMLINK_COMPONENT (target $target) — refusing to follow symlinked directory component"
+        break
+      elif [ "$regrc" -ne 0 ]; then
+        INSTALL_ERROR="$target (registry row failed to reconcile $src)"; break
+      fi
       continue
     fi
     srcfile="$STAGE/src/$src"

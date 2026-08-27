@@ -184,6 +184,70 @@ check "a failed install leaves the original conf untouched, not truncated in pla
 check "no leftover temp file after a failed install" \
   bash -c '! ls "$1"/.deploy-tmp.* >/dev/null 2>&1' _ "$FX/home1/scripts/atomic.d"
 
+# ── C1: A SYMLINKED REGISTRY-ROW COMPONENT REFUSES, LIKE EVERY OTHER ROW TYPE.
+# apply_registry_row used a raw `mkdir -p`, the one row type with no symlink
+# vault: with ~/scripts symlinked out of the home, install wrote outside the
+# home AS ROOT, rc 0. This is the component-level case: the directory named
+# directly by the manifest target is itself the symlink.
+#
+# ISOLATED MANIFEST — ONLY the registry row. rig()'s own docs row also
+# targets scripts/docs/norm.md, which shares the same symlinked "scripts"
+# parent and would trip its OWN (already-guarded) ensure_dir call first,
+# masking whether the registry row's own check does anything at all.
+rig
+mkdir -p "$FX/stage/src/projects.d"
+printf 'NAME="X"\n' > "$FX/stage/src/projects.d/x.conf"
+printf 'projects.d scripts/projects.d 644 registry\n' > "$FX/stage/deploy-manifest"
+OUTSIDE="$(mktemp -d)"
+chmod 700 "$OUTSIDE"
+ln -s "$OUTSIDE" "$FX/home1/scripts"    # ~/scripts symlinked OUT of the home
+u="$(run "$FX/home1")"; rc=$?
+check "C1: symlinked scripts/ under a registry row: rc 65"  [ "$rc" -eq 65 ]
+case "$u" in *symlink*) ok ;; *) bad "the symlink is not named: $u" ;; esac
+check "C1: nothing installed outside the home"               [ ! -e "$OUTSIDE/x.conf" ]
+mode_outside="$(ls -ld "$OUTSIDE" | cut -c1-10)"
+check "C1: the directory outside the home is untouched (700)" [ "$mode_outside" = "drwx------" ]
+rm -rf "$OUTSIDE"
+
+# ── C1b: THE PRUNE SIDE — THE ONE THAT DELETES. With ~/scripts/projects.d
+# symlinked out of the home, the measured bug DELETED foreign files outside
+# the home as root, rc 0: the prune loop lists "$DSTD"/*.conf and DSTD
+# resolved through the link. Here the symlink is the LEAF component, not the
+# parent, and the outside directory pre-exists with a foreign, undelivered
+# conf that must survive.
+rig
+mkdir -p "$FX/stage/src/projects.d" "$FX/home1/scripts"
+printf 'NAME="X"\n' > "$FX/stage/src/projects.d/x.conf"
+printf 'projects.d scripts/projects.d 644 registry\n' >> "$FX/stage/deploy-manifest"
+OUTSIDE="$(mktemp -d)"
+printf 'NAME="Foreign"\n' > "$OUTSIDE/foreign.conf"     # undelivered: would be PRUNED without the guard
+ln -s "$OUTSIDE" "$FX/home1/scripts/projects.d"         # the leaf itself symlinked OUT of the home
+u="$(run "$FX/home1")"; rc=$?
+check "C1b: symlinked scripts/projects.d: rc 65"             [ "$rc" -eq 65 ]
+case "$u" in *symlink*) ok ;; *) bad "the symlink is not named: $u" ;; esac
+check "C1b: nothing installed outside the home"               [ ! -f "$OUTSIDE/x.conf" ]
+check "C1b: a foreign file outside the home SURVIVES — not pruned as root" \
+  [ -f "$OUTSIDE/foreign.conf" ]
+rm -rf "$OUTSIDE"
+
+# ── C4: OWNER, LIKE THE FILE ROW BRANCH. apply_registry_row must read
+# STEWARD_DEPLOY_INSTALL_OWNER the same way the file branch's `install -o/-g`
+# does. Isolated with a manifest holding ONLY a registry row, so a chown
+# failure on some OTHER row type cannot mask this row's own behavior.
+# STEWARD_DEPLOY_INSTALL_OWNER is left UNSET here (not "off"): $USERNAME
+# (home1) is not a real account on this machine, so a genuine chown attempt
+# fails — exactly as a plain file row already fails under the same condition
+# (measured: `install -o home1 -g home1 ...` -> "unknown group home1", rc 1).
+rig
+mkdir -p "$FX/stage/src/owner.d"
+printf 'NAME="X"\n' > "$FX/stage/src/owner.d/x.conf"
+printf 'owner.d scripts/owner.d 644 registry\n' > "$FX/stage/deploy-manifest"
+u="$( export PATH="$FX/bin:$PATH" STEWARD_DEPLOY_STATE="$FX/state" \
+    STEWARD_DEPLOY_SYSTEMCTL="$FX/bin/systemctl" STEWARD_SWEEP_PATH_ALL="$FX/home1/bin"
+  bash "$A" "$FX/stage" fakesha1 "$FX/home1" 2>&1 )"; rc=$?
+check "C4: registry row without OWNER=off does not silently succeed" [ "$rc" -ne 0 ]
+check "C4: the conf was not installed"                                [ ! -f "$FX/home1/scripts/owner.d/x.conf" ]
+
 # ── 6. TWO HOMES: a refusal in one does not stop the other; rc is still 65 ──
 rig
 run "$FX/home1" >/dev/null; run "$FX/home2" >/dev/null

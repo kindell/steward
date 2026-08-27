@@ -212,8 +212,14 @@ deploy_sources_clean() {
   local REPO2="${DEPLOY_STAGE_REPO2:-}"
   local _own="" _other="" _k
   for _k in "$@"; do
-    if [ -f "$REPO/$_k" ]; then _own="$_own $_k"
-    elif [ -n "$REPO2" ] && [ -f "$REPO2/$_k" ]; then _other="$_other $_k"
+    # [ -e ], NOT [ -f ]: a registry row's source is a DIRECTORY
+    # (entities.d, projects.d), and [ -f ] is false for one — so a directory
+    # source fell out of BOTH lists, silently, and never reached
+    # `git status`. `git status --porcelain -- <dir>` already reports a dirty
+    # directory correctly; the check above it was just never letting one
+    # through.
+    if [ -e "$REPO/$_k" ]; then _own="$_own $_k"
+    elif [ -n "$REPO2" ] && [ -e "$REPO2/$_k" ]; then _other="$_other $_k"
     fi
   done
   local _dirty=""

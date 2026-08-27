@@ -134,6 +134,30 @@ check "clean sources: no sources against a dirty tree gives rc 0" [ "$rc" -eq 0 
 # suite (the estate's own deploy suite) 2026-08-19; the equivalent case for
 # deploy-self.sh, which IS product, stays in test/deploy-self.test.sh.
 
+# C2: A DIRECTORY SOURCE (a registry row, e.g. entities.d/projects.d) MUST BE
+# MEASURED TOO. `[ -f "$REPO/$_k" ]` is false for a directory, so it fell out
+# of BOTH the "own repo" and "other repo" lists and never reached
+# `git status` — the provenance gate silently blessed a registry row with a
+# modified tracked file and an untracked new file underneath it.
+mkdir -p "$rk/projects.d"
+printf 'NAME="Kept"\n' > "$rk/projects.d/kept.conf"
+( cd "$rk" && git add -A && git commit -qm 'add projects.d' )
+
+# CONTROL GROUP: a clean directory source gives rc 0.
+deploy_sources_clean "$rk" projects.d; rc=$?
+check "clean sources: a clean DIRECTORY source gives rc 0" [ "$rc" -eq 0 ]
+
+# PROVOKE THE FAULT: a tracked file inside the directory is modified, and an
+# untracked one is added — both uncommitted.
+printf 'NAME="Changed"\n' >> "$rk/projects.d/kept.conf"
+printf 'NAME="New"\n' > "$rk/projects.d/untracked.conf"
+u="$(deploy_sources_clean "$rk" projects.d 2>&1)"; rc=$?
+check "clean sources: a dirty DIRECTORY source gives rc 65" [ "$rc" -eq 65 ]
+case "$u" in *"projects.d"*) ok ;; *) bad "the directory name is missing from the error: $u" ;; esac
+( cd "$rk" && git checkout -q -- projects.d/kept.conf && rm -f "$rk/projects.d/untracked.conf" )
+deploy_sources_clean "$rk" projects.d; rc=$?
+check "clean sources: the directory source is clean again after cleanup" [ "$rc" -eq 0 ]
+
 
 echo "== provenance =="
 r="$fx/gitrepo"; mkdir -p "$r"
