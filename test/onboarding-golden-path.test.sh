@@ -52,6 +52,13 @@ for d in sessions.d entities.d projects.d jobs.d services.d browsers.d hosts.d; 
   check "dir $d created" [ -d "$FX/e/$d" ]
 done
 
+echo "== validation rejects invalid names =="
+estate_scaffold "$FX/bad-leading-digit" org=9acme team=kindell owner=alice session=home-alice >/dev/null 2>&1
+check "org with leading digit rejected" [ "$?" -eq 64 ]
+
+estate_scaffold "$FX/bad-leading-dash" org=-acme team=kindell owner=alice session=home-alice >/dev/null 2>&1
+check "org with leading dash rejected" [ "$?" -eq 64 ]
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
