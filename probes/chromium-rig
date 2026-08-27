@@ -72,8 +72,26 @@ profile="${BROWSER_PROFILE:-$session}"
 # account that owns it, and whoever measures rarely owns the rig. Without it
 # every profile reads empty and every drift is invisible, which looks exactly
 # like a dead rig.
+#
+# THE CONNECT DEADLINE MUST FIT INSIDE asset_probe's. These two numbers are not
+# independent and must never be tuned as if they were:
+#
+#   ConnectTimeout below            this prober's own bound on the connect phase
+#   STEWARD_ASSET_PROBE_TIMEOUT     asset_probe's bound on this whole process
+#                                   (lib/assets.sh, default 5s)
+#
+# Whichever fires first decides what the reader is told. When the prober's bound
+# is the LARGER one the prober never gets to answer at all: against a blackholed
+# host asset_probe kills it and reports `unknown probe-timeout`, and the
+# host-unreachable branch below — which exists precisely to say WHICH machine
+# stopped answering — becomes reachable only for failures fast enough to beat the
+# outer clock, i.e. connection refused and DNS. It shipped that way (8s against
+# 5s) and the branch was dead for every case it was written for.
+#
+# 3s is therefore deliberate and has to stay under the outer default. The chain
+# suite asserts the ordering rather than trusting this comment.
 default_measure() {
-  ssh -o BatchMode=yes -o ConnectTimeout=8 "$1" '
+  ssh -o BatchMode=yes -o ConnectTimeout=3 "$1" '
     printf "BIND %s\n" "$(ss -ltn 2>/dev/null | tr -s " " | cut -d" " -f4 | grep -E ":(59[0-9][0-9]|9[0-9]{3})$" | sort -u | tr "\n" " ")"
     printf "GATED %s\n" "$(sudo -n iptables -L OUTPUT -n 2>/dev/null | grep -oE "dpt:9[0-9]{3}" | cut -d: -f2 | sort -u | tr "\n" " ")"
     printf "PROFILE "

@@ -313,6 +313,20 @@ cmd_assets() {
   # already chosen one; an explicit setting always wins.
   : "${STEWARD_ASSET_PROBE_CMD:=$HERE/bin/probe-dispatch}"
   export STEWARD_ASSET_PROBE_CMD
+  # AND A DEADLINE WITH ROOM FOR A REAL ROUND TRIP. The library's own default
+  # (5s) is sized for a prober that hangs, not for one that talks to another
+  # machine: a measured run of the real ssh path took ~1.75s per session, so a
+  # loaded host tips a WORKING probe into `unknown probe-timeout` — the same
+  # non-measurement-dressed-as-measurement this model exists to prevent, only
+  # with the honest word on it.
+  #
+  # Raised here rather than in lib/assets.sh because this is the command that
+  # wires the ssh-based dispatcher in; a caller embedding asset_probe with its
+  # own fast prober should keep the tighter default. The ordering that must
+  # hold, smallest first: the prober's own connect bound (3s, probes/chromium-rig)
+  # < the library backstop (5s) <= this.
+  : "${STEWARD_ASSET_PROBE_TIMEOUT:=10}"
+  export STEWARD_ASSET_PROBE_TIMEOUT
   # THE PROBER NEEDS TO KNOW WHOSE ASSET IT IS MEASURING. asset_probe's signature
   # carries the asset, not the session, and a rig prober cannot measure a rig
   # without knowing which session declares it. The name rides in the environment

@@ -68,6 +68,14 @@ session_assets() {
 # (default below); crossing it is itself a measurement that could not be made,
 # so it reports `unknown` with a timeout detail, same as any other failure.
 #
+# IT IS A BACKSTOP, NOT A PROBER'S CLOCK. A prober that reaches over a network
+# must carry its OWN, SMALLER deadline, because only the prober can say what
+# went wrong — "that host did not answer" is a different sentence from "the
+# probe ran out of time", and only the first names the machine to go look at.
+# When the prober's bound is the larger of the two this layer kills it first and
+# the prober's own diagnosis never gets printed. Both numbers therefore have to
+# be read together; neither is safe to tune alone.
+#
 # GNU `timeout` IS NOT GUARANTEED. Stock macOS does not ship it, and this code
 # runs on macOS — see _asset_probe_run_with_timeout below for the fallback.
 #
