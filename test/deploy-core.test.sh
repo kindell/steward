@@ -198,5 +198,42 @@ if grep -vE '^\s*#' "$here/lib/deploy-core.sh" | grep -Eq '(^|[^a-z])(ssh|scp)($
 if grep -vE '^\s*#' "$here/lib/deploy-core.sh" | grep -Eq 'md5|shasum'; then
   bad "the core computes a hash — the hub must never compute one"; else ok; fi
 
+echo "== registry rows carry a directory, not a file =="
+# A REGISTRY ROW'S SOURCE IS A DIRECTORY. deploy_stage's file check
+# (`[ -f "$REPO/$_k" ]`) refuses a directory outright, so without this the row
+# dies as "source exists in neither" — a refusal naming the wrong cause.
+rfx="$(mktemp -d)"; mkdir -p "$rfx/repo/projects.d" "$rfx/apply"
+printf 'NAME="One"\nPARENT="team"\n'   > "$rfx/repo/projects.d/one.conf"
+printf 'NAME="Two"\nPARENT="team"\n'   > "$rfx/repo/projects.d/two.conf"
+# A non-conf file in the same directory must NOT travel: the registry reads
+# *.conf, and a stray backup or editor swapfile is not registry data.
+printf 'stale\n'                       > "$rfx/repo/projects.d/one.conf.bak-x"
+printf '#!/bin/bash\n'                 > "$rfx/apply/deploy-apply.sh"
+printf 'projects.d scripts/projects.d 644 registry\n' > "$rfx/manifest"
+
+st="$(deploy_stage "$rfx/repo" "$rfx/manifest" "$rfx/apply/deploy-apply.sh" projects.d)"; rc=$?
+check "a registry row stages rc 0"        [ "$rc" -eq 0 ]
+check "the directory's confs are staged"  [ -f "$st/src/projects.d/one.conf" ]
+check "both confs are staged"             [ -f "$st/src/projects.d/two.conf" ]
+check "non-conf files do not travel"      [ ! -e "$st/src/projects.d/one.conf.bak-x" ]
+
+# AN EMPTY REGISTRY DIRECTORY IS A REAL STATE, NOT AN ERROR: an estate may
+# declare a register it has not populated yet. It must stage as an empty
+# directory, so the applier can prune a host that still holds old confs.
+mkdir -p "$rfx/repo/empty.d"
+printf 'empty.d scripts/empty.d 644 registry\n' > "$rfx/manifest2"
+st2="$(deploy_stage "$rfx/repo" "$rfx/manifest2" "$rfx/apply/deploy-apply.sh" empty.d)"; rc=$?
+check "an empty registry directory stages rc 0" [ "$rc" -eq 0 ]
+check "and stages as a directory"               [ -d "$st2/src/empty.d" ]
+
+# A MISSING DIRECTORY MUST REFUSE. Same rule as a missing file: a row naming
+# something that does not exist is a manifest error, and silence would deploy
+# a host that is missing a register nobody noticed was declared.
+printf 'nosuch.d scripts/nosuch.d 644 registry\n' > "$rfx/manifest3"
+out="$(deploy_stage "$rfx/repo" "$rfx/manifest3" "$rfx/apply/deploy-apply.sh" nosuch.d 2>&1)"; rc=$?
+check "a missing registry directory refuses" [ "$rc" -ne 0 ]
+case "$out" in *nosuch.d*) ok ;; *) bad "the refusal names the missing directory: $out" ;; esac
+rm -rf "$rfx"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

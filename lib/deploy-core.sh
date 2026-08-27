@@ -295,6 +295,23 @@ deploy_stage() {
   local _k
   for _k in "$@"; do
     mkdir -p "$STAGE/src/$(dirname "$_k")"
+    # A DIRECTORY SOURCE IS A REGISTRY ROW. Only *.conf travels: the register
+    # reads that glob, and a backup or a swapfile beside a conf is not registry
+    # data. An EMPTY directory is a valid state — an estate may declare a
+    # register it has not populated — so the directory is created either way,
+    # which is also what lets the applier prune a host that still holds confs.
+    local _dsrc=""
+    if [ -d "$REPO/$_k" ]; then _dsrc="$REPO/$_k"
+    elif [ -n "$REPO2" ] && [ -d "$REPO2/$_k" ]; then _dsrc="$REPO2/$_k"; fi
+    if [ -n "$_dsrc" ]; then
+      mkdir -p "$STAGE/src/$_k" || { echo "deploy: cannot create stage dir for $_k" >&2; rm -rf "$STAGE"; return 70; }
+      local _c
+      for _c in "$_dsrc"/*.conf; do
+        [ -f "$_c" ] || continue          # the glob is literal when nothing matches
+        cp "$_c" "$STAGE/src/$_k/" || { echo "deploy: cannot copy $_c" >&2; rm -rf "$STAGE"; return 70; }
+      done
+      continue
+    fi
     local _src=""
     if [ -f "$REPO/$_k" ]; then _src="$REPO/$_k"
     elif [ -n "$REPO2" ] && [ -f "$REPO2/$_k" ]; then _src="$REPO2/$_k"
