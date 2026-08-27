@@ -106,5 +106,5 @@ out="$(run "" "")"
 has "an empty type is unknown too" "$out" "unknown"
 
 echo
-echo "probe-dispatch: $pass ok, $fail fail"
+printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
