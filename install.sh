@@ -123,77 +123,16 @@ fi
 say "product: $(git -C "$PRODUCT_DIR" log --oneline -1)"
 
 # ── 4. THE ESTATE ──────────────────────────────────────────────────────────
-# REFUSES TO OVERWRITE. An existing conf holds values that name live units and a
-# live tmux socket; rewriting it is how a machine loses track of what it is
-# already running. Removing it is the owner's deliberate act, never ours.
-if [ -e "$ESTATE_DIR/estate/steward.conf" ]; then
-  die "an estate already exists at $ESTATE_DIR/estate/steward.conf — refusing to overwrite it.
-     Its values name live units and a live tmux socket. Move it aside yourself if
-     you mean to start over." 65
-fi
-
-mkdir -p "$ESTATE_DIR"/{estate,sessions.d,jobs.d,services.d,browsers.d,hosts.d} \
-  || die "could not create $ESTATE_DIR" 70
-
-cat > "$ESTATE_DIR/estate/steward.conf" <<CONF
-# estate/steward.conf — THIS ESTATE'S OWN NAMES.
-#
-# Written by install.sh. Every value here identifies THIS fleet; the product
-# carries the mechanism and nothing else. Changing a value renames something
-# live — read the note beside each key before you do.
-
-# Names every launchd/systemd unit this machine operates. Changing it makes the
-# installer stop recognising the units it already installed: it would boot out
-# every live one and bootstrap duplicates under the new name.
-LABEL_PREFIX="com.${ORG}.claude"
-
-# The session's identity in the process table:
-#     claude --remote-control "<RC_LABEL_PREFIX><session name>"
-# Supervision uses this string twice — to BUILD the command and to MEASURE
-# whether claude is alive. Change it without restarting every process and the
-# pattern matches nothing, supervision concludes every session is dead, and it
-# enters its repair path. The trailing space belongs to the label.
-RC_LABEL_PREFIX="${ORG}: "
-
-# The hub's name on the bus, and its machine name. Two keys on purpose: they
-# hold the same string in a small estate and diverge the first time somebody
-# names a machine after the room it stands in.
-HUB_SESSION="${ORG}-hub"
-HUB_HOST="$(hostname -s)"
-
-# The bus relay's ssh target, <user>@<host>. Both parts required: a bare host
-# name makes ssh use the CALLING account's name, which on a multi-tenant machine
-# is the wrong account.
-HUB_SSH="$(id -un)@$(hostname -s)"
-
-# A directory NAME, never a path — a slash would let a typo write logs anywhere.
-JOB_LOG_DIR="${ORG}-jobs"
-
-# The tmux socket file under ~/.tmux/. LIVE: the server holding every session
-# creates it, and renaming it leaves every client unable to find a server that
-# is still running.
-TMUX_SOCKET="${ORG}.sock"
-
-# The fixed, contentless ping typed into a recipient's pane. A CONSTANT compared
-# exactly — that is how the guard tells a ping from real user input — and also
-# instruction text every running session is told to react to.
-PING_MSG="[bus] you have mail — read your inbox"
-
-# Supervision's two state directory names. A pause marker that cannot be found
-# turns a deliberately stopped session into one supervision restarts.
-STATE_DIR_NAME="${ORG}-supervisor"
-PAUSED_DIR_NAME="${ORG}-paused"
-
-# Label prefixes for jobs, services and browsers. Same warning as LABEL_PREFIX.
-JOB_LABEL_PREFIX="com.${ORG}.job"
-SERVICE_LABEL_PREFIX="com.${ORG}.service"
-BROWSER_LABEL_PREFIX="com.${ORG}.browser"
-
-# The name of this machine's secrets service-account file under ~/.config/op/.
-OP_TOKEN_FILE_NAME="${ORG}-service-account"
-CONF
-chmod 600 "$ESTATE_DIR/estate/steward.conf"
-say "estate: written to $ESTATE_DIR/estate/steward.conf"
+# ONE WRITER. The estate, first team and first session are written by the
+# scaffold engine — the same code the suite drives and the Rust wizard will
+# call. The installer no longer duplicates the conf, which is how it drifted to
+# 14 fields and no entities.d before the identity model.
+# shellcheck source=lib/scaffold.sh
+. "$PRODUCT_DIR/lib/scaffold.sh" || die "could not load scaffold engine" 70
+estate_scaffold "$ESTATE_DIR" \
+  org="$ORG" team="$ORG" owner="$(id -un)" session="${ORG}-hub" \
+  || die "scaffold failed" "$?"
+say "estate: written to $ESTATE_DIR/estate/steward.conf (via scaffold engine)"
 
 # ── 5. THE MEASUREMENT ─────────────────────────────────────────────────────
 # THE INSTALL ENDS WITH A MEASUREMENT, NOT A CLAIM. "Written" says a file
@@ -231,22 +170,11 @@ fi
 # ── 6. THE FIRST SESSION ───────────────────────────────────────────────────
 # THE FIRST SESSION CANNOT CREATE ITSELF. session-new.sh derives its identity
 # from the tmux pane it runs in, which requires an already-registered session —
-# right for every session after the first, impossible for the first. So the
-# installer writes the hub's registry entry itself, and everything after the
-# first goes through the enrolment chain like it should.
+# right for every session after the first, impossible for the first. estate_scaffold
+# already wrote this entry in step 4 (ONE WRITER — a second heredoc here would
+# silently clobber it with a stale, narrower version missing ID/ASSETS). Every
+# session after this one goes through the enrolment chain like it should.
 HUB="${ORG}-hub"
-cat > "$ESTATE_DIR/sessions.d/$HUB.conf" <<CONF
-# $HUB — this estate's hub, written by install.sh. The FIRST session cannot be
-# created by session-new.sh (it derives identity from the pane it runs in), so
-# this one entry is written at install time. Every later session goes through
-# the enrolment chain.
-HOST="$(hostname -s)"
-REPO_PATH="$ESTATE_DIR"
-RC_LABEL="${ORG}: $HUB"
-PERMISSION_MODE="bypassPermissions"
-OWNER="$(id -un)"
-DOMAIN="$ORG"
-CONF
 say ""
 say "hub session: $HUB registered"
 
