@@ -146,11 +146,16 @@ asset_probe() {
   fi
   probe_status="$(printf '%s' "$out" | awk '{print $1}')"
   detail="$(printf '%s' "$out" | awk '{$1=""; sub(/^ /,""); print}')"
-  # THE VOCABULARY IS CLOSED. A prober that answers something else is a broken
-  # prober, and a broken prober must not be able to invent a status the cockpit
-  # would render as healthy.
+  # THE VOCABULARY IS CLOSED AT FOUR WORDS, and 'unknown' is one of them — a
+  # real answer a prober gives when it honestly could not measure (host
+  # unreachable, no session context, an asset type it does not recognise),
+  # not a broken prober's invention. Accepting it here lets that reason
+  # survive to the caller instead of being overwritten. A prober that answers
+  # a FIFTH word is what's actually broken, and it must not be able to invent
+  # a status the cockpit would render as healthy — that word, and only that
+  # word, still gets rewritten to the generic bad-status-from-probe below.
   case "$probe_status" in
-    up|local-only|down) ;;
+    up|local-only|down|unknown) ;;
     *) probe_status="unknown"; detail="bad-status-from-probe" ;;
   esac
   printf '%s %s %s\n' "$a" "$probe_status" "${detail:-none}"

@@ -139,6 +139,35 @@ for a in mail:kindell slack:acme chromium-rig teams:acme; do
   case "$w" in up|local-only|down|unknown) ok ;; *) bad "unexpected status word '$w' for $a" ;; esac
 done
 
+echo "== a prober's own 'unknown' reason survives; a broken prober's does not =="
+
+# UNKNOWN IS A LEGITIMATE ANSWER IN THE FOUR-WORD VOCABULARY, not a broken
+# prober's invention. A prober that measured and honestly could not tell must
+# have its own reason survive intact — collapsing it to the generic
+# bad-status-from-probe would erase exactly the detail a reader needs
+# (host-unreachable vs. no-session-context vs. no-rig-declared read very
+# differently at the cockpit).
+cat > "$FX/probe-stub-unknown" <<'STUB'
+#!/bin/bash
+echo "unknown some-specific-reason"
+STUB
+chmod +x "$FX/probe-stub-unknown"
+line="$(STEWARD_ASSET_PROBE_CMD="$FX/probe-stub-unknown" asset_probe widget:x)"
+check "a prober's own unknown reason survives" \
+  [ "$line" = "widget:x unknown some-specific-reason" ]
+
+# THE GUARD STILL BITES ON A WORD OUTSIDE THE VOCABULARY. A broken prober must
+# never be able to invent a status the cockpit would render as healthy — that
+# is the guard's real job, and accepting 'unknown' above must not weaken it.
+cat > "$FX/probe-stub-bogus" <<'STUB'
+#!/bin/bash
+echo "healthy all-good"
+STUB
+chmod +x "$FX/probe-stub-bogus"
+line="$(STEWARD_ASSET_PROBE_CMD="$FX/probe-stub-bogus" asset_probe widget:x)"
+check "a word outside the vocabulary is still rewritten" \
+  [ "$line" = "widget:x unknown bad-status-from-probe" ]
+
 echo "== a hung probe times out instead of blocking forever =="
 
 # A STUB THAT SLEEPS LONGER THAN THE LIMIT is what a stuck socket looks like.
