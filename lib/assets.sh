@@ -33,7 +33,16 @@ session_assets() {
   # ZERO ASSETS IS A VALID ANSWER. printf on an empty string would emit one blank
   # line, which a caller counts as an asset — so the empty case prints nothing.
   [ -n "$_list" ] || return 0
+  # WORD-SPLITTING IS DELIBERATE (the field is a space-separated list); GLOB
+  # EXPANSION IS NOT. This function runs in the CALLER's shell (no subshell),
+  # so `set -f` must be undone before returning or it would silently disable
+  # globbing for the rest of the caller's session. Read the caller's prior
+  # state first so the restore is exact, not just "turn it back on".
+  local _had_f
+  case "$-" in *f*) _had_f=1 ;; *) _had_f="" ;; esac
+  set -f
   printf '%s\n' $_list   # deliberately unquoted: the field is a space-separated list
+  [ -n "$_had_f" ] || set +f
   return 0
 }
 

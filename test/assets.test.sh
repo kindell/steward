@@ -57,6 +57,42 @@ leak="$( . "$here/lib/registry.sh"
          printf '%s' "$ASSETS" )"
 check "ASSETS is empty after loading a session without it" [ -z "$leak" ]
 
+
+# GLOB EXPANSION MUST NOT LEAK INTO THE FIELD. The list is deliberately word-
+# split (unquoted on purpose) but a literal '*' must come out as '*', not as
+# whatever files happen to sit in the caller's cwd. Run from a directory that
+# actually contains files, so a regression would manifest as extra lines.
+echo "== a literal '*' in ASSETS survives, even with files in cwd =="
+printf 'HOST="h"\nOWNER="alice"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="glob-assets"\nASSETS="mail:acme * chromium-rig"\n' \
+  > "$FX/sessions.d/glob-assets.conf"
+GLOBDIR="$(mktemp -d)"; trap 'rm -rf "$FX" "$GLOBDIR"' EXIT
+: > "$GLOBDIR/aaa"; : > "$GLOBDIR/bbb"
+glob_out="$(cd "$GLOBDIR" && session_assets glob-assets)"
+check "exactly three assets, not glob-expanded" [ "$(printf '%s\n' "$glob_out" | grep -c .)" -eq 3 ]
+check "literal '*' present"    bash -c 'printf "%s\n" "$1" | grep -qx "\*"' _ "$glob_out"
+check "mail asset present too" bash -c 'printf "%s\n" "$1" | grep -qx "mail:acme"' _ "$glob_out"
+check "rig asset present too"  bash -c 'printf "%s\n" "$1" | grep -qx "chromium-rig"' _ "$glob_out"
+check "aaa did not sneak in"   bash -c '! printf "%s\n" "$1" | grep -qx "aaa"' _ "$glob_out"
+check "bbb did not sneak in"   bash -c '! printf "%s\n" "$1" | grep -qx "bbb"' _ "$glob_out"
+
+# set -f MUST NOT LEAK INTO THE CALLER. The function runs in the caller's own
+# shell (no subshell), so calling it here — in THIS script's shell, not inside
+# $(...) or (...) which would isolate any leak — must leave $- exactly as it
+# was found. Also prove globbing itself still works afterward: a leaked
+# `set -f` would make the next glob a no-op rather than flip a flag we forgot
+# to read.
+echo "== set -f does not leak into the caller =="
+case "$-" in *f*) before_f=1 ;; *) before_f="" ;; esac
+_save_pwd="$PWD"
+cd "$GLOBDIR"
+session_assets glob-assets >/dev/null
+cd "$_save_pwd"
+case "$-" in *f*) after_f=1 ;; *) after_f="" ;; esac
+check "caller's -f flag unchanged by session_assets" [ "$before_f" = "$after_f" ]
+_glob_check="$GLOBDIR"/*
+set -- $_glob_check
+check "caller's shell still globs after session_assets" [ "$#" -eq 2 ]
+
 echo "== probing reports health, and never guesses =="
 
 # THE PROBES ARE INJECTABLE. A probe that shells out to a real mail client or a

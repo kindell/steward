@@ -59,6 +59,60 @@ check "org with leading digit rejected" [ "$?" -eq 64 ]
 estate_scaffold "$FX/bad-leading-dash" org=-acme team=kindell owner=alice session=home-alice >/dev/null 2>&1
 check "org with leading dash rejected" [ "$?" -eq 64 ]
 
+echo "== assets is validated, not sourced blind =="
+
+# THE INJECTION THE REVIEWER DEMONSTRATED. assets is written into a conf that
+# registry_load later SOURCES; an unescaped '"' closes the string early and
+# anything after it runs as shell when the conf is loaded. Prove the field is
+# rejected BEFORE it ever reaches disk, and that the payload never ran.
+rm -f /tmp/SHOULD_NOT_EXIST
+estate_scaffold "$FX/inject" org=acme team=kindell owner=alice session=home-alice \
+  assets='x" ; touch /tmp/SHOULD_NOT_EXIST ; y="z' >/dev/null 2>&1
+inj_rc=$?
+check "malicious assets refused (rc 64)" [ "$inj_rc" -eq 64 ]
+check "malicious assets did not write a session conf" [ ! -e "$FX/inject/sessions.d/home-alice.conf" ]
+check "the injected command never ran" [ ! -e /tmp/SHOULD_NOT_EXIST ]
+rm -f /tmp/SHOULD_NOT_EXIST
+
+# A HANDFUL OF OTHER INJECTION SHAPES, so the fix is a character allowlist and
+# not a single-pattern patch over the one example the review happened to try.
+estate_scaffold "$FX/inject-semicolon" org=acme team=kindell owner=alice session=s \
+  assets='a;touch /tmp/SHOULD_NOT_EXIST_2' >/dev/null 2>&1
+check "semicolon-only assets refused" [ "$?" -eq 64 ]
+check "semicolon payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_2 ]
+rm -f /tmp/SHOULD_NOT_EXIST_2
+
+estate_scaffold "$FX/inject-backtick" org=acme team=kindell owner=alice session=s \
+  assets='a`touch /tmp/SHOULD_NOT_EXIST_3`' >/dev/null 2>&1
+check "backtick assets refused" [ "$?" -eq 64 ]
+check "backtick payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_3 ]
+rm -f /tmp/SHOULD_NOT_EXIST_3
+
+estate_scaffold "$FX/inject-cmdsub" org=acme team=kindell owner=alice session=s \
+  assets='a$(touch /tmp/SHOULD_NOT_EXIST_4)' >/dev/null 2>&1
+check "command-substitution assets refused" [ "$?" -eq 64 ]
+check "command-substitution payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_4 ]
+rm -f /tmp/SHOULD_NOT_EXIST_4
+
+estate_scaffold "$FX/inject-and" org=acme team=kindell owner=alice session=s \
+  assets='a && touch /tmp/SHOULD_NOT_EXIST_5' >/dev/null 2>&1
+check "&&-joined assets refused" [ "$?" -eq 64 ]
+check "&&-joined payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_5 ]
+rm -f /tmp/SHOULD_NOT_EXIST_5
+
+estate_scaffold "$FX/inject-newline" org=acme team=kindell owner=alice session=s \
+  assets="$(printf 'a\ntouch /tmp/SHOULD_NOT_EXIST_6')" >/dev/null 2>&1
+check "newline-embedded assets refused" [ "$?" -eq 64 ]
+check "newline payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_6 ]
+rm -f /tmp/SHOULD_NOT_EXIST_6
+
+# A→B MUST STILL WORK: valid assets are not collateral damage from the fix.
+estate_scaffold "$FX/valid-assets" org=acme team=kindell owner=alice session=home-alice \
+  assets="mail:acme chromium-rig" >/dev/null 2>&1
+check "valid assets scaffold rc 0" [ "$?" -eq 0 ]
+check "valid assets written verbatim" \
+  grep -q 'ASSETS="mail:acme chromium-rig"' "$FX/valid-assets/sessions.d/home-alice.conf"
+
 echo "== the first team is registered =="
 tm="$( export STEWARD_ESTATE_ROOT="$FX/e" STEWARD_REGISTRY_DIR="$FX/e/sessions.d"
        . "$here/lib/registry.sh"; registry_entity_load kindell >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS" )"

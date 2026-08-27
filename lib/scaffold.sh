@@ -32,6 +32,16 @@ estate_scaffold() {
   case "$owner" in *[!a-z0-9-]*) echo "scaffold: owner must be lower-case a-z0-9- ('$owner')" >&2; return 64 ;; esac
   case "$session" in [a-z]*) ;; *) echo "scaffold: session must start with a-z ('$session')" >&2; return 64 ;; esac
   case "$session" in *[!a-z0-9-]*) echo "scaffold: session must be lower-case a-z0-9- ('$session')" >&2; return 64 ;; esac
+  # ASSETS IS WRITTEN INTO A CONF THAT registry_load LATER SOURCES. Unlike the
+  # four name fields above, it is not a bare token — it is a space-separated
+  # list of "<type>" or "<type>:<arg>" entries — but it still lands unescaped
+  # inside double quotes in a shell-sourced file, so a stray `"` in the value
+  # closes the string early and anything after it (`;`, backticks, `$(...)`)
+  # runs as shell when the conf is sourced. Restrict it to a safe character
+  # set up front rather than trying to escape it on the way out.
+  case "$assets" in
+    *[!A-Za-z0-9:._\ -]*) echo "scaffold: assets must contain only [A-Za-z0-9:._-] and spaces ('$assets')" >&2; return 64 ;;
+  esac
 
   if [ -e "$dir/estate/steward.conf" ]; then
     echo "scaffold: an estate already exists at $dir/estate/steward.conf — refusing to overwrite" >&2
