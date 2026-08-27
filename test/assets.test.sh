@@ -103,6 +103,29 @@ for a in mail:kindell slack:acme chromium-rig teams:acme; do
   case "$w" in up|local-only|down|unknown) ok ;; *) bad "unexpected status word '$w' for $a" ;; esac
 done
 
+echo "== a hung probe times out instead of blocking forever =="
+
+# A STUB THAT SLEEPS LONGER THAN THE LIMIT is what a stuck socket looks like.
+# Without a deadline this would hang asset_probe forever — worse than 'unknown',
+# since it reports NOTHING and blocks a caller that polls a whole fleet
+# serially. The sleep is kept well above the limit (STUB_SLEEP > timeout) so
+# the assertion below — that asset_probe returns well inside STUB_SLEEP — only
+# passes if the deadline was actually enforced, not just outlasted by luck.
+STUB_SLEEP=3
+cat > "$FX/probe-stub-slow" <<STUB
+#!/bin/bash
+sleep $STUB_SLEEP
+echo "up should-not-be-seen"
+STUB
+chmod +x "$FX/probe-stub-slow"
+
+before=$SECONDS
+line="$(STEWARD_ASSET_PROBE_CMD="$FX/probe-stub-slow" STEWARD_ASSET_PROBE_TIMEOUT=1 asset_probe mail:kindell)"
+elapsed=$((SECONDS - before))
+check "timed-out probe reports unknown" bash -c '[[ "$1" == "mail:kindell unknown "* ]]' _ "$line"
+check "timed-out probe names the timeout" bash -c '[[ "$1" == *"probe-timeout"* ]]' _ "$line"
+check "timed-out probe returns well inside the stub's sleep" [ "$elapsed" -lt "$STUB_SLEEP" ]
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
