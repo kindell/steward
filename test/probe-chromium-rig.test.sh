@@ -55,8 +55,8 @@ cat > "$FX/bin/measure" <<'EOF'
 #!/bin/bash
 [ -n "${MEASURE_SILENT:-}" ] && exit 255
 echo "BIND 10.0.0.1:5910 10.0.0.1:5911 10.0.0.1:5912 10.0.0.1:5913 127.0.0.1:5914 127.0.0.1:9320 127.0.0.1:9321 127.0.0.1:9399"
-echo "GRINDAD 9320 9399"
-echo "PROFIL 9320=healthy 9321=ungated 9399=drifted"
+echo "GATED 9320 9399"
+echo "PROFILE 9320=healthy 9321=ungated 9399=drifted"
 EOF
 chmod +x "$FX/bin/measure"
 

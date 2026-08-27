@@ -75,8 +75,8 @@ profile="${BROWSER_PROFILE:-$session}"
 default_measure() {
   ssh -o BatchMode=yes -o ConnectTimeout=8 "$1" '
     printf "BIND %s\n" "$(ss -ltn 2>/dev/null | tr -s " " | cut -d" " -f4 | grep -E ":(59[0-9][0-9]|9[0-9]{3})$" | sort -u | tr "\n" " ")"
-    printf "GRINDAD %s\n" "$(sudo -n iptables -L OUTPUT -n 2>/dev/null | grep -oE "dpt:9[0-9]{3}" | cut -d: -f2 | sort -u | tr "\n" " ")"
-    printf "PROFIL "
+    printf "GATED %s\n" "$(sudo -n iptables -L OUTPUT -n 2>/dev/null | grep -oE "dpt:9[0-9]{3}" | cut -d: -f2 | sort -u | tr "\n" " ")"
+    printf "PROFILE "
     for _p in $(ss -ltn 2>/dev/null | grep -oE "127\.0\.0\.1:9[0-9]{3}" | cut -d: -f2 | sort -u); do
       _pid="$(sudo -n ss -ltnp 2>/dev/null | grep "127.0.0.1:$_p " | grep -oE "pid=[0-9]+" | cut -d= -f2 | head -1)"
       [ -n "$_pid" ] || continue
@@ -99,8 +99,8 @@ fi
 [ -n "$raw" ] || answer unknown host-unreachable
 
 binds="$(printf '%s' "$raw" | sed -n 's/^BIND //p')"
-gates="$(printf '%s' "$raw" | sed -n 's/^GRINDAD //p')"
-profiles="$(printf '%s' "$raw" | sed -n 's/^PROFIL //p')"
+gates="$(printf '%s' "$raw" | sed -n 's/^GATED //p')"
+profiles="$(printf '%s' "$raw" | sed -n 's/^PROFILE //p')"
 
 # ── reading the bind list ──────────────────────────────────────────────────
 #
