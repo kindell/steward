@@ -88,6 +88,53 @@ out3="$(STEWARD_REGISTRY_DIR="$FX/does-not-exist" session_identity_rows 2>/dev/n
 is "rc is non-zero" "$( [ "$rc3" -ne 0 ] && echo yes || echo no )" "yes"
 is "and nothing was printed" "$out3" ""
 
+# A SYSTEMIC FAILURE MUST NOT LOOK LIKE ZERO SESSIONS. registry_load refuses
+# EVERY session identically when the estate file is missing or missing a
+# required field (LABEL_PREFIX/HUB_HOST/OP_TOKEN_FILE_NAME) — registry_list
+# still succeeds, so a loop that just `continue`s past each failure reports
+# rc 0 with no rows, indistinguishable from an estate that genuinely has no
+# sessions. That is the exact failure this whole layer exists to prevent.
+echo "== a broken estate file refuses, not an empty read =="
+SYS="$FX/systemic"; mkdir -p "$SYS/sessions.d" "$SYS/entities.d"
+# Deliberately no estate/steward.conf: sessions.d holds a real, otherwise-valid
+# conf, so registry_list sees one name — but nothing can load.
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="full"\n' \
+  > "$SYS/sessions.d/full.conf"
+out_sys="$(STEWARD_REGISTRY_DIR="$SYS/sessions.d" STEWARD_ESTATE_ROOT="$SYS" session_identity_rows 2>"$FX/sys.err")"; rc_sys=$?
+is "systemic: rc is non-zero" "$( [ "$rc_sys" -ne 0 ] && echo yes || echo no )" "yes"
+is "systemic: stdout is empty" "$out_sys" ""
+is "systemic: stderr says something" "$( [ -s "$FX/sys.err" ] && echo yes || echo no )" "yes"
+
+# ZERO SESSIONS MUST STAY A DIFFERENT ANSWER FROM "CANNOT READ". The fix above
+# must not overcorrect into refusing an estate that genuinely has none.
+echo "== a valid estate with zero sessions is still rc 0 =="
+ZERO="$FX/zero"; mkdir -p "$ZERO/sessions.d" "$ZERO/entities.d" "$ZERO/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$ZERO/estate/steward.conf"
+out_zero="$(STEWARD_REGISTRY_DIR="$ZERO/sessions.d" STEWARD_ESTATE_ROOT="$ZERO" session_identity_rows 2>"$FX/zero.err")"; rc_zero=$?
+is "zero sessions: rc 0" "$rc_zero" "0"
+is "zero sessions: stdout is empty" "$out_zero" ""
+
+# A PARTIAL FAILURE MUST STILL LIST THE GOOD ONES, AND NAME THE BAD ONE. The
+# contract is "data on stdout, diagnosis on stderr" — a session that exists in
+# the registry but could not be read is diagnosis, and dropping it silently is
+# the same failure as the systemic case, just for one row instead of all.
+echo "== a partial failure lists the good session and names the bad one on stderr =="
+PART="$FX/partial"; mkdir -p "$PART/sessions.d" "$PART/entities.d" "$PART/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$PART/estate/steward.conf"
+printf 'HOST="h1"\nOWNER="dave"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="good"\n' \
+  > "$PART/sessions.d/good.conf"
+# No OWNER: registry_load's own OWNER validation rejects this one (rc 1).
+printf 'HOST="h1"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="bad"\n' \
+  > "$PART/sessions.d/bad.conf"
+out_part="$(STEWARD_REGISTRY_DIR="$PART/sessions.d" STEWARD_ESTATE_ROOT="$PART" session_identity_rows 2>"$FX/part.err")"; rc_part=$?
+is "partial: rc 0" "$rc_part" "0"
+is "partial: the good session is listed" "$(field "$out_part" good 1)" "good"
+is "partial: the bad session is absent from stdout" "$(field "$out_part" bad 1)" ""
+is "partial: the bad session is named on stderr" \
+   "$(grep -q 'bad' "$FX/part.err" && echo yes || echo no)" "yes"
+
 # AN EMPTY MANAGED_BY VALUE IS NOT A RELATION. Matching the key's presence
 # rather than a non-empty value would classify a stale/template
 # MANAGED_BY="" as "client" instead of falling through to MEMBERS.

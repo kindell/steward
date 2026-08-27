@@ -28,12 +28,28 @@ session_identity_rows() {
   names="$(registry_list)" || return 1
 
   local n entity_dir; entity_dir="$(registry_entity_dir)"
+  # COUNT LISTED VS LOADED. registry_load refuses every session identically
+  # when the estate file is missing or missing a required field — registry_list
+  # still succeeds in that state, so a loop that only ever `continue`s past a
+  # load failure returns rc 0 with zero rows, indistinguishable from an estate
+  # that genuinely has no sessions. Counting both lets the caller tell "the
+  # registry is empty" from "the registry could not be read" apart below.
+  local total=0 loaded=0
   # READ LINE BY LINE, do not word-split. Session names are validated to a safe
   # charset upstream, but an unquoted expansion here would still glob against
   # the caller's cwd — the exact hazard lib/assets.sh needed `set -f` for.
   while IFS= read -r n; do
     [ -n "$n" ] || continue
-    registry_load "$n" >/dev/null 2>&1 || continue
+    total=$((total + 1))
+    if ! registry_load "$n" >/dev/null 2>&1; then
+      # A SESSION THAT EXISTS BUT WON'T LOAD IS DIAGNOSIS, NOT SILENCE. This
+      # layer's contract is data on stdout, diagnosis on stderr, meaning in the
+      # return code — dropping the name here would make one bad conf vanish
+      # from the output with no trace of why the row count came up short.
+      echo "sessions: skipping '$n' — the registry would not load it" >&2
+      continue
+    fi
+    loaded=$((loaded + 1))
     # SNAPSHOT BEFORE USING. registry_load writes into this shell, and the next
     # iteration overwrites every one of these — read them out first.
     local id owner domain host assets
@@ -67,5 +83,19 @@ session_identity_rows() {
   done <<EOF
 $names
 EOF
+
+  # AN ALL-FAIL IS A DIFFERENT ANSWER FROM "NO SESSIONS", NOT A WORSE CASE OF
+  # IT. registry_list listing one or more names and every one of them failing
+  # to load is not an estate with no sessions — it is a registry that could
+  # not be read (a missing estate file, or one missing LABEL_PREFIX / HUB_HOST
+  # / OP_TOKEN_FILE_NAME). Nothing was printed above in this branch, since the
+  # loop only prints a row for a session that loaded — so stdout is already
+  # empty here, matching the refusal this returns.
+  if [ "$total" -gt 0 ] && [ "$loaded" -eq 0 ]; then
+    echo "sessions: REFUSING — $total session(s) listed and none could be loaded;" \
+         "the estate file is likely missing or missing a required field" \
+         "(LABEL_PREFIX, HUB_HOST, OP_TOKEN_FILE_NAME) — see the lines above" >&2
+    return 1
+  fi
   return 0
 }
