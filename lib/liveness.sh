@@ -80,6 +80,6 @@ liveness_for() {
   local name="${1:-}" rows="${2:-}" hit
   hit="$(printf '%s\n' "$rows" | awk -F'\t' -v n="$name" '$1==n{print; exit}')"
   if [ -n "$hit" ]; then printf '%s\n' "$hit"; return 0; fi
-  printf '%s\tunknown\tunknown\tunknown\tunknown\t-\tunknown\n' "$name"
+  printf '%s\tunknown\tunknown\tunknown\tunknown\t-\t-\n' "$name"
   return 0
 }

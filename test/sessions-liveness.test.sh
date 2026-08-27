@@ -86,10 +86,12 @@ is "tmux"          "$(printf '%s\n' "$row" | cut -f3)" "unknown"
 is "agent"         "$(printf '%s\n' "$row" | cut -f4)" "unknown"
 is "runtime"       "$(printf '%s\n' "$row" | cut -f5)" "unknown"
 is "model is a dash, not a guess" "$(printf '%s\n' "$row" | cut -f6)" "-"
+is "last_activity is a dash, not a guess" "$(printf '%s\n' "$row" | cut -f7)" "-"
 
 echo "== and a session it did mention comes back intact =="
 row2="$(liveness_for alpha "$out")"
 is "tmux survives the lookup" "$(printf '%s\n' "$row2" | cut -f3)" "up"
+is "last_activity survives the lookup" "$(printf '%s\n' "$row2" | cut -f7)" "2026-08-28T09:00:00.000Z"
 
 # A PROBER THAT INVENTS A WORD MUST NOT REACH A CONSUMER. The vocabulary for
 # each field is closed; anything else is a broken command, and a broken command
