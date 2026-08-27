@@ -34,27 +34,40 @@ rig() { # <name> <cdp> <vnc> [profile]
     "$1" "$2" "$3" "${4:-$1}" > "$FX/sessions.d/$1.conf"
 }
 
-rig healthy  9320 5910
-rig ungated  9321 5911
-rig drifted  9322 5912
-rig deadcdp  9323 5913
-rig loopvnc  9324 5914
-rig deadvnc  9325 5915
+rig healthy  9720 5810
+rig ungated  9721 5811
+rig drifted  9722 5812
+rig deadcdp  9723 5813
+rig loopvnc  9724 5814
+rig deadvnc  9725 5815
 printf 'HOST="h1"\nOWNER="a"\nDOMAIN="d"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="norig"\n' \
   > "$FX/sessions.d/norig.conf"
 
+# THE NUMBERS ARE FICTION ON PURPOSE. This file is destined to be public, and an
+# earlier version of this fixture carried four RFC1918 addresses and a dozen
+# ports that were not invented — three of them were the live CDP ports of named
+# customer rigs, copied out of the registry because they were what was in front
+# of whoever wrote the fixture. A reader learns a real number from a fixture as
+# readily as from a config file.
+#
+# So: RFC 5737 documentation addresses, and ports chosen OUTSIDE every range a
+# host declares for a rig. Nothing in the prober cares what the numbers are —
+# only which address a port is bound to and whether it appears in the gate list —
+# so the fixture keeps its exact SHAPE (outward, loopback, silent, drifted) and
+# changes only its digits.
+#
 # THE FIXTURE HOST, as one measurement. Every session above reads its own rows
 # out of these three lines, exactly as the real prober reads them off a host.
-#   healthy  VNC 5910 bound outward, CDP 9320 listening and gated
-#   ungated  VNC 5911 bound outward, CDP 9321 listening, NO gate rule
-#   drifted  VNC 5912 bound outward, CDP 9322 silent, profile running on 9399
-#   deadcdp  VNC 5913 bound outward, CDP 9323 silent, no profile anywhere
-#   loopvnc  VNC 5914 on loopback only
-#   deadvnc  VNC 5915 absent entirely
+#   healthy  VNC 5810 bound outward, CDP 9720 listening and gated
+#   ungated  VNC 5811 bound outward, CDP 9721 listening, NO gate rule
+#   drifted  VNC 5812 bound outward, CDP 9722 silent, profile running on 9799
+#   deadcdp  VNC 5813 bound outward, CDP 9723 silent, no profile anywhere
+#   loopvnc  VNC 5814 on loopback only
+#   deadvnc  VNC 5815 absent entirely
 cat > "$FX/bin/measure" <<'EOF'
 #!/bin/bash
 [ -n "${MEASURE_SILENT:-}" ] && exit 255
-BIND="10.0.0.1:5910 10.0.0.1:5911 10.0.0.1:5912 10.0.0.1:5913 127.0.0.1:5914 127.0.0.1:9320 127.0.0.1:9321 127.0.0.1:9399"
+BIND="192.0.2.10:5810 192.0.2.11:5811 192.0.2.12:5812 192.0.2.13:5813 127.0.0.1:5814 127.0.0.1:9720 127.0.0.1:9721 127.0.0.1:9799"
 # A HOST THAT CONNECTED BUT MEASURED NOTHING. `printf "BIND %s\n" "$(...)"`
 # prints the label whether or not the subshell produced anything, so ssh merely
 # CONNECTING is enough to make the output non-empty. This is what the real
@@ -64,10 +77,10 @@ BIND="10.0.0.1:5910 10.0.0.1:5911 10.0.0.1:5912 10.0.0.1:5913 127.0.0.1:5914 127
 # THE GATE HALF ALONE FAILED. `sudo -n iptables` is denied (the probing account
 # is not the one with the NOPASSWD rule) while plain `ss` still works: binds and
 # profiles are real, the gate list is empty.
-[ -n "${MEASURE_NOGATES:-}" ] && { printf 'BIND %s\nGATED \nPROFILE 9320=healthy 9321=ungated 9399=drifted\n' "$BIND"; exit 0; }
+[ -n "${MEASURE_NOGATES:-}" ] && { printf 'BIND %s\nGATED \nPROFILE 9720=healthy 9721=ungated 9799=drifted\n' "$BIND"; exit 0; }
 echo "BIND $BIND"
-echo "GATED 9320 9399"
-echo "PROFILE 9320=healthy 9321=ungated 9399=drifted"
+echo "GATED 9720 9799"
+echo "PROFILE 9720=healthy 9721=ungated 9799=drifted"
 EOF
 chmod +x "$FX/bin/measure"
 
@@ -82,8 +95,8 @@ echo "chromium-rig — the healthy control group"
 out="$(run healthy)"; rc=$?
 is  "a healthy rig is up" "$(word "$out")" "up"
 is  "rc 0 — probing reports, it does not judge" "$rc" "0"
-has "the detail names the VNC port to connect to" "$out" "vnc:5910"
-has "the detail names the CDP port" "$out" "cdp:9320"
+has "the detail names the VNC port to connect to" "$out" "vnc:5810"
+has "the detail names the CDP port" "$out" "cdp:9720"
 
 echo "chromium-rig — the two warnings that stay 'up'"
 
@@ -101,8 +114,8 @@ is  "the detail spells the danger out" "$(det "$out")" "cdp-open-to-all-local-us
 # action, so it must not share a word with a dead rig.
 out="$(run drifted)"
 is  "a drifted rig is still up" "$(word "$out")" "up"
-has "the detail names the port actually running" "$out" "9399"
-has "the detail names the declared port too" "$out" "9322"
+has "the detail names the port actually running" "$out" "9799"
+has "the detail names the declared port too" "$out" "9722"
 
 echo "chromium-rig — the unusable states"
 
