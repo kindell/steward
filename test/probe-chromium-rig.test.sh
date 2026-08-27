@@ -159,6 +159,15 @@ out="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_RIG_MEASURE_CMD="$FX/bin/me
 is  "no session context is unknown" "$(word "$out")" "unknown"
 is  "the detail says why" "$(det "$out")" "no-session-context"
 
+# AN ARGUMENT THIS PROBER CANNOT HONOUR. `chromium-rig:<session>` was rejected
+# as registry syntax, but nothing stops a conf from writing it — and the
+# dispatcher forwards the arg. Measuring STEWARD_PROBE_SESSION anyway would
+# answer confidently about a session the conf did not name.
+out="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_RIG_MEASURE_CMD="$FX/bin/measure" \
+       STEWARD_PROBE_SESSION=healthy bash "$PROBE" chromium-rig other-session 2>&1)"
+is  "an argument is refused, not ignored" "$(word "$out")" "unknown"
+is  "the detail names the argument" "$(det "$out")" "unexpected-arg"
+
 # A SESSION THAT DECLARES NO RIG. Asking about an asset the session does not
 # have is a question with no measurement behind it.
 out="$(run norig)"

@@ -105,6 +105,36 @@ is "a missing estate probes directory falls through" \
 out="$(run "" "")"
 has "an empty type is unknown too" "$out" "unknown"
 
+echo "probe-dispatch — the type is a name, not a path"
+
+# THE TYPE BECOMES A PATH. ASSETS is the one registry field registry_load resets
+# without validating, and it is the one field that turns into an exec'd path
+# here. The write side's charset already excludes a separator, but a conf can be
+# written by hand and by the session-creation script, both of which bypass it.
+# A lookup that can walk out of the probes directory is a lookup nobody can
+# audit by listing that directory.
+# The escape is placed where it WOULD be reached: one level up from the product
+# probes directory, so `../elsewhere/sneak` resolves to a real executable. A
+# fixture whose escape target does not exist would pass on the fallthrough and
+# prove nothing.
+mkdir -p "$FX/product/elsewhere"
+printf '#!/bin/bash\nprintf "up escaped\\n"\n' > "$FX/product/elsewhere/sneak"
+chmod +x "$FX/product/elsewhere/sneak"
+out="$(run "../elsewhere/sneak" "")"
+has "a type with a path separator is refused" "$out" "unknown"
+has "the refusal names the separator" "$out" "path-separator"
+
+# A LEADING DOT is the other half: `.` and `..` are directory entries, and a
+# hidden name in the probes directory is a prober nobody reading `ls` would see.
+out="$(run ".hidden" "")"
+has "a type starting with a dot is refused" "$out" "unknown"
+has "the refusal names the dot" "$out" "starts-with-a-dot"
+
+# AND THE REFUSAL IS STILL AN ANSWER, rc 0 — a measurement that could not be
+# made, reported the same way as every other one.
+run "../elsewhere/sneak" "" >/dev/null 2>&1; rc=$?
+is "a refused type still returns rc 0" "$rc" "0"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

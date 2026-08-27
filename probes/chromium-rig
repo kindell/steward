@@ -47,6 +47,15 @@ set -uo pipefail
 # transcription that can drift.
 answer() { printf '%s %s\n' "$1" "$2"; exit 0; }
 
+# THE ARGUMENT IS NOT SILENTLY IGNORED. Nothing stops a conf from declaring
+# `chromium-rig:some-other-session`; the dispatcher forwards the arg faithfully
+# and this prober has no use for it, so it would measure whatever
+# STEWARD_PROBE_SESSION says and answer `up` about a session the reader never
+# asked about — the arg's whole content lost without a word. Saying so is the
+# only way the rejected syntax stays rejected instead of becoming a quiet
+# half-feature.
+[ -z "${2:-}" ] || answer unknown unexpected-arg
+
 session="${STEWARD_PROBE_SESSION:-}"
 [ -n "$session" ] || answer unknown no-session-context
 
@@ -56,10 +65,17 @@ HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 registry_load "$session" >/dev/null 2>&1 || answer unknown unloadable-session
 
 [ "${BROWSER_RIG:-}" = "yes" ] || answer unknown no-rig-declared
-host="${HOST:-$(hostname -s 2>/dev/null)}"
-cdp="${BROWSER_CDP:-}"
-vnc="${BROWSER_VNC:-}"
-profile="${BROWSER_PROFILE:-$session}"
+# THESE FIVE FIELDS ARE registry_load's GUARANTEE, NOT THIS FILE'S. It resets
+# every one of them before sourcing the conf, defaults HOST to the hub and
+# BROWSER_PROFILE to the session name, and REFUSES a BROWSER_RIG="yes" conf whose
+# display, CDP and VNC are not numeric. Fallbacks here would only look like a
+# defence: they would be dead on every path that gets this far, and they would
+# imply this prober survives a malformed conf when in fact registry_load has
+# already failed the load and sent us to `unloadable-session` above.
+host="$HOST"
+cdp="$BROWSER_CDP"
+vnc="$BROWSER_VNC"
+profile="$BROWSER_PROFILE"
 
 # ── the measurement ────────────────────────────────────────────────────────
 #
@@ -132,6 +148,23 @@ profiles="$(printf '%s' "$raw" | sed -n 's/^PROFILE //p')"
 # this prober to have anything to say about it; nothing at all means the question
 # went unanswered.
 [ -n "$binds" ] || answer unknown no-listeners-measured
+
+# GLOBBING OFF FROM HERE DOWN. Every loop below word-splits a string that came
+# off ANOTHER MACHINE — `for b in $2`, `for kv in $profiles` — and the splitting
+# is what those loops are for. The expansion that rides along with it is not: a
+# remote value carrying `*` or `?` would be expanded against THIS machine's
+# working directory, so a bind list or a profile name could silently become a
+# list of local filenames and the mapping would read a fiction. lib/assets.sh
+# carries the same guard for the same hazard.
+#
+# NO RESTORE, AND THAT IS CHECKED RATHER THAN ASSUMED: a prober is always its own
+# process — probe-dispatch `exec`s it, asset_probe runs it as a command — so this
+# flag dies with `answer`'s exit and can reach no caller. session_assets has to
+# restore because it deliberately runs IN the caller's shell.
+#
+# SET HERE, NOT AT THE TOP, so registry.sh is sourced and registry_load runs with
+# the shell options they were written under.
+set -f
 
 # ── reading the bind list ──────────────────────────────────────────────────
 #

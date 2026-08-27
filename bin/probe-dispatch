@@ -42,6 +42,21 @@ fi
 # directory lives inside the checkout and a test cannot write there.
 product_dir="${STEWARD_PRODUCT_PROBE_DIR:-$HERE/probes}"
 
+# THE TYPE BECOMES A PATH, so it has to be a NAME. `ASSETS` is the one registry
+# field registry_load resets without validating, and it is now the one field that
+# turns into something this script execs. That is not an escalation — a conf that
+# can set ASSETS is a conf that gets sourced, and lib/scaffold.sh's charset
+# already excludes `/` on the write side — but session-new.sh and a hand-edited
+# conf both bypass that charset, and a lookup that walks out of the probes
+# directory is a lookup nobody can audit by reading the directory.
+#
+# A REFUSAL IS AN ANSWER, not an error: this is still a measurement that could
+# not be made, so it gets the same word every other unmeasurable gets.
+case "$type" in
+  */*) printf 'unknown asset-type-has-a-path-separator\n'; exit 0 ;;
+  .*)  printf 'unknown asset-type-starts-with-a-dot\n'; exit 0 ;;
+esac
+
 if [ -n "$type" ]; then
   for dir in "$estate_dir" "$product_dir"; do
     [ -n "$dir" ] || continue
