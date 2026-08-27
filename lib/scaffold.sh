@@ -40,7 +40,7 @@ estate_scaffold() {
   # runs as shell when the conf is sourced. Restrict it to a safe character
   # set up front rather than trying to escape it on the way out.
   case "$assets" in
-    *[!A-Za-z0-9:._\ -]*) echo "scaffold: assets must contain only [A-Za-z0-9:._-] and spaces ('$assets')" >&2; return 64 ;;
+    *[!A-Za-z0-9:._@\ -]*) echo "scaffold: assets must contain only [A-Za-z0-9:._@-] and spaces ('''$assets''')" >&2; return 64 ;;
   esac
 
   if [ -e "$dir/estate/steward.conf" ]; then
