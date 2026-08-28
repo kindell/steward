@@ -435,10 +435,13 @@ cmd_sessions() {
     rm -f "$ident_out" "$ident_err"
     return 70
   }
-  local ident rc diag unreadable
+  local ident rc diag unreadable hidden
   session_identity_rows >"$ident_out" 2>"$ident_err"; rc=$?
   ident="$(cat "$ident_out")"; diag="$(cat "$ident_err")"
   unreadable="${SESSIONS_UNREADABLE:-}"
+  # SAME PRECEDENCE AS THE FILTER ITSELF, so the count printed here and the
+  # rows it describes always agree on who was asking.
+  hidden="${SESSIONS_HIDDEN:-0}"
   rm -f "$ident_out" "$ident_err"
 
   if [ "$rc" -ne 0 ]; then
@@ -483,7 +486,7 @@ cmd_sessions() {
       done)"
     # Join in jq rather than in shell string concatenation: the fields carry
     # names and timestamps, and hand-built json is where quoting bugs live.
-    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" '
+    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" --argjson _hidden "$hidden" '
       ($_live | split("\n") | map(select(length>0) | split("\t"))
         | map({key: .[0], value: {daemon:.[1], tmux:.[2], agent:.[3],
                                   runtime:.[4],
@@ -502,6 +505,10 @@ cmd_sessions() {
        # fewer rows. Always a list, empty when nothing failed, so a consumer
        # never has to tell absent from empty.
        unreadable: ($_unreadable | split("\n") | map(select(length>0))),
+       # A COUNT, NEVER NAMES — see lib/sessions.sh. `hidden` is always a
+       # number, even zero, so a consumer never has to guess whether the
+       # engine simply does not report hiding.
+       hidden: $_hidden,
        sessions: [ inputs | select(length>0) | split("\t") |
          {name:.[0], id:.[1], owner:.[2], domain:.[3], host:.[4],
           entity: (if .[5] == "-" then null else {name:.[5], relation:.[6]} end),
@@ -523,6 +530,17 @@ cmd_sessions() {
         "$(printf '%s' "$lrow" | cut -f4)" "$(printf '%s' "$lrow" | cut -f6)" \
         "$([ "$as" = "-" ] && printf '(declares none)' || printf '%s' "$as")"
     done
+    # SAME COUNT AS THE JSON FORM, said in a sentence instead of a field. A
+    # zero-row table after every full listing would be noise nobody reads by
+    # the second week, so this line is silent when nothing is hidden AND the
+    # table itself has rows — but the one case that line would otherwise
+    # leave ambiguous, an empty table, still gets it: "hidden" and "genuinely
+    # no sessions" must not look the same on a blank screen.
+    local _viewer_text; _viewer_text="${STEWARD_VIEWER:-$(id -un 2>/dev/null)}"
+    local _listed; _listed="$(printf '%s\n' "$ident" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if [ "$hidden" -gt 0 ] || [ "$_listed" -eq 0 ]; then
+      printf '(%s session(s) not visible to %s)\n' "$hidden" "$_viewer_text"
+    fi
     # A FULL COLUMN OF `unknown` WITH NO EXPLANATION IS THE SILENCE THIS
     # COMMAND EXISTS TO REMOVE. lib/liveness.sh keeps the unconfigured case
     # quiet on purpose — it is a normal state, and a warning on every run of

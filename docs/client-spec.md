@@ -128,6 +128,7 @@ means it never looked.
 {
   "ok": true,
   "unreadable": ["<session name>"],
+  "hidden": 0,
   "sessions": [
     {
       "name": "<name>", "id": "<name>", "owner": "<name>",
@@ -210,6 +211,25 @@ are absent from `sessions` — a half-read row would be worse than none — and
 `ok` stays `true`, because `ok` answers "was the registry readable", not "is
 every row here". A consumer that ignores `unreadable` reads a shorter list as a
 complete one, which is the failure this command was built against.
+
+**`hidden` is an integer, always present, and it is a COUNT — never names.**
+It is the number of sessions that are in the registry, loaded fine, and were
+left out of `sessions` because the viewer may not see them. A view that wants
+to list what a viewer may not see is asking for something this command
+deliberately does not hand out: enumerating the hidden sessions would leak
+precisely the thing being withheld, so all `hidden` says is that there is more
+here, never what. It stays separate from `unreadable` on purpose — one names a
+policy decision as a bare count, the other names a fault — and a session that
+is hidden is never also listed in `unreadable`, or a registry error could hide
+behind a visibility rule.
+
+**The viewer is the account running the command** — `id -un`, not a value a
+caller passes in the request — so `hidden` (and which sessions appear in
+`sessions` at all) changes with who runs it. Two people running this command
+against the same registry at the same moment can get different documents. A
+view that caches this response between users, or renders it for someone other
+than whoever's session actually ran the command, is showing one person's
+answer to another.
 
 **Refusals stay in the requested format.** When the registry cannot be read at
 all, `--json` answers `{"ok": false, "reason": "<the refusal text>"}` on stdout

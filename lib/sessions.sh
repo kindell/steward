@@ -62,6 +62,11 @@ _sessions_tsv_row() {
 # the kind of instruction that does not survive contact with a client. The
 # variable is reset on every call, so a previous run's failures never leak into
 # this one's answer.
+#
+# ALSO SETS SESSIONS_HIDDEN: a count, never names, of sessions that loaded
+# fine but the viewer may not see. Hidden and unreadable answer different
+# questions — one is policy, the other is a fault — and stay in separate
+# variables so a registry error can never disappear behind a visibility rule.
 session_identity_rows() {
   SESSIONS_UNREADABLE=""
   if ! command -v registry_load >/dev/null 2>&1; then
@@ -69,6 +74,18 @@ session_identity_rows() {
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || { echo "sessions: could not load the registry" >&2; return 1; }
   fi
+  if ! command -v session_visible_to >/dev/null 2>&1; then
+    local _here2; _here2="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # shellcheck source=visibility.sh
+    . "$_here2/visibility.sh" || { echo "sessions: could not load the visibility rule" >&2; return 1; }
+  fi
+  # WHO IS ASKING decides what is answered. The account running the command,
+  # not a value a caller passes in the document — STEWARD_VIEWER exists for the
+  # suite, the same seam shape as STEWARD_REGISTRY_DIR, and like that one it is
+  # a testing convenience rather than a boundary. The boundary is file
+  # permissions on the hosts; this is what the tool chooses to render.
+  local _viewer="${STEWARD_VIEWER:-$(id -un 2>/dev/null)}"
+  SESSIONS_HIDDEN=0
   # THE ESCAPER IS A DEPENDENCY, AND A MISSING ONE MUST REFUSE. Falling back to
   # a raw printf when jq is absent would restore the injection this layer was
   # fixed for, on the one machine least likely to notice.
@@ -125,6 +142,14 @@ session_identity_rows() {
       continue
     fi
     loaded=$((loaded + 1))
+    # A SESSION THE VIEWER MAY NOT SEE IS COUNTED, NOT NAMED. Omitting it
+    # silently would make a filtered fleet look like a small one; naming it
+    # would leak the thing being withheld. The count says "there is more here"
+    # without saying what.
+    if ! session_visible_to "$_viewer" "$n"; then
+      SESSIONS_HIDDEN=$((SESSIONS_HIDDEN + 1))
+      continue
+    fi
     # SNAPSHOT BEFORE USING. registry_load writes into this shell, and the next
     # iteration overwrites every one of these — read them out first.
     local id owner domain host assets
