@@ -215,6 +215,25 @@ bus_fraga_tillatet() {
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
   [ "$fo" = "$ft" ] && return 0
   [ "$do_" = "$dt" ] && return 0
+  # A GROUP GRANT. The target can name one or more groups in VISIBLE_TO, and a
+  # group is an entity with MEMBERS. If the asker's owner is among them, they may
+  # ask — this is the same key the cockpit's visibility rule uses, and it has to
+  # be the same: a cockpit that offers an `ask` against a session the bus then
+  # refuses is a promise the tool cannot keep.
+  #
+  # THE GRANT IS READ FROM THE TARGET'S CONF, never the asker's. The direction
+  # matters above all else: the one who owns the session lets people in, not
+  # the one who wants in.
+  local groups g members
+  groups="$(bus_fraga_falt "$to_" VISIBLE_TO)"
+  for g in $groups; do
+    # Refusal-as-default applies here too: a group that cannot be read opens
+    # nothing.
+    case "$g" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") continue ;; esac
+    members="$(sed -n 's/^MEMBERS="\(.*\)"/\1/p' \
+      "$(registry_entity_dir)/$g.conf" 2>/dev/null | head -1)"
+    case " $members " in *" $fo "*) return 0 ;; esac
+  done
   # THE MACHINE SESSION BELONGS TO EVERYONE WHO LIVES ON THE MACHINE. It does not
   # carry an entity — it carries a MACHINE — so the owner/domain rule would close
   # it to everyone but its own account, and it would then be useless for its only
