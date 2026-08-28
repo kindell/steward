@@ -103,8 +103,15 @@ fn spawn_attached_pane(app: &App) -> io::Result<pane::Pane> {
     let mut argv = vec![tmux_bin()];
     argv.extend(verb::attach_argv(&socket, &session.name, AttachMode::Interactive));
 
+    // Size the pty to the BODY, not the whole terminal. The draw carves a
+    // one-line status bar off the bottom (`Constraint::Length(1)`), so the
+    // child is rendered into `rows - 1`; handing it the full `rows` would let
+    // it place its last line, and its cursor, on a row that is never shown.
+    // saturating_sub + max(1) keeps a degenerate one-row terminal from asking
+    // for a zero-height pty.
     let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    pane::Pane::spawn_sized(&argv, rows, cols)
+    let body_rows = rows.saturating_sub(1).max(1);
+    pane::Pane::spawn_sized(&argv, body_rows, cols)
 }
 
 // key_to_bytes — translate a KeyEvent into the bytes a real terminal would
@@ -332,7 +339,9 @@ fn main() -> ExitCode {
                     }
                     Ok(Event::Resize(cols, rows)) => {
                         if let Some(p) = &pane {
-                            p.resize(rows, cols);
+                            // Same one-line status bar as at spawn: the pane
+                            // owns `rows - 1`, not the whole terminal.
+                            p.resize(rows.saturating_sub(1).max(1), cols);
                         }
                         let _ = term.autoresize();
                     }
