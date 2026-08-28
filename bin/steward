@@ -19,6 +19,7 @@
 #   steward init <estate> <ssh-target>
 #   steward scaffold <dir> org=<> team=<> owner=<> session=<> [assets=<>] [--json]
 #   steward assets <session> [--json]
+#   steward sessions [--json]
 set -uo pipefail
 
 HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -360,18 +361,105 @@ EOF
   return 0
 }
 
+# cmd_sessions [--json] — every session's identity joined with its liveness.
+#
+# TWO LAYERS, JOINED HERE AND NOWHERE ELSE. Identity is a free local read;
+# liveness shells out and can fail. They are measured separately so a failure in
+# one cannot erase the other — a session whose liveness could not be measured
+# still appears, with its identity intact and every liveness field `unknown`.
+#
+# REACH IS NOT HERE. Whether a session's declared assets actually answer costs a
+# remote round trip each and is `steward assets`' job. A view asks for that
+# separately and asynchronously; folding it in would make this command take half
+# a minute for a fleet of twenty.
+cmd_sessions() {
+  local want_json="" a
+  # DETECT --json BEFORE VALIDATING ANYTHING ELSE. A refusal must come back in
+  # the format the caller asked for; discovering the flag only after rejecting
+  # an earlier argument would answer a json request with a bare sentence, and a
+  # consumer reads that as a broken tool rather than a bad argument.
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+  for a in "$@"; do
+    case "$a" in
+      --json) ;;
+      *) if [ -n "$want_json" ]; then jq -cn --arg r "steward: unknown argument '$a'" '{ok:false,reason:$r}'
+         else printf 'steward: unknown argument %s\n' "$a" >&2; fi
+         return 64 ;;
+    esac
+  done
+
+  # shellcheck source=lib/sessions.sh
+  . "$HERE/lib/sessions.sh"
+  # shellcheck source=lib/liveness.sh
+  . "$HERE/lib/liveness.sh"
+
+  local ident rc
+  ident="$(session_identity_rows 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # A REFUSAL MUST STAY IN THE REQUESTED FORMAT. A consumer that asked for
+    # json and got a bare sentence on stdout cannot parse the refusal, so it
+    # reports a broken tool instead of an unreadable registry.
+    if [ -n "$want_json" ]; then jq -cn --arg r "$ident" '{ok:false,reason:$r}'
+    else printf '%s\n' "$ident" >&2; fi
+    return "$rc"
+  fi
+
+  local live; live="$(liveness_rows)"
+
+  if [ -n "$want_json" ]; then
+    # Materialise one liveness row per IDENTIFIED session — including the ones
+    # the command never mentioned, which liveness_for fills with `unknown`. No
+    # temporary file: this writes nothing into the checkout and cannot leave
+    # litter behind when a run is interrupted.
+    local joined=""
+    joined="$(printf '%s\n' "$ident" | while IFS=$'\t' read -r n _rest; do
+        [ -n "$n" ] || continue
+        liveness_for "$n" "$live"
+      done)"
+    # Join in jq rather than in shell string concatenation: the fields carry
+    # names and timestamps, and hand-built json is where quoting bugs live.
+    jq -Rn --arg _live "$joined" '
+      ($_live | split("\n") | map(select(length>0) | split("\t"))
+        | map({key: .[0], value: {daemon:.[1], tmux:.[2], agent:.[3],
+                                  runtime:.[4],
+                                  model:       (if .[5] == "-" then null else .[5] end),
+                                  lastActivity:(if .[6] == "-" then null else .[6] end)}})
+        | from_entries) as $L |
+      {ok:true,
+       sessions: [ inputs | select(length>0) | split("\t") |
+         {name:.[0], id:.[1], owner:.[2], domain:.[3], host:.[4],
+          entity: (if .[5] == "-" then null else {name:.[5], relation:.[6]} end),
+          assets: (if .[7] == "-" then [] else (.[7] | split(" ")) end),
+          liveness: ($L[.[0]] // {daemon:"unknown",tmux:"unknown",agent:"unknown",
+                                  runtime:"unknown",model:null,lastActivity:null})} ]}' \
+      <<<"$ident"
+  else
+    printf '%-24s %-10s %-8s %-12s %-14s %s\n' SESSION OWNER TMUX AGENT MODEL ASSETS
+    printf '%s\n' "$ident" | while IFS=$'\t' read -r n id ow dm ho en er as; do
+      [ -n "$n" ] || continue
+      local lrow; lrow="$(liveness_for "$n" "$live")"
+      printf '%-24s %-10s %-8s %-12s %-14s %s\n' \
+        "$n" "$ow" "$(printf '%s' "$lrow" | cut -f3)" \
+        "$(printf '%s' "$lrow" | cut -f4)" "$(printf '%s' "$lrow" | cut -f6)" \
+        "$([ "$as" = "-" ] && printf '(declares none)' || printf '%s' "$as")"
+    done
+  fi
+  return 0
+}
+
 case "${1:-}" in
   add)      shift; cmd_add "$@" ;;
   ls)       shift; cmd_ls "${1:-}" ;;
   init)     shift; cmd_init "$@" ;;
   scaffold) shift; cmd_scaffold "$@" ;;
   assets)   shift; cmd_assets "$@"; exit $? ;;
+  sessions) shift; cmd_sessions "$@"; exit $? ;;
   -h|--help) usage 0 ;;
   "")
     # No subcommand at all is the bare invocation reserved for the interactive
     # cockpit (a Rust TUI, not built yet) — say so rather than guess and fall
     # into --help.
-    echo "steward: interactive cockpit not built yet — use a subcommand (add, ls, init, scaffold, assets; see steward --help)" >&2
+    echo "steward: interactive cockpit not built yet — use a subcommand (add, ls, init, scaffold, assets, sessions; see steward --help)" >&2
     exit 64
     ;;
   *)
