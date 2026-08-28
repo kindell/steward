@@ -489,6 +489,18 @@ cmd_sessions() {
   live="$(cat "$live_out")"; rm -f "$live_out"
 
   if [ -n "$want_json" ]; then
+    # THE DOCUMENT DECLARES WHICH HOST IS HOME. Each session row carries its
+    # own host, but a consumer deciding whether that session can be reached
+    # LOCALLY (the cockpit's enter) needs the hub's name to compare against —
+    # without it, the cockpit attached a remote-host session to the local tmux
+    # and got "can't find session", measured on the real hub. HUB_HOST is a
+    # required estate field (the all-fail refusal above names it), so by this
+    # line it is readable; a failure here is still a refusal, never a guess.
+    local hub
+    hub="$(registry_hub_host)" || {
+      jq -cn --arg r "steward: the estate file names no readable HUB_HOST" '{ok:false,reason:$r}'
+      return 78
+    }
     # Materialise one liveness row per IDENTIFIED session — including the ones
     # the command never mentioned, which liveness_for fills with `unknown`. No
     # temporary file: this writes nothing into the checkout and cannot leave
@@ -500,7 +512,7 @@ cmd_sessions() {
       done)"
     # Join in jq rather than in shell string concatenation: the fields carry
     # names and timestamps, and hand-built json is where quoting bugs live.
-    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" --argjson _hidden "$hidden" '
+    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" --argjson _hidden "$hidden" --arg _hub "$hub" '
       ($_live | split("\n") | map(select(length>0) | split("\t"))
         | map({key: .[0], value: {daemon:.[1], tmux:.[2], agent:.[3],
                                   runtime:.[4],
@@ -513,6 +525,9 @@ cmd_sessions() {
                                   reason:      (if (.[7] // "-") == "-" then null else .[7] end)}})
         | from_entries) as $L |
       {ok:true,
+       # WHICH HOST IS HOME — the name each session"s own `host` is compared
+       # against when a consumer asks "is this reachable locally?".
+       hub: $_hub,
        # A PARTIAL FAILURE MUST BE VISIBLE IN THE DOCUMENT, not only on a second
        # stream. `ok:true` beside a shorter list asserts the answer is complete;
        # a session that vanished entirely is the spec"s founding complaint with

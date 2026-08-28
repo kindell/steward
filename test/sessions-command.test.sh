@@ -58,6 +58,11 @@ echo "== the json contract =="
 j="$(run --json)"; rc=$?
 is "rc 0" "$rc" "0"
 is "ok is true"       "$(printf '%s' "$j" | jq -r '.ok')" "true"
+# The document declares WHICH HOST IS HOME. A consumer deciding whether a
+# session can be attached locally needs the hub's name next to each session's
+# host — without it, the cockpit attached a remote-host session to the local
+# tmux and got "can't find session", measured on the real hub.
+is "hub declared"     "$(printf '%s' "$j" | jq -r '.hub')" "h1"
 is "two sessions"     "$(printf '%s' "$j" | jq -r '.sessions | length')" "2"
 is "identity joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.owner')" "a"
 is "entity joined"    "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.entity.name')" "Acme"

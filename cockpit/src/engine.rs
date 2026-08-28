@@ -39,6 +39,12 @@ pub struct Fleet {
     pub sessions: Vec<Session>,
     pub hidden: u32,
     pub unreadable: Vec<String>,
+    /// Which host is home: the hub's name, compared against each session's
+    /// own `host` to decide whether it can be reached locally (the enter
+    /// verb). Required, not defaulted — a document that cannot say where
+    /// home is cannot honestly answer "is this session local?", and a
+    /// guessed empty string would make every session read as remote.
+    pub hub: String,
 }
 
 // The engine's refusal shape, which is json too — a consumer that asked for
@@ -100,7 +106,7 @@ mod tests {
 
     #[test]
     fn reads_a_fleet() {
-        let json = r#"{"ok":true,"hidden":2,"unreadable":[],"sessions":[
+        let json = r#"{"ok":true,"hub":"h1","hidden":2,"unreadable":[],"sessions":[
             {"name":"alpha","id":"alpha","owner":"a","domain":"d","host":"h1",
              "entity":null,"assets":["widget"],
              "liveness":{"daemon":"loaded","tmux":"up","agent":"running",
@@ -112,13 +118,25 @@ mod tests {
         assert_eq!(f.sessions[0].assets, vec!["widget"]);
         assert_eq!(f.sessions[0].liveness.tmux, "up");
         assert_eq!(f.hidden, 2);
+        assert_eq!(f.hub, "h1");
+    }
+
+    // THE DOCUMENT MUST SAY WHERE HOME IS. A fleet without `hub` cannot answer
+    // "is this session local?", and defaulting it to "" would make every
+    // session read as remote — a guess, not a measurement. Missing hub is a
+    // parse error like the other required fields.
+    #[test]
+    fn a_document_missing_hub_is_an_error() {
+        let json = r#"{"ok":true,"hidden":0,"unreadable":[],"sessions":[]}"#;
+        let e = read_fleet(&stub(json)).unwrap_err();
+        assert!(e.contains("hub"), "the refusal should name the missing field, got: {e}");
     }
 
     // A COUNT THAT IS ZERO IS STILL A COUNT. The engine always emits `hidden`,
     // and a reader that treated a missing field as "no hiding" would guess.
     #[test]
     fn hidden_is_read_even_at_zero() {
-        let json = r#"{"ok":true,"hidden":0,"unreadable":[],"sessions":[]}"#;
+        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[]}"#;
         let f = read_fleet(&stub(json)).expect("should parse");
         assert_eq!(f.hidden, 0);
         assert!(f.sessions.is_empty());
@@ -128,7 +146,7 @@ mod tests {
     // the engine keeps them apart — so must the reader.
     #[test]
     fn unreadable_is_its_own_list() {
-        let json = r#"{"ok":true,"hidden":1,"unreadable":["broken"],"sessions":[]}"#;
+        let json = r#"{"ok":true,"hub":"h1","hidden":1,"unreadable":["broken"],"sessions":[]}"#;
         let f = read_fleet(&stub(json)).expect("should parse");
         assert_eq!(f.unreadable, vec!["broken"]);
         assert_eq!(f.hidden, 1);
@@ -138,7 +156,7 @@ mod tests {
     // rendering it as "" would make a measured emptiness look like a value.
     #[test]
     fn a_null_model_stays_none() {
-        let json = r#"{"ok":true,"hidden":0,"unreadable":[],"sessions":[
+        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
             {"name":"a","id":"a","owner":"o","domain":"d","host":"h","entity":null,
              "assets":[],"liveness":{"daemon":"missing","tmux":"down","agent":"not-running",
              "runtime":"claude-code","model":null,"lastActivity":null,"reason":"x"}}]}"#;
