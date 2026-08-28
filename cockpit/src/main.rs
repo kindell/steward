@@ -223,6 +223,25 @@ fn main() -> ExitCode {
     let mut exit_code = ExitCode::SUCCESS;
 
     loop {
+        // A DEAD CLIENT IS NOT A VIEW. The attached child can die on its own
+        // — tmux printing "can't find session" and exiting, a server going
+        // away — and a loop that never asks leaves the operator inside a
+        // frozen picture of a corpse, forwarding keystrokes into a closed
+        // pipe until they find the detach chord. Measured on the real hub,
+        // the first enter an operator tried. Asked every frame; when the
+        // child is gone the pane drops (its group is killed and reaped) and
+        // the list comes back with a visible line saying what happened.
+        if app.mode == Mode::Attached {
+            if let Some(p) = pane.as_mut() {
+                if p.exited() {
+                    pane = None;
+                    app.mode = Mode::Browsing;
+                    app.refusal =
+                        Some("the attached client exited — back to the list".to_string());
+                }
+            }
+        }
+
         // I4: THE ONE ACTION THIS PROGRAM EXISTS FOR gets its error handled
         // like every other failure here — not discarded. `cockpit | head -1`
         // reaches this via EPIPE (Rust ignores SIGPIPE), and a discarded draw

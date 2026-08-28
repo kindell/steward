@@ -141,6 +141,16 @@ impl Pane {
             p.set_size(rows, cols);
         }
     }
+
+    /// Whether the child has already exited. try_wait is the non-blocking
+    /// read: Some(status) means gone, None means still running. An error
+    /// reads as exited — a child whose state cannot be measured is not one
+    /// to keep forwarding an operator's keystrokes into; the caller's next
+    /// move (drop this pane, say so, return to the list) is the honest
+    /// answer either way, and Drop's group-kill makes it safe on both.
+    pub fn exited(&mut self) -> bool {
+        !matches!(self.child.try_wait(), Ok(None))
+    }
 }
 
 impl Drop for Pane {
@@ -248,5 +258,34 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         assert!(!alive, "child pid {pid} should be gone after Pane::drop");
+    }
+
+    // A DEAD CHILD MUST BE MEASURABLE. The attach path spawns a client that
+    // can die on its own (wrong session name, server gone) — a loop that
+    // cannot ask "did it exit?" keeps rendering the corpse and forwarding
+    // keystrokes into it. Measured on the real hub: tmux printed its error,
+    // the client exited, and the cockpit sat in the attached view.
+    #[test]
+    fn a_finished_child_reads_as_exited() {
+        let mut pane = Pane::spawn(&["bash".to_string(), "-c".to_string(), "printf done".to_string()])
+            .expect("spawn should succeed");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut gone = false;
+        while Instant::now() < deadline {
+            if pane.exited() {
+                gone = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "a child that finished must read as exited");
+    }
+
+    #[test]
+    fn a_running_child_reads_as_alive() {
+        let mut pane = Pane::spawn(&["bash".to_string(), "-c".to_string(), "sleep 30".to_string()])
+            .expect("spawn should succeed");
+        assert!(!pane.exited(), "a sleeping child must not read as exited");
+        drop(pane);
     }
 }
