@@ -265,6 +265,49 @@ STEWARD_REGISTRY_DIR="$ZERO/sessions.d" STEWARD_ESTATE_ROOT="$ZERO" \
 is "and a clean run resets it, it does not accumulate" \
    "$(printf '%s' "$SESSIONS_UNREADABLE")" ""
 
+# ── THE ARGV CHANNEL: A FIELD VALUE THAT IS ALSO A jq OPTION ───────────────
+#
+# The tab-and-newline fixture above proves control characters are escaped
+# INSIDE the filter. It cannot see this class: jq parses options anywhere on
+# its command line, including after --args, so a field value that happens to
+# spell an option token is consumed as an option rather than handed to @tsv as
+# data — no control character involved. ASSETS is the one registry field
+# registry_load resets without validating, so this is the field a hostile or
+# merely unlucky conf reaches through.
+#
+# TWO TOKENS, TWO DIFFERENT FAILURE SHAPES. --tab is swallowed as a jq flag,
+# short one field on the row; -h makes jq print its own usage text to stdout,
+# in place of the row. A fix that only closed one of these would still leave
+# the other indistinguishable from a healthy session.
+echo "== an ASSETS value that is a jq option token does not eat a field =="
+ARGV="$FX/argv-option"; mkdir -p "$ARGV/sessions.d" "$ARGV/entities.d" "$ARGV/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$ARGV/estate/steward.conf"
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="argvtab"\nASSETS="--tab"\n' \
+  > "$ARGV/sessions.d/argvtab.conf"
+argv_tab_out="$(STEWARD_REGISTRY_DIR="$ARGV/sessions.d" STEWARD_ESTATE_ROOT="$ARGV" session_identity_rows 2>/dev/null)"
+is "--tab: row count matches the registry (one session, one row)" \
+   "$(printf '%s\n' "$argv_tab_out" | grep -c .)" "1"
+is "--tab: the row still has all eight fields" \
+   "$(printf '%s\n' "$argv_tab_out" | awk -F'\t' 'NR==1{print NF}')" "8"
+is "--tab: the session's own name is present" \
+   "$(field "$argv_tab_out" argvtab 1)" "argvtab"
+
+rm -f "$ARGV/sessions.d/argvtab.conf"
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="argvh"\nASSETS="-h"\n' \
+  > "$ARGV/sessions.d/argvh.conf"
+argv_h_out="$(STEWARD_REGISTRY_DIR="$ARGV/sessions.d" STEWARD_ESTATE_ROOT="$ARGV" session_identity_rows 2>/dev/null)"
+is "-h: row count matches the registry (one session, one row)" \
+   "$(printf '%s\n' "$argv_h_out" | grep -c .)" "1"
+is "-h: the row still has all eight fields" \
+   "$(printf '%s\n' "$argv_h_out" | awk -F'\t' 'NR==1{print NF}')" "8"
+is "-h: the session's own name is present" \
+   "$(field "$argv_h_out" argvh 1)" "argvh"
+case "$argv_h_out" in
+  *"commandline JSON processor"*) bad "-h: jq's own usage text does not enter the row stream" "got: $argv_h_out" ;;
+  *)                               ok  "-h: jq's own usage text does not enter the row stream" ;;
+esac
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

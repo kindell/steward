@@ -233,6 +233,21 @@ is "the omitted session's reason is the seam's own" \
 is "and it is still not claimed to be down" \
    "$(printf '%s\n' "$drow" | cut -f3)" "unknown"
 
+# AN OMISSION LISTED WITHOUT A REASON IS ITS OWN WORD, NOT A BARE SILENCE. A
+# shim may name a session in `omitted` and still supply an empty string (or the
+# dash this file uses elsewhere for "nothing here") as its reason — that is
+# different from `not-in-answer` (the shim never mentioned the session at all)
+# and must not collapse into it.
+echo "== an omission listed with an empty reason gets its own word =="
+omit_empty="$(stub omitempty 'cat <<'"'"'J'"'"'
+{"sessions":{},"omitted":{"epsilon":""}}
+J')"
+STEWARD_LIVENESS_CMD="$omit_empty" liveness_rows >"$FX/rows.omitempty" 2>/dev/null
+rows_omitempty="$(cat "$FX/rows.omitempty")"
+erow="$(liveness_for epsilon "$rows_omitempty")"
+is "the reason is omitted-without-reason, not a blank" \
+   "$(reason_of "$erow")" "omitted-without-reason"
+
 # FIELD CONTENT IS A HAZARD ON THIS SIDE TOO. This half of the chain was never
 # injectable — @tsv has escaped every value since the first version — but no
 # fixture in this family ever carried whitespace in a field, so the property was

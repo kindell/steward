@@ -173,6 +173,17 @@ runtime that was measured perfectly well.
 `assets` is **always a list** — empty means the session declares none. A
 consumer that had to handle both a string and a list gets it wrong once.
 
+**Every string value in this document has passed through `jq -r @tsv` on its
+way here**, because the row it was read from has to survive as one row even
+when a value contains the row's own separators. That escaping is lossy at
+this layer, on purpose: a real tab in a registry value (most reachably
+`ASSETS`, the one field the registry loader does not validate) arrives here
+as the two characters `\` and `t`, not a tab; a real backslash arrives
+doubled. A view that renders `\t` believing the operator typed a literal
+backslash-t is reading the escaped form correctly — the actual tab was never
+representable inside a TSV field and this is the trade that keeps one bad
+value from shifting every column after it.
+
 **`reason` is a detail field, not a fifth status word.** A view renders the
 status words; `reason` is what it shows beside an `unknown` so that the reader
 is not left with six causes collapsed into one word. The values the product
@@ -189,6 +200,7 @@ itself produces:
 | `seam-unparseable` | the shim's output is not valid JSON |
 | `seam-no-sessions-object` | valid JSON, no `sessions` object |
 | `not-in-answer` | the shim ran and did not mention this session |
+| `omitted-without-reason` | the shim listed this session in `omitted` but gave an empty string or `"-"` as the reason |
 
 Anything else is a sentence the estate's shim supplied in its `omitted` map.
 

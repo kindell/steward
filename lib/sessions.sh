@@ -34,8 +34,21 @@
 # _sessions_tsv_row <field...> — the fields as one escaped TSV row on stdout.
 # Positional arguments, never a format string: a value that happened to contain
 # a percent sign must not be able to reach printf's parser either.
+#
+# THE `--` IS LOAD-BEARING, NOT NOISE. jq parses options anywhere on its
+# command line, including AFTER --args: a field value that happens to spell an
+# option token (ASSETS="--tab", ASSETS="-h", ...) is consumed as an option
+# instead of handed to @tsv as data. Measured 2026-08-28 on this jq: ASSETS
+# set to "--tab" silently drops a field (a 7-field row where every consumer
+# expects 8); "-h" replaces the row with jq's own usage text on stdout; "--arg"
+# makes jq refuse and the whole session vanishes from the output with rc still
+# 0 — the exact failure mode the previous fix round already spent a pass
+# eliminating for control characters, reopened here through the argv channel
+# instead. `--` tells jq "everything after this is data, not an option", which
+# is exactly the guarantee this function exists to make. Do not remove it as
+# dead-looking punctuation: removing it is how it was reintroduced once.
 _sessions_tsv_row() {
-  jq -rn --args '$ARGS.positional | @tsv' "$@"
+  jq -rn --args '$ARGS.positional | @tsv' -- "$@"
 }
 
 # session_identity_rows — one TSV row per session on stdout:
