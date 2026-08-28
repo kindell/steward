@@ -393,16 +393,45 @@ cmd_sessions() {
   # shellcheck source=lib/liveness.sh
   . "$HERE/lib/liveness.sh"
 
-  local ident rc
-  ident="$(session_identity_rows 2>&1)"; rc=$?
+  # STDOUT AND STDERR ARE CAPTURED SEPARATELY, ON PURPOSE. `$ident` below is
+  # parsed as pure TSV data by both the jq join and the human-form `read`
+  # loop — a single `2>&1` fold would land session_identity_rows' diagnostic
+  # sentence ("sessions: skipping '<name>' ...") inside that same variable
+  # as if it were a data row. That diagnostic is not rare: it fires on rc 0
+  # whenever some sessions load and one does not, which is a realistic fleet,
+  # not an edge case. Measured live before this fix: `--json` fed the merged
+  # text into jq's split() and produced no JSON at all, `jq: error ... split
+  # input and separator must be strings`, while still exiting 0 — silent
+  # corruption reported as success. The human form spliced the sentence into
+  # the middle of a table row. Route stderr to a temp file instead, so `$ident`
+  # stays pure data on every path; do not "simplify" this back to `2>&1`.
+  local ident_err; ident_err="$(mktemp)" || {
+    if [ -n "$want_json" ]; then jq -cn --arg r "steward: cannot create a temporary file" '{ok:false,reason:$r}'
+    else printf 'steward: cannot create a temporary file\n' >&2; fi
+    return 70
+  }
+  local ident rc diag
+  ident="$(session_identity_rows 2>"$ident_err")"; rc=$?
+  diag="$(cat "$ident_err")"; rm -f "$ident_err"
+
   if [ "$rc" -ne 0 ]; then
     # A REFUSAL MUST STAY IN THE REQUESTED FORMAT. A consumer that asked for
     # json and got a bare sentence on stdout cannot parse the refusal, so it
-    # reports a broken tool instead of an unreadable registry.
-    if [ -n "$want_json" ]; then jq -cn --arg r "$ident" '{ok:false,reason:$r}'
-    else printf '%s\n' "$ident" >&2; fi
+    # reports a broken tool instead of an unreadable registry. The registry
+    # could not be read at all here, so `$diag` — the captured stderr — IS the
+    # reason text; stdout is empty in this branch (session_identity_rows never
+    # emits a data row for a session it never loaded).
+    if [ -n "$want_json" ]; then jq -cn --arg r "$diag" '{ok:false,reason:$r}'
+    else printf '%s\n' "$diag" >&2; fi
     return "$rc"
   fi
+
+  # rc 0 WITH DIAGNOSTICS PRESENT is the partial-failure case: some sessions
+  # loaded, at least one did not, and that is diagnosis, not silence. Forward
+  # it unchanged to THIS command's own stderr — never into stdout, and never
+  # dropped. Dropping it here would re-create, one layer up, exactly the
+  # silence the skip-and-report fix in lib/sessions.sh removed.
+  [ -n "$diag" ] && printf '%s\n' "$diag" >&2
 
   local live; live="$(liveness_rows)"
 
@@ -435,6 +464,9 @@ cmd_sessions() {
       <<<"$ident"
   else
     printf '%-24s %-10s %-8s %-12s %-14s %s\n' SESSION OWNER TMUX AGENT MODEL ASSETS
+    # id, dm, ho, en, er are read but intentionally unused — they exist only
+    # to keep the read positionally aligned with the 8-field TSV; dropping
+    # them from the read would silently shift every field after the gap.
     printf '%s\n' "$ident" | while IFS=$'\t' read -r n id ow dm ho en er as; do
       [ -n "$n" ] || continue
       local lrow; lrow="$(liveness_for "$n" "$live")"

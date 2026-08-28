@@ -102,6 +102,46 @@ has "the table names a session" "$t" "alpha"
 has "and shows its liveness"    "$t" "up"
 has "and marks the unmeasured"  "$t" "unknown"
 
+# A SESSION THAT EXISTS BUT WON'T LOAD, ALONGSIDE ONES THAT DO. rc stays 0 (a
+# partial failure is not a systemic one) and lib/sessions.sh puts a diagnostic
+# sentence on STDERR. The bug this reproduces: capturing that diagnostic into
+# the same variable as the TSV data corrupts stdout — `--json` fed the merged
+# text into jq's split() and produced NO valid JSON at all, while still
+# exiting 0. This is the RED case: it must fail before the capture is split.
+echo "== a partial identity failure does not corrupt stdout (json) =="
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nID="broken"\n' \
+  > "$FX/sessions.d/broken.conf"
+
+jerr="$(mktemp)"
+jout="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+        STEWARD_LIVENESS_CMD="$FX/live" bash "$STEWARD" sessions --json 2>"$jerr")"
+jrc=$?
+jerrtext="$(cat "$jerr")"; rm -f "$jerr"
+is "rc is still 0"           "$jrc" "0"
+is "stdout is valid json"    "$(printf '%s' "$jout" | jq -e . >/dev/null 2>&1 && echo yes || echo no)" "yes"
+is "ok is true"               "$(printf '%s' "$jout" | jq -r '.ok' 2>/dev/null)" "true"
+is "the good session is present" \
+   "$(printf '%s' "$jout" | jq -r '[.sessions[].name] | index("alpha") != null' 2>/dev/null)" "true"
+case "$jout" in
+  *broken*) bad "the broken session's name is not inside the JSON" "found 'broken' in: $jout" ;;
+  *)        ok  "the broken session's name is not inside the JSON" ;;
+esac
+has "the diagnostic reached this command's own stderr instead" "$jerrtext" "broken"
+
+echo "== the same partial failure, human form =="
+herr="$(mktemp)"
+hout="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+        STEWARD_LIVENESS_CMD="$FX/live" bash "$STEWARD" sessions 2>"$herr")"
+hrc=$?
+herrtext="$(cat "$herr")"; rm -f "$herr"
+is "rc is still 0" "$hrc" "0"
+has "the good session's row is present" "$hout" "alpha"
+case "$hout" in
+  *"skipping"*) bad "the diagnostic sentence is not spliced into stdout" "found 'skipping' in: $hout" ;;
+  *)            ok  "the diagnostic sentence is not spliced into stdout" ;;
+esac
+has "but the diagnosis survives — on stderr" "$herrtext" "skipping 'broken'"
+
 # AN UNREADABLE REGISTRY REFUSES, in both forms, and the json form must still be
 # json — a consumer that gets a bare error string on stdout cannot parse it.
 echo "== an unreadable registry refuses in both forms =="
@@ -109,6 +149,20 @@ e="$(STEWARD_REGISTRY_DIR="$FX/nope" STEWARD_ESTATE_ROOT="$FX" \
      bash "$STEWARD" sessions --json 2>/dev/null)"; erc=$?
 is "json refusal is non-zero" "$( [ "$erc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and is still json"        "$(printf '%s' "$e" | jq -r '.ok')" "false"
+has "and the reason is the actual refusal text, not empty" \
+   "$(printf '%s' "$e" | jq -r '.reason')" "registry"
+
+# THE PLAIN-TEXT REFUSAL WAS PREVIOUSLY UNASSERTED — only the --json refusal's
+# content was checked. A fix that routed stderr to a file and then forgot to
+# read it back would silently produce an empty reason, and only an assertion
+# on the actual text (not just "non-zero rc") would catch that.
+eo="$(STEWARD_REGISTRY_DIR="$FX/nope" STEWARD_ESTATE_ROOT="$FX" \
+      bash "$STEWARD" sessions 2>/dev/null)"; eorc=$?
+et="$(STEWARD_REGISTRY_DIR="$FX/nope" STEWARD_ESTATE_ROOT="$FX" \
+      bash "$STEWARD" sessions 2>&1 1>/dev/null)"
+is "plain refusal is non-zero too" "$( [ "$eorc" -ne 0 ] && echo yes || echo no )" "yes"
+is "plain refusal's stdout is empty" "$eo" ""
+has "plain refusal's reason lands on stderr" "$et" "registry"
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
