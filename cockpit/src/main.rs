@@ -1,3 +1,4 @@
+mod app;
 mod engine;
 mod list;
 mod mark;
