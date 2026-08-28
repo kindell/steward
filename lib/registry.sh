@@ -589,6 +589,7 @@ registry_load() {
   # Reset before sourcing so a prior load never leaks into this one.
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""; RC_FRI=""
   ID=""; KIND=""; LIFECYCLE=""; ASSETS=""
+  VISIBILITY=""; VISIBLE_TO=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
   RUNTIME=""; MODEL=""; OPENCODE_VERSION=""; OPENCODE_PORT=""; AUTO_APPROVE=""; CLAUDE_MEMORY_ROOT=""
@@ -805,6 +806,34 @@ registry_load() {
     # rig and start nothing. Say so rather than ignoring them.
     echo "registry: $project.conf has BROWSER_* settings but no BROWSER_RIG=yes — the rig will NOT start" >&2
     return 1
+  fi
+  # VISIBILITY AND VISIBLE_TO — who, besides the owner, may see this session.
+  #
+  # THIS IS A RENDERING RULE, NOT ACCESS CONTROL. The registry is readable and
+  # a caller can set STEWARD_REGISTRY_DIR to any directory; what these fields
+  # buy is that the tools do not show, and do not offer, what the viewer is
+  # not meant to work on. The real boundary is file permissions on the hosts.
+  #
+  # THE VOCABULARY IS CLOSED at one word. `private` withdraws a session from the
+  # derived team view; absence means the ordinary derivation applies. A third
+  # word would be a declaration whose meaning no consumer knows.
+  case "${VISIBILITY:-}" in
+    ""|private) ;;
+    *) echo "registry: $project.conf invalid VISIBILITY '$VISIBILITY' (allowed: private, or omit)" >&2
+       return 1 ;;
+  esac
+  # EVERY NAME IN THE LIST IS CHECKED, not just the first: a list validated by
+  # its head is a list something appends to. The names index entity confs, so a
+  # value containing a slash or a leading dot would reach outside the entity
+  # directory the moment a consumer built a path from it.
+  if [ -n "${VISIBLE_TO:-}" ]; then
+    local _g
+    for _g in $VISIBLE_TO; do
+      if ! registry_valid_name "$_g"; then
+        echo "registry: $project.conf invalid VISIBLE_TO entry '$_g' (allowed: a-z 0-9 -)" >&2
+        return 1
+      fi
+    done
   fi
   OWNER_HOME="/Users/$OWNER"
   # Per-project secrets service account (a domain may have its own vault and account).
