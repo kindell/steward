@@ -3,8 +3,8 @@
 # verbs over plain ssh) PLUS a thin dispatcher onto the local bash engine for
 # commands that build an estate rather than reach one. Runs on macOS bash 3.2
 # as well as Linux — no arrays of the modern kind, no mapfile. A bare
-# invocation (no subcommand) is reserved for the interactive cockpit (a Rust
-# TUI, not built yet) and refuses rather than guessing.
+# invocation (no subcommand) starts the interactive cockpit (a Rust TUI under
+# cockpit/), building it with cargo first if this checkout has never built it.
 #
 # THE LIST IS PERSONAL, AND THAT IS THE DESIGN. Estates do not know about each
 # other; only the operator's own machine holds the list, and two operators of
@@ -571,11 +571,26 @@ case "${1:-}" in
   sessions) shift; cmd_sessions "$@"; exit $? ;;
   -h|--help) usage 0 ;;
   "")
-    # No subcommand at all is the bare invocation reserved for the interactive
-    # cockpit (a Rust TUI, not built yet) — say so rather than guess and fall
-    # into --help.
-    echo "steward: interactive cockpit not built yet — use a subcommand (add, ls, init, scaffold, assets, sessions; see steward --help)" >&2
-    exit 64
+    # No subcommand at all is the bare invocation — it starts the
+    # interactive cockpit (a Rust TUI) rather than falling into --help.
+    #
+    # BUILT ON FIRST USE, NOT VENDORED. A fresh checkout has no
+    # cockpit/target/ at all, and a bare invocation there must not look like
+    # the same refusal a genuinely broken build would produce — the two are
+    # different problems (nothing attempted vs. something failed) and get
+    # different messages and different exit codes.
+    _cockpit_bin="$HERE/cockpit/target/release/cockpit"
+    if [ ! -x "$_cockpit_bin" ]; then
+      _cargo="${STEWARD_CARGO_BIN:-$HOME/.cargo/bin/cargo}"
+      command -v "$_cargo" >/dev/null 2>&1 || _cargo="$(command -v cargo 2>/dev/null || true)"
+      if [ -z "$_cargo" ]; then
+        fel "the cockpit is not built and no cargo was found to build it with (looked for \$STEWARD_CARGO_BIN, ~/.cargo/bin/cargo, and cargo on PATH) — install Rust, or set STEWARD_CARGO_BIN" 69
+      fi
+      echo "steward: the cockpit is not built yet — building it now ($_cargo build --release)..." >&2
+      "$_cargo" build --release --manifest-path "$HERE/cockpit/Cargo.toml" \
+        || fel "the cockpit failed to build — see the cargo output above" 70
+    fi
+    exec "$_cockpit_bin"
     ;;
   *)
     est="$1"; shift

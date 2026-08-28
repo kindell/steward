@@ -6,7 +6,7 @@
 // that — which row is selected, and what each probe answered — and this file
 // is where that memory lives. It stays a plain struct and two free functions
 // on purpose: no thread, no terminal, no clock. A test drives it with a
-// `KeyCode` and a `ProbeResult` the same way a real run would, and never
+// `KeyEvent` and a `ProbeResult` the same way a real run would, and never
 // needs a screen to do it.
 //
 // SELECTION SATURATES, IT DOES NOT WRAP. Wrapping from the last row back to
@@ -29,14 +29,47 @@
 // the exact failure mode this whole system exists to refuse.
 
 use crate::engine::Fleet;
-use crossterm::event::KeyCode;
+use crate::verb;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
+
+// Mode — which of the two loops main.rs is running. Browsing draws the list
+// and the inspector, same as every plan before this one; Attached hands the
+// whole frame to the embedded pane and every key but the detach chord to the
+// child. The mode lives on App (not as a separate flag pane.rs owns) because
+// a keypress is what changes it, and handle_key is the one place a keypress
+// already changes state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Browsing,
+    Attached,
+}
+
+// THE DETACH CHORD IS Ctrl-]. tmux already owns C-b — reusing it, or anything
+// a finger could half-remember as it, would mean a detach attempt sometimes
+// reaches tmux instead of the cockpit. Ctrl-] has no tmux meaning to collide
+// with, and is rare enough in ordinary shell use that an operator attached to
+// a real session will not trigger it by accident.
+pub const DETACH_HINT: &str = "Ctrl-] detach";
 
 pub struct App {
     pub fleet: Fleet,
     pub selected: usize,
     pub probes: HashMap<String, ProbeResult>,
     pub quit: bool,
+    pub mode: Mode,
+    // THE VIEWER IS RESOLVED ONCE, AT CONSTRUCTION — not read fresh from the
+    // environment on every Enter. The seam is the same one the engine uses
+    // (lib/sessions.sh: STEWARD_VIEWER, falling back to `id -un`), but a test
+    // that wants a deterministic owner/viewer pair sets this field directly
+    // rather than mutating process environment a parallel test thread might
+    // also be reading.
+    pub viewer: String,
+    // A REFUSAL IS A THING TO SHOW, NOT A THING TO LOG. `enter` on a session
+    // someone else owns must stay visible until the operator moves on or
+    // tries again — silently doing nothing is the exact failure mode the
+    // owner gate exists to avoid drawing.
+    pub refusal: Option<String>,
 }
 
 impl App {
@@ -46,7 +79,60 @@ impl App {
             selected: 0,
             probes: HashMap::new(),
             quit: false,
+            mode: Mode::Browsing,
+            viewer: resolve_viewer(),
+            refusal: None,
         }
+    }
+}
+
+// resolve_viewer — STEWARD_VIEWER first, `id -un` as the fallback. THE SAME
+// SEAM THE ENGINE USES: a caller that already knows who is asking (a wrapper
+// script, a test harness) sets the variable rather than trusting whichever
+// account happens to be running this binary. An empty result is not a
+// wildcard — verb::enter_allowed already refuses an empty viewer on its own,
+// so a failed `id -un` fails closed rather than admitting everyone.
+fn resolve_viewer() -> String {
+    if let Ok(v) = std::env::var("STEWARD_VIEWER") {
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    std::process::Command::new("id")
+        .arg("-un")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+// is_detach — the one chord that means "leave Attached", recognized by its
+// modifiers as well as its code. `KeyEvent::from(KeyCode::Char(']'))` (no
+// modifiers) is a plain bracket keystroke meant for the child, not a detach —
+// only Ctrl-] detaches.
+fn is_detach(key: KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    match key.code {
+        // Ctrl-] as documented, and as every test in this module (and
+        // anything built via `KeyEvent::new`) constructs it directly.
+        KeyCode::Char(']') => true,
+        // THE SAME PHYSICAL KEYSTROKE, READ THE OTHER WAY. Ctrl-\, Ctrl-],
+        // Ctrl-^ and Ctrl-_ all send one of the raw bytes 0x1C-0x1F —
+        // exactly the same bytes a Ctrl-4..Ctrl-7 keypress sends on most
+        // keyboards, because the terminal has no way to tell the two
+        // apart without the kitty keyboard protocol, which this cockpit
+        // does not enable (see terminal.rs). crossterm's own non-kitty
+        // parser resolves that ambiguity by reporting the digit — measured
+        // live against a real tmux pane feeding this program's stdin,
+        // where a physical Ctrl-] arrived here as Char('5') + CONTROL, not
+        // Char(']') + CONTROL. Treating the two as equivalent is what
+        // makes the documented chord actually fire outside kitty.
+        KeyCode::Char('5') => true,
+        _ => false,
     }
 }
 
@@ -67,12 +153,29 @@ pub struct AssetAnswer {
     pub detail: String,
 }
 
-// handle_key — the only place a keypress becomes a state change. `Up`/`Down`
-// move the selection with saturation at both ends; `q` requests quit; every
-// other key is ignored in silence, because later plans are what give those
-// keys meaning, not this one inventing behavior for them early.
-pub fn handle_key(app: &mut App, key: KeyCode) {
-    match key {
+// handle_key — the only place a keypress becomes a state change. In
+// Browsing: `Up`/`Down` move the selection with saturation at both ends;
+// `q` requests quit; `Enter` on the selected row either attaches (the
+// viewer owns it) or sets a visible refusal (it does not); every other key
+// is ignored in silence, because later plans are what give those keys
+// meaning, not this one inventing behavior for them early.
+//
+// IN ATTACHED, THIS FUNCTION DOES ALMOST NOTHING ON PURPOSE. Every key
+// except the detach chord belongs to the child process, not to this
+// program's own state — main.rs is what forwards it to `pane.send`. This
+// function's whole job while attached is recognizing the one chord that
+// exits, which is also why `q` must NOT be special-cased here for that mode:
+// a `q` typed into a real program running inside the pane (a pager, an
+// editor) has to reach it, never quit the cockpit instead.
+pub fn handle_key(app: &mut App, key: KeyEvent) {
+    if app.mode == Mode::Attached {
+        if is_detach(key) {
+            app.mode = Mode::Browsing;
+        }
+        return;
+    }
+
+    match key.code {
         KeyCode::Down => {
             // AN EMPTY FLEET HAS NO LAST ROW TO SATURATE AT. `len() - 1` on a
             // zero-length vec underflows a usize, so the empty case is
@@ -88,6 +191,25 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('q') => {
             app.quit = true;
+        }
+        KeyCode::Enter => {
+            app.refusal = None;
+            if let Some(session) = app.fleet.sessions.get(app.selected) {
+                if verb::enter_allowed(&session.owner, &app.viewer) {
+                    app.mode = Mode::Attached;
+                } else {
+                    // NAMES OWNERSHIP, NOT PERMISSION. "denied" or "not
+                    // allowed" would read like a rank the operator lacks;
+                    // the actual reason is narrower and more specific than
+                    // that — this session belongs to someone else, and
+                    // enter never crosses that line for anyone, root
+                    // included.
+                    app.refusal = Some(format!(
+                        "{} is owned by {} — enter stays with the owner",
+                        session.name, session.owner
+                    ));
+                }
+            }
         }
         _ => {}
     }
@@ -140,7 +262,7 @@ pub fn probe_status_word(r: &ProbeResult) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::engine::{Liveness, Session};
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     // BUILT FROM THE ENGINE'S OWN STRUCTS, not from a fixture json string —
     // this module never re-parses anything, so it constructs the shapes it
@@ -168,6 +290,28 @@ mod tests {
         }
     }
 
+    // A SECOND FIXTURE, OWNER CHOSEN BY THE CALLER — the enter/refusal tests
+    // need a session whose owner and the app's viewer can be set
+    // independently, which fleet_of's hardcoded "alice" cannot express.
+    fn fleet_owned_by(name: &str, owner: &str) -> Fleet {
+        Fleet {
+            sessions: vec![Session {
+                name: name.to_string(),
+                owner: owner.to_string(),
+                host: "h".to_string(),
+                assets: vec!["x".to_string()],
+                liveness: Liveness {
+                    tmux: "unknown".to_string(),
+                    agent: "unknown".to_string(),
+                    model: None,
+                    reason: None,
+                },
+            }],
+            hidden: 0,
+            unreadable: Vec::new(),
+        }
+    }
+
     // A FRESH APP HAS NOTHING SELECTED, PROBED OR QUEUED TO QUIT. Not named
     // in the brief's contract, but App::new is part of the interface this
     // task produces and a caller downstream needs its starting state pinned.
@@ -177,6 +321,7 @@ mod tests {
         assert_eq!(app.selected, 0);
         assert!(app.probes.is_empty());
         assert!(!app.quit);
+        assert_eq!(app.mode, Mode::Browsing);
     }
 
     // SELECTION SATURATES. Wrapping teleports the eye; a list this short has no
@@ -184,17 +329,17 @@ mod tests {
     #[test]
     fn down_moves_and_saturates_at_the_end() {
         let mut app = App::new(fleet_of(&["a", "b", "c"]));
-        handle_key(&mut app, KeyCode::Down);
-        handle_key(&mut app, KeyCode::Down);
-        handle_key(&mut app, KeyCode::Down);
-        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
         assert_eq!(app.selected, 2);
     }
 
     #[test]
     fn up_saturates_at_zero() {
         let mut app = App::new(fleet_of(&["a", "b", "c"]));
-        handle_key(&mut app, KeyCode::Up);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Up));
         assert_eq!(app.selected, 0);
     }
 
@@ -202,7 +347,7 @@ mod tests {
     fn q_requests_quit() {
         let mut app = App::new(fleet_of(&["a"]));
         assert!(!app.quit);
-        handle_key(&mut app, KeyCode::Char('q'));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('q')));
         assert!(app.quit);
     }
 
@@ -211,7 +356,7 @@ mod tests {
     #[test]
     fn an_unhandled_key_is_ignored_silently() {
         let mut app = App::new(fleet_of(&["a", "b"]));
-        handle_key(&mut app, KeyCode::Char('z'));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('z')));
         assert_eq!(app.selected, 0);
         assert!(!app.quit);
     }
@@ -221,12 +366,108 @@ mod tests {
     #[test]
     fn keys_on_an_empty_fleet_do_not_panic() {
         let mut app = App::new(fleet_of(&[]));
-        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
         assert_eq!(app.selected, 0);
-        handle_key(&mut app, KeyCode::Up);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Up));
         assert_eq!(app.selected, 0);
-        handle_key(&mut app, KeyCode::Char('q'));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('q')));
         assert!(app.quit);
+    }
+
+    // CTRL-] DETACHES, A PLAIN ']' DOES NOT. The chord is defined by its
+    // modifiers as much as its code — this is exactly the information the
+    // old `KeyCode`-only signature threw away before it ever reached here.
+    #[test]
+    fn ctrl_rbracket_detaches_from_attached_mode() {
+        let mut app = App::new(fleet_of(&["a"]));
+        app.mode = Mode::Attached;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.mode, Mode::Browsing);
+    }
+
+    // THE SAME PHYSICAL KEYSTROKE, AS A REAL TERMINAL ACTUALLY REPORTS IT.
+    // Measured live 2026-08-28 against a real tmux pane: without the kitty
+    // keyboard protocol, crossterm's parser cannot tell Ctrl-] apart from
+    // Ctrl-5 (both send the same raw byte), and it resolves the ambiguity
+    // by reporting the digit. A regression here would mean the documented
+    // chord — the one written into the status line — silently stops
+    // working the moment it is pressed for real, while every test using
+    // the bracket form directly kept passing.
+    #[test]
+    fn ctrl_5_also_detaches_the_same_physical_keystroke() {
+        let mut app = App::new(fleet_of(&["a"]));
+        app.mode = Mode::Attached;
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.mode, Mode::Browsing);
+    }
+
+    // A PLAIN '5' (NO CONTROL) MUST NOT DETACH — it is an ordinary digit a
+    // program running inside the pane is entitled to receive.
+    #[test]
+    fn a_plain_five_does_not_detach() {
+        let mut app = App::new(fleet_of(&["a"]));
+        app.mode = Mode::Attached;
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('5')));
+        assert_eq!(app.mode, Mode::Attached);
+    }
+
+    // A PLAIN q QUITS IN BROWSING BUT MUST REACH THE CHILD WHILE ATTACHED —
+    // a pager or an editor running inside the pane has its own `q`, and the
+    // cockpit must not steal the keystroke from it.
+    #[test]
+    fn plain_q_quits_in_browsing_but_not_attached() {
+        let mut browsing = App::new(fleet_of(&["a"]));
+        handle_key(&mut browsing, KeyEvent::from(KeyCode::Char('q')));
+        assert!(browsing.quit);
+
+        let mut attached = App::new(fleet_of(&["a"]));
+        attached.mode = Mode::Attached;
+        handle_key(&mut attached, KeyEvent::from(KeyCode::Char('q')));
+        assert!(!attached.quit);
+        assert_eq!(attached.mode, Mode::Attached);
+    }
+
+    // ENTER ON A SESSION THE VIEWER OWNS ATTACHES.
+    #[test]
+    fn enter_on_an_owned_session_attaches() {
+        let mut app = App::new(fleet_owned_by("a", "alice"));
+        app.viewer = "alice".to_string();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Attached);
+        assert!(app.refusal.is_none());
+    }
+
+    // ENTER ON A SESSION THE VIEWER DOES NOT OWN IS REFUSED VISIBLY — it
+    // must stay in Browsing AND leave a message behind, not just do nothing.
+    // A silent no-op here would be indistinguishable from a dropped
+    // keystroke, and an operator would have no way to tell the two apart.
+    #[test]
+    fn enter_on_a_foreign_session_is_refused_visibly() {
+        let mut app = App::new(fleet_owned_by("a", "alice"));
+        app.viewer = "bob".to_string();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browsing);
+        assert!(app.refusal.is_some());
+    }
+
+    // THE REFUSAL NAMES OWNERSHIP, NOT PERMISSION. "denied" reads like a
+    // rank the operator lacks; the actual reason is narrower — this session
+    // belongs to someone else, full stop, and that is what the message says.
+    #[test]
+    fn the_refusal_names_ownership_not_permission() {
+        let mut app = App::new(fleet_owned_by("a", "alice"));
+        app.viewer = "bob".to_string();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        let msg = app.refusal.expect("a refusal message");
+        assert!(msg.contains("alice"), "refusal should name the owner: {msg}");
+        assert!(!msg.to_lowercase().contains("denied"));
+        assert!(!msg.to_lowercase().contains("permission"));
     }
 
     // A PROBE RESULT LANDS ON ITS SESSION, not on the selected one — the user
