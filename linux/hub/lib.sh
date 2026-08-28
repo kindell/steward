@@ -219,11 +219,17 @@ bus_fraga_tillatet() {
   # group is an entity with MEMBERS. If the asker's owner is among them, they may
   # ask.
   #
-  # THE GROUP GRANT IS THE ONLY PART THIS GATE SHARES WITH THE VISIBILITY RULE
-  # IN lib/visibility.sh. An earlier wording of this comment claimed the two use
-  # "the same key", and that a client therefore cannot offer an `ask` this gate
-  # then refuses. It was false in both directions. Measured 2026-08-28 by running
-  # session_visible_to and this function over one fixture registry:
+  # WHAT THIS GATE SHARES WITH THE VISIBILITY RULE IN lib/visibility.sh IS TWO
+  # THINGS: THE OWNER IDENTITY AND THE GROUP GRANT, NOTHING ELSE. An earlier
+  # wording of this comment claimed the two use "the same key", and that a
+  # client therefore cannot offer an `ask` this gate then refuses. It was false
+  # in both directions. A later fix claimed instead that only the group grant
+  # is shared and counted three divergences — that missed that the owner path
+  # above (fo = ft) is the same test as the visibility rule's "viewer = OWNER"
+  # under the mapping the rest of this comment already uses (the asker's owner
+  # := the viewer), same outcome including under `private` — and it missed a
+  # fourth divergence. Measured 2026-08-28 by running session_visible_to and
+  # this function over one fixture registry:
   #
   #   target OWNER=b DOMAIN=cust, cust MANAGED_BY=mgr, mgr MEMBERS=a
   #     visibility rule: VISIBLE     this gate: refused
@@ -231,8 +237,11 @@ bus_fraga_tillatet() {
   #     visibility rule: hidden      this gate: ALLOWED
   #   target is a machine session, asker lives on the same host
   #     visibility rule: hidden      this gate: ALLOWED
+  #   asker OWNER=a DOMAIN=cust, target OWNER=b DOMAIN=cust, cust has no
+  #   MEMBERS at all (only MANAGED_BY=mgr, and a is not in mgr either)
+  #     visibility rule: hidden      this gate: ALLOWED
   #
-  # THREE KNOWN DIVERGENCES, in the order measured above:
+  # FOUR KNOWN DIVERGENCES, in the order measured above:
   #   1. NO MANAGED_BY HOP HERE. The visibility rule takes one hop from the
   #      target's domain up to the entity that manages it; this gate compares
   #      the two domain names for equality and stops there. That is the very
@@ -243,6 +252,14 @@ bus_fraga_tillatet() {
   #      which is the leak in the opposite direction.
   #   3. THE MACHINE CARVE-OUT BELOW HAS NO COUNTERPART in the visibility rule,
   #      which knows nothing about a machine's own session.
+  #   4. THIS GATE COMPARES DOMAIN NAMES FOR EQUALITY; THE VISIBILITY RULE
+  #      REQUIRES MEMBERSHIP IN THE DOMAIN ENTITY. `do_ = dt` grants as soon as
+  #      the two sessions' DOMAIN names match, regardless of what the entity's
+  #      MEMBERS says — the entity need not even name the asker's owner, as in
+  #      the fourth row above. The visibility rule's step 4 instead looks up
+  #      the domain entity and requires the viewer to appear in its MEMBERS.
+  #      This is the same direction of leak as divergence 1: more open than
+  #      the rule, never less.
   #
   # CLOSING THE GAP IS A DESIGN CHANGE, NOT A COMMENT FIX. It means giving a
   # gate whose refusal-as-default reasoning is load-bearing a derivation hop and
