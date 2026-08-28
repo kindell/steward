@@ -121,17 +121,33 @@ _ls_en() {
   # and an unreachable estate renders as a section with no rows and no warning —
   # a dead machine that reads as an empty one. Capturing makes the status the
   # one thing it is about.
-  local _out _rc
-  _out="$("$SSH_BIN" "$SSH" "$(_status_cmd)" 2>&1)"; _rc=$?
+  #
+  # AND THE TWO STREAMS ARE KEPT APART. `2>&1` here is not the inert kind: the
+  # producing process is ssh, which writes to stderr on SUCCESS routinely —
+  # "Warning: Permanently added ... to the list of known hosts", banners,
+  # "Pseudo-terminal will not be allocated", locale warnings. Merged, every one
+  # of those went through the prefixer and rendered as a table row, and a line
+  # that arrived first could take the header slot. The comment below reasons
+  # carefully about the rc != 0 case and never considered rc == 0 with stderr,
+  # which is the same hazard through the same line.
+  local _out _err _rc _errf
+  _errf="$(mktemp)" || { echo "  could not create a temporary file — skipping $name" >&2; return 1; }
+  _out="$("$SSH_BIN" "$SSH" "$(_status_cmd)" 2>"$_errf")"; _rc=$?
+  _err="$(cat "$_errf")"; rm -f "$_errf"
   # ONLY A SUCCESSFUL ANSWER IS A TABLE. A failed call returns ssh's error
   # lines, and prefixing those makes an error look like data: the first line
   # gets the ESTATE heading and the rest line up as rows. Measured 2026-08-24
   # against an estate whose key could not be used — "ESTATE  Permission denied,
   # please try again." A reader skims that as a session list.
   if [ "$_rc" -eq 0 ]; then
+    # ON SUCCESS, ssh's STDERR IS DIAGNOSIS, NOT DATA. It is forwarded rather
+    # than dropped — a host key that was just added is worth seeing — but it
+    # goes to this command's own stderr, where it cannot become a row.
+    [ -z "$_err" ] || printf '%s\n' "$_err" >&2
     printf '%s\n' "$_out" | _prefix_estate "$name"
   else
     [ -z "$_out" ] || printf '%s\n' "$_out"
+    [ -z "$_err" ] || printf '%s\n' "$_err"
     echo "  UNREACHABLE or refused — the rows above (if any) are partial."
   fi
 }
@@ -405,14 +421,25 @@ cmd_sessions() {
   # corruption reported as success. The human form spliced the sentence into
   # the middle of a table row. Route stderr to a temp file instead, so `$ident`
   # stays pure data on every path; do not "simplify" this back to `2>&1`.
-  local ident_err; ident_err="$(mktemp)" || {
+  #
+  # AND STDOUT GOES TO A FILE TOO, not into `$( )`. A command substitution is a
+  # subshell: session_identity_rows sets SESSIONS_UNREADABLE and liveness_rows
+  # sets LIVENESS_SEAM_REASON, and neither would survive the trip back. Those
+  # two variables are how the names of unloadable sessions and the reason a
+  # measurement could not be made reach the JSON document below, which is the
+  # whole reason both exist — so the redirection is load-bearing, not a style.
+  local ident_out ident_err
+  ident_out="$(mktemp)" && ident_err="$(mktemp)" || {
     if [ -n "$want_json" ]; then jq -cn --arg r "steward: cannot create a temporary file" '{ok:false,reason:$r}'
     else printf 'steward: cannot create a temporary file\n' >&2; fi
+    rm -f "$ident_out" "$ident_err"
     return 70
   }
-  local ident rc diag
-  ident="$(session_identity_rows 2>"$ident_err")"; rc=$?
-  diag="$(cat "$ident_err")"; rm -f "$ident_err"
+  local ident rc diag unreadable
+  session_identity_rows >"$ident_out" 2>"$ident_err"; rc=$?
+  ident="$(cat "$ident_out")"; diag="$(cat "$ident_err")"
+  unreadable="${SESSIONS_UNREADABLE:-}"
+  rm -f "$ident_out" "$ident_err"
 
   if [ "$rc" -ne 0 ]; then
     # A REFUSAL MUST STAY IN THE REQUESTED FORMAT. A consumer that asked for
@@ -433,7 +460,16 @@ cmd_sessions() {
   # silence the skip-and-report fix in lib/sessions.sh removed.
   [ -n "$diag" ] && printf '%s\n' "$diag" >&2
 
-  local live; live="$(liveness_rows)"
+  # SAME REASON, SAME SHAPE: liveness_rows must not run in a subshell either, or
+  # LIVENESS_SEAM_REASON never comes back and every `unknown` below loses its
+  # reason — which is the exact silence this command exists to make impossible.
+  local live live_out; live_out="$(mktemp)" || {
+    if [ -n "$want_json" ]; then jq -cn --arg r "steward: cannot create a temporary file" '{ok:false,reason:$r}'
+    else printf 'steward: cannot create a temporary file\n' >&2; fi
+    return 70
+  }
+  liveness_rows >"$live_out"
+  live="$(cat "$live_out")"; rm -f "$live_out"
 
   if [ -n "$want_json" ]; then
     # Materialise one liveness row per IDENTIFIED session — including the ones
@@ -447,20 +483,32 @@ cmd_sessions() {
       done)"
     # Join in jq rather than in shell string concatenation: the fields carry
     # names and timestamps, and hand-built json is where quoting bugs live.
-    jq -Rn --arg _live "$joined" '
+    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" '
       ($_live | split("\n") | map(select(length>0) | split("\t"))
         | map({key: .[0], value: {daemon:.[1], tmux:.[2], agent:.[3],
                                   runtime:.[4],
                                   model:       (if .[5] == "-" then null else .[5] end),
-                                  lastActivity:(if .[6] == "-" then null else .[6] end)}})
+                                  lastActivity:(if .[6] == "-" then null else .[6] end),
+                                  # `reason` IS A DETAIL FIELD, LIKE THE REACH
+                                  # LAYER"S `detail` — not a fifth status word.
+                                  # null means the session was genuinely
+                                  # measured and there is nothing to explain.
+                                  reason:      (if (.[7] // "-") == "-" then null else .[7] end)}})
         | from_entries) as $L |
       {ok:true,
+       # A PARTIAL FAILURE MUST BE VISIBLE IN THE DOCUMENT, not only on a second
+       # stream. `ok:true` beside a shorter list asserts the answer is complete;
+       # a session that vanished entirely is the spec"s founding complaint with
+       # fewer rows. Always a list, empty when nothing failed, so a consumer
+       # never has to tell absent from empty.
+       unreadable: ($_unreadable | split("\n") | map(select(length>0))),
        sessions: [ inputs | select(length>0) | split("\t") |
          {name:.[0], id:.[1], owner:.[2], domain:.[3], host:.[4],
           entity: (if .[5] == "-" then null else {name:.[5], relation:.[6]} end),
           assets: (if .[7] == "-" then [] else (.[7] | split(" ")) end),
           liveness: ($L[.[0]] // {daemon:"unknown",tmux:"unknown",agent:"unknown",
-                                  runtime:"unknown",model:null,lastActivity:null})} ]}' \
+                                  runtime:"unknown",model:null,lastActivity:null,
+                                  reason:"not-in-answer"})} ]}' \
       <<<"$ident"
   else
     printf '%-24s %-10s %-8s %-12s %-14s %s\n' SESSION OWNER TMUX AGENT MODEL ASSETS
@@ -475,6 +523,16 @@ cmd_sessions() {
         "$(printf '%s' "$lrow" | cut -f4)" "$(printf '%s' "$lrow" | cut -f6)" \
         "$([ "$as" = "-" ] && printf '(declares none)' || printf '%s' "$as")"
     done
+    # A FULL COLUMN OF `unknown` WITH NO EXPLANATION IS THE SILENCE THIS
+    # COMMAND EXISTS TO REMOVE. lib/liveness.sh keeps the unconfigured case
+    # quiet on purpose — it is a normal state, and a warning on every run of
+    # every command is a warning nobody reads by the second week. But a human
+    # who just asked for this table and got an unmeasured column deserves the
+    # one sentence that says why, and where to fix it. Stderr, so the table
+    # stays pure data; only in the human form, so a consumer is not spammed.
+    if [ "${LIVENESS_SEAM_REASON:-}" = "seam-not-configured" ]; then
+      printf 'steward: no liveness command configured — set STEWARD_LIVENESS_CMD to the estate'"'"'s shim; the liveness columns above are UNMEASURED, not unhealthy\n' >&2
+    fi
   fi
   return 0
 }

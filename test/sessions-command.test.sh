@@ -29,6 +29,11 @@ printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nI
 printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="beta"\n' \
   > "$FX/sessions.d/beta.conf"
 printf 'NAME="Acme"\nMANAGED_BY="team-one"\n' > "$FX/entities.d/acme.conf"
+# THE MANAGER MUST EXIST. The entity join goes through registry_entity_load,
+# which refuses a MANAGED_BY that does not resolve — a relation pointing at
+# nothing reads as structure and carries none. A fixture that omitted this file
+# would be measuring a broken registry rather than the join.
+printf 'NAME="Team One"\nMEMBERS="a"\n' > "$FX/entities.d/team-one.conf"
 
 cat > "$FX/live" <<'EOF'
 #!/bin/bash
@@ -80,6 +85,17 @@ is "model is null, not the string unknown" \
 is "lastActivity is null too, not the string unknown" \
    "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="beta")|.liveness.lastActivity')" "null"
 
+# AND THE UNKNOWN SAYS WHY. Six distinct causes render as this one word; a view
+# cannot invent a reason it was never given, so the reason travels with it.
+# `reason` is a DETAIL beside the status words, never a fifth status word.
+echo "== an unknown carries its reason; a measurement carries none =="
+is "the reason key is always there" \
+   "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.liveness|has("reason")')" "true"
+is "a measured session has no reason to give" \
+   "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.reason')" "null"
+is "an unmeasured session says the seam did not mention it" \
+   "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="beta")|.liveness.reason')" "not-in-answer"
+
 # NO LIVENESS COMMAND AT ALL is the state of a fresh estate. Every session must
 # then be unknown — never healthy, never missing from the list.
 echo "== with no liveness command, every session is still listed and unknown =="
@@ -87,6 +103,29 @@ j2="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
       env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>&1)"
 is "both sessions still listed" "$(printf '%s' "$j2" | jq -r '.sessions | length')" "2"
 is "alpha is unknown too"       "$(printf '%s' "$j2" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "unknown"
+is "and every one of them says WHY it is unknown" \
+   "$(printf '%s' "$j2" | jq -r '[.sessions[]|select(.liveness.reason=="seam-not-configured")]|length')" "2"
+
+# THE HUMAN FORM SAYS IT TOO — on stderr, so the table stays pure data.
+h2err="$(mktemp)"
+STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+  env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions >/dev/null 2>"$h2err"
+has "the human form names the missing variable" "$(cat "$h2err")" "STEWARD_LIVENESS_CMD"
+rm -f "$h2err"
+
+# A SEAM THAT WAS CONFIGURED AND COULD NOT BE RUN IS A DIFFERENT FACT FROM ONE
+# THAT WAS NEVER CONFIGURED — and neither may render as the other.
+echo "== a seam that could not be run says so, on stderr and in the document =="
+serr="$(mktemp)"
+j2b="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+       STEWARD_LIVENESS_CMD="$FX/no-such-shim" bash "$STEWARD" sessions --json 2>"$serr")"
+serrtext="$(cat "$serr")"; rm -f "$serr"
+is "the sessions are still listed" "$(printf '%s' "$j2b" | jq -r '.sessions | length')" "2"
+is "with a reason that is not the unconfigured one" \
+   "$(printf '%s' "$j2b" | jq -r '.sessions[0].liveness.reason')" "seam-not-found"
+is "and stdout is still valid json" \
+   "$(printf '%s' "$j2b" | jq -e . >/dev/null 2>&1 && echo yes || echo no)" "yes"
+has "and the diagnosis is on stderr, not in the table" "$serrtext" "no-such-shim"
 
 # A DOMAIN WITH NO ENTITY FILE. null, not an empty object that a view would
 # render as an entity with a blank name.
@@ -122,11 +161,18 @@ is "stdout is valid json"    "$(printf '%s' "$jout" | jq -e . >/dev/null 2>&1 &&
 is "ok is true"               "$(printf '%s' "$jout" | jq -r '.ok' 2>/dev/null)" "true"
 is "the good session is present" \
    "$(printf '%s' "$jout" | jq -r '[.sessions[].name] | index("alpha") != null' 2>/dev/null)" "true"
-case "$jout" in
-  *broken*) bad "the broken session's name is not inside the JSON" "found 'broken' in: $jout" ;;
-  *)        ok  "the broken session's name is not inside the JSON" ;;
-esac
-has "the diagnostic reached this command's own stderr instead" "$jerrtext" "broken"
+is "the broken session is absent from the session list" \
+   "$(printf '%s' "$jout" | jq -r '[.sessions[].name] | index("broken") // "absent"' 2>/dev/null)" "absent"
+# A SESSION THAT VANISHES IS THE SPEC'S FOUNDING COMPLAINT WITH FEWER ROWS.
+# `ok:true` beside a shorter list asserts the answer is complete. The diagnosis
+# exists on stderr and stays there — but the declared consumer is a view reading
+# --json from a subprocess, and nothing in the contract tells it to capture and
+# correlate a second stream. So the document carries it too.
+is "but it is named in unreadable" \
+   "$(printf '%s' "$jout" | jq -r '.unreadable | index("broken") != null' 2>/dev/null)" "true"
+is "and unreadable is a list, always present" \
+   "$(printf '%s' "$jout" | jq -r '.unreadable | type' 2>/dev/null)" "array"
+has "the diagnostic reached this command's own stderr as well" "$jerrtext" "broken"
 
 echo "== the same partial failure, human form =="
 herr="$(mktemp)"
