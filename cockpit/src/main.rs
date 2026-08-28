@@ -5,6 +5,7 @@ mod list;
 mod mark;
 mod probe;
 mod terminal;
+mod verb;
 
 // cockpit/src/main.rs — where the cockpit starts.
 //
