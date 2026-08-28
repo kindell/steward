@@ -7,12 +7,14 @@
 // failed probe gave. Nothing here is new information the engine or the
 // prober didn't already produce; this is where it finally gets spelled out.
 //
-// A PROBE RESULT IS PER SESSION, NOT PER ASSET. probe.rs already folds a
-// multi-asset answer into one status/detail pair (first asset's status,
-// "+N more" in the detail) before app.rs ever stores it — see probe.rs's
-// `run_probe`. So every asset line in this panel reflects the same single
-// `ProbeResult`; there is no per-asset result to look up separately, and
-// inventing one here would be a second, disagreeing truth.
+// A PROBE RESULT CARRIES ONE ANSWER PER ASSET. probe.rs stopped folding a
+// multi-asset answer into one status/detail pair — see probe.rs's
+// `run_probe` — precisely because painting every declared asset with one
+// shared status is false health: a session with one asset up and one down
+// must not render as uniformly "up". Each line here looks up ITS OWN
+// asset's answer by name in `ProbeResult::Answered`'s `Vec<AssetAnswer>`. A
+// declared asset the probe did not individually answer for renders "not
+// measured individually" — never a status copied from a different asset.
 //
 // EVERY CELL SAYS SOMETHING. No selection is a hint, not a blank screen; an
 // absent field is a dash, not an empty column; a declared-but-unprobed asset
@@ -20,12 +22,21 @@
 // silence where a status word would have been. This is the same rule list.rs
 // and mark.rs already follow, applied one level deeper.
 
-use crate::app::ProbeResult;
+use crate::app::{AssetAnswer, ProbeResult};
 use crate::engine::Session;
 use crate::mark::{asset_mark, mark_char, Mark};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Paragraph, Widget};
+
+// find_answer — the lookup this whole fix hinges on: a declared asset's
+// answer by name, not by position. Looking these up positionally (asset 0
+// gets answer 0) would silently misattribute the moment the probe's array
+// and the session's declared order ever drifted apart; matching by name is
+// what makes "each asset's own status" actually true.
+fn find_answer<'a>(answers: &'a [AssetAnswer], asset: &str) -> Option<&'a AssetAnswer> {
+    answers.iter().find(|a| a.asset == asset)
+}
 
 pub fn render_inspector(s: Option<&Session>, probe: Option<&ProbeResult>, area: Rect, buf: &mut Buffer) {
     let mut lines: Vec<String> = Vec::new();
@@ -74,12 +85,32 @@ pub fn render_inspector(s: Option<&Session>, probe: Option<&ProbeResult>, area: 
         lines.push("  no assets declared".to_string());
     } else {
         match probe {
-            // MEASURED: the status word and the full detail, both on
-            // screen — this is the word `list.rs`'s `●` can only gesture at.
-            Some(ProbeResult::Answered { status, detail }) => {
-                let mark = mark_char(asset_mark(&s.assets, Some(status.as_str())));
+            // MEASURED: each declared asset looks up ITS OWN answer by
+            // name and gets its own word and detail — this is the word
+            // `list.rs`'s `●` can only gesture at, and it must never be
+            // one asset's word painted onto another asset's line.
+            Some(ProbeResult::Answered { assets: answers }) => {
                 for asset in &s.assets {
-                    lines.push(format!("  {mark} {asset}: {status} — {detail}"));
+                    match find_answer(answers, asset) {
+                        Some(ans) => {
+                            let mark = mark_char(asset_mark(
+                                std::slice::from_ref(asset),
+                                Some(ans.status.as_str()),
+                            ));
+                            lines.push(format!(
+                                "  {mark} {asset}: {} — {}",
+                                ans.status, ans.detail
+                            ));
+                        }
+                        // DECLARED BUT NOT ANSWERED FOR INDIVIDUALLY. The
+                        // probe answered the session but not this asset by
+                        // name — never fabricate a status by copying a
+                        // different asset's word onto this line.
+                        None => {
+                            let mark = mark_char(Mark::Unmeasurable);
+                            lines.push(format!("  {mark} {asset}: not measured individually"));
+                        }
+                    }
                 }
             }
             // UNMEASURABLE: a failed probe is an answer, not a blank — the
@@ -202,12 +233,100 @@ mod tests {
     fn a_probed_asset_shows_word_and_full_detail() {
         let s = sess("alpha", "alice", "host-1", &["rig"], "up", "running", None, None);
         let probe = ProbeResult::Answered {
-            status: "up".to_string(),
-            detail: "vnc:1 cdp:2".to_string(),
+            assets: vec![AssetAnswer {
+                asset: "rig".to_string(),
+                status: "up".to_string(),
+                detail: "vnc:1 cdp:2".to_string(),
+            }],
         };
         let out = draw(Some(&s), Some(&probe));
         assert!(out.contains("up"), "status word missing:\n{out}");
         assert!(out.contains("vnc:1 cdp:2"), "full detail missing:\n{out}");
+    }
+
+    // THE DISCRIMINATOR THE REVIEWER FOUND MISSING: two assets with
+    // DIFFERENT statuses must each show THEIR OWN word on THEIR OWN line.
+    // A copy-first bug (every line painted with the first asset's status)
+    // must fail this test.
+    #[test]
+    fn two_assets_with_differing_statuses_each_show_their_own_word() {
+        let s = sess(
+            "alpha",
+            "alice",
+            "host-1",
+            &["rig1", "rig2"],
+            "up",
+            "running",
+            None,
+            None,
+        );
+        let probe = ProbeResult::Answered {
+            assets: vec![
+                AssetAnswer {
+                    asset: "rig1".to_string(),
+                    status: "up".to_string(),
+                    detail: "reachable".to_string(),
+                },
+                AssetAnswer {
+                    asset: "rig2".to_string(),
+                    status: "down".to_string(),
+                    detail: "refused".to_string(),
+                },
+            ],
+        };
+        let out = draw(Some(&s), Some(&probe));
+        let rig1_line = out.lines().find(|l| l.contains("rig1")).expect("rig1 line missing");
+        let rig2_line = out.lines().find(|l| l.contains("rig2")).expect("rig2 line missing");
+        assert!(
+            rig1_line.contains("up") && rig1_line.contains("reachable"),
+            "rig1 must show its own status and detail: {rig1_line:?}"
+        );
+        assert!(
+            rig2_line.contains("down") && rig2_line.contains("refused"),
+            "rig2 must show its own status and detail: {rig2_line:?}"
+        );
+        assert!(
+            !rig2_line.contains("reachable"),
+            "rig2 must not carry rig1's detail: {rig2_line:?}"
+        );
+        assert!(
+            !rig1_line.contains("refused") && !rig1_line.contains("down"),
+            "rig1 must not carry rig2's status or detail: {rig1_line:?}"
+        );
+    }
+
+    // A DECLARED ASSET THE PROBE DID NOT ANSWER FOR INDIVIDUALLY must say
+    // so honestly — never fall back to a copied status from a different
+    // asset in the same answer.
+    #[test]
+    fn an_asset_without_its_own_answer_says_not_measured_individually() {
+        let s = sess(
+            "alpha",
+            "alice",
+            "host-1",
+            &["rig1", "rig2"],
+            "up",
+            "running",
+            None,
+            None,
+        );
+        let probe = ProbeResult::Answered {
+            assets: vec![AssetAnswer {
+                asset: "rig1".to_string(),
+                status: "up".to_string(),
+                detail: "reachable".to_string(),
+            }],
+        };
+        let out = draw(Some(&s), Some(&probe));
+        let rig2_line = out.lines().find(|l| l.contains("rig2")).expect("rig2 line missing");
+        assert!(
+            rig2_line.contains("not measured individually"),
+            "rig2 must say it was not answered for: {rig2_line:?}"
+        );
+        assert!(
+            !rig2_line.contains("up") && !rig2_line.contains("reachable"),
+            "rig2 must not copy rig1's status or detail: {rig2_line:?}"
+        );
     }
 
     #[test]

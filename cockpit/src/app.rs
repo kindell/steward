@@ -52,8 +52,19 @@ impl App {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeResult {
-    Answered { status: String, detail: String },
+    Answered { assets: Vec<AssetAnswer> },
     Failed { reason: String },
+}
+
+// AssetAnswer — one asset's own status and detail. The prober used to fold
+// several of these into a single status/detail pair on the ProbeResult
+// itself ("first + N more"); that fold was the plan defect this type fixes.
+// Every asset a session declares gets to answer for itself now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetAnswer {
+    pub asset: String,
+    pub status: String,
+    pub detail: String,
 }
 
 // handle_key — the only place a keypress becomes a state change. `Up`/`Down`
@@ -92,6 +103,37 @@ pub fn apply_probe(app: &mut App, session: String, r: ProbeResult) {
 
 pub fn probe_for<'a>(app: &'a App, name: &str) -> Option<&'a ProbeResult> {
     app.probes.get(name)
+}
+
+// probe_status_word — the ONE word the list's single mark needs. mark.rs's
+// own doc is explicit that the mark answers "did we measure this", never
+// "what did we find" — so a session with several assets still only needs
+// its FIRST answer's status here; the inspector (not this function) is
+// where every asset gets its own word. Lives beside apply_probe/probe_for
+// rather than in mark.rs on purpose: mark.rs's vocabulary is closed over
+// `Mark` and plain status strings, and knows nothing about `ProbeResult` —
+// keeping this here keeps that module free of the probe subsystem's shape.
+//
+// A Failed probe answers "unknown" — the same word mark.rs already treats
+// as unmeasurable, because a failed probe measured nothing.
+//
+// JUDGMENT CALL — Answered with an EMPTY assets Vec: the prober itself
+// never produces this (probe.rs's None arm turns zero declared assets into
+// Failed before app.rs ever sees an Answered), but apply_probe does not
+// require every caller to route through the prober, so the case is real.
+// Returning None here would claim "still measuring" — a lie, since an
+// answer already arrived, it just named nothing. The honest word is the
+// same "unknown" a Failed uses: an answer naming zero measurements
+// measured nothing either, and mark.rs already knows how to render
+// "unknown" as unmeasurable rather than healthy.
+pub fn probe_status_word(r: &ProbeResult) -> Option<&str> {
+    match r {
+        ProbeResult::Answered { assets } => match assets.first() {
+            Some(a) => Some(a.status.as_str()),
+            None => Some("unknown"),
+        },
+        ProbeResult::Failed { .. } => Some("unknown"),
+    }
 }
 
 #[cfg(test)]
@@ -197,8 +239,11 @@ mod tests {
             &mut app,
             "b".to_string(),
             ProbeResult::Answered {
-                status: "up".to_string(),
-                detail: "reachable".to_string(),
+                assets: vec![AssetAnswer {
+                    asset: "x".to_string(),
+                    status: "up".to_string(),
+                    detail: "reachable".to_string(),
+                }],
             },
         );
         assert!(probe_for(&app, "b").is_some());
@@ -238,13 +283,61 @@ mod tests {
             &mut app,
             "a".to_string(),
             ProbeResult::Answered {
-                status: "up".to_string(),
-                detail: "reachable".to_string(),
+                assets: vec![AssetAnswer {
+                    asset: "x".to_string(),
+                    status: "up".to_string(),
+                    detail: "reachable".to_string(),
+                }],
             },
         );
         match probe_for(&app, "a") {
-            Some(ProbeResult::Answered { status, .. }) => assert_eq!(status, "up"),
+            Some(ProbeResult::Answered { assets }) => {
+                assert_eq!(assets[0].status, "up")
+            }
             other => panic!("expected the retry to have replaced the failure, got {other:?}"),
         }
+    }
+
+    // THE MARK ANSWERS "DID WE MEASURE", NOT "WHAT DID WE FIND" — several
+    // assets still only need their FIRST answer's status here; the
+    // inspector is where each asset gets its own word.
+    #[test]
+    fn probe_status_word_is_the_first_answers_status() {
+        let r = ProbeResult::Answered {
+            assets: vec![
+                AssetAnswer {
+                    asset: "a".to_string(),
+                    status: "up".to_string(),
+                    detail: "reachable".to_string(),
+                },
+                AssetAnswer {
+                    asset: "b".to_string(),
+                    status: "down".to_string(),
+                    detail: "refused".to_string(),
+                },
+            ],
+        };
+        assert_eq!(probe_status_word(&r), Some("up"));
+    }
+
+    // A FAILED PROBE MEASURED NOTHING — the word is "unknown", the same
+    // word mark.rs already treats as unmeasurable.
+    #[test]
+    fn probe_status_word_for_failed_is_unknown() {
+        let r = ProbeResult::Failed {
+            reason: "timed out".to_string(),
+        };
+        assert_eq!(probe_status_word(&r), Some("unknown"));
+    }
+
+    // JUDGMENT CALL: an Answered with zero AssetAnswers has no first
+    // answer to report. Treating it as "still measuring" (None) would be
+    // a lie — an answer already arrived, it just named nothing. "unknown"
+    // is the honest word: an answer pointing at zero measurements
+    // measured nothing either, same as a Failed.
+    #[test]
+    fn probe_status_word_for_an_empty_answer_is_unknown() {
+        let r = ProbeResult::Answered { assets: vec![] };
+        assert_eq!(probe_status_word(&r), Some("unknown"));
     }
 }

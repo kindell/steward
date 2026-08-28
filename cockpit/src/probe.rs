@@ -49,11 +49,10 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-use crate::app::ProbeResult;
+use crate::app::{AssetAnswer, ProbeResult};
 
 #[derive(Debug, Deserialize)]
 struct ProbedAsset {
-    #[allow(dead_code)]
     asset: String,
     status: String,
     detail: String,
@@ -127,32 +126,34 @@ fn run_probe(cmd_template: &str, session: &str) -> ProbeResult {
         };
     }
 
-    // MULTI-ASSET FOLDS INTO FIRST + COUNT. A list's single mark cannot
-    // honestly summarize several assets that might disagree, and inventing
-    // a pessimistic fifth status word would only rename that dishonesty.
-    // The inspector (a later task) shows every asset; this is a summary
-    // for the row, not the whole answer.
-    match answer.assets.split_first() {
-        Some((first, rest)) => {
-            let detail = if rest.is_empty() {
-                first.detail.clone()
-            } else {
-                format!("{} +{} more", first.detail, rest.len())
-            };
-            ProbeResult::Answered {
-                status: first.status.clone(),
-                detail,
-            }
-        }
+    // EVERY ASSET ANSWERS FOR ITSELF. Folding several assets into one
+    // status/detail pair was the plan defect this function used to carry —
+    // a session with one asset up and one down rendered as uniformly "up"
+    // wherever that folded pair got painted. The inspector now looks up
+    // each declared asset's own answer by name; this is what supplies the
+    // full list for it to look up.
+    if answer.assets.is_empty() {
         // DECLARES NOTHING. Zero assets means zero measurements — no status
         // word in the vocabulary means "measured and there was nothing to
         // measure", and inventing one would look like a probe that ran and
         // found health where it found only absence. Failed, with a reason
         // that says exactly that, so the row shows *something* rather than
         // leaving the caller waiting on a message that will never arrive.
-        None => ProbeResult::Failed {
+        return ProbeResult::Failed {
             reason: "session declares no assets to probe".to_string(),
-        },
+        };
+    }
+
+    ProbeResult::Answered {
+        assets: answer
+            .assets
+            .into_iter()
+            .map(|a| AssetAnswer {
+                asset: a.asset,
+                status: a.status,
+                detail: a.detail,
+            })
+            .collect(),
     }
 }
 
@@ -234,9 +235,10 @@ mod tests {
         let (name, result) = recv(&rx);
         assert_eq!(name, "one");
         match result {
-            ProbeResult::Answered { status, detail } => {
-                assert_eq!(status, "up");
-                assert_eq!(detail, "vnc:1 cdp:2");
+            ProbeResult::Answered { assets } => {
+                assert_eq!(assets.len(), 1);
+                assert_eq!(assets[0].status, "up");
+                assert_eq!(assets[0].detail, "vnc:1 cdp:2");
             }
             other => panic!("expected Answered, got {other:?}"),
         }
@@ -262,8 +264,8 @@ mod tests {
         let (name, result) = recv(&rx);
         assert_eq!(name, "empty");
         match result {
-            ProbeResult::Answered { status, .. } => {
-                panic!("expected no fabricated status, got Answered({status})")
+            ProbeResult::Answered { assets } => {
+                panic!("expected no fabricated status, got Answered({assets:?})")
             }
             ProbeResult::Failed { reason } => {
                 assert!(!reason.is_empty(), "the reason must say something");
@@ -317,10 +319,13 @@ mod tests {
         }
     }
 
-    // MULTI-ASSET: the first asset's status and detail are kept, and the
-    // detail names how many more there were. Two assets -> "+1 more".
+    // MULTI-ASSET: every declared asset gets its OWN AssetAnswer, never a
+    // fold into one summary pair. The fixture deliberately gives the two
+    // assets DIFFERENT statuses ("up" / "down") so a copy-first bug —
+    // stamping every asset with the first one's status — cannot pass this
+    // test by accident.
     #[test]
-    fn several_assets_fold_into_first_plus_count() {
+    fn several_assets_arrive_individually() {
         let cmd = stub_for(&[(
             "multi",
             r#"{"ok":true,"session":"multi","assets":[{"asset":"a","status":"up","detail":"reachable"},{"asset":"b","status":"down","detail":"refused"}]}"#,
@@ -330,12 +335,14 @@ mod tests {
 
         let (_, result) = recv(&rx);
         match result {
-            ProbeResult::Answered { status, detail } => {
-                assert_eq!(status, "up");
-                assert!(
-                    detail.contains("+1 more"),
-                    "expected the detail to name the extra asset, got: {detail}"
-                );
+            ProbeResult::Answered { assets } => {
+                assert_eq!(assets.len(), 2, "expected both assets, got: {assets:?}");
+                let a = assets.iter().find(|x| x.asset == "a").expect("asset a missing");
+                assert_eq!(a.status, "up");
+                assert_eq!(a.detail, "reachable");
+                let b = assets.iter().find(|x| x.asset == "b").expect("asset b missing");
+                assert_eq!(b.status, "down");
+                assert_eq!(b.detail, "refused");
             }
             other => panic!("expected Answered, got {other:?}"),
         }
