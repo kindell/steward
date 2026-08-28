@@ -1,6 +1,6 @@
 // cockpit/src/terminal.rs — the ONE place that owns the terminal's raw state.
 //
-// WHY IT EXISTS. Teardown was five old exit paths spread across main.rs, some
+// WHY IT EXISTS. Teardown was several old exit paths spread across main.rs, some
 // of them calling process::exit after only some of raw mode / alternate
 // screen / cursor were undone, and some of them skipping teardown entirely —
 // so a draw error could leave the operator's cursor hidden or the terminal in
@@ -79,7 +79,7 @@ pub fn enter() -> io::Result<(TerminalGuard, Terminal<CrosstermBackend<Stdout>>)
 mod tests {
     use super::*;
     // restore() MUST be idempotent and safe to call without enter() having run:
-    // the panic hook calls it from an arbitrary point, and Drop calls it after
+    // the panic hook calls it from anywhere at all, and Drop calls it after
     // enter() failed partway. A crash THERE would leave the terminal broken at
     // exactly the moment it is meant to be rescued.
     #[test]
