@@ -1,3 +1,5 @@
+mod engine;
+
 // cockpit/src/main.rs — where the cockpit starts.
 //
 // WHY THIS EXISTS AT ALL. The engine answers `steward sessions --json` with the
