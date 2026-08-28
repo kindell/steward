@@ -3,9 +3,16 @@
 //
 // THE PROBER IS A COMMAND TEMPLATE, INJECTED. Production wires it to
 // `steward assets {} --json`; the suite feeds `printf` stubs that stand in
-// for it. Same seam shape as engine.rs, and for the same reason: a probe
-// that could only be tried against a live estate would be tried once by hand
-// and then rot.
+// for it — the same injected-template shape as engine.rs, and for the same
+// reason: a probe that could only be tried against a live estate would be
+// tried once by hand and then rot. But the resemblance stops at the seam:
+// engine.rs's template is fixed at construction and never has per-item data
+// spliced into it afterward. This module's template gets a session name
+// spliced into it on every call — the first place in this codebase that
+// hands untrusted per-item data to a shell string. That is exactly why
+// `run_probe` validates the session name before building the command,
+// rather than trusting the charset check some upstream caller may already
+// have done.
 //
 // SEQUENTIAL, ON PURPOSE. Each probe costs a real round trip (~1.7s,
 // measured against the live ssh path — see bin/steward's cmd_assets). This
@@ -60,10 +67,36 @@ struct Answer {
     assets: Vec<ProbedAsset>,
 }
 
+// is_safe_session_name — the charset this module is willing to splice into
+// a shell string: `^[a-z][a-z0-9-]*$`. Upstream is expected to have already
+// validated the session name against the same shape, but this module does
+// not trust that — see the module doc for why. A hand-rolled `chars()` walk
+// rather than a regex dependency: the language is three rules wide.
+fn is_safe_session_name(session: &str) -> bool {
+    let mut chars = session.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 // run_probe — one session, one command, one honest result. Never panics:
 // every exit from this function is a `ProbeResult`, including the ones
 // where the command could not even be started.
 fn run_probe(cmd_template: &str, session: &str) -> ProbeResult {
+    // VALIDATE BEFORE BUILDING THE COMMAND. `session` is about to be
+    // spliced textually into a string handed to `bash -c` — a name
+    // carrying `;` or `$(...)` would execute as shell instead of standing
+    // for itself. See the module doc: this is the seam that pays for that,
+    // so it checks here, where the value is actually used, rather than
+    // trusting the caller.
+    if !is_safe_session_name(session) {
+        return ProbeResult::Failed {
+            reason: "session name contains characters unsafe to hand to the probe".to_string(),
+        };
+    }
+
     let cmd = cmd_template.replace("{}", session);
 
     let out = match Command::new("bash").arg("-c").arg(&cmd).output() {
@@ -306,6 +339,75 @@ mod tests {
             }
             other => panic!("expected Answered, got {other:?}"),
         }
+    }
+
+    // AN UNSAFE SESSION NAME NEVER REACHES THE SHELL. `run_probe` splices
+    // `session` textually into the command it hands to `bash -c`; a name
+    // carrying `;` or `$(...)` would otherwise execute as shell rather than
+    // stand for itself. The stub here always touches a marker file as a
+    // side effect of actually running — proving the marker is absent proves
+    // the command was never spawned at all, not merely that its injected
+    // half failed.
+    fn marker_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "steward-probe-unsafe-name-marker-{}-{}",
+            std::process::id(),
+            label
+        ))
+    }
+
+    #[test]
+    fn a_semicolon_in_the_session_name_is_rejected_and_the_probe_never_runs() {
+        let marker = marker_path("semicolon");
+        let _ = std::fs::remove_file(&marker);
+        let cmd = format!(
+            "touch {} && printf '%s' '{{\"ok\":true,\"assets\":[]}}'",
+            marker.display()
+        );
+        let rx = spawn_prober(cmd, vec!["evil;touch pwned".to_string()]);
+
+        let (_, result) = recv(&rx);
+        match result {
+            ProbeResult::Failed { reason } => {
+                assert_eq!(
+                    reason,
+                    "session name contains characters unsafe to hand to the probe"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            !marker.exists(),
+            "the probe command must never be spawned for an unsafe session name"
+        );
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn a_command_substitution_in_the_session_name_is_rejected_and_the_probe_never_runs() {
+        let marker = marker_path("subshell");
+        let _ = std::fs::remove_file(&marker);
+        let cmd = format!(
+            "touch {} && printf '%s' '{{\"ok\":true,\"assets\":[]}}'",
+            marker.display()
+        );
+        let rx = spawn_prober(cmd, vec!["evil$(touch pwned)".to_string()]);
+
+        let (_, result) = recv(&rx);
+        match result {
+            ProbeResult::Failed { reason } => {
+                assert_eq!(
+                    reason,
+                    "session name contains characters unsafe to hand to the probe"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(
+            !marker.exists(),
+            "the probe command must never be spawned for an unsafe session name"
+        );
+        let _ = std::fs::remove_file(&marker);
     }
 
     // THE THREAD MUST NOT PANIC WHEN THE RECEIVER IS DROPPED MID-RUN. Two
