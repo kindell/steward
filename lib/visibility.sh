@@ -3,10 +3,10 @@
 #
 # THIS IS A RENDERING RULE, NOT ACCESS CONTROL, and the distinction matters
 # enough to state before anything else. The registry is readable; a caller can
-# point STEWARD_REGISTRY_DIR anywhere and read any conf directly. What this
-# function decides is what the TOOLS show and offer — the difference between a
-# wall and a road that was never built. The real boundary is file permissions on
-# the hosts.
+# set STEWARD_REGISTRY_DIR to any directory and read any conf directly. What
+# this function decides is what the TOOLS show and offer — the difference
+# between a wall and a road that was never built. The real boundary is file
+# permissions on the hosts.
 #
 # ONE PLACE. A rule scattered across a renderer, a command and a gate is a rule
 # that drifts, and each copy drifts in a direction nobody chose. This file is
@@ -16,6 +16,13 @@
 # will not load: all answer NO. A registry that cannot be read must never become
 # a permit — bus/lib.sh established that rule for the message gate and the same
 # reasoning holds here.
+#
+# AND THE CALLER CANNOT TELL THE TWO APART, BY DESIGN. This function answers in
+# a return code and has two outcomes, not three: "this viewer has no claim" and
+# "we could not resolve who would have one" both come back as rc 1. A caller
+# that counts refusals is counting both, and must not describe its count as a
+# policy decision — see the `hidden` section of docs/client-spec.md, rewritten
+# 2026-08-28 after a live read found a registry gap being reported that way.
 
 # _visibility_member_of <person> <entity-id> — rc 0 if the entity loads and
 # names that person in MEMBERS.
@@ -63,8 +70,26 @@ session_visible_to() {
   #    fields: private to withdraw it from the team, and a grant to hand it to
   #    the group. Checking private first would make the pair useless in exactly
   #    the case it exists for.
+  #
+  #    THE SPLIT IS WANTED; THE GLOB IS NOT. An unquoted `$grants` is word
+  #    splitting AND pathname expansion, so the same conf and the same viewer
+  #    answer differently from different working directories. Measured
+  #    2026-08-28 with VISIBLE_TO="*" on a private session: from a cwd holding
+  #    a file named after a real group, the asterisk became that group and a
+  #    non-member was let in. lib/registry.sh validates this field, and the
+  #    validation cannot help — the expansion happens after it, here.
+  #
+  #    THE SPLIT IS CAPTURED INTO AN ARRAY rather than looped under `set -f`,
+  #    because the loop RETURNS from inside itself on a match: a restore after
+  #    the loop would never run on the path that matters and would leave
+  #    globbing disabled in the caller's shell. One line under the flag.
+  local _had_f; case "$-" in *f*) _had_f=1 ;; *) _had_f="" ;; esac
+  set -f
+  # shellcheck disable=SC2206  # splitting is intended here; globbing is off
+  local _grant_list=( $grants )
+  [ -n "$_had_f" ] || set +f
   local g
-  for g in $grants; do
+  for g in "${_grant_list[@]+"${_grant_list[@]}"}"; do
     _visibility_member_of "$viewer" "$g" && return 0
   done
 

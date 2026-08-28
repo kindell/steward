@@ -826,9 +826,29 @@ registry_load() {
   # its head is a list something appends to. The names index entity confs, so a
   # value containing a slash or a leading dot would reach outside the entity
   # directory the moment a consumer built a path from it.
+  #
+  # THE SPLIT IS WANTED; THE GLOB IS NOT. An unquoted `$VISIBLE_TO` is word
+  # splitting AND pathname expansion, and the expansion happens DURING the
+  # split — so the per-entry check above would validate whatever the CALLER'S
+  # WORKING DIRECTORY happened to contain instead of what the conf says.
+  # Measured 2026-08-28 with VISIBLE_TO="*", the same conf and the same loader,
+  # only the directory differing: a cwd holding a file named after a real group
+  # loaded rc 0 with the asterisk silently replaced; a cwd holding a plain
+  # notes file refused rc 1; a cwd holding the entity directory refused too.
+  # A field whose meaning is decided by the reader's cwd is not validated.
+  #
+  # THE SPLIT IS CAPTURED INTO AN ARRAY rather than looped under `set -f`,
+  # because this loop RETURNS from inside itself — a restore placed after the
+  # loop would be skipped on the refusal path and leave globbing disabled in
+  # the caller's shell. One line under the flag, then the flag goes back.
   if [ -n "${VISIBLE_TO:-}" ]; then
+    local _had_f; case "$-" in *f*) _had_f=1 ;; *) _had_f="" ;; esac
+    set -f
+    # shellcheck disable=SC2206  # splitting is intended here; globbing is off
+    local _vt_entries=( $VISIBLE_TO )
+    [ -n "$_had_f" ] || set +f
     local _g
-    for _g in $VISIBLE_TO; do
+    for _g in "${_vt_entries[@]+"${_vt_entries[@]}"}"; do
       if ! registry_valid_name "$_g"; then
         echo "registry: $project.conf invalid VISIBLE_TO entry '$_g' (allowed: a-z 0-9 -)" >&2
         return 1

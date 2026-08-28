@@ -81,6 +81,43 @@ conf second_bad 'VISIBLE_TO="board ../etc"\n'
 ( registry_load second_bad >/dev/null 2>&1; printf '%s' "$?" ) > "$FX/out"
 is "a bad name LATER in the list is refused too" "$(cat "$FX/out")" "1"
 
+# THE VALIDATION SPLITS THE LIST, AND A SPLIT IN A SHELL IS ALSO A GLOB.
+# `for _g in $VISIBLE_TO` word-splits (wanted) and pathname-expands (not
+# wanted), so what the loop validates depends on the CALLER'S WORKING
+# DIRECTORY — and the expansion happens DURING the split, which means the
+# per-entry check above validates whatever the directory happened to contain
+# instead of what the conf says. Measured 2026-08-28, VISIBLE_TO="*", the same
+# conf and the same loader, only the directory differing:
+#
+#   cwd holding notes.txt    -> rc 1, refused for an entry the conf never had
+#   cwd holding board        -> rc 0, ACCEPTED: `*` became a valid group name
+#   cwd holding entities.d   -> rc 1, refused
+#
+# A field whose meaning is decided by the reader's cwd is not a validated field.
+echo "== the list is split but never glob-expanded =="
+conf star 'VISIBLE_TO="*"\n'
+GTRAP="$FX/glob"; mkdir -p "$GTRAP"; : > "$GTRAP/board"; : > "$GTRAP/steering"
+( cd "$GTRAP" && registry_load star >/dev/null 2>&1; printf '%s' "$?" ) > "$FX/out"
+is "a literal * is refused even where it would expand to valid names" \
+   "$(cat "$FX/out")" "1"
+( cd "$GTRAP" && registry_load star 2>&1 >/dev/null ) > "$FX/out"
+case "$(cat "$FX/out")" in
+  *"entry '*'"*) ok "and the refusal names the entry the conf actually carries" ;;
+  *) bad "and the refusal names the entry the conf actually carries" "$(cat "$FX/out")" ;;
+esac
+# THE SAME ANSWER FROM EVERY DIRECTORY is the property, not just "refused
+# somewhere". A directory whose listing is harmless must give the identical rc.
+GTRAP2="$FX/glob2"; mkdir -p "$GTRAP2"; : > "$GTRAP2/notes.txt"
+( cd "$GTRAP2" && registry_load star >/dev/null 2>&1; printf '%s' "$?" ) > "$FX/out"
+is "and the same rc from a directory that would expand differently" \
+   "$(cat "$FX/out")" "1"
+# A REAL LIST MUST STILL SURVIVE from a directory full of decoys — the fix must
+# disable globbing, not the splitting the field depends on.
+conf twogroups 'VISIBLE_TO="board steering"\n'
+( cd "$GTRAP" && registry_load twogroups >/dev/null 2>&1; printf '%s|%s' "$?" "$VISIBLE_TO" ) > "$FX/out"
+is "a genuine two-group list still splits and still loads" \
+   "$(cat "$FX/out")" "0|board steering"
+
 echo "== a legitimate multi-group list survives =="
 conf many 'VISIBLE_TO="board audit-2026 steering"\n'
 ( registry_load many >/dev/null 2>&1; printf '%s' "$VISIBLE_TO" ) > "$FX/out"
