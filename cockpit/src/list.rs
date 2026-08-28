@@ -19,6 +19,28 @@ use ratatui::widgets::{Paragraph, Widget};
 pub fn render_list(f: &Fleet, area: Rect, buf: &mut Buffer) {
     let mut lines: Vec<String> = Vec::new();
 
+    // ACCOUNTING LINES GO FIRST. `Paragraph` clips at `area.height` with no
+    // marker, and whatever is pushed last is the first casualty of a short
+    // area — the live fleet is already taller than a typical terminal. Putting
+    // hidden/unreadable ahead of the session rows is what keeps them on screen
+    // when something has to give.
+
+    // C1: UNREADABLE NAMES ARE MEANT TO BE SEEN, unlike `hidden` — they are
+    // faults the operator must fix, not a rule's quiet withholding. Dropping
+    // them renders the remaining fleet as clean and complete, which is the
+    // failure the client-spec was written against.
+    if !f.unreadable.is_empty() {
+        lines.push(format!(
+            "(!) {} unreadable: {}",
+            f.unreadable.len(),
+            f.unreadable.join(" ")
+        ));
+    }
+
+    if f.hidden > 0 {
+        lines.push(format!("({} session(s) not visible to you)", f.hidden));
+    }
+
     if f.sessions.is_empty() {
         // AN EMPTY FLEET IS AN ANSWER. A blank screen would look exactly like a
         // view that failed to draw.
@@ -34,14 +56,28 @@ pub fn render_list(f: &Fleet, area: Rect, buf: &mut Buffer) {
         } else {
             s.assets.join(" ")
         };
-        lines.push(format!(
-            "{:<28} {} {:<9} {:<10} {}",
-            s.name, m, s.liveness.tmux, s.liveness.agent, assets
-        ));
+        let mut row = format!(
+            "{:<28} {:<10} {} {:<9} {:<10} {}",
+            s.name, s.owner, m, s.liveness.tmux, s.liveness.agent, assets
+        );
+        // I3: A REASON IS RENDERED WHEN THE ENGINE GAVE ONE, visibly tied to
+        // the row it explains. An `unknown` without a reason is the same
+        // silence the model was built to make impossible.
+        if let Some(reason) = &s.liveness.reason {
+            row.push(' ');
+            row.push_str(reason);
+        }
+        lines.push(row);
     }
 
-    if f.hidden > 0 {
-        lines.push(format!("({} session(s) not visible to you)", f.hidden));
+    // I2: A TOO-SHORT AREA GETS A MARKER, NOT SILENT CLIPPING. `Paragraph`
+    // would otherwise drop the tail with no sign anything was cut — which
+    // looks exactly like a fleet that happened to be short.
+    let height = area.height as usize;
+    if height > 0 && lines.len() > height {
+        let overflow = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(format!("… {overflow} more row(s)"));
     }
 
     Paragraph::new(lines.join("\n")).render(area, buf);
@@ -135,5 +171,123 @@ mod tests {
     fn an_empty_fleet_says_so() {
         let out = draw(&fleet(vec![], 0));
         assert!(out.trim().len() > 0, "an empty fleet drew nothing at all");
+    }
+
+    // C1: UNREADABLE IS A FAULT THE OPERATOR MUST FIX, not a rule's quiet
+    // withholding like `hidden` — so unlike hidden, these names are *meant* to
+    // be seen. A view that parsed `unreadable` and never rendered it would
+    // show the remaining fleet as clean and complete, which is the exact
+    // failure the client-spec names.
+    #[test]
+    fn unreadable_names_are_on_screen() {
+        let f = Fleet { sessions: vec![], hidden: 0, unreadable: vec!["broken-a".into(), "broken-b".into()] };
+        let out = draw(&f);
+        assert!(out.contains("broken-a"), "unreadable name missing:\n{out}");
+        assert!(out.contains("broken-b"), "unreadable name missing:\n{out}");
+        assert!(out.contains('2'), "unreadable count missing:\n{out}");
+    }
+
+    #[test]
+    fn an_empty_unreadable_list_does_not_shout() {
+        let f = fleet(vec![sess("alpha", &[], "up", None)], 0);
+        let out = draw(&f);
+        assert!(!out.contains("unreadable"), "should stay quiet with no unreadable:\n{out}");
+    }
+
+    // I2: TRUNCATION EATS THE HIDDEN LINE FIRST, because `Paragraph` clips at
+    // `area.height` with no marker and the hidden line was pushed last. Live
+    // at today's 21-line fleet in a 20-row area. The accounting lines must
+    // survive truncation by being drawn first, not last.
+    fn draw_in(f: &Fleet, width: u16, height: u16) -> String {
+        let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
+        t.draw(|frame| render_list(f, frame.area(), frame.buffer_mut())).unwrap();
+        let b = t.backend().buffer().clone();
+        (0..b.area.height)
+            .map(|y| {
+                (0..b.area.width)
+                    .map(|x| b[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_hidden_line_survives_a_too_short_area() {
+        // 20 sessions + a hidden line, drawn into an area only 20 rows tall —
+        // the live shape measured on today's fleet.
+        let sessions: Vec<Session> = (0..20)
+            .map(|i| sess(&format!("s{i}"), &[], "up", None))
+            .collect();
+        let f = fleet(sessions, 1);
+        let out = draw_in(&f, 60, 20);
+        assert!(out.contains("not visible"), "hidden line was clipped:\n{out}");
+    }
+
+    #[test]
+    fn an_overflow_marker_names_the_hidden_row_count() {
+        let sessions: Vec<Session> = (0..25)
+            .map(|i| sess(&format!("s{i}"), &[], "up", None))
+            .collect();
+        let f = fleet(sessions, 0);
+        let out = draw_in(&f, 60, 10);
+        assert!(out.contains("more"), "no overflow marker in a clipped area:\n{out}");
+    }
+
+    #[test]
+    fn nothing_changes_when_everything_fits() {
+        let f = fleet(vec![sess("alpha", &[], "up", None)], 0);
+        let out = draw_in(&f, 60, 10);
+        assert!(!out.contains("more"), "an overflow marker appeared when nothing overflowed:\n{out}");
+    }
+
+    // I3: `liveness.reason` IS DROPPED. All 20 live sessions carry
+    // `reason: "seam-not-configured"` and render as bare "unknown unknown"
+    // with no why. An `unknown` without a reason is the same silence the
+    // model was built to make impossible.
+    #[test]
+    fn a_reason_is_shown_beside_the_row_it_explains() {
+        // Wide enough that the owner column and the reason both survive the
+        // row without being clipped by the area width.
+        let out = draw_in(
+            &fleet(
+                vec![sess("alpha", &[], "unknown", Some("seam-not-configured"))],
+                0,
+            ),
+            100,
+            10,
+        );
+        let row = out.lines().find(|l| l.contains("alpha")).unwrap_or("");
+        assert!(row.contains("seam-not-configured"), "reason missing from row: {row}");
+    }
+
+    #[test]
+    fn no_reason_means_no_trailing_noise() {
+        let out = draw_in(&fleet(vec![sess("alpha", &[], "up", None)], 0), 100, 10);
+        let row = out.lines().find(|l| l.contains("alpha")).unwrap_or("");
+        // No reason attached, and nothing in mark.rs's vocabulary looks like one.
+        assert!(!row.contains("seam"), "unexpected reason noise: {row}");
+    }
+
+    // F6: THE OWNER COLUMN. On a two-person estate the owner is how you tell
+    // whose session it is — the spec's team-level table names it alongside
+    // liveness and assets.
+    #[test]
+    fn the_owner_appears_in_the_row() {
+        let s = Session {
+            name: "alpha".into(),
+            owner: "jon".into(),
+            host: "h".into(),
+            assets: vec![],
+            liveness: Liveness {
+                tmux: "up".into(),
+                agent: "running".into(),
+                model: None,
+                reason: None,
+            },
+        };
+        let out = draw_in(&fleet(vec![s], 0), 100, 10);
+        let row = out.lines().find(|l| l.contains("alpha")).unwrap_or("");
+        assert!(row.contains("jon"), "owner missing from row: {row}");
     }
 }

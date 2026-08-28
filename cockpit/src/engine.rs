@@ -36,11 +36,8 @@ pub struct Session {
 
 #[derive(Debug, Deserialize)]
 pub struct Fleet {
-    #[serde(default)]
     pub sessions: Vec<Session>,
-    #[serde(default)]
     pub hidden: u32,
-    #[serde(default)]
     pub unreadable: Vec<String>,
 }
 
@@ -173,5 +170,15 @@ mod tests {
             .unwrap_err();
         assert!(e.contains("registry unreadable"),
                 "the engine's own reason must survive, got: {e}");
+    }
+
+    // F5: A MISSING FIELD MUST NOT GUESS. The engine always emits `sessions`,
+    // `hidden` and `unreadable` — `#[serde(default)]` on them only hides a
+    // malformed envelope behind a guess (an empty fleet) the reader has no
+    // business making. A document that omits them is broken, not empty.
+    #[test]
+    fn a_document_missing_the_three_fields_is_an_error() {
+        let e = read_fleet(&stub(r#"{"ok":true}"#)).unwrap_err();
+        assert!(!e.is_empty(), "a malformed envelope must be an Err, got: {e:?}");
     }
 }

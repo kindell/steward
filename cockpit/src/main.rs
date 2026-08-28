@@ -48,6 +48,15 @@ fn main() {
             std::process::exit(70);
         }
     };
-    let _ = term.draw(|frame| list::render_list(&fleet, frame.area(), frame.buffer_mut()));
+    // I4: THE ONE ACTION THIS PROGRAM EXISTS FOR gets its error handled like
+    // every other failure here — not discarded. `cockpit | head -1` reaches
+    // this via EPIPE (Rust ignores SIGPIPE), and a discarded draw error exits
+    // 0 as if nothing happened, which is exactly the silence this whole
+    // system refuses everywhere else.
+    if let Err(e) = term.draw(|frame| list::render_list(&fleet, frame.area(), frame.buffer_mut())) {
+        let _ = disable_raw_mode();
+        eprintln!("cockpit: {e}");
+        std::process::exit(70);
+    }
     let _ = disable_raw_mode();
 }
