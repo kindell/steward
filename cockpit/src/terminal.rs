@@ -78,13 +78,13 @@ pub fn enter() -> io::Result<(TerminalGuard, Terminal<CrosstermBackend<Stdout>>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    // restore() MÅSTE vara idempotent och säker att kalla utan att enter()
-    // körts — panic-hooken kallar den från en godtycklig punkt, och Drop kallar
-    // den efter att enter() misslyckats halvvägs. Att den kraschar DÅ vore att
-    // lämna terminalen trasig i precis det ögonblick den ska räddas.
+    // restore() MUST be idempotent and safe to call without enter() having run:
+    // the panic hook calls it from an arbitrary point, and Drop calls it after
+    // enter() failed partway. A crash THERE would leave the terminal broken at
+    // exactly the moment it is meant to be rescued.
     #[test]
     fn restore_is_idempotent_and_safe_without_enter() {
         restore();
-        restore();  // två gånger, ingen panik, ingen dubbelfri
+        restore();  // twice — no panic, no double free
     }
 }
