@@ -80,13 +80,17 @@ is "unparseable output prints nothing" "$out5" ""
 # it measured; liveness_for is what guarantees a caller always gets a full row.
 echo "== a session the command never mentioned is unknown, not absent =="
 row="$(liveness_for gamma "$out")"
-is "seven fields"  "$(printf '%s\n' "$row" | awk -F'\t' '{print NF}')" "7"
+# EIGHT FIELDS, not seven: the eighth is the REASON. A non-answer that does not
+# say why is the silence this whole model exists to make impossible.
+is "eight fields"  "$(printf '%s\n' "$row" | awk -F'\t' '{print NF}')" "8"
 is "daemon"        "$(printf '%s\n' "$row" | cut -f2)" "unknown"
 is "tmux"          "$(printf '%s\n' "$row" | cut -f3)" "unknown"
 is "agent"         "$(printf '%s\n' "$row" | cut -f4)" "unknown"
 is "runtime"       "$(printf '%s\n' "$row" | cut -f5)" "unknown"
 is "model is a dash, not a guess" "$(printf '%s\n' "$row" | cut -f6)" "-"
 is "last_activity is a dash, not a guess" "$(printf '%s\n' "$row" | cut -f7)" "-"
+is "and the reason is not empty" \
+   "$( [ -n "$(printf '%s\n' "$row" | cut -f8)" ] && echo yes || echo no )" "yes"
 
 echo "== and a session it did mention comes back intact =="
 row2="$(liveness_for alpha "$out")"
@@ -113,6 +117,138 @@ is "the legitimate field survives"           "$(field "$out6" delta 4)" "running
 # never appear whole anywhere in this file, including in comments: written out
 # in full, either one would make this check find itself on every run, no
 # matter what the library does, and a guard that always fails is no guard.
+# ── A MISCONFIGURED SEAM MUST NOT BE BYTE-IDENTICAL TO A WORKING ONE ───────
+#
+# The assertions above are right about stdout purity and were, for that reason,
+# the exact place this hid: five distinct misconfigurations all returned rc 0
+# with nothing on either stream, and the whole fleet then rendered as a column
+# of `unknown` with no reason anywhere. rc IS ALWAYS 0 here and stays that way —
+# this layer reports. rc is not the channel; stderr is.
+echo "== a misconfigured seam says what was wrong, on stderr =="
+# NOT EXECUTABLE. A real file, wrong mode — the commonest of them, because a
+# checkout that lost its exec bit looks entirely healthy in a directory listing.
+printf '#!/bin/bash\necho "{}"\n' > "$FX/noexec"; chmod -x "$FX/noexec"
+o_ne="$(STEWARD_LIVENESS_CMD="$FX/noexec" liveness_rows 2>"$FX/ne.err")"
+is "not executable: stdout stays empty" "$o_ne" ""
+is "not executable: and stderr says so" \
+   "$( [ -s "$FX/ne.err" ] && echo yes || echo no )" "yes"
+is "not executable: naming the path"    \
+   "$(grep -q "$FX/noexec" "$FX/ne.err" && echo yes || echo no)" "yes"
+
+# OUTPUT THAT DOES NOT PARSE. The command ran and answered; the answer is not
+# an answer. Reading that as an empty fleet is reading a broken tool as health.
+garb2="$(stub garbage2 'echo "this is not json"')"
+o_gb="$(STEWARD_LIVENESS_CMD="$garb2" liveness_rows 2>"$FX/gb.err")"
+is "unparseable: stdout stays empty" "$o_gb" ""
+is "unparseable: and stderr says so" \
+   "$( [ -s "$FX/gb.err" ] && echo yes || echo no )" "yes"
+
+# A PATH THAT DOES NOT EXIST — a typo in a deploy, indistinguishable from a
+# working seam until someone asks why nothing is ever measured.
+o_nf="$(STEWARD_LIVENESS_CMD="$FX/does-not-exist" liveness_rows 2>"$FX/nf.err")"
+is "missing path: stdout stays empty" "$o_nf" ""
+is "missing path: and stderr says so" \
+   "$( [ -s "$FX/nf.err" ] && echo yes || echo no )" "yes"
+
+# A BARE COMMAND NAME rather than a path. `[ -x ]` fails on anything unresolved,
+# so this reads exactly like every other silence — and it is a plausible
+# mistake, because most environment variables that name a command take one.
+o_bn="$(STEWARD_LIVENESS_CMD="true" liveness_rows 2>"$FX/bn.err")"
+is "bare name: stdout stays empty" "$o_bn" ""
+is "bare name: and stderr says so" \
+   "$( [ -s "$FX/bn.err" ] && echo yes || echo no )" "yes"
+
+# A COMMAND THAT FAILS.
+bad_rc2="$(stub badrc2 'echo "boom" >&2; exit 3')"
+o_rc="$(STEWARD_LIVENESS_CMD="$bad_rc2" liveness_rows 2>"$FX/rc.err")"
+is "failing command: stdout stays empty" "$o_rc" ""
+is "failing command: and stderr says so" \
+   "$( [ -s "$FX/rc.err" ] && echo yes || echo no )" "yes"
+is "failing command: the command's own words survive" \
+   "$(grep -q 'boom' "$FX/rc.err" && echo yes || echo no)" "yes"
+
+# THE UNSET CASE IS NOT AN ERROR. An estate that has not wired a shim yet is a
+# normal state; making it noisy would train the reader to ignore the line that
+# matters.
+echo "== an unconfigured seam stays quiet — that is a normal state =="
+o_un="$(unset STEWARD_LIVENESS_CMD; liveness_rows 2>"$FX/un.err")"
+is "unset: stdout stays empty" "$o_un" ""
+is "unset: and stderr stays empty too" \
+   "$( [ -s "$FX/un.err" ] && echo yes || echo no )" "no"
+
+# ── A NON-ANSWER CARRIES ITS REASON ───────────────────────────────────────
+#
+# `unknown` with no reason is the silence this whole model exists to make
+# impossible: six different causes render as one word, and a view cannot invent
+# a reason it was never given. The reason is an eighth field — a DETAIL, next to
+# the status words, never a fifth status word of its own.
+#
+# liveness_rows sets LIVENESS_SEAM_REASON in the CALLER's shell, so these calls
+# redirect its stdout to a file rather than capturing it in `$(...)` — a command
+# substitution is a subshell and the variable would never come back.
+echo "== a session that was not measured says why =="
+reason_of() { printf '%s\n' "$1" | cut -f8; }
+
+STEWARD_LIVENESS_CMD="$good" liveness_rows >"$FX/rows.good" 2>/dev/null
+rows_good="$(cat "$FX/rows.good")"
+is "a measured session's reason is a dash — there is nothing to explain" \
+   "$(reason_of "$(liveness_for alpha "$rows_good")")" "-"
+is "eight fields now, not seven" \
+   "$(printf '%s\n' "$(liveness_for alpha "$rows_good")" | awk -F'\t' '{print NF}')" "8"
+is "a session the seam ran and did not mention says so" \
+   "$(reason_of "$(liveness_for gamma "$rows_good")")" "not-in-answer"
+
+( unset STEWARD_LIVENESS_CMD; liveness_rows >/dev/null 2>&1
+  r="$(liveness_for gamma "")"
+  printf '%s' "$r" | cut -f8 ) > "$FX/r.unconf"
+is "an unconfigured seam says that, not 'not measured'" \
+   "$(cat "$FX/r.unconf")" "seam-not-configured"
+
+STEWARD_LIVENESS_CMD="$bad_rc2" liveness_rows >/dev/null 2>/dev/null
+is "a seam that ran and failed says that" \
+   "$(reason_of "$(liveness_for gamma "")")" "seam-failed"
+
+STEWARD_LIVENESS_CMD="$garb2" liveness_rows >/dev/null 2>/dev/null
+is "a seam whose answer does not parse says that" \
+   "$(reason_of "$(liveness_for gamma "")")" "seam-unparseable"
+
+STEWARD_LIVENESS_CMD="$FX/noexec" liveness_rows >/dev/null 2>/dev/null
+is "a seam that could not be run says that" \
+   "$(reason_of "$(liveness_for gamma "")")" "seam-not-executable"
+
+# THE ESTATE MAY NAME ITS OWN OMISSIONS. A session the shim could not measure
+# is still OMITTED from `sessions` — it is never guessed — but the shim may say
+# why in an `omitted` map, and that reason reaches the consumer instead of a
+# bare "not in the answer".
+echo "== an omission the seam explained keeps the seam's own words =="
+omit="$(stub omit 'cat <<'"'"'J'"'"'
+{"sessions":{"alpha":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code"}},
+ "omitted":{"delta":"the launch manager did not answer"}}
+J')"
+STEWARD_LIVENESS_CMD="$omit" liveness_rows >"$FX/rows.omit" 2>/dev/null
+rows_omit="$(cat "$FX/rows.omit")"
+drow="$(liveness_for delta "$rows_omit")"
+is "the omitted session's reason is the seam's own" \
+   "$(reason_of "$drow")" "the launch manager did not answer"
+is "and it is still not claimed to be down" \
+   "$(printf '%s\n' "$drow" | cut -f3)" "unknown"
+
+# FIELD CONTENT IS A HAZARD ON THIS SIDE TOO. This half of the chain was never
+# injectable — @tsv has escaped every value since the first version — but no
+# fixture in this family ever carried whitespace in a field, so the property was
+# believed rather than measured. The identity half was injectable for exactly
+# that long, for exactly that reason.
+echo "== a value carrying a tab cannot forge a column =="
+nasty="$(stub nasty 'printf "%s" "{\"sessions\":{\"eps\":{\"daemon\":\"loaded\",\"tmux\":\"up\",\"agent\":\"running\",\"runtime\":\"rt\tzz-ghost\tup\tup\tup\",\"model\":\"m\"}}}"')"
+STEWARD_LIVENESS_CMD="$nasty" liveness_rows >"$FX/rows.nasty" 2>/dev/null
+rows_nasty="$(cat "$FX/rows.nasty")"
+is "one session answered for is one row out" \
+   "$(printf '%s\n' "$rows_nasty" | grep -c .)" "1"
+is "and it still has exactly eight fields" \
+   "$(printf '%s\n' "$rows_nasty" | awk -F'\t' 'NR==1{print NF}')" "8"
+is "the model column is not overwritten by the injection" \
+   "$(field "$rows_nasty" eps 6)" "m"
+
 echo "== the suite never names a real socket =="
 _no_sock_pat='\.s'"ock"
 _no_tmux_s_pat='tmux'; _no_tmux_s_pat="${_no_tmux_s_pat} -S"
