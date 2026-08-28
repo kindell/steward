@@ -122,6 +122,33 @@ for d in fleet watchdog; do
 done
 
 echo
+echo "== rust suites =="
+# CARGO IS NOT ON PATH. rustup keeps it in ~/.cargo/bin, and this machine
+# does not have that on its path — a bare `cargo` would have given "command
+# not found" and a silent green line, exactly the absence of measurement
+# this file exists against.
+CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
+for d in cockpit; do
+  [ -d "$d" ] || continue
+  found=$((found+1))
+  case "$d" in *"$ONLY"*) ;; *) continue ;; esac
+  ran=$((ran+1))
+  if [ ! -x "$CARGO" ]; then
+    # A MISSING TOOL IS NOT A GREEN TEST. It is a measurement that could not
+    # be made, and it must show as red — not skipped over with a reassuring
+    # line.
+    printf '  RED    %-34s (cargo missing: %s)\n' "$d" "$CARGO"
+    red=$((red+1)); continue
+  fi
+  if run_with_timeout bash -c "cd '$d' && '$CARGO' test --quiet" >/dev/null 2>&1; then
+    printf '  ok     %-34s\n' "$d"
+  else
+    printf '  RED    %-34s (cargo test)\n' "$d"
+    red=$((red+1))
+  fi
+done
+
+echo
 echo "suites found=$found ran=$ran red=$red silent=$silent"
 [ -n "$ONLY" ] && echo "NOTE: filter '$ONLY' is active — this is NOT a full run."
 if [ "$ran" -ne "$found" ] && [ -z "$ONLY" ]; then
