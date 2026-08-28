@@ -537,6 +537,13 @@ cmd_sessions() {
     # leave ambiguous, an empty table, still gets it: "hidden" and "genuinely
     # no sessions" must not look the same on a blank screen.
     local _viewer_text; _viewer_text="${STEWARD_VIEWER:-$(id -un 2>/dev/null)}"
+    # A BLANK NAME IS NOT A REASON. If `id -un` fails and STEWARD_VIEWER is
+    # unset there is no viewer, so lib/sessions.sh hides everything — an empty
+    # viewer is not a wildcard, and refusing is right. But the line then read
+    # "not visible to )" with nothing in the gap, which tells a reader that
+    # something is withheld and not that the tool could not work out who they
+    # are. Name the failure instead of printing its absence.
+    [ -n "$_viewer_text" ] || _viewer_text="an unidentified account — 'id -un' failed and STEWARD_VIEWER is unset"
     local _listed; _listed="$(printf '%s\n' "$ident" | sed '/^$/d' | wc -l | tr -d ' ')"
     if [ "$hidden" -gt 0 ] || [ "$_listed" -eq 0 ]; then
       printf '(%s session(s) not visible to %s)\n' "$hidden" "$_viewer_text"

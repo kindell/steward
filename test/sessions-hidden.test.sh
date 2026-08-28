@@ -2,10 +2,10 @@
 # test/sessions-hidden.test.sh — seeing less must look different from there
 # being less.
 #
-# THE COUNT IS THE WHOLE POINT. A filtered list that simply omits what the
-# viewer may not see is indistinguishable from a fleet that small — the exact
-# silence this project exists to prevent, one layer up from the one the spec
-# opens with. So the document carries a number.
+# THE COUNT IS THE WHOLE REASON THIS EXISTS. A filtered list that simply omits
+# what the viewer may not see is indistinguishable from a fleet that small —
+# the exact silence this project exists to prevent, one layer up from the one
+# the spec opens with. So the document carries a number.
 #
 # AND IT IS A NUMBER, NEVER NAMES. Enumerating what someone may not see is
 # leaking precisely the thing being withheld. A count says "there is more here"
@@ -70,11 +70,57 @@ is "four hidden"   "$(printf '%s' "$jc" | jq -r '.hidden')" "4"
 is "ok is still true — this is an answer, not a failure" \
    "$(printf '%s' "$jc" | jq -r '.ok')" "true"
 
+# A REGISTRY GAP LANDS IN `hidden` TOO, AND THAT IS THE DESIGNED ANSWER.
+# Refusal is the default in lib/visibility.sh: an entity that will not load
+# answers NO, exactly as a viewer with no claim does. The rule has two outcomes,
+# not three, so this count carries both — measured live 2026-08-28 against the
+# real registry, where one machine-owned session was withheld for precisely this
+# reason and nobody had decided to withhold it. `unreadable` must NOT absorb it:
+# the session's own conf loaded perfectly, and moving it there would report a
+# readable conf as a broken one. docs/client-spec.md states this outright rather
+# than leaving a reader to infer a human decision behind every count.
+echo "== a session whose domain names no entity is hidden, not unreadable =="
+sess orphan bob no-such-entity
+jo="$(run alice --json)"
+is "the visible two are unaffected" "$(printf '%s' "$jo" | jq -r '.sessions | length')" "2"
+is "and the gap is counted as hidden" "$(printf '%s' "$jo" | jq -r '.hidden')" "3"
+is "unreadable stays empty — the conf itself loaded fine" \
+   "$(printf '%s' "$jo" | jq -r '.unreadable | length')" "0"
+hasnt "and it is still not named" "$jo" "orphan"
+# Its OWNER still sees it: a missing entity withdraws nothing from the person
+# whose session it is, so the gap cannot be mistaken for a broken session.
+jbo="$(run bob --json)"
+has "its owner still sees it" "$(printf '%s' "$jbo" | jq -r '.sessions[].name')" "orphan"
+rm -f "$FX/sessions.d/orphan.conf"
+
 echo "== the human form says it too =="
 t="$(run alice)"
 has "the visible session is listed" "$t" "mine"
 has "and the count is stated"       "$t" "2"
 hasnt "without naming the hidden"   "$t" "theirs"
+# THE SENTENCE MUST NAME WHO IT IS ABOUT. This document changes with the
+# account that asked for it, so a bare count is ambiguous on a shared terminal
+# — and the assertion is what binds the viewer resolution in bin/steward to the
+# one in lib/sessions.sh: they are written out twice, and a count that
+# disagreed with the rows it describes would otherwise be invisible here.
+# THE SENTENCE, not the table. `alice` owns a listed session, so her name is in
+# the output either way — asserting against the whole text would pass for a line
+# that named nobody. Pull out the line itself.
+has "and the sentence names the viewer" \
+    "$(printf '%s\n' "$t" | grep 'not visible to')" "alice"
+
+# AN UNIDENTIFIABLE VIEWER IS REFUSED, AND SAID. With no viewer the rule hides
+# everything, which is right — an empty viewer is not a wildcard. But the line
+# once read "not visible to )" with a blank where the name goes, which reads as
+# a withholding rather than as a tool that could not work out who is asking.
+echo "== and when the account cannot be determined, it says so =="
+FAKEBIN="$FX/bin"; mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\nexit 1\n' > "$FAKEBIN/id"; chmod +x "$FAKEBIN/id"
+tn="$(PATH="$FAKEBIN:$PATH" STEWARD_REGISTRY_DIR="$FX/sessions.d" \
+      STEWARD_ESTATE_ROOT="$FX" bash "$STEWARD" sessions 2>/dev/null)"
+has "everything is hidden — refusal is the default" "$tn" "(4 session(s) not visible"
+hasnt "and the name is not left blank"              "$tn" "not visible to )"
+has "the reason is named instead"                   "$tn" "id -un"
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
