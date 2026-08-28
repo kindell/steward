@@ -52,11 +52,27 @@ pub fn enter() -> io::Result<(TerminalGuard, Terminal<CrosstermBackend<Stdout>>)
         restore();
         prev(info);
     }));
-    enable_raw_mode()?;
+    // Every failure path from here on has already changed real terminal
+    // state (raw mode, and/or the alternate screen + cursor) that a plain
+    // `?` would leave stuck: `?` returns Err immediately and there is no
+    // TerminalGuard yet for Drop to restore with, so each step restores
+    // explicitly before propagating its error.
+    if let Err(e) = enable_raw_mode() {
+        restore();
+        return Err(e);
+    }
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, Hide)?;
-    let term = Terminal::new(CrosstermBackend::new(out))?;
-    Ok((TerminalGuard, term))
+    if let Err(e) = execute!(out, EnterAlternateScreen, Hide) {
+        restore();
+        return Err(e);
+    }
+    match Terminal::new(CrosstermBackend::new(out)) {
+        Ok(term) => Ok((TerminalGuard, term)),
+        Err(e) => {
+            restore();
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

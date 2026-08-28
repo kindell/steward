@@ -83,9 +83,10 @@ fn main() -> ExitCode {
 
     // THE ONE PLACE RAW MODE, THE ALTERNATE SCREEN, AND THE CURSOR ARE
     // TOUCHED. terminal::enter() installs the panic hook before it changes
-    // anything, so a failure partway through still restores what it managed
-    // to change. No TerminalGuard exists yet on this path, so there is
-    // nothing for a Drop to clean up here — exiting directly is safe.
+    // anything, AND restores on its own Err paths before returning — no
+    // TerminalGuard exists yet here for a Drop to clean up with, so
+    // enter() itself undoes whatever it managed to change. Exiting
+    // directly on Err is therefore safe.
     let (_guard, mut term) = match terminal::enter() {
         Ok(v) => v,
         Err(e) => {
