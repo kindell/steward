@@ -63,10 +63,22 @@ _sessions_tsv_row() {
 # variable is reset on every call, so a previous run's failures never leak into
 # this one's answer.
 #
-# ALSO SETS SESSIONS_HIDDEN: a count, never names, of sessions that loaded
-# fine but the viewer may not see. Hidden and unreadable answer different
-# questions — one is policy, the other is a fault — and stay in separate
-# variables so a registry error can never disappear behind a visibility rule.
+# ALSO SETS SESSIONS_HIDDEN: a count, never names, of the sessions that loaded
+# fine and that session_visible_to did not grant to this viewer.
+#
+# IT COUNTS A REFUSAL, NOT A DECISION. Refusal is the default in the visibility
+# rule, so an entity conf that does not exist, an entity with no display name
+# and an unreadable entity directory all land here beside the ordinary "this
+# viewer has no claim" — the rule has two outcomes and not three, deliberately.
+# An earlier wording of this comment said hidden names a policy while unreadable
+# names a fault. That was overstated, and measured false 2026-08-28 against a
+# live registry read by its own operator: one withheld row, withheld only
+# because the entity its domain named had no conf at all.
+#
+# WHAT THE TWO VARIABLES DO SEPARATE is which conf failed. Unreadable means the
+# SESSION's own conf would not load; hidden means it loaded and the rule said
+# no. They stay separate so a registry error can never disappear behind a
+# visibility rule.
 session_identity_rows() {
   SESSIONS_UNREADABLE=""
   if ! command -v registry_load >/dev/null 2>&1; then
@@ -152,6 +164,18 @@ session_identity_rows() {
     fi
     # SNAPSHOT BEFORE USING. registry_load writes into this shell, and the next
     # iteration overwrites every one of these — read them out first.
+    #
+    # AND A SECOND LOAD HAS ALREADY HAPPENED SINCE THE ONE ABOVE. The filter
+    # just above calls session_visible_to, which runs registry_load on this
+    # same session in THIS shell — the rule lives in one place and reads the
+    # conf itself rather than trusting fields a caller passed it. So the values
+    # read below are the FILTER'S load, not the counting load. They are
+    # identical today for one reason only: it is the same session's conf. A
+    # future filter that consulted a different conf would leave that conf's
+    # fields here and this row would silently carry another session's data.
+    # The duplicate load also doubles the per-session read cost, which is a
+    # local file and cheap enough to be the right trade for one rule in one
+    # place — worth knowing before this loop grows a third consultation.
     local id owner domain host assets
     id="${ID:-$n}"; owner="${OWNER:--}"; domain="${DOMAIN:--}"
     host="${HOST:--}"; assets="${ASSETS:-}"

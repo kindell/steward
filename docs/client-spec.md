@@ -214,14 +214,32 @@ complete one, which is the failure this command was built against.
 
 **`hidden` is an integer, always present, and it is a COUNT — never names.**
 It is the number of sessions that are in the registry, loaded fine, and were
-left out of `sessions` because the viewer may not see them. A view that wants
-to list what a viewer may not see is asking for something this command
-deliberately does not hand out: enumerating the hidden sessions would leak
-precisely the thing being withheld, so all `hidden` says is that there is more
-here, never what. It stays separate from `unreadable` on purpose — one names a
-policy decision as a bare count, the other names a fault — and a session that
+left out of `sessions` because the visibility rule did not grant them to this
+viewer. A view that wants to list what a viewer may not see is asking for
+something this command deliberately does not hand out: enumerating the hidden
+sessions would leak precisely the thing being withheld, so all `hidden` says is
+that there is more here, never what.
+
+**`hidden` says THE RULE REFUSED — not that a human decided.** Refusal is the
+default in the visibility rule: an entity conf that does not exist, an entity
+missing its display name, an unreadable entity directory — all answer NO,
+exactly as a viewer with no claim does. The rule has two outcomes and not
+three, on purpose, and this count therefore carries both causes. A registry GAP
+is counted here. An earlier wording of this paragraph said `hidden` names a
+policy decision while `unreadable` names a fault; that was overstated, and
+measured false 2026-08-28 against a live registry read by its own operator —
+one withheld row, withheld only because the entity its domain named had no conf
+at all. Nobody had decided to withhold it. A view must therefore not render
+this count as "someone chose to keep things from you"; the honest sentence is
+"there is more here that you were not granted".
+
+**It stays separate from `unreadable` all the same**, because the two answer
+different questions about the session's OWN conf: `unreadable` means that conf
+would not load, `hidden` means it loaded and the rule said no. A session that
 is hidden is never also listed in `unreadable`, or a registry error could hide
-behind a visibility rule.
+behind a visibility rule. Finding the registry gap behind a `hidden` is a
+registry question and not this document's: it is asked with the tools that read
+entities, and it cannot be answered here without naming what is withheld.
 
 **The viewer is the account running the command** — `id -un`, not a value a
 caller passes in the request — so `hidden` (and which sessions appear in
@@ -230,6 +248,35 @@ against the same registry at the same moment can get different documents. A
 view that caches this response between users, or renders it for someone other
 than whoever's session actually ran the command, is showing one person's
 answer to another.
+
+**`STEWARD_VIEWER` overrides that from the environment.** If the variable is
+set, its value is the viewer and `id -un` is never consulted. It exists so the
+product's own suites can ask the question as somebody else, the same seam shape
+as `STEWARD_REGISTRY_DIR`, and like that one it is a testing convenience rather
+than a boundary. It is stated here because a document that describes the viewer
+as "the account running the command" and stops there reads as an enforcement
+claim, and this is not one.
+
+### None of this is access control
+
+**The filtering above is a RENDERING RULE.** It decides what the tools show and
+offer — the difference between a wall and a road that was never built. It stops
+nothing: the registry is a directory of readable files, `STEWARD_REGISTRY_DIR`
+aims the reader at any directory of them, and `STEWARD_VIEWER` names any
+viewer. A
+person who can run this command can read the confs it filtered out.
+
+**The real boundary is file permissions on the hosts**, plus the transport
+(SSH) and the accounts the estate is built out of: one person, one account, one
+agent login. Those are what a session cannot walk around; this document's
+`hidden` count is not.
+
+Why say it here rather than only in the engine: this is the one artifact a
+client author reads as the contract. The engine says it in four files and the
+suites say it in their headers, and none of that reaches someone building a
+view against the JSON above. A view that presents filtered output as "you do
+not have access to these" is making a promise the product did not make; the
+sentence it can honestly render is "these are not yours to work on".
 
 **Refusals stay in the requested format.** When the registry cannot be read at
 all, `--json` answers `{"ok": false, "reason": "<the refusal text>"}` on stdout
