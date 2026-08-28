@@ -70,6 +70,144 @@ With no argument: every estate in the list, one block each, failures
 reported per estate rather than aborting the sweep — one unreachable
 machine must not blind the operator to the others.
 
+### `steward sessions [--json]`
+
+Every session's IDENTITY joined with its LIVENESS, in one local read plus one
+subprocess call. Identity comes from the registry and is free. Liveness comes
+from a command the estate supplies. REACH — whether a session's declared assets
+actually answer — is deliberately NOT here: it costs a remote round trip per
+session and is `steward assets`' job, asked for separately and asynchronously.
+
+The declared consumer is a view reading `--json` from a subprocess, so the
+contract below is part of the product, not an implementation detail.
+
+#### The liveness seam
+
+The product does not measure liveness itself and cannot: it means reading a
+launch manager, a multiplexer socket and a log file, all named by one estate's
+conventions on one estate's operating system.
+
+```
+STEWARD_LIVENESS_CMD=<absolute path to the estate's shim>
+```
+
+**It must be a PATH, not a command name** — a bare name is refused rather than
+resolved through `PATH`, because what this seam runs reads a socket carrying
+live conversations. With the variable unset, every session reports `unknown`
+with the reason `seam-not-configured`; that is a normal state for an estate that
+has not wired a shim yet, and it is the ONLY seam condition that is not also
+announced on stderr.
+
+The shim takes no arguments and answers for the whole fleet in one call — the
+asset layer already pays a remote round trip per session and liveness must not
+inherit that cost. It writes one JSON document on stdout:
+
+```json
+{
+  "sessions": { "<name>": { "daemon": "loaded", "tmux": "up", "agent": "running",
+                            "runtime": "<name>", "model": "<name>|null",
+                            "lastActivity": "<timestamp>|null" } },
+  "omitted":  { "<name>": "<why this session could not be measured>" }
+}
+```
+
+A session the shim could not measure is **omitted from `sessions`, never
+guessed** — a guess would look exactly like a measurement, which is the one
+failure this whole model exists to prevent. `omitted` is optional and carries
+the shim's own reason for that omission; every status field of an omitted
+session is forced to `unknown` on the way in, because the estate is supplying a
+REASON there, not a measurement.
+
+Inside `sessions`, a missing key and an explicit `null` are different facts and
+stay different: `null` means the shim looked and found no value, an absent key
+means it never looked.
+
+#### The JSON document
+
+```json
+{
+  "ok": true,
+  "unreadable": ["<session name>"],
+  "sessions": [
+    {
+      "name": "<name>", "id": "<name>", "owner": "<name>",
+      "domain": "<name>", "host": "<name>",
+      "entity": { "name": "<display name>", "relation": "team" },
+      "assets": ["<declared asset>"],
+      "liveness": {
+        "daemon": "loaded", "tmux": "up", "agent": "running",
+        "runtime": "<name>", "model": "<name>", "lastActivity": "<timestamp>",
+        "reason": null
+      }
+    }
+  ]
+}
+```
+
+**Closed vocabularies.** A word outside its set is rewritten to `unknown` before
+it reaches this document — a command that answers something else is a broken
+command, and a broken command must never be able to invent a word a view would
+render as healthy.
+
+| field | set |
+|---|---|
+| `liveness.daemon` | `loaded` · `missing` · `unknown` |
+| `liveness.tmux` | `up` · `down` · `unknown` |
+| `liveness.agent` | `running` · `not-running` · `unknown` |
+| `entity.relation` | `team` · `client` · `-` (an entity that declares neither members nor a manager) |
+
+`liveness.runtime` is deliberately NOT a closed set: a runtime is a NAME, not a
+state, and a third one appears the day one is added. Rewriting an unrecognised
+name to `unknown` would report "we could not measure the runtime" about a
+runtime that was measured perfectly well.
+
+**Nulls, and what each one claims.**
+
+| field | `null` means |
+|---|---|
+| `entity` | no entity file describes this session's domain, or the one that does would not load |
+| `liveness.model` | measured, and there is no value |
+| `liveness.lastActivity` | measured, and there is no value |
+| `liveness.reason` | the session WAS measured; there is nothing to explain |
+
+`assets` is **always a list** — empty means the session declares none. A
+consumer that had to handle both a string and a list gets it wrong once.
+
+**`reason` is a detail field, not a fifth status word.** A view renders the
+status words; `reason` is what it shows beside an `unknown` so that the reader
+is not left with six causes collapsed into one word. The values the product
+itself produces:
+
+| value | what happened |
+|---|---|
+| `seam-not-configured` | `STEWARD_LIVENESS_CMD` is unset |
+| `seam-not-a-path` | it is set to a bare command name |
+| `seam-not-found` | it names a path that does not exist |
+| `seam-not-executable` | it names a file without its exec bit |
+| `seam-failed` | the shim ran and exited non-zero |
+| `seam-no-output` | the shim succeeded and said nothing |
+| `seam-unparseable` | the shim's output is not valid JSON |
+| `seam-no-sessions-object` | valid JSON, no `sessions` object |
+| `not-in-answer` | the shim ran and did not mention this session |
+
+Anything else is a sentence the estate's shim supplied in its `omitted` map.
+
+**`unreadable` is always present, and empty means nothing failed.** It names
+every session that is in the registry and could not be loaded. Those sessions
+are absent from `sessions` — a half-read row would be worse than none — and
+`ok` stays `true`, because `ok` answers "was the registry readable", not "is
+every row here". A consumer that ignores `unreadable` reads a shorter list as a
+complete one, which is the failure this command was built against.
+
+**Refusals stay in the requested format.** When the registry cannot be read at
+all, `--json` answers `{"ok": false, "reason": "<the refusal text>"}` on stdout
+with a non-zero exit code. A consumer that asked for JSON and got a bare
+sentence reports a broken tool instead of an unreadable registry.
+
+**Diagnosis is on stderr, always, in addition.** Everything above is
+belt-and-braces: the per-session causes are also written to stderr as sentences
+for a human at a terminal. Neither channel is the only one.
+
 ### `steward <estate> attach <session>`
 
 `ssh -t` into the host and `tmux attach`. The client never types INTO a
