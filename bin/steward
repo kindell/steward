@@ -574,13 +574,28 @@ case "${1:-}" in
     # No subcommand at all is the bare invocation — it starts the
     # interactive cockpit (a Rust TUI) rather than falling into --help.
     #
-    # BUILT ON FIRST USE, NOT VENDORED. A fresh checkout has no
-    # cockpit/target/ at all, and a bare invocation there must not look like
-    # the same refusal a genuinely broken build would produce — the two are
-    # different problems (nothing attempted vs. something failed) and get
-    # different messages and different exit codes.
+    # BUILT ON FIRST USE, NOT VENDORED — AND HONEST WHEN THERE IS NOTHING TO
+    # BUILD. A fresh checkout has no cockpit/target/ at all, and a bare
+    # invocation there must not look like the same refusal a genuinely broken
+    # build would produce — nothing attempted vs. something failed are
+    # different problems and get different messages and exit codes. A
+    # DEPLOYED install is a further state again: the script copied into a
+    # home carries no cockpit/ source at all, and attempting a build there
+    # hands the operator cargo's raw missing-manifest error, which reads like
+    # a broken build when the truth is "this install was never given the
+    # source". Measured on the real hub the first day an operator typed a
+    # bare `steward` outside the checkout. So: an explicit
+    # STEWARD_COCKPIT_BIN always wins; a checkout builds on first use; an
+    # install with no source refuses and names both ways forward.
+    if [ -n "${STEWARD_COCKPIT_BIN:-}" ]; then
+      [ -x "$STEWARD_COCKPIT_BIN" ] || fel "STEWARD_COCKPIT_BIN is set but not an executable: $STEWARD_COCKPIT_BIN" 69
+      exec "$STEWARD_COCKPIT_BIN"
+    fi
     _cockpit_bin="$HERE/cockpit/target/release/cockpit"
     if [ ! -x "$_cockpit_bin" ]; then
+      if [ ! -f "$HERE/cockpit/Cargo.toml" ]; then
+        fel "this install has no cockpit source (looked in $HERE/cockpit) — run bin/steward from a product checkout, or aim STEWARD_COCKPIT_BIN at a built cockpit binary" 69
+      fi
       _cargo="${STEWARD_CARGO_BIN:-$HOME/.cargo/bin/cargo}"
       command -v "$_cargo" >/dev/null 2>&1 || _cargo="$(command -v cargo 2>/dev/null || true)"
       if [ -z "$_cargo" ]; then
