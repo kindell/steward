@@ -217,22 +217,86 @@ bus_fraga_tillatet() {
   [ "$do_" = "$dt" ] && return 0
   # A GROUP GRANT. The target can name one or more groups in VISIBLE_TO, and a
   # group is an entity with MEMBERS. If the asker's owner is among them, they may
-  # ask — this is the same key the cockpit's visibility rule uses, and it has to
-  # be the same: a cockpit that offers an `ask` against a session the bus then
-  # refuses is a promise the tool cannot keep.
+  # ask.
+  #
+  # THE GROUP GRANT IS THE ONLY PART THIS GATE SHARES WITH THE VISIBILITY RULE
+  # IN lib/visibility.sh. An earlier wording of this comment claimed the two use
+  # "the same key", and that a client therefore cannot offer an `ask` this gate
+  # then refuses. It was false in both directions. Measured 2026-08-28 by running
+  # session_visible_to and this function over one fixture registry:
+  #
+  #   target OWNER=b DOMAIN=cust, cust MANAGED_BY=mgr, mgr MEMBERS=a
+  #     visibility rule: VISIBLE     this gate: refused
+  #   target OWNER=b DOMAIN=mgr with VISIBILITY="private", asker's domain mgr
+  #     visibility rule: hidden      this gate: ALLOWED
+  #   target is a machine session, asker lives on the same host
+  #     visibility rule: hidden      this gate: ALLOWED
+  #
+  # THREE KNOWN DIVERGENCES, in the order measured above:
+  #   1. NO MANAGED_BY HOP HERE. The visibility rule takes one hop from the
+  #      target's domain up to the entity that manages it; this gate compares
+  #      the two domain names for equality and stops there. That is the very
+  #      case the group grant was introduced for, so a client rendered from the
+  #      visibility rule WILL show work whose `ask` this gate refuses.
+  #   2. `private` IS NOT READ HERE. It withdraws a session from the visibility
+  #      rule and leaves the same-owner and same-domain paths above untouched,
+  #      which is the leak in the opposite direction.
+  #   3. THE MACHINE CARVE-OUT BELOW HAS NO COUNTERPART in the visibility rule,
+  #      which knows nothing about a machine's own session.
+  #
+  # CLOSING THE GAP IS A DESIGN CHANGE, NOT A COMMENT FIX. It means giving a
+  # gate whose refusal-as-default reasoning is load-bearing a derivation hop and
+  # a private check, and that belongs in the plan that builds the client, made
+  # deliberately. Until then a client must treat "may see" and "may ask" as two
+  # questions and must never render one as the other.
   #
   # THE GRANT IS READ FROM THE TARGET'S CONF, never the asker's. The direction
   # matters above all else: the one who owns the session lets people in, not
   # the one who wants in.
-  local groups g members
+  #
+  # THE SPLIT IS WANTED; THE GLOB IS NOT. An unquoted `$groups` is word
+  # splitting AND pathname expansion, so this gate's answer depended on the
+  # caller's working directory. Measured 2026-08-28 with VISIBLE_TO="*" on one
+  # target, one asker, only the directory differing: from a cwd holding a file
+  # named after a real group the asterisk became that group and the gate
+  # ALLOWED the ask. The charset check inside the loop cannot help — the
+  # expansion has already happened by the time it runs.
+  #
+  # CAPTURED INTO AN ARRAY rather than looped under `set -f`, because the loop
+  # RETURNS from inside itself: a restore after the loop would be skipped on
+  # exactly the path that matters, leaving globbing off in the caller's shell.
+  local groups g
   groups="$(bus_fraga_falt "$to_" VISIBLE_TO)"
-  for g in $groups; do
+  local _had_f; case "$-" in *f*) _had_f=1 ;; *) _had_f="" ;; esac
+  set -f
+  # shellcheck disable=SC2206  # splitting is intended here; globbing is off
+  local _group_list=( $groups )
+  [ -n "$_had_f" ] || set +f
+  for g in "${_group_list[@]+"${_group_list[@]}"}"; do
     # Refusal-as-default applies here too: a group that cannot be read opens
     # nothing.
     case "$g" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") continue ;; esac
-    members="$(sed -n 's/^MEMBERS="\(.*\)"/\1/p' \
-      "$(registry_entity_dir)/$g.conf" 2>/dev/null | head -1)"
-    case " $members " in *" $fo "*) return 0 ;; esac
+    # THE REGISTRY'S OWN LOADER, NOT A SECOND PARSE. This read used to be
+    # `sed -n 's/^MEMBERS="\(.*\)"/\1/p'`, which matches DOUBLE QUOTES ONLY.
+    # registry_entity_load SOURCES the conf, so to it — and to the visibility
+    # rule that uses it — MEMBERS='a b' and MEMBERS="a b" are the same value.
+    # Measured 2026-08-28 with a single-quoted group: the visibility rule
+    # answered VISIBLE and this gate refused, silently. The parity suite could
+    # not see it either, because both copies carried the same parse and every
+    # fixture was double-quoted; it now carries a single-quoted one.
+    #
+    # The loader is also STRICTER, and deliberately so: it requires a display
+    # name and resolves a manager through itself, so an entity that does not
+    # resolve opens nothing. That is refusal-as-default, which this gate
+    # already states as its rule.
+    #
+    # A SUBSHELL, the pattern the visibility rule uses and documents: the load
+    # sets ENTITY_* globals, and letting those escape into a caller that is
+    # mid-decision answers the next question with the previous entity's members.
+    if ( registry_entity_load "$g" >/dev/null 2>&1 || exit 1
+         case " ${ENTITY_MEMBERS:-} " in *" $fo "*) exit 0 ;; *) exit 1 ;; esac ); then
+      return 0
+    fi
   done
   # THE MACHINE SESSION BELONGS TO EVERYONE WHO LIVES ON THE MACHINE. It does not
   # carry an entity — it carries a MACHINE — so the owner/domain rule would close
