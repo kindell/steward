@@ -2,6 +2,7 @@ mod app;
 mod engine;
 mod list;
 mod mark;
+mod probe;
 
 // cockpit/src/main.rs — where the cockpit starts.
 //
