@@ -22,7 +22,21 @@
 #   steward sessions [--json]
 set -uo pipefail
 
-HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
+# put a symlink to this script on PATH (~/.local/bin/steward -> the
+# checkout), and BASH_SOURCE[0] carries the CALLING path, symlink and all.
+# Rooting on that made every "$HERE/lib/..." source and the cockpit crate
+# resolve under the symlink's home, where none of it exists — measured on the
+# real hub the first day a bare `steward` ran from PATH. Resolve the symlink
+# chain first (plain readlink in a loop: bash 3.2 has no readlink -f, and a
+# link target may itself be relative to the link's own directory).
+_selfpath="${BASH_SOURCE[0]}"
+while [ -L "$_selfpath" ]; do
+  _selfdir="$(CDPATH= cd -- "$(dirname "$_selfpath")" && pwd)"
+  _selfpath="$(readlink "$_selfpath")"
+  case "$_selfpath" in /*) ;; *) _selfpath="$_selfdir/$_selfpath" ;; esac
+done
+HERE="$(CDPATH= cd -- "$(dirname "$_selfpath")/.." && pwd)"
 ESTATES_D="${STEWARD_ESTATES_D:-$HOME/.config/steward/estates.d}"
 SSH_BIN="${STEWARD_SSH:-ssh}"
 REPO_URL="${STEWARD_REPO_URL:-https://github.com/kindell/steward}"
