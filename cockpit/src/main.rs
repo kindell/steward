@@ -19,7 +19,7 @@ use std::io::stdout;
 
 // THE ENGINE COMMAND IS CONFIGURABLE and defaults to the real one. The suite
 // never reaches this function — it tests the three modules beneath it — but a
-// default that pointed nowhere would make the binary useless without a wrapper.
+// default that led nowhere would make the binary useless without a wrapper.
 fn engine_cmd() -> String {
     std::env::var("COCKPIT_ENGINE_CMD")
         .unwrap_or_else(|_| "steward sessions --json".to_string())

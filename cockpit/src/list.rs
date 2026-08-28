@@ -195,9 +195,9 @@ mod tests {
     }
 
     // I2: TRUNCATION EATS THE HIDDEN LINE FIRST, because `Paragraph` clips at
-    // `area.height` with no marker and the hidden line was pushed last. Live
-    // at today's 21-line fleet in a 20-row area. The accounting lines must
-    // survive truncation by being drawn first, not last.
+    // `area.height` with no marker and the hidden line was pushed last. The
+    // live fleet already runs taller than a typical terminal window. The
+    // accounting lines must survive truncation by being drawn first, not last.
     fn draw_in(f: &Fleet, width: u16, height: u16) -> String {
         let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
         t.draw(|frame| render_list(f, frame.area(), frame.buffer_mut())).unwrap();
@@ -214,8 +214,8 @@ mod tests {
 
     #[test]
     fn the_hidden_line_survives_a_too_short_area() {
-        // 20 sessions + a hidden line, drawn into an area only 20 rows tall —
-        // the live shape measured on today's fleet.
+        // More sessions than the area can hold, plus a hidden line, drawn
+        // into a too-short area — the live shape measured on today's fleet.
         let sessions: Vec<Session> = (0..20)
             .map(|i| sess(&format!("s{i}"), &[], "up", None))
             .collect();
@@ -241,8 +241,8 @@ mod tests {
         assert!(!out.contains("more"), "an overflow marker appeared when nothing overflowed:\n{out}");
     }
 
-    // I3: `liveness.reason` IS DROPPED. All 20 live sessions carry
-    // `reason: "seam-not-configured"` and render as bare "unknown unknown"
+    // I3: `liveness.reason` IS DROPPED. Every live session carried
+    // `reason: "seam-not-configured"` and rendered as bare "unknown unknown"
     // with no why. An `unknown` without a reason is the same silence the
     // model was built to make impossible.
     #[test]
@@ -276,7 +276,7 @@ mod tests {
     fn the_owner_appears_in_the_row() {
         let s = Session {
             name: "alpha".into(),
-            owner: "jon".into(),
+            owner: "alice".into(),
             host: "h".into(),
             assets: vec![],
             liveness: Liveness {
@@ -288,6 +288,6 @@ mod tests {
         };
         let out = draw_in(&fleet(vec![s], 0), 100, 10);
         let row = out.lines().find(|l| l.contains("alpha")).unwrap_or("");
-        assert!(row.contains("jon"), "owner missing from row: {row}");
+        assert!(row.contains("alice"), "owner missing from row: {row}");
     }
 }
