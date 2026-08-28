@@ -1,5 +1,6 @@
 mod app;
 mod engine;
+mod inspector;
 mod list;
 mod mark;
 mod probe;
