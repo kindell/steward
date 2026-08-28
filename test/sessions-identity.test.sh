@@ -70,6 +70,12 @@ echo "== nothing declared is a dash, never a blank column =="
 is "no assets is a dash" "$(field "$out" bare 8)" "-"
 is "the row still has eight fields" \
    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="bare"{print NF}')" "8"
+# ...AND SO DOES A ROW WHOSE LAST FIELD CARRIES A REAL VALUE. Counting the
+# columns only on the row whose eighth field is the literal dash verifies the
+# dash substitution, not the row shape: a value that itself contained a tab
+# would still split into extra columns and this assertion would never see it.
+is "a row whose last field is a real value has eight fields too" \
+   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="full"{print NF}')" "8"
 
 # AN UNKNOWN ENTITY IS NOT AN ERROR. A session may name a domain no entity file
 # describes yet; that is a gap in the registry, not a failure of this read.
@@ -144,6 +150,120 @@ printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="odd"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"
   > "$FX/sessions.d/oddsession.conf"
 out4="$(session_identity_rows)"
 is "empty MANAGED_BY reads as team, not client" "$(field "$out4" oddsession 7)" "team"
+
+# ── FIELD CONTENT IS A HAZARD, NOT JUST FIELD PRESENCE ─────────────────────
+#
+# A TSV row is only a row while no VALUE contains the separator. ASSETS is the
+# one registry field registry_load resets without validating (bin/probe-dispatch
+# says so in as many words), and the entity display NAME is validated for
+# presence, never for charset. A raw printf of either one lets a conf forge
+# extra columns — or, with enough of them, a whole extra session that the
+# registry does not contain. Reproduced 2026-08-28: one conf in, two sessions
+# out, rc 0, nothing on either stream.
+echo "== a value carrying a tab and a newline cannot forge a row =="
+HOS="$FX/hostile"; mkdir -p "$HOS/sessions.d" "$HOS/entities.d" "$HOS/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$HOS/estate/steward.conf"
+printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
+# The injection is written with real control characters: a tab inside the value
+# and a newline that opens what looks like a second eight-field row.
+{
+  printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="alpha"\n'
+  printf 'ASSETS="one\nzz-ghost\tzz-ghost\troot\tprod\thub9\tMegaCorp\tclient\tsecret"\n'
+} > "$HOS/sessions.d/alpha.conf"
+hos_out="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
+is "one conf in the registry is one row out" \
+   "$(printf '%s\n' "$hos_out" | grep -c .)" "1"
+is "the row still has exactly eight fields" \
+   "$(printf '%s\n' "$hos_out" | awk -F'\t' 'NR==1{print NF}')" "8"
+case "$hos_out" in
+  *zz-ghost*"	"*) bad "no fabricated session name reaches a column of its own" "got: $hos_out" ;;
+  *)              ok  "no fabricated session name reaches a column of its own" ;;
+esac
+is "the session that does exist is still named correctly" \
+   "$(field "$hos_out" alpha 1)" "alpha"
+is "and its owner is not overwritten by the injection" \
+   "$(field "$hos_out" alpha 3)" "alice"
+
+# THE ENTITY DISPLAY NAME IS THE SECOND VECTOR. Nothing validates its charset,
+# and a tab in it shifts every column to its right — turning `relation` into
+# whatever the second half of the name happened to be, outside its own closed
+# set team|client|-.
+echo "== a tab in the entity display name cannot shift the relation column =="
+printf 'NAME="Ac\tme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
+hos2="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
+is "the row still has exactly eight fields" \
+   "$(printf '%s\n' "$hos2" | awk -F'\t' 'NR==1{print NF}')" "8"
+rel="$(field "$hos2" alpha 7)"
+case "$rel" in
+  team|client|-) ok "the relation stays inside its closed set" ;;
+  *)             bad "the relation stays inside its closed set" "got '$rel'" ;;
+esac
+
+# ── THE ENTITY JOIN IS THE REGISTRY'S OWN READ, NOT A SECOND ONE ───────────
+#
+# A second implementation of a measurement drifts from the first, and the drift
+# renders as a fact. registry_entity_load accepts single-quoted values, requires
+# a NAME, and resolves MANAGED_BY through itself; a local sed for the same two
+# fields matched only double quotes. Measured 2026-08-28: NAME='Acme Ltd' read
+# as no entity at all — a false `null` indistinguishable from the honest "no
+# entity file describes this domain".
+echo "== a single-quoted entity name resolves, it does not read as no entity =="
+SQ="$FX/singlequote"; mkdir -p "$SQ/sessions.d" "$SQ/entities.d" "$SQ/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$SQ/estate/steward.conf"
+printf "NAME='Acme Ltd'\nMEMBERS='alice'\n" > "$SQ/entities.d/acme.conf"
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="sq"\n' \
+  > "$SQ/sessions.d/sq.conf"
+sq_out="$(STEWARD_REGISTRY_DIR="$SQ/sessions.d" STEWARD_ESTATE_ROOT="$SQ" session_identity_rows 2>/dev/null)"
+is "the single-quoted name is read"  "$(field "$sq_out" sq 6)" "Acme Ltd"
+is "and its relation with it"        "$(field "$sq_out" sq 7)" "team"
+
+# A RELATION POINTING AT NOTHING IS NOT A RELATION. The registry's loader
+# refuses a MANAGED_BY that does not resolve; reporting `client` on the strength
+# of the line existing invents structure out of a typo.
+echo "== a MANAGED_BY pointing at nothing does not read as client =="
+printf 'NAME="Orphan Co"\nMANAGED_BY="no-such-team"\n' > "$SQ/entities.d/acme.conf"
+sq2="$(STEWARD_REGISTRY_DIR="$SQ/sessions.d" STEWARD_ESTATE_ROOT="$SQ" session_identity_rows 2>"$FX/sq.err")"
+is "the session is still listed"     "$(field "$sq2" sq 1)" "sq"
+is "but it is not called a client"   "$( [ "$(field "$sq2" sq 7)" = "client" ] && echo yes || echo no )" "no"
+is "and the unreadable entity is named on stderr" \
+   "$(grep -q 'no-such-team' "$FX/sq.err" && echo yes || echo no)" "yes"
+
+# ── M7: THE CAUSE IS THE ONLY USEFUL HALF OF A SKIP LINE ───────────────────
+echo "== a skipped session's diagnostic carries the registry's own cause =="
+M7="$FX/cause"; mkdir -p "$M7/sessions.d" "$M7/entities.d" "$M7/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$M7/estate/steward.conf"
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="ok"\n' \
+  > "$M7/sessions.d/fine.conf"
+# HOST is validated by registry_load and says so by name.
+printf 'HOST="NOT A HOST"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="b"\n' \
+  > "$M7/sessions.d/badhost.conf"
+STEWARD_REGISTRY_DIR="$M7/sessions.d" STEWARD_ESTATE_ROOT="$M7" \
+  session_identity_rows >/dev/null 2>"$FX/cause.err"
+is "the skip line names the session" \
+   "$(grep -q "skipping 'badhost'" "$FX/cause.err" && echo yes || echo no)" "yes"
+is "and carries the registry's own cause, not just a generic sentence" \
+   "$(grep -q "invalid HOST" "$FX/cause.err" && echo yes || echo no)" "yes"
+
+# ── I4: THE UNREADABLE SESSIONS ARE A VALUE, NOT ONLY A SENTENCE ───────────
+#
+# The declared consumer of this layer is a view reading a subprocess' stdout.
+# Telling it to also capture stderr and correlate the two is an instruction that
+# does not survive contact with a client, so the names are readable as data too.
+echo "== the skipped sessions are also carried in SESSIONS_UNREADABLE =="
+SESSIONS_UNREADABLE="stale-value-from-a-previous-run"
+STEWARD_REGISTRY_DIR="$M7/sessions.d" STEWARD_ESTATE_ROOT="$M7" \
+  session_identity_rows >/dev/null 2>/dev/null
+is "the bad session is named in it" \
+   "$(printf '%s\n' "$SESSIONS_UNREADABLE" | grep -cx 'badhost')" "1"
+is "the good one is not"  \
+   "$(printf '%s\n' "$SESSIONS_UNREADABLE" | grep -cx 'fine')" "0"
+STEWARD_REGISTRY_DIR="$ZERO/sessions.d" STEWARD_ESTATE_ROOT="$ZERO" \
+  session_identity_rows >/dev/null 2>/dev/null
+is "and a clean run resets it, it does not accumulate" \
+   "$(printf '%s' "$SESSIONS_UNREADABLE")" ""
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
