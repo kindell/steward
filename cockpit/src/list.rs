@@ -162,7 +162,7 @@ mod tests {
     }
 
     fn fleet(sessions: Vec<Session>, hidden: u32) -> Fleet {
-        Fleet { sessions, hidden, unreadable: vec![] }
+        Fleet { sessions, hidden, unreadable: vec![], hub: "h".to_string() }
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
     // failure the client-spec names.
     #[test]
     fn unreadable_names_are_on_screen() {
-        let f = Fleet { sessions: vec![], hidden: 0, unreadable: vec!["broken-a".into(), "broken-b".into()] };
+        let f = Fleet { sessions: vec![], hidden: 0, unreadable: vec!["broken-a".into(), "broken-b".into()], hub: "h".to_string() };
         let out = draw(&f, 0, &no_probes());
         assert!(out.contains("broken-a"), "unreadable name missing:\n{out}");
         assert!(out.contains("broken-b"), "unreadable name missing:\n{out}");
@@ -390,7 +390,7 @@ mod tests {
         let sessions: Vec<Session> = (0..5)
             .map(|i| sess(&format!("s{i}"), &[], "up", None))
             .collect();
-        let f = Fleet { sessions, hidden: 2, unreadable: vec!["broken-a".into()] };
+        let f = Fleet { sessions, hidden: 2, unreadable: vec!["broken-a".into()], hub: "h".to_string() };
         // lines = 1 (unreadable) + 1 (hidden) + 5 (sessions) = 7, into a
         // 5-row area: 4 survive, plus an overflow marker naming the other 3.
         let out = draw_in(&f, 0, &no_probes(), 60, 5);

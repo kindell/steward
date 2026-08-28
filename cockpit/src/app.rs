@@ -50,7 +50,12 @@ pub enum Mode {
 // reaches tmux instead of the cockpit. Ctrl-] has no tmux meaning to collide
 // with, and is rare enough in ordinary shell use that an operator attached to
 // a real session will not trigger it by accident.
-pub const DETACH_HINT: &str = "Ctrl-] detach";
+// THE HINT NAMES BOTH READINGS. is_detach below accepts Ctrl-5 because it is
+// the same byte — and on keyboard layouts where `]` sits behind AltGr (Swedish
+// among them), Ctrl-5 is the only comfortable way to type the chord at all.
+// A hint that only says Ctrl-] tells those operators their one good exit does
+// not exist. Measured: the first real operator's first detach.
+pub const DETACH_HINT: &str = "Ctrl-] / Ctrl-5 detach";
 
 pub struct App {
     pub fleet: Fleet,
@@ -196,7 +201,22 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.refusal = None;
             if let Some(session) = app.fleet.sessions.get(app.selected) {
                 if verb::enter_allowed(&session.owner, &app.viewer) {
-                    app.mode = Mode::Attached;
+                    // OWNERSHIP FIRST, THEN REACH. Ownership is the durable
+                    // answer (a foreign session stays foreign when remote
+                    // attach lands one day); reach is a capability gap. A
+                    // session on another host cannot be attached to the
+                    // LOCAL tmux — trying anyway spawned a client that died
+                    // with tmux's "can't find session", leaving the operator
+                    // in an attached view of a corpse. Measured on the real
+                    // hub, first enter on a remote-host session.
+                    if session.host == app.fleet.hub {
+                        app.mode = Mode::Attached;
+                    } else {
+                        app.refusal = Some(format!(
+                            "{} runs on {} — remote view/enter not yet",
+                            session.name, session.host
+                        ));
+                    }
                 } else {
                     // NAMES OWNERSHIP, NOT PERMISSION. "denied" or "not
                     // allowed" would read like a rank the operator lacks;
@@ -287,6 +307,7 @@ mod tests {
                 .collect(),
             hidden: 0,
             unreadable: Vec::new(),
+            hub: "h".to_string(),
         }
     }
 
@@ -309,6 +330,7 @@ mod tests {
             }],
             hidden: 0,
             unreadable: Vec::new(),
+            hub: "h".to_string(),
         }
     }
 
@@ -580,5 +602,56 @@ mod tests {
     fn probe_status_word_for_an_empty_answer_is_unknown() {
         let r = ProbeResult::Answered { assets: vec![] };
         assert_eq!(probe_status_word(&r), Some("unknown"));
+    }
+
+    // A THIRD FIXTURE, HOST CHOSEN BY THE CALLER — the remote-gate tests need
+    // a session whose host and the fleet's hub differ. The hub stays "h" like
+    // every other fixture here; the session's host is the variable.
+    fn fleet_on_host(name: &str, owner: &str, host: &str) -> Fleet {
+        let mut f = fleet_owned_by(name, owner);
+        f.sessions[0].host = host.to_string();
+        f
+    }
+
+    // ENTER ON A REMOTE SESSION REFUSES VISIBLY. The plan scoped remote
+    // attach out — but out means a visible line, never a local tmux client
+    // spawned against a session that lives elsewhere and dying with tmux's
+    // own error. Measured on the real hub: the first enter an operator ever
+    // tried was a remote-host session, and the cockpit attached a corpse.
+    #[test]
+    fn enter_on_a_remote_session_refuses_visibly() {
+        let mut app = App::new(fleet_on_host("far-session", "alice", "elsewhere"));
+        app.viewer = "alice".to_string();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browsing, "a remote session must not attach");
+        let r = app.refusal.expect("the refusal must be visible");
+        assert!(r.contains("remote"), "the refusal names the gap: {r}");
+        assert!(r.contains("elsewhere"), "the refusal names the host: {r}");
+    }
+
+    // AND A LOCAL ONE STILL ATTACHES — host equal to the hub is the whole
+    // meaning of local.
+    #[test]
+    fn enter_on_a_local_owned_session_attaches() {
+        let mut app = App::new(fleet_on_host("near-session", "alice", "h"));
+        app.viewer = "alice".to_string();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Attached);
+        assert_eq!(app.refusal, None);
+    }
+
+    // OWNERSHIP IS CHECKED BEFORE REACH. A foreign session on a remote host
+    // gets the ownership refusal — the durable truth — not the capability
+    // gap, which would read as "come back when remote lands" to someone the
+    // owner gate will still refuse then.
+    #[test]
+    fn a_foreign_remote_session_refuses_on_ownership_not_reach() {
+        let mut app = App::new(fleet_on_host("far-session", "alice", "elsewhere"));
+        app.viewer = "bob".to_string();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Browsing);
+        let r = app.refusal.expect("the refusal must be visible");
+        assert!(r.contains("owned by alice"), "ownership first: {r}");
+        assert!(!r.contains("remote"), "reach must not mask ownership: {r}");
     }
 }
