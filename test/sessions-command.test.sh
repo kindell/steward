@@ -44,8 +44,15 @@ J
 EOF
 chmod +x "$FX/live"
 
+# STEWARD_VIEWER: the command's answer depends on who is asking — a session
+# invisible to the viewer is hidden, not listed — so a suite that never says
+# who it is testing as is testing an accident of whichever account happens to
+# run it. Every fixture session below is OWNER="a", so "a" is the viewer that
+# legitimately sees all of them; the owner check in lib/visibility.sh always
+# wins regardless of entity membership, which is why one viewer covers alpha,
+# beta, orphan and broken alike.
 run() { STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
-        STEWARD_LIVENESS_CMD="$FX/live" bash "$STEWARD" sessions "$@" 2>&1; }
+        STEWARD_LIVENESS_CMD="$FX/live" STEWARD_VIEWER="a" bash "$STEWARD" sessions "$@" 2>&1; }
 
 echo "== the json contract =="
 j="$(run --json)"; rc=$?
@@ -99,7 +106,7 @@ is "an unmeasured session says the seam did not mention it" \
 # NO LIVENESS COMMAND AT ALL is the state of a fresh estate. Every session must
 # then be unknown — never healthy, never missing from the list.
 echo "== with no liveness command, every session is still listed and unknown =="
-j2="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+j2="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
       env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>&1)"
 is "both sessions still listed" "$(printf '%s' "$j2" | jq -r '.sessions | length')" "2"
 is "alpha is unknown too"       "$(printf '%s' "$j2" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "unknown"
@@ -108,7 +115,7 @@ is "and every one of them says WHY it is unknown" \
 
 # THE HUMAN FORM SAYS IT TOO — on stderr, so the table stays pure data.
 h2err="$(mktemp)"
-STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
   env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions >/dev/null 2>"$h2err"
 has "the human form names the missing variable" "$(cat "$h2err")" "STEWARD_LIVENESS_CMD"
 rm -f "$h2err"
@@ -117,7 +124,7 @@ rm -f "$h2err"
 # THAT WAS NEVER CONFIGURED — and neither may render as the other.
 echo "== a seam that could not be run says so, on stderr and in the document =="
 serr="$(mktemp)"
-j2b="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+j2b="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
        STEWARD_LIVENESS_CMD="$FX/no-such-shim" bash "$STEWARD" sessions --json 2>"$serr")"
 serrtext="$(cat "$serr")"; rm -f "$serr"
 is "the sessions are still listed" "$(printf '%s' "$j2b" | jq -r '.sessions | length')" "2"
@@ -152,7 +159,7 @@ printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nID="broken"\n' \
   > "$FX/sessions.d/broken.conf"
 
 jerr="$(mktemp)"
-jout="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+jout="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
         STEWARD_LIVENESS_CMD="$FX/live" bash "$STEWARD" sessions --json 2>"$jerr")"
 jrc=$?
 jerrtext="$(cat "$jerr")"; rm -f "$jerr"
@@ -176,7 +183,7 @@ has "the diagnostic reached this command's own stderr as well" "$jerrtext" "brok
 
 echo "== the same partial failure, human form =="
 herr="$(mktemp)"
-hout="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+hout="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
         STEWARD_LIVENESS_CMD="$FX/live" bash "$STEWARD" sessions 2>"$herr")"
 hrc=$?
 herrtext="$(cat "$herr")"; rm -f "$herr"

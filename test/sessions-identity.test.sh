@@ -41,6 +41,14 @@ printf 'NAME="Team One"\nMEMBERS="alice bob"\n' > "$FX/entities.d/team-one.conf"
 
 export STEWARD_REGISTRY_DIR="$FX/sessions.d"
 export STEWARD_ESTATE_ROOT="$FX"
+# STEWARD_VIEWER: session_identity_rows filters by who is asking (M8's
+# visibility rule) — a suite that never says who it is testing as is a suite
+# testing whichever account happens to run it, not the code. "alice" owns
+# `full` and, through team-one's MEMBERS, is also a legitimate viewer of
+# `bare` (owned by bob) — one default covers most of this file's fixtures.
+# A handful of later fixtures are owned by carol or dave instead; those calls
+# override STEWARD_VIEWER inline rather than widening this default.
+export STEWARD_VIEWER="alice"
 # shellcheck source=/dev/null
 . "$here/lib/sessions.sh"
 
@@ -82,7 +90,9 @@ is "a row whose last field is a real value has eight fields too" \
 echo "== a domain with no entity file still yields a row =="
 printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="nosuch"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="orphan"\n' \
   > "$FX/sessions.d/orphan.conf"
-out2="$(session_identity_rows)"
+# orphan's owner is carol, not the suite default alice, and its domain has no
+# entity to grant a team view either — so only carol can see it.
+out2="$(STEWARD_VIEWER=carol session_identity_rows)"
 is "the orphan is listed"        "$(field "$out2" orphan 1)" "orphan"
 is "its entity name is a dash"   "$(field "$out2" orphan 6)" "-"
 is "its relation is a dash"      "$(field "$out2" orphan 7)" "-"
@@ -134,7 +144,8 @@ printf 'HOST="h1"\nOWNER="dave"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"
 # No OWNER: registry_load's own OWNER validation rejects this one (rc 1).
 printf 'HOST="h1"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="bad"\n' \
   > "$PART/sessions.d/bad.conf"
-out_part="$(STEWARD_REGISTRY_DIR="$PART/sessions.d" STEWARD_ESTATE_ROOT="$PART" session_identity_rows 2>"$FX/part.err")"; rc_part=$?
+# the readable session here is owned by dave, not the suite default alice.
+out_part="$(STEWARD_REGISTRY_DIR="$PART/sessions.d" STEWARD_ESTATE_ROOT="$PART" STEWARD_VIEWER=dave session_identity_rows 2>"$FX/part.err")"; rc_part=$?
 is "partial: rc 0" "$rc_part" "0"
 is "partial: the good session is listed" "$(field "$out_part" good 1)" "good"
 is "partial: the bad session is absent from stdout" "$(field "$out_part" bad 1)" ""
@@ -148,7 +159,8 @@ echo "== an empty MANAGED_BY value falls through to MEMBERS =="
 printf 'NAME="Odd"\nMANAGED_BY=""\nMEMBERS="carol"\n' > "$FX/entities.d/odd.conf"
 printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="odd"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="oddsession"\n' \
   > "$FX/sessions.d/oddsession.conf"
-out4="$(session_identity_rows)"
+# oddsession's owner is carol, not the suite default alice.
+out4="$(STEWARD_VIEWER=carol session_identity_rows)"
 is "empty MANAGED_BY reads as team, not client" "$(field "$out4" oddsession 7)" "team"
 
 # ── FIELD CONTENT IS A HAZARD, NOT JUST FIELD PRESENCE ─────────────────────
