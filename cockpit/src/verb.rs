@@ -60,9 +60,11 @@ pub fn attach_argv(socket: &str, session: &str, mode: AttachMode) -> Vec<String>
 /// touch it beyond taking it in, since the argv it returns is what gets
 /// passed TO that binary, not the binary's own path. It stays a parameter
 /// (rather than dropping out of the signature) so the call site reads as
-/// "spawn `bus_bin` with this argv" in one place — today's `main` reads
-/// `bus_bin` from `COCKPIT_BUS_CMD` and offers no `ask` verb at all when
-/// that variable is unset, never a guessed path.
+/// "spawn `bus_bin` with this argv" in one place. When `ask` is wired, its
+/// caller is meant to take `bus_bin` from `COCKPIT_BUS_CMD` and offer no
+/// `ask` verb at all when that variable is unset, never a guessed path — the
+/// bus lives in the estate, so a hardcoded path has no place in this crate.
+/// `ask` is not wired in this plan: `ask_argv` is pure logic with no caller yet.
 ///
 /// THE ENVELOPE IS REQUIRED, NOT OPTIONAL. The bus refuses any body whose
 /// first line is not `CLASS topic: title` (exit 65) — so this function takes
