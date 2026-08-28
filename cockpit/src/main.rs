@@ -4,6 +4,7 @@ mod inspector;
 mod list;
 mod mark;
 mod probe;
+mod terminal;
 
 // cockpit/src/main.rs — where the cockpit starts.
 //
@@ -32,10 +33,8 @@ mod probe;
 
 use app::{App, handle_key, apply_probe};
 use ratatui::crossterm::event::{self, Event};
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::{Terminal, backend::CrosstermBackend};
-use std::io::stdout;
+use std::process::ExitCode;
 use std::time::Duration;
 
 // THE ENGINE COMMAND IS CONFIGURABLE and defaults to the real one. The suite
@@ -53,14 +52,16 @@ fn assets_cmd() -> String {
         .unwrap_or_else(|_| "steward assets {} --json".to_string())
 }
 
-fn main() {
+fn main() -> ExitCode {
     let fleet = match engine::read_fleet(&engine_cmd()) {
         Ok(f) => f,
         Err(e) => {
             // A FAILURE TO READ IS NOT AN EMPTY FLEET, and it must not be drawn
-            // as one. Say it on stderr and exit non-zero.
+            // as one. Say it on stderr and exit non-zero. This happens BEFORE
+            // terminal::enter() — no terminal state has been touched yet, so
+            // there is nothing for a guard to clean up.
             eprintln!("cockpit: {e}");
-            std::process::exit(70);
+            return ExitCode::from(70);
         }
     };
 
@@ -80,16 +81,16 @@ fn main() {
         .collect();
     let rx = probe::spawn_prober(assets_cmd(), probing_sessions);
 
-    if enable_raw_mode().is_err() {
-        eprintln!("cockpit: this needs a terminal");
-        std::process::exit(69);
-    }
-    let mut term = match Terminal::new(CrosstermBackend::new(stdout())) {
-        Ok(t) => t,
+    // THE ONE PLACE RAW MODE, THE ALTERNATE SCREEN, AND THE CURSOR ARE
+    // TOUCHED. terminal::enter() installs the panic hook before it changes
+    // anything, so a failure partway through still restores what it managed
+    // to change. No TerminalGuard exists yet on this path, so there is
+    // nothing for a Drop to clean up here — exiting directly is safe.
+    let (_guard, mut term) = match terminal::enter() {
+        Ok(v) => v,
         Err(e) => {
-            let _ = disable_raw_mode();
             eprintln!("cockpit: {e}");
-            std::process::exit(70);
+            std::process::exit(69);
         }
     };
     // WITHOUT THIS, WHATEVER WAS ON SCREEN BEFORE (a shell prompt, a
@@ -101,6 +102,12 @@ fn main() {
     // explicit clear before the first frame is what makes the picture honest
     // from frame one.
     let _ = term.clear();
+
+    // THE EXIT CODE A LOOP ERROR EARNS. Defaults to success; a draw or poll
+    // error downgrades it and requests quit, so the loop still exits through
+    // its one normal path — `_guard` drops on the way out of `main` either
+    // way, there is no second teardown to keep in sync with this one.
+    let mut exit_code = ExitCode::SUCCESS;
 
     loop {
         // I4: THE ONE ACTION THIS PROGRAM EXISTS FOR gets its error handled
@@ -119,25 +126,29 @@ fn main() {
             inspector::render_inspector(selected, probe, cols[1], frame.buffer_mut());
         });
         if let Err(e) = drawn {
-            let _ = disable_raw_mode();
             eprintln!("cockpit: {e}");
-            std::process::exit(70);
+            exit_code = ExitCode::from(70);
+            app.quit = true;
         }
 
         // A SHORT POLL, NOT A BLOCKING READ. 50ms is short enough that a
         // probe landing mid-wait shows up on the next frame without the
         // operator noticing the delay, and long enough not to spin the CPU.
-        match event::poll(Duration::from_millis(50)) {
-            Ok(true) => {
-                if let Ok(Event::Key(key)) = event::read() {
-                    handle_key(&mut app, key.code);
+        // Skipped once a draw error above already requested quit — there is
+        // no picture left worth taking more keys for.
+        if !app.quit {
+            match event::poll(Duration::from_millis(50)) {
+                Ok(true) => {
+                    if let Ok(Event::Key(key)) = event::read() {
+                        handle_key(&mut app, key.code);
+                    }
                 }
-            }
-            Ok(false) => {}
-            Err(e) => {
-                let _ = disable_raw_mode();
-                eprintln!("cockpit: {e}");
-                std::process::exit(70);
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("cockpit: {e}");
+                    exit_code = ExitCode::from(70);
+                    app.quit = true;
+                }
             }
         }
 
@@ -153,5 +164,8 @@ fn main() {
         }
     }
 
-    let _ = disable_raw_mode();
+    // `_guard` drops here, restoring raw mode, the alternate screen and the
+    // cursor in one place regardless of which path through the loop above
+    // set `exit_code`.
+    exit_code
 }
