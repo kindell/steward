@@ -1,4 +1,5 @@
 mod engine;
+mod mark;
 
 // cockpit/src/main.rs — where the cockpit starts.
 //
