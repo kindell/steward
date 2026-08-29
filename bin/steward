@@ -852,6 +852,58 @@ cmd_sessions() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# The bare invocation's own two resolvers — hub-local verification, then
+# socket derivation from it. Both run inside the "" branch of the dispatcher
+# below, after _operator_config_load and before the cockpit runs.
+#
+# HUB-LOCAL IS A CONVENIENCE GATE, NOT A SECURITY BOUNDARY. STEWARD_HOSTNAME_CMD
+# exists purely as a test seam — it can "spoof" the check, but that buys an
+# operator nothing they could not already get with an explicit
+# STEWARD_TMUX_SOCKET. It guards against running on the wrong machine, not
+# against a hostile one.
+#
+# NEVER A HARD FAILURE. When the registry cannot answer — no estate root
+# resolvable, a missing or broken estate file — this is simply "not
+# hub-local". The cockpit's own refusals downstream (missing socket, etc.)
+# already say why; a bare invocation must not gain a NEW way to fail just
+# because this convenience check could not be evaluated.
+_resolve_hub_local() {
+  local _hostcmd="${STEWARD_HOSTNAME_CMD:-}" _here_host _hub_host
+  if [ -n "$_hostcmd" ]; then
+    _here_host="$("$_hostcmd" 2>/dev/null)" || return 1
+  else
+    _here_host="$(hostname -s 2>/dev/null)" || return 1
+  fi
+  [ -n "$_here_host" ] || return 1
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh" 2>/dev/null || return 1
+  _hub_host="$(registry_hub_host 2>/dev/null)" || return 1
+  [ "$_here_host" = "$_hub_host" ] || return 1
+  STEWARD_HUB_LOCAL=1
+  export STEWARD_HUB_LOCAL
+  return 0
+}
+
+# _resolve_socket — fills STEWARD_TMUX_SOCKET for the cockpit child by
+# deriving it from the estate's own TMUX_SOCKET, but only on a verified
+# hub-local machine. An explicit value — from the process environment, or
+# already filled in by _operator_config_load from the operator's config file
+# — always wins untouched; its _CFG_SOURCE_STEWARD_TMUX_SOCKET already says
+# which. Any failure along the way (not hub-local, registry unreadable,
+# TMUX_SOCKET missing or invalid) simply leaves the variable unset — the
+# cockpit's existing "refusing to guess a socket" refusal stands on Enter.
+_resolve_socket() {
+  [ -n "${STEWARD_TMUX_SOCKET:-}" ] && return 0
+  _resolve_hub_local || return 0
+  local _sock
+  _sock="$(registry_tmux_socket 2>/dev/null)" || return 0
+  STEWARD_TMUX_SOCKET="$HOME/.tmux/$_sock"
+  export STEWARD_TMUX_SOCKET
+  _CFG_SOURCE_STEWARD_TMUX_SOCKET="derived"
+  return 0
+}
+
 # CALLED FIRST IN THE DISPATCHER, BEFORE ANY SUBCOMMAND — every path below
 # (add, ls, sessions, the bare cockpit invocation, an <estate> verb) must
 # see the same, already-resolved environment, and a broken config must
@@ -904,6 +956,11 @@ case "${1:-}" in
     # bare `steward` outside the checkout. So: an explicit
     # STEWARD_COCKPIT_BIN always wins; a checkout builds on first use; an
     # install with no source refuses and names both ways forward.
+    #
+    # SOCKET DERIVATION RUNS FOR EVERY PATH BELOW, including
+    # STEWARD_COCKPIT_BIN — a stub or a real binary should see the same
+    # environment a built-in-place cockpit would.
+    _resolve_socket
     if [ -n "${STEWARD_COCKPIT_BIN:-}" ]; then
       [ -x "$STEWARD_COCKPIT_BIN" ] || fel "STEWARD_COCKPIT_BIN is set but not an executable: $STEWARD_COCKPIT_BIN" 69
       exec "$STEWARD_COCKPIT_BIN"
