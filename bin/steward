@@ -20,6 +20,7 @@
 #   steward scaffold <dir> org=<> team=<> owner=<> session=<> [assets=<>] [--json]
 #   steward assets <session> [--json]
 #   steward sessions [--json]
+#   steward doctor
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -904,11 +905,284 @@ _resolve_socket() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# `steward doctor` — the operator's first read on a fresh checkout, before
+# anything is trusted. Probes 1-5 (the core): self-path, operator-config,
+# estate-root, registry, hub-local. `--json`/`--static` and probes 6-9
+# (liveness, socket, cockpit-binary, dependencies) are a later task — see
+# docs/superpowers/specs/2026-08-29-operatorens-vag-in-design.md section 5.
+#
+# EVERY PROBE READS, NEVER WRITES. No file writes, no builds, no bus, git or
+# network calls happen anywhere below — the one verb that mutates is
+# `steward config init`/`set` (not built yet), and every FAIL/WARN line names
+# the exact command to run, never a raw `export` line an operator would have
+# to remember and repeat by hand.
+#
+# ONE FUNCTION PER PROBE, `_doctor_probe_<id>`, IDs EXACTLY as the spec's
+# table. Each probe prints a single `STATUS text` line on its own stdout and
+# returns a class the runner folds into both that line's STATUS and the
+# overall exit code: 0 for PASS/WARN, 78 for an unsafe or missing config
+# value, 69 for a missing facility, 70 for a doctor-internal failure (e.g. it
+# could not even create a temp file).
+#
+# THE DEPENDENCY CHAIN IS TWO RULES, NOT FIVE. A FAIL in operator-config
+# blocks estate-root, registry AND hub-local — nothing downstream of a broken
+# config can be measured honestly, because every one of those probes needs a
+# resolved STEWARD_ESTATE_ROOT. A FAIL in estate-root blocks registry and
+# hub-local the same way. self-path blocks nothing (it runs before anything
+# else could need it) and hub-local blocks nothing further (nothing runs
+# after it today). Every SKIP names the probe that blocked it, never a bare
+# "skipped".
+_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local"
+
+# self-path — reports on the SAME symlink-resolution loop at the top of this
+# file, never a second one. By the time this runs, $_selfpath and $HERE are
+# already the resolved, canonical values every other command trusts; a
+# dangling link or an unresolvable install root would already have made
+# nearly everything below this line fail in stranger ways, so this probe
+# exists to say so plainly, first.
+_doctor_probe_self-path() {
+  if [ -z "${_selfpath:-}" ] || [ ! -f "$_selfpath" ]; then
+    printf 'FAIL the resolved self-path does not exist (a dangling symlink?): %s\n' "${_selfpath:-<empty>}"
+    return 69
+  fi
+  if [ -z "${HERE:-}" ] || [ ! -d "$HERE" ]; then
+    printf 'FAIL could not resolve the install root from %s\n' "$_selfpath"
+    return 69
+  fi
+  printf 'PASS resolved to %s (install root %s)\n' "$_selfpath" "$HERE"
+  return 0
+}
+
+# operator-config — syntax/owner/mode plus every effective value's
+# provenance. _operator_config_load already ran at the top of this script
+# (reused, never re-implemented); this probe only reports what it found.
+#
+# THE FOUNDING CASE: A VALUE FROM THE ENVIRONMENT WITH NO DURABLE FILE BEHIND
+# IT. A session inherits STEWARD_ESTATE_ROOT from its supervisor every time
+# it runs — that is correct and common, and it is also indistinguishable
+# from real setup unless something says so. `ambient-only` is that word: it
+# fires only when a value's source is process-environment AND no config
+# file exists at all, never when the value merely differs from what a
+# present file says (env always wins there too, but a durable file already
+# exists to fall back to).
+_doctor_probe_operator-config() {
+  # A BROKEN FILE ALWAYS MEANS AN EXISTING FILE. _operator_config_load
+  # returns rc 0 for "no file at all" unconditionally — every rc-78 branch in
+  # it runs only after `[ -e "$f" ]` already passed. So the remedy here is
+  # always `config set`, never `config init` (which refuses outright on a
+  # file that exists): `set` rewrites the file atomically rather than
+  # patching the broken line, so it clears whatever made the old one
+  # unreadable.
+  if [ "${_cfg_rc:-0}" -ne 0 ]; then
+    printf 'FAIL %s -- run: steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root (config set rewrites the file cleanly)\n' "$_CFG_ERROR"
+    return 78
+  fi
+
+  local cfgfile="${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"
+  local have_file=""
+  [ -e "$cfgfile" ] && have_file=1
+
+  local root_txt sock_txt live_txt
+  root_txt="STEWARD_ESTATE_ROOT=${STEWARD_ESTATE_ROOT:-} source=$_CFG_SOURCE_STEWARD_ESTATE_ROOT"
+  sock_txt="STEWARD_TMUX_SOCKET=${STEWARD_TMUX_SOCKET:-} source=$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
+  live_txt="STEWARD_LIVENESS_CMD=${STEWARD_LIVENESS_CMD:-} source=$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
+
+  local ambient=""
+  if [ -z "$have_file" ]; then
+    if [ "$_CFG_SOURCE_STEWARD_ESTATE_ROOT" = "process-environment" ]; then root_txt="$root_txt (ambient-only)"; ambient=1; fi
+    if [ "$_CFG_SOURCE_STEWARD_TMUX_SOCKET" = "process-environment" ]; then sock_txt="$sock_txt (ambient-only)"; ambient=1; fi
+    if [ "$_CFG_SOURCE_STEWARD_LIVENESS_CMD" = "process-environment" ]; then live_txt="$live_txt (ambient-only)"; ambient=1; fi
+  fi
+
+  # THE MODE CHECK THE PARSER ITSELF DOES NOT MAKE. 0644 is ACCEPTED for
+  # reading (only group/other WRITE bits are refused) — but a config file
+  # that names an estate root should not be world-readable either, so doctor
+  # says so even where the loader stayed silent.
+  local mode_warn=""
+  if [ -n "$have_file" ] && [ ! -L "$cfgfile" ]; then
+    local mode; mode="$(_CFG_MODE_OF "$cfgfile" 2>/dev/null)"
+    if [ -n "$mode" ] && [ "$mode" != "600" ]; then
+      mode_warn="config file mode is $mode, not 0600 (group/other can read it) -- run: chmod 0600 $cfgfile"
+    fi
+  fi
+
+  local text="$root_txt; $sock_txt; $live_txt"
+
+  if [ -n "$ambient" ]; then
+    local init_root="${STEWARD_ESTATE_ROOT:-/abs/correct-estate-root}"
+    local init_cmd="steward config init --estate-root $init_root"
+    [ "$_CFG_SOURCE_STEWARD_TMUX_SOCKET" = "process-environment" ]  && init_cmd="$init_cmd --tmux-socket ${STEWARD_TMUX_SOCKET}"
+    [ "$_CFG_SOURCE_STEWARD_LIVENESS_CMD" = "process-environment" ] && init_cmd="$init_cmd --liveness-cmd ${STEWARD_LIVENESS_CMD}"
+    if [ -n "$mode_warn" ]; then
+      printf 'WARN %s -- run: %s; also: %s\n' "$text" "$init_cmd" "$mode_warn"
+    else
+      printf 'WARN %s -- run: %s\n' "$text" "$init_cmd"
+    fi
+    return 0
+  fi
+
+  if [ -n "$mode_warn" ]; then
+    printf 'WARN %s -- %s\n' "$text" "$mode_warn"
+    return 0
+  fi
+
+  printf 'PASS %s\n' "$text"
+  return 0
+}
+
+# estate-root — the root directory, estate/steward.conf, and its schema.
+# Reuses _registry_estate_root and registry_estate_file/registry_schema_check
+# from lib/registry.sh rather than re-deriving any of it.
+_doctor_probe_estate-root() {
+  local root; root="$(_registry_estate_root)"
+
+  local cfgfile="${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"
+  local have_file=""
+  [ -e "$cfgfile" ] && have_file=1
+  # SAME RULE AS operator-config's OWN REMEDY: `init` only ever applies when
+  # no config file exists yet; once one exists, `set` is the only verb that
+  # will not refuse.
+  local remedy
+  if [ -n "$have_file" ]; then
+    remedy="steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root"
+  else
+    remedy="steward config init --estate-root /abs/correct-estate-root"
+  fi
+
+  if [ ! -d "$root" ]; then
+    printf 'FAIL estate root does not exist: %s -- run: %s\n' "$root" "$remedy"
+    return 78
+  fi
+
+  local estate_file; estate_file="$(registry_estate_file)"
+  if [ ! -f "$estate_file" ]; then
+    printf 'FAIL estate file missing: %s -- run: %s\n' "$estate_file" "$remedy"
+    return 78
+  fi
+
+  local schema_out schema_rc
+  schema_out="$(registry_schema_check 2>&1 >/dev/null)"
+  schema_rc=$?
+  if [ "$schema_rc" -ne 0 ]; then
+    printf 'FAIL %s -- run: %s\n' "$schema_out" "$remedy"
+    return 78
+  fi
+
+  printf 'PASS root=%s estate-file=%s\n' "$root" "$estate_file"
+  return 0
+}
+
+# registry — does the session registry load, and how many rows are
+# unreadable. Reuses registry_list and registry_load; never re-parses a
+# session conf itself.
+_doctor_probe_registry() {
+  local errf; errf="$(mktemp 2>/dev/null)"
+  if [ -z "$errf" ]; then
+    printf 'FAIL could not create a temporary file\n'
+    return 70
+  fi
+  local list rc
+  list="$(registry_list 2>"$errf")"
+  rc=$?
+  local err; err="$(cat "$errf" 2>/dev/null)"
+  rm -f "$errf"
+  if [ "$rc" -ne 0 ]; then
+    printf 'FAIL %s -- if this estate root is wrong, run: steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root\n' "$err"
+    return 78
+  fi
+
+  local total=0 unreadable=0 name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    total=$((total+1))
+    ( registry_load "$name" >/dev/null 2>&1 ) || unreadable=$((unreadable+1))
+  done <<EOF
+$list
+EOF
+
+  if [ "$unreadable" -gt 0 ]; then
+    printf 'WARN %d/%d session(s) failed to load -- run: steward sessions to see which\n' "$unreadable" "$total"
+    return 0
+  fi
+  printf 'PASS %d session(s) registered, all load\n' "$total"
+  return 0
+}
+
+# hub-local — this machine's hostname against the estate's HUB_HOST. THE
+# DECISION ITSELF IS _resolve_hub_local's, REUSED VERBATIM (same
+# STEWARD_HOSTNAME_CMD test seam it already honors); this probe only prints
+# the two names next to the same yes/no it already makes. Not being the hub
+# is a normal state for an operator's own laptop, not a defect — so it is a
+# WARN with no remedy, never a FAIL.
+_doctor_probe_hub-local() {
+  local hub_host; hub_host="$(registry_hub_host 2>/dev/null)"
+  if [ -z "$hub_host" ]; then
+    printf 'FAIL the estate names no readable HUB_HOST -- run: steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root\n'
+    return 78
+  fi
+
+  local here_host
+  if [ -n "${STEWARD_HOSTNAME_CMD:-}" ]; then here_host="$("$STEWARD_HOSTNAME_CMD" 2>/dev/null)"
+  else here_host="$(hostname -s 2>/dev/null)"; fi
+  if [ -z "$here_host" ]; then
+    printf 'FAIL could not determine this machine'"'"'s hostname\n'
+    return 69
+  fi
+
+  if _resolve_hub_local; then
+    printf 'PASS this machine (%s) is the hub (HUB_HOST=%s)\n' "$here_host" "$hub_host"
+  else
+    printf 'WARN this machine (%s) is not the hub (HUB_HOST=%s) -- socket derivation and estate-local shortcuts stay off; an explicit STEWARD_TMUX_SOCKET is still honored\n' "$here_host" "$hub_host"
+  fi
+  return 0
+}
+
+# cmd_doctor — the runner. Prints one `ID  STATUS  text` line per probe, in
+# dependency order, and returns 0 only when nothing FAILed.
+cmd_doctor() {
+  [ "$#" -eq 0 ] || fel "doctor: unknown argument '$1' (--json/--static land in a later task)" 64
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh" || { echo "steward: could not load lib/registry.sh" >&2; return 70; }
+
+  local worst=0 blocked_by="" id out status text rc
+  for id in $_DOCTOR_PROBE_IDS; do
+    if [ -n "$blocked_by" ]; then
+      printf '%s  SKIP  blocked by %s\n' "$id" "$blocked_by"
+      continue
+    fi
+    out="$(_doctor_probe_"$id")"; rc=$?
+    status="${out%% *}"
+    text="${out#* }"
+    printf '%s  %s  %s\n' "$id" "$status" "$text"
+    [ "$rc" -gt "$worst" ] && worst="$rc"
+    case "$id" in
+      operator-config|estate-root)
+        [ "$status" = "FAIL" ] && blocked_by="$id"
+        ;;
+    esac
+  done
+  return "$worst"
+}
+
 # CALLED FIRST IN THE DISPATCHER, BEFORE ANY SUBCOMMAND — every path below
 # (add, ls, sessions, the bare cockpit invocation, an <estate> verb) must
 # see the same, already-resolved environment, and a broken config must
 # refuse before any of them has a chance to run.
 _operator_config_load; _cfg_rc=$?
+
+# `doctor` IS THE ONE EXCEPTION TO THE GATE JUST BELOW. Its whole purpose is
+# to diagnose a broken operator config, which it cannot do if the dispatcher
+# has already exited on that same brokenness — so it runs on $_cfg_rc/
+# $_CFG_ERROR/$_CFG_SOURCE_* exactly as _operator_config_load left them,
+# reused rather than re-derived, whether or not the load itself succeeded.
+if [ "${1:-}" = "doctor" ]; then
+  shift
+  cmd_doctor "$@"
+  exit $?
+fi
+
 if [ "$_cfg_rc" -ne 0 ]; then
   _cfg_json=""
   for _cfg_a in "$@"; do [ "$_cfg_a" = "--json" ] && _cfg_json=1; done
