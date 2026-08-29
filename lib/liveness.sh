@@ -148,10 +148,22 @@ liveness_rows() {
   # get wrong, not dozens — and `wait` is interruptible by a trapped signal by
   # design: it returns the moment the signal arrives, without waiting for the
   # shim to finish on its own.
+  # THE WATCHDOG NEEDS ITS OWN PROCESS GROUP TOO, on the same evidence as the
+  # shim above. MEASURED, not assumed: `kill "$watchdog"` on a plain `&`
+  # background job only signals the subshell's own pid. On the happy path
+  # (the shim answers before the deadline — the overwhelmingly common case)
+  # that subshell is blocked inside its own `wait` for the `sleep` it forked,
+  # and SIGTERM's default disposition tears the subshell down immediately
+  # without waiting for that child — so the `sleep` is reparented to init and
+  # keeps running for the rest of the deadline, an orphan on EVERY happy-path
+  # call. `set -m` around this line puts the whole subshell — sleep included —
+  # into its own group, so `kill -- "-$watchdog"` below reaches both.
   local timed_out=""
   trap 'timed_out=1' USR1
+  set -m
   ( sleep "$deadline"; kill -USR1 $$ 2>/dev/null ) &
   local watchdog=$!
+  set +m
 
   local rc
   wait "$pid" 2>/dev/null; rc=$?
@@ -162,8 +174,15 @@ liveness_rows() {
   # instant the trap is simply removed instead of first silenced. `trap -`
   # only runs once the watchdog is confirmed reaped, when no signal can still
   # be in flight.
+  #
+  # THE WHOLE GROUP, NOT JUST THE SUBSHELL'S OWN PID — the same reason the
+  # timeout branch below kills the shim by group. `kill "$watchdog"` alone
+  # left the watchdog's `sleep "$deadline"` orphaned on every happy-path call
+  # (MEASURED: a `sleep 41` with ppid 1 still running seconds after this
+  # function returned), because the subshell dies to the signal while still
+  # blocked waiting on that sleep. `kill -- "-$watchdog"` reaches both.
   trap '' USR1
-  kill "$watchdog" 2>/dev/null
+  kill -- "-$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
   trap - USR1
 

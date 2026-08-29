@@ -335,6 +335,30 @@ is "hung shim: reason is seam-timeout at a different injected limit too" "$LIVEN
 is "hung shim: returned in under 2x the injected limit" \
    "$( [ "$elapsed3" -lt 6 ] && echo yes || echo no )" "yes"
 
+# ── THE HAPPY PATH MUST NOT LEAK THE WATCHDOG'S OWN SLEEP ─────────────────
+#
+# THE OVERWHELMINGLY COMMON CASE IS THE SHIM ANSWERING BEFORE THE DEADLINE,
+# NOT THE TIMEOUT. Killing just the watchdog subshell's pid does not reach the
+# `sleep` it forked to wait out the deadline: the subshell dies to the signal
+# while blocked inside its own wait for that sleep, and the sleep is
+# reparented to init and keeps running for the whole injected deadline. A
+# distinctive deadline (47 — a value nothing else in this suite or host would
+# plausibly be sleeping on) makes a leaked process unmistakable, and because
+# the leak would otherwise live for the full 47s, a short settle poll is not
+# racing anything.
+echo "== the happy path leaves no orphaned watchdog sleep behind =="
+fast="$(stub fast 'cat <<'"'"'J'"'"'
+{"sessions":{"gamma":{"daemon":"loaded","tmux":"up","agent":"running",
+ "runtime":"claude-code"}}}
+J')"
+STEWARD_LIVENESS_TIMEOUT=47 STEWARD_LIVENESS_CMD="$fast" liveness_rows >/dev/null 2>"$FX/fast.err"
+found="no"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if pgrep -f 'sleep 47$' >/dev/null 2>&1; then found="yes"; break; fi
+  sleep 0.1
+done
+is "happy path: no leftover 'sleep 47' watchdog process" "$found" "no"
+
 echo "== the suite never names a real socket =="
 _no_sock_pat='\.s'"ock"
 _no_tmux_s_pat='tmux'; _no_tmux_s_pat="${_no_tmux_s_pat} -S"
