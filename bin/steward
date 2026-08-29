@@ -1978,7 +1978,12 @@ cmd_login() {
 
   local viewer="${STEWARD_VIEWER:-}"
   [ -n "$viewer" ] || viewer="$(id -un 2>/dev/null)"
-  if [ "$OWNER" != "$viewer" ]; then
+  # AN EMPTY VIEWER MATCHES NO ONE. registry_load already guarantees a
+  # non-empty, regex-validated OWNER, so empty==empty cannot happen today —
+  # but that guarantee lives in another file, and this comparison must not
+  # silently reopen if the loader ever relaxes. Same construction as the
+  # cockpit's enter_allowed: non-empty first, equality second.
+  if [ -z "$viewer" ] || [ "$OWNER" != "$viewer" ]; then
     printf 'steward: %s is owned by %s — login stays with the owner\n' "$session" "$OWNER" >&2
     return 77
   fi

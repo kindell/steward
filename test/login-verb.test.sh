@@ -171,6 +171,35 @@ is      "rc 64"                            "$rc" "64"
 has     "refusal explains login is interactive" "$out" "interactive"
 absent  "claude stub did not run"          "$FX/claude.ran"
 
+
+# The one refusal the suite did not bind: more than one argument is a usage
+# error, refused before any registry access — no stub may run.
+echo "== too many arguments: rc 64, nothing ran =="
+clear_markers
+out="$(run "$hub_host" "$claude_stub" "$opencode_stub" 1 work extra)"; rc=$?
+is      "two arguments: rc 64"            "$rc" "64"
+has     "refusal names the arity"         "$out" "at most one"
+absent  "claude stub did not run"         "$FX/claude.ran"
+
+# AN EMPTY VIEWER MATCHES NO ONE — the guard is local now, not only an
+# upstream loader invariant. Forcing the empty viewer needs both halves to
+# come up empty: STEWARD_VIEWER unset AND the id fallback failing, so a fake
+# id that fails sits FIRST on PATH while every other tool resolves as usual.
+echo "== empty viewer matches no owner =="
+clear_markers
+mkdir -p "$FX/fakebin"
+printf '#!/bin/bash\nexit 1\n' > "$FX/fakebin/id"
+chmod +x "$FX/fakebin/id"
+out="$(env -i PATH="$FX/fakebin:$PATH" HOME="$FX/home" STEWARD_ESTATE_ROOT="$FX" \
+  STEWARD_CONFIG_FILE="$FX/no-such-operator-config" \
+  STEWARD_HOSTNAME_CMD="$hub_host" \
+  STEWARD_LOGIN_CMD_CLAUDE="$claude_stub" STEWARD_LOGIN_CMD_OPENCODE="$opencode_stub" \
+  STEWARD_LOGIN_ASSUME_TTY=1 \
+  bash "$STEWARD" login work </dev/null 2>&1)"; rc=$?
+is      "empty viewer: rc 77"             "$rc" "77"
+has     "refusal names the owner"         "$out" "owned by a"
+absent  "claude stub did not run"         "$FX/claude.ran"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
