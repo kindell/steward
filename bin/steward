@@ -933,7 +933,7 @@ _resolve_socket() {
 # else could need it) and hub-local blocks nothing further (nothing runs
 # after it today). Every SKIP names the probe that blocked it, never a bare
 # "skipped".
-_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local"
+_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local liveness socket cockpit-binary dependencies"
 
 # _doctor_oneline <text> — flattens a possibly multi-line diagnostic (reused
 # lib/registry.sh error text — e.g. registry_schema_check's schema-too-new
@@ -944,6 +944,19 @@ _DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local"
 # every consumer of this output (including Task 5's --json) depends on.
 _doctor_oneline() {
   printf '%s' "$1" | tr '\n' ' ' | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//'
+}
+
+# _doctor_mtime_of <path> — best-effort epoch mtime, BSD or GNU stat. Same
+# shape as _CFG_MODE_OF above (portable stat is a mode-reader in that
+# function, a clock-reader here); mtime is used by the cockpit-binary probe
+# as a DIAGNOSIS ("does the binary look older than its sources"), never as
+# provenance of anything — a touched file can lie in either direction.
+_doctor_mtime_of() {
+  local p="$1" m
+  m="$(stat -f '%m' "$p" 2>/dev/null)"
+  [ -n "$m" ] || m="$(stat -c '%Y' "$p" 2>/dev/null)"
+  [ -n "$m" ] || return 1
+  printf '%s' "$m"
 }
 
 # self-path — reports on the SAME symlink-resolution loop at the top of this
@@ -1149,36 +1162,369 @@ _doctor_probe_hub-local() {
   return 0
 }
 
-# cmd_doctor — the runner. Prints one `ID  STATUS  text` line per probe, in
-# dependency order, and returns 0 only when nothing FAILed.
-cmd_doctor() {
-  if [ "$#" -gt 0 ]; then
-    case "$1" in
-      --json|--static) fel "doctor: unknown argument '$1' (--json/--static land in a later task)" 64 ;;
-      *) fel "doctor: unknown argument '$1'" 64 ;;
-    esac
+# liveness — source+provenance of the effective STEWARD_LIVENESS_CMD, path
+# safety, a BOUNDED contract probe (the shim actually runs, through the same
+# liveness_rows/LIVENESS_SEAM_REASON machinery every other caller uses — this
+# probe adds no timeout mechanism of its own), and registry parity: the
+# session names the shim answered about, compared against the registry's own
+# set.
+#
+# THE EFFECTIVE VALUE IS RESOLVED IN cmd_doctor, NOT HERE. This function runs
+# inside a `$( )` command substitution — a subshell — so any mutation it made
+# to STEWARD_LIVENESS_CMD or _CFG_SOURCE_STEWARD_LIVENESS_CMD (the estate
+# fallback cmd_sessions performs) would vanish the instant it returned. The
+# runner performs that same fallback once, in ITS OWN shell, before the probe
+# loop starts, and leaves the result (and any refusal from it) in
+# $STEWARD_LIVENESS_CMD / $_CFG_SOURCE_STEWARD_LIVENESS_CMD /
+# $_DOCTOR_LIVENESS_RC / $_DOCTOR_LIVENESS_DIAG for this probe to only read.
+#
+# A VALID EMPTY ANSWER IS NOT PROOF OF AN EMPTY FLEET. A shim that returns
+# `{"sessions":{}}` cleanly (rc 0, no seam reason) against a registry that
+# lists real sessions is indistinguishable, on the wire, from a shim that
+# is quietly pointed at the wrong estate — so it is a WARN, never a PASS.
+# The same is true in reverse: a session name the shim mentions that the
+# registry does not know is worth a WARN, not silent acceptance.
+_doctor_probe_liveness() {
+  if [ -n "${_DOCTOR_LIVENESS_RC:-}" ] && [ "$_DOCTOR_LIVENESS_RC" -ne 0 ]; then
+    if [ "$_DOCTOR_LIVENESS_RC" -eq 70 ]; then
+      printf 'FAIL %s\n' "$(_doctor_oneline "${_DOCTOR_LIVENESS_DIAG:-could not create a temporary file}")"
+      return 70
+    fi
+    printf 'FAIL %s -- run: steward config set STEWARD_LIVENESS_CMD /abs/path (or fix LIVENESS_CMD in estate/steward.conf)\n' \
+      "$(_doctor_oneline "${_DOCTOR_LIVENESS_DIAG:-registry: LIVENESS_CMD is invalid}")"
+    return 78
   fi
+
+  local cmd="${STEWARD_LIVENESS_CMD:-}" src="${_CFG_SOURCE_STEWARD_LIVENESS_CMD:-unset}"
+
+  if [ -z "$cmd" ]; then
+    printf 'WARN no liveness command configured (seam-not-configured) -- run: steward config set STEWARD_LIVENESS_CMD /abs/path/to/shim, or add LIVENESS_CMD to estate/steward.conf\n'
+    return 0
+  fi
+
+  # THE SAME ABSOLUTE-PATH CONTRACT lib/liveness.sh ITSELF ENFORCES, checked
+  # here too so the FAIL line names doctor's own remedy rather than making an
+  # operator read liveness_rows' stderr to learn it.
+  case "$cmd" in
+    /*) ;;
+    *)
+      printf 'FAIL STEWARD_LIVENESS_CMD is not an absolute path (seam-not-absolute): %s -- run: steward config set STEWARD_LIVENESS_CMD /abs/path\n' "$cmd"
+      return 78
+      ;;
+  esac
+
+  if [ -n "${_DOCTOR_STATIC:-}" ]; then
+    printf 'SKIP static -- shim not invoked under --static (source=%s cmd=%s)\n' "$src" "$cmd"
+    return 0
+  fi
+
+  # SAID BEFORE THE SHIM RUNS, NOT AFTER. The shim reads a live multiplexer
+  # socket; an operator watching doctor run deserves to know, in advance,
+  # that this is the one probe that executes estate-owned code rather than
+  # only reading files doctor itself can account for.
+  echo "steward: about to run the estate's liveness code to measure it -- invoking the configured shim ($cmd)" >&2
+
+  local _rows_out _rows_err
+  _rows_out="$(mktemp 2>/dev/null)" && _rows_err="$(mktemp 2>/dev/null)" || {
+    rm -f "$_rows_out"
+    printf 'FAIL could not create a temporary file\n'
+    return 70
+  }
+  liveness_rows >"$_rows_out" 2>"$_rows_err"
+  local rows errtext reason
+  rows="$(cat "$_rows_out")"; errtext="$(cat "$_rows_err")"
+  rm -f "$_rows_out" "$_rows_err"
+  reason="${LIVENESS_SEAM_REASON:-}"
+
+  if [ "$reason" = "seam-timeout" ]; then
+    printf 'FAIL %s (seam-timeout) -- source=%s cmd=%s -- a hung shim is "could not measure now", not misconfiguration; raise STEWARD_LIVENESS_TIMEOUT if this is expected, or fix the shim\n' \
+      "$(_doctor_oneline "$errtext")" "$src" "$cmd"
+    return 75
+  fi
+  if [ -n "$reason" ]; then
+    printf 'FAIL %s (%s) -- source=%s cmd=%s\n' "$(_doctor_oneline "$errtext")" "$reason" "$src" "$cmd"
+    return 78
+  fi
+
+  local reg_names shim_names reg_count=0 shim_count=0 name unknown_sessions=""
+  reg_names="$(registry_list 2>/dev/null)"
+  shim_names="$(printf '%s\n' "$rows" | awk -F'\t' 'NF{print $1}')"
+
+  while IFS= read -r name; do [ -n "$name" ] || continue; reg_count=$((reg_count+1)); done <<EOF
+$reg_names
+EOF
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    shim_count=$((shim_count+1))
+    if ! printf '%s\n' "$reg_names" | grep -Fxq -- "$name"; then
+      unknown_sessions="$unknown_sessions $name"
+    fi
+  done <<EOF
+$shim_names
+EOF
+
+  if [ "$shim_count" -eq 0 ] && [ "$reg_count" -gt 0 ]; then
+    printf 'WARN the shim answered with zero sessions against a %d-session registry -- a valid empty JSON answer is not proof of an empty fleet; source=%s cmd=%s\n' \
+      "$reg_count" "$src" "$cmd"
+    return 0
+  fi
+  if [ -n "$unknown_sessions" ]; then
+    printf 'WARN the shim reports session(s) the registry does not know:%s -- source=%s cmd=%s\n' "$unknown_sessions" "$src" "$cmd"
+    return 0
+  fi
+
+  printf 'PASS source=%s cmd=%s answered %d session(s), registry has %d, parity ok\n' "$src" "$cmd" "$shim_count" "$reg_count"
+  return 0
+}
+
+# socket — the derived-or-explicit tmux socket path (reusing _resolve_socket's
+# own logic and provenance, called once in cmd_doctor's shell for the same
+# subshell reason liveness above documents), then measured: exists, is a
+# socket, nothing more.
+#
+# NEVER CREATES OR STARTS ANYTHING. This probe is a stat, not a connection —
+# `nc -lU` or any other server-starting fixture is out of bounds even in
+# tests; a missing socket is reported, never brought into existence.
+_doctor_probe_socket() {
+  local path="${STEWARD_TMUX_SOCKET:-}" src="${_CFG_SOURCE_STEWARD_TMUX_SOCKET:-unset}"
+
+  if [ -z "$path" ]; then
+    printf 'WARN no tmux socket resolved (not hub-local, and no explicit STEWARD_TMUX_SOCKET) -- run: steward config set STEWARD_TMUX_SOCKET /abs/path/under/.tmux/name, or run doctor on the hub\n'
+    return 0
+  fi
+
+  if [ -n "${_DOCTOR_STATIC:-}" ]; then
+    printf 'SKIP static -- filesystem probe not run under --static (path=%s source=%s)\n' "$path" "$src"
+    return 0
+  fi
+
+  if [ ! -e "$path" ]; then
+    printf 'FAIL tmux socket does not exist: %s (source=%s) -- this is normal before any session has started; doctor never creates or starts one\n' "$path" "$src"
+    return 69
+  fi
+  if [ ! -S "$path" ]; then
+    printf 'FAIL %s exists but is not a socket (source=%s)\n' "$path" "$src"
+    return 69
+  fi
+  printf 'PASS %s is a socket (source=%s)\n' "$path" "$src"
+  return 0
+}
+
+# cockpit-binary — missing/fresh/stale/unverifiable against the source set
+# (src/, Cargo.toml, Cargo.lock) by mtime. mtime is DIAGNOSIS, never
+# provenance — a touched file can lie in either direction, so every
+# non-`missing` state says so and hands back the exact build command rather
+# than acting on what it saw.
+#
+# STEWARD_COCKPIT_DIR is a TEST SEAM, same spirit as STEWARD_HOSTNAME_CMD —
+# it lets a fixture aim this probe at a FAKE cockpit tree instead of the
+# real product checkout's cockpit/, which this probe must never read from
+# inside a test. STEWARD_COCKPIT_BIN (already used by the bare invocation)
+# is honored the same way here: an explicit binary always wins over the
+# derived target/release/cockpit path.
+_doctor_probe_cockpit-binary() {
+  local dir="${STEWARD_COCKPIT_DIR:-$HERE/cockpit}"
+  local bin="${STEWARD_COCKPIT_BIN:-$dir/target/release/cockpit}"
+  local build_cmd="cargo build --release --manifest-path $dir/Cargo.toml"
+
+  local have_src=""
+  [ -d "$dir/src" ] && [ -f "$dir/Cargo.toml" ] && [ -f "$dir/Cargo.lock" ] && have_src=1
+
+  if [ ! -e "$bin" ]; then
+    if [ -n "$have_src" ]; then
+      printf 'WARN cockpit binary missing: %s -- run: %s\n' "$bin" "$build_cmd"
+      return 0
+    fi
+    printf 'FAIL cockpit binary missing and no source tree found at %s -- run: %s, or set STEWARD_COCKPIT_BIN to a prebuilt binary\n' "$dir" "$build_cmd"
+    return 69
+  fi
+
+  if [ -z "$have_src" ]; then
+    printf 'WARN cockpit binary present but unverifiable: no source tree at %s to compare mtimes against (this looks like a deployed install without source) -- freshness cannot be measured\n' "$dir"
+    return 0
+  fi
+
+  local newest_src=0 newest_src_file="$dir/Cargo.toml" f mt
+  for f in "$dir/Cargo.toml" "$dir/Cargo.lock"; do
+    mt="$(_doctor_mtime_of "$f" 2>/dev/null)" || continue
+    if [ "$mt" -gt "$newest_src" ]; then newest_src="$mt"; newest_src_file="$f"; fi
+  done
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    mt="$(_doctor_mtime_of "$f" 2>/dev/null)" || continue
+    if [ "$mt" -gt "$newest_src" ]; then newest_src="$mt"; newest_src_file="$f"; fi
+  done < <(find "$dir/src" -type f 2>/dev/null)
+
+  local bin_mt; bin_mt="$(_doctor_mtime_of "$bin" 2>/dev/null)" || bin_mt=0
+
+  if [ "$bin_mt" -ge "$newest_src" ]; then
+    printf 'PASS cockpit binary is fresh: %s (mtime diagnosis, not provenance) is not older than any file under %s\n' "$bin" "$dir"
+    return 0
+  fi
+  printf 'WARN cockpit binary is stale: %s is older than %s (mtime diagnosis, not provenance -- stale does NOT trigger an automatic rebuild) -- run: %s\n' \
+    "$bin" "$newest_src_file" "$build_cmd"
+  return 0
+}
+
+# dependencies — exact resolved paths for jq, tmux, cargo. NO PATH-GUESSING:
+# this reports exactly what `command -v` resolved in THIS environment, which
+# is what matters under cron or ssh, where PATH is not a login shell's PATH
+# — never a claim about where an operator's shell would find it.
+_doctor_probe_dependencies() {
+  local jq_path tmux_path cargo_path
+  jq_path="$(command -v jq 2>/dev/null)"
+  tmux_path="$(command -v tmux 2>/dev/null)"
+  cargo_path="$(command -v cargo 2>/dev/null)"
+
+  local text="jq=${jq_path:-MISSING} tmux=${tmux_path:-MISSING} cargo=${cargo_path:-MISSING}"
+
+  # jq IS LOAD-BEARING FOR THE PRODUCT ITSELF -- steward sessions --json and
+  # this very doctor --json both build their documents with it. Its absence
+  # is a missing facility, not a preference.
+  if [ -z "$jq_path" ]; then
+    printf 'FAIL %s -- jq is required (steward sessions --json and doctor --json both need it) -- install jq so it resolves on PATH\n' "$text"
+    return 69
+  fi
+
+  local warn=""
+  if [ -z "$tmux_path" ]; then
+    warn="tmux missing: attach/peek and the tmux socket probe will not work"
+  fi
+  if [ -z "$cargo_path" ]; then
+    [ -n "$warn" ] && warn="$warn; "
+    warn="${warn}cargo missing: the cockpit cannot be built from source here (aim STEWARD_COCKPIT_BIN at a prebuilt binary instead)"
+  fi
+  if [ -n "$warn" ]; then
+    printf 'WARN %s -- %s\n' "$text" "$warn"
+    return 0
+  fi
+  printf 'PASS %s\n' "$text"
+  return 0
+}
+
+# cmd_doctor — the runner. Prints one `ID  STATUS  text` line per probe, in
+# dependency order, and returns 0 only when nothing FAILed (worst rc wins:
+# 0 PASS/WARN/SKIP, 78 unsafe/missing config, 69 missing facility, 75
+# temporary measurement unknown, 70 internal doctor error).
+cmd_doctor() {
+  local want_json="" a
+  _DOCTOR_STATIC=""
+  for a in "$@"; do
+    case "$a" in
+      --json) want_json=1 ;;
+      --static) _DOCTOR_STATIC=1 ;;
+      *) fel "doctor: unknown argument '$a'" 64 ;;
+    esac
+  done
 
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh" || { echo "steward: could not load lib/registry.sh" >&2; return 70; }
+  # shellcheck source=lib/liveness.sh
+  . "$HERE/lib/liveness.sh" || { echo "steward: could not load lib/liveness.sh" >&2; return 70; }
+
+  # ── THE TWO RESOLUTIONS THAT MUST HAPPEN IN THIS SHELL, ONCE ──────────
+  # See the liveness/socket probes' own comments for why: each probe runs
+  # inside a `$( )` subshell, so a mutation made there never reaches the
+  # sources object this runner builds after the loop. Resolving here, before
+  # any probe runs, means every probe (and --json's sources block) reads the
+  # SAME already-settled values — never re-derives them, never disagrees.
+  _DOCTOR_LIVENESS_RC=0
+  _DOCTOR_LIVENESS_DIAG=""
+  if [ -z "${STEWARD_LIVENESS_CMD:-}" ]; then
+    local _lv_out _lv_err
+    _lv_err="$(mktemp 2>/dev/null)"
+    if [ -z "$_lv_err" ]; then
+      _DOCTOR_LIVENESS_RC=70
+      _DOCTOR_LIVENESS_DIAG="steward: cannot create a temporary file"
+    else
+      _lv_out="$(registry_liveness_cmd 2>"$_lv_err")"; _DOCTOR_LIVENESS_RC=$?
+      _DOCTOR_LIVENESS_DIAG="$(cat "$_lv_err" 2>/dev/null)"
+      rm -f "$_lv_err"
+      if [ "$_DOCTOR_LIVENESS_RC" -eq 0 ] && [ -n "$_lv_out" ]; then
+        STEWARD_LIVENESS_CMD="$_lv_out"; export STEWARD_LIVENESS_CMD
+        _CFG_SOURCE_STEWARD_LIVENESS_CMD="estate"
+      fi
+    fi
+  fi
+  _resolve_socket
 
   local worst=0 blocked_by="" id out status text rc
   for id in $_DOCTOR_PROBE_IDS; do
     if [ -n "$blocked_by" ]; then
-      printf '%s  SKIP  blocked by %s\n' "$id" "$blocked_by"
-      continue
+      case "$id" in
+        # cockpit-binary and dependencies are LOCAL, ESTATE-INDEPENDENT
+        # checks -- a broken operator config or estate root says nothing
+        # about whether cargo or jq are even on this machine, so they run
+        # regardless of what blocked everything else.
+        cockpit-binary|dependencies) ;;
+        *)
+          status="SKIP"; text="blocked by $blocked_by"
+          # --json PRINTS NOTHING TO STDOUT UNTIL THE ONE DOCUMENT AT THE
+          # END. The human `ID  STATUS  text` lines and the JSON document
+          # are two different renderings of the same probe list, never
+          # both at once -- a consumer piping doctor --json into jq must
+          # see ONLY the document.
+          [ -n "$want_json" ] || printf '%s  %s  %s\n' "$id" "$status" "$text"
+          if [ -n "$want_json" ]; then
+            _doctor_json_probes="${_doctor_json_probes:-}$id	$status	$text
+"
+          fi
+          continue
+          ;;
+      esac
     fi
-    out="$(_doctor_probe_"$id")"; rc=$?
+    # CALLED DIRECTLY, NEVER THROUGH `$( )`. A command substitution forks a
+    # subshell whose $$ still reads as THIS process's pid (bash does not
+    # renumber it) but whose `trap` table is its own, private copy — so the
+    # liveness probe's outer-deadline watchdog (lib/liveness.sh, `kill -USR1
+    # $$`) would signal the right pid with the wrong process listening,
+    # and the signal's default disposition (terminate) would kill this
+    # entire doctor run instead of only unblocking the one `wait`. MEASURED:
+    # a hanging stub under `$( )` exited the whole script at rc 158 (128+30,
+    # SIGUSR1) instead of the probe returning 75. Capturing through a temp
+    # file instead keeps the probe in THIS shell, where the trap lib/liveness.sh
+    # sets is the one `kill -USR1 $$` actually reaches.
+    local _probe_outf; _probe_outf="$(mktemp 2>/dev/null)" || {
+      printf '%s  FAIL  could not create a temporary file\n' "$id"
+      rc=70; [ "$rc" -gt "$worst" ] && worst="$rc"
+      continue
+    }
+    _doctor_probe_"$id" >"$_probe_outf"; rc=$?
+    out="$(cat "$_probe_outf")"; rm -f "$_probe_outf"
     status="${out%% *}"
     text="${out#* }"
-    printf '%s  %s  %s\n' "$id" "$status" "$text"
+    [ -n "$want_json" ] || printf '%s  %s  %s\n' "$id" "$status" "$text"
     [ "$rc" -gt "$worst" ] && worst="$rc"
     case "$id" in
       operator-config|estate-root)
         [ "$status" = "FAIL" ] && blocked_by="$id"
         ;;
     esac
+    if [ -n "$want_json" ]; then
+      _doctor_json_probes="${_doctor_json_probes:-}$id	$status	$text
+"
+    fi
   done
+
+  if [ -n "$want_json" ]; then
+    jq -Rn \
+      --arg probes "${_doctor_json_probes:-}" \
+      --arg root_val "${STEWARD_ESTATE_ROOT:-}" --arg root_src "${_CFG_SOURCE_STEWARD_ESTATE_ROOT:-unset}" \
+      --arg sock_val "${STEWARD_TMUX_SOCKET:-}" --arg sock_src "${_CFG_SOURCE_STEWARD_TMUX_SOCKET:-unset}" \
+      --arg live_val "${STEWARD_LIVENESS_CMD:-}" --arg live_src "${_CFG_SOURCE_STEWARD_LIVENESS_CMD:-unset}" \
+      --argjson rc "$worst" '
+      ($probes | split("\n") | map(select(length>0) | split("\t"))
+        | map({id: .[0], status: .[1], text: .[2]})) as $probelist |
+      { ok: ($rc == 0),
+        rc: $rc,
+        probes: $probelist,
+        sources: {
+          root:     {value: $root_val, source: $root_src},
+          socket:   {value: $sock_val, source: $sock_src},
+          liveness: {value: $live_val, source: $live_src}
+        } }'
+  fi
+
   return "$worst"
 }
 
