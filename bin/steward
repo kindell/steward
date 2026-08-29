@@ -935,6 +935,17 @@ _resolve_socket() {
 # "skipped".
 _DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local"
 
+# _doctor_oneline <text> — flattens a possibly multi-line diagnostic (reused
+# lib/registry.sh error text — e.g. registry_schema_check's schema-too-new
+# refusal, or registry_list's missing-sessions.d refusal, both of which emit
+# more than one line) to exactly one line before it enters a probe's
+# `ID  STATUS  text` line. A raw embedded newline would leave a continuation
+# line with no `ID  STATUS` prefix, breaking the one-line-per-probe contract
+# every consumer of this output (including Task 5's --json) depends on.
+_doctor_oneline() {
+  printf '%s' "$1" | tr '\n' ' ' | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//'
+}
+
 # self-path — reports on the SAME symlink-resolution loop at the top of this
 # file, never a second one. By the time this runs, $_selfpath and $HERE are
 # already the resolved, canonical values every other command trusts; a
@@ -1065,7 +1076,7 @@ _doctor_probe_estate-root() {
   schema_out="$(registry_schema_check 2>&1 >/dev/null)"
   schema_rc=$?
   if [ "$schema_rc" -ne 0 ]; then
-    printf 'FAIL %s -- run: %s\n' "$schema_out" "$remedy"
+    printf 'FAIL %s -- run: %s\n' "$(_doctor_oneline "$schema_out")" "$remedy"
     return 78
   fi
 
@@ -1088,7 +1099,7 @@ _doctor_probe_registry() {
   local err; err="$(cat "$errf" 2>/dev/null)"
   rm -f "$errf"
   if [ "$rc" -ne 0 ]; then
-    printf 'FAIL %s -- if this estate root is wrong, run: steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root\n' "$err"
+    printf 'FAIL %s -- if this estate root is wrong, run: steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root\n' "$(_doctor_oneline "$err")"
     return 78
   fi
 
@@ -1141,7 +1152,12 @@ _doctor_probe_hub-local() {
 # cmd_doctor — the runner. Prints one `ID  STATUS  text` line per probe, in
 # dependency order, and returns 0 only when nothing FAILed.
 cmd_doctor() {
-  [ "$#" -eq 0 ] || fel "doctor: unknown argument '$1' (--json/--static land in a later task)" 64
+  if [ "$#" -gt 0 ]; then
+    case "$1" in
+      --json|--static) fel "doctor: unknown argument '$1' (--json/--static land in a later task)" 64 ;;
+      *) fel "doctor: unknown argument '$1'" 64 ;;
+    esac
+  fi
 
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh" || { echo "steward: could not load lib/registry.sh" >&2; return 70; }

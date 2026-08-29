@@ -3,9 +3,13 @@
 #
 # EVERY PROBE IS A PURE READ. The one thing this suite proves harder than any
 # individual probe's correctness is that doctor never writes anything: a
-# recursive checksum of the whole fixture tree, taken before and after a run,
-# must come back identical. A diagnostic tool that mutates what it diagnoses
-# has stopped being a diagnostic tool.
+# recursive checksum of the whole fixture tree (find -type f | shasum),
+# taken before and after a run, must come back identical. That method proves
+# content and file-set identity — a changed byte, a new file, or a removed
+# file all move the checksum. It does NOT prove an mtime-only change, a mode
+# change, or a new empty directory left no trace; the checksum cannot see any
+# of those. A diagnostic tool that mutates what it diagnoses has stopped
+# being a diagnostic tool.
 #
 # THE SKIP CHAIN IS THE OTHER LOAD-BEARING SHAPE. A FAIL in operator-config
 # means nothing downstream can be measured honestly — every later probe needs
@@ -55,6 +59,17 @@ field() { printf '%s' "$1" | awk -F'  ' -v n="$2" '{print $n}'; }
 line_for() { # <output> <probe-id> — the one line for that probe, or empty
   printf '%s\n' "$1" | grep "^$2  "
 }
+# assert_all_lines_shaped <label> <output> — every line of a doctor run's
+# output must match the `ID  STATUS  text` probe-line shape. A reused
+# lib/registry.sh diagnostic that leaks a raw embedded newline produces a
+# continuation line with no `ID  STATUS` prefix, which this catches; Task 5's
+# --json builds on this runner's line shape, so it must hold on FAIL paths,
+# not only the green fixture.
+assert_all_lines_shaped() {
+  local offenders
+  offenders="$(printf '%s\n' "$2" | grep -Ev '^(self-path|operator-config|estate-root|registry|hub-local)  (PASS|WARN|FAIL|SKIP)  ')"
+  if [ -z "$offenders" ]; then ok "$1"; else bad "$1" "offending line(s): $offenders"; fi
+}
 
 echo "== 1. probe IDs exactly as the spec table, line format parseable =="
 mkfx "$FX/green"
@@ -77,6 +92,29 @@ is "self-path PASS on a real checkout"    "$(field "$(line_for "$out" self-path)
 is "estate-root PASS on a valid estate"   "$(field "$(line_for "$out" estate-root)" 2)"     "PASS"
 is "registry PASS with one loadable row"  "$(field "$(line_for "$out" registry)" 2)"        "PASS"
 is "hub-local PASS when hostnames match"  "$(field "$(line_for "$out" hub-local)" 2)"       "PASS"
+
+echo "== 1b. multi-line diagnostics stay one line per probe: schema-too-new (estate-root) =="
+mkfx "$FX/schema"
+printf 'SCHEMA_VERSION=99999\n' >> "$FX/schema/estate/steward.conf"
+out="$(run "$FX/schema" "$FX/schema/hostcmd")"; rc=$?
+is "schema-too-new: rc 78" "$rc" "78"
+is "estate-root itself is FAIL" "$(field "$(line_for "$out" estate-root)" 2)" "FAIL"
+assert_all_lines_shaped "schema-too-new: every output line matches the probe-line shape" "$out"
+
+echo "== 1c. multi-line diagnostics stay one line per probe: missing sessions.d (registry) =="
+mkdir -p "$FX/nosessions/estate" "$FX/nosessions/home"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX/nosessions/estate/steward.conf"
+cat > "$FX/nosessions/hostcmd" <<'EOF'
+#!/bin/bash
+echo h1
+EOF
+chmod +x "$FX/nosessions/hostcmd"
+out="$(run "$FX/nosessions" "$FX/nosessions/hostcmd")"; rc=$?
+is "missing sessions.d: rc 78" "$rc" "78"
+is "estate-root PASS (sessions.d is registry's own concern)" "$(field "$(line_for "$out" estate-root)" 2)" "PASS"
+is "registry itself is FAIL" "$(field "$(line_for "$out" registry)" 2)" "FAIL"
+assert_all_lines_shaped "missing-sessions.d: every output line matches the probe-line shape" "$out"
 
 echo "== 2. the SKIP chain from a broken operator config =="
 mkfx "$FX/skipchain"
@@ -163,6 +201,13 @@ run "$FX/pristine" "$FX/pristine/hostcmd" >/dev/null
 after="$(checksum)"
 is "fixture tree checksum unchanged after a doctor run" "$after" "$before"
 
+echo "== 6. rc 69: hub-local cannot determine this machine's hostname =="
+mkfx "$FX/rc69"
+out="$(run "$FX/rc69" "$FX/rc69/does-not-exist")"; rc=$?
+is "unresolvable hostname command: rc 69" "$rc" "69"
+is "hub-local itself is FAIL" "$(field "$(line_for "$out" hub-local)" 2)" "FAIL"
+has "hub-local FAIL names the reason" "$(line_for "$out" hub-local)" "could not determine"
+
 echo "== unknown flags refuse rc 64 (--json/--static are a later task) =="
 mkfx "$FX/flags"
 run_with_flag() { # <flag>
@@ -171,10 +216,13 @@ run_with_flag() { # <flag>
 }
 out="$(run_with_flag --json)"; rc=$?
 is "--json refuses: rc 64" "$rc" "64"
+has "--json names the later-task disclaimer" "$out" "later task"
 out="$(run_with_flag --static)"; rc=$?
 is "--static refuses: rc 64" "$rc" "64"
+has "--static names the later-task disclaimer" "$out" "later task"
 out="$(run_with_flag --bogus)"; rc=$?
 is "an unrelated unknown flag refuses: rc 64" "$rc" "64"
+hasnt "an unrelated unknown flag gets a plain refusal, no later-task disclaimer" "$out" "later task"
 
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"
