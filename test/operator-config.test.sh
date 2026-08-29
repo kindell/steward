@@ -178,6 +178,35 @@ out="$(debug "$FX/open-dir/config")"; rc=$?
 is "config inside a world-writable directory: rc 78" "$rc" "78"
 chmod 0700 "$FX/open-dir"
 
+
+# THE MODE READER MUST SURVIVE GNU STAT. On Linux, `stat -f` means FILESYSTEM
+# status — the BSD-first probe "succeeds" with a multi-line filesystem report
+# instead of an octal mode, the GNU fallback is never reached, and the mode
+# check misfires on garbage. Measured 2026-08-30 on a fresh Ubuntu host: the
+# very first `config init` a stranger ran refused a perfectly normal 0755
+# directory with the ext4 report pasted into the refusal. The reader must
+# accept only an octal answer and fall through otherwise.
+echo "== 6. the mode reader rejects non-octal stat output (GNU stat shape) =="
+mkdir -p "$FX/gnu-bin"
+cat > "$FX/gnu-bin/stat" <<'STATSTUB'
+#!/bin/bash
+# Mimics GNU stat: -f prints a filesystem report (rc 0), -c '%a' prints octal.
+case "$1" in
+  -f) printf '  File: "%s"\n    ID: cd9557 Namelen: 255 Type: ext2/ext3\nBlocks: Total: 12422878\n' "$3"; exit 0 ;;
+  -c) /usr/bin/stat -f '%Lp' "$3" 2>/dev/null || /usr/bin/stat -c '%a' "$3"; exit 0 ;;
+esac
+exit 1
+STATSTUB
+chmod +x "$FX/gnu-bin/stat"
+cat > "$FX/gnu-valid" <<'EOF2'
+FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/estate/root
+EOF2
+chmod 0600 "$FX/gnu-valid"
+out="$(env -i PATH="$FX/gnu-bin:$PATH" HOME="$FX/home" STEWARD_CONFIG_FILE="$FX/gnu-valid" STEWARD_CFG_DEBUG=1 bash "$STEWARD" ls 2>&1)"; rc=$?
+is "gnu stat shape: a valid 0600 file still loads (rc 0)" "$rc" "0"
+has "gnu stat shape: the value came through" "$out" "STEWARD_ESTATE_ROOT=/abs/estate/root source=config-file"
+
 echo "== 5. a broken file refuses the WHOLE invocation, not just the line =="
 printf 'FORMAT=1\nCOCKPIT_ENGINE_CMD=/bin/rm\n' > "$FX/broken-for-sessions"
 

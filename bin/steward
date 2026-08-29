@@ -137,11 +137,21 @@ _CFG_VALUE_OK() {
 }
 
 _CFG_MODE_OF() { # <path> — best-effort octal mode, BSD or GNU stat.
+  # ONLY AN OCTAL ANSWER COUNTS. On GNU/Linux, `stat -f` means FILESYSTEM
+  # status — the BSD-first probe "succeeds" (rc 0) with a multi-line
+  # filesystem report instead of a mode, so a non-empty check alone lets
+  # garbage through and the GNU fallback is never reached. Measured
+  # 2026-08-30 on a fresh Ubuntu host: the first `config init` a new
+  # operator ran refused a normal 0755 directory with the ext4 report
+  # pasted into the refusal. Each answer is accepted only if it looks
+  # like a mode; anything else falls through to the next form.
   local p="$1" m
-  m="$(stat -f '%Lp' "$p" 2>/dev/null)"
-  [ -n "$m" ] || m="$(stat -c '%a' "$p" 2>/dev/null)"
-  [ -n "$m" ] || return 1
-  printf '%s' "$m"
+  for m in "$(stat -f '%Lp' "$p" 2>/dev/null)" "$(stat -c '%a' "$p" 2>/dev/null)"; do
+    case "$m" in
+      [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$m"; return 0 ;;
+    esac
+  done
+  return 1
 }
 
 _CFG_GROUP_OR_OTHER_WRITABLE() { # <octal mode> — true if group or other carries the write bit.
