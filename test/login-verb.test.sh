@@ -172,6 +172,20 @@ has     "refusal explains login is interactive" "$out" "interactive"
 absent  "claude stub did not run"          "$FX/claude.ran"
 
 
+
+# THE INSTALLER'S OWN SHELF COUNTS. install.sh places the runtime binary in
+# ~/.local/bin — but a non-login shell (sudo, cron, ssh command) often lacks
+# that on PATH, and the very first real operator hit exactly this: the verb
+# refused "not found on PATH" while the binary sat where the product itself
+# had put it. A bare name falls back to $HOME/.local/bin before refusing.
+echo "== bare name falls back to the installer shelf =="
+clear_markers
+mkdir -p "$FX/home/.local/bin"
+cp "$claude_stub" "$FX/home/.local/bin/shelfclaude"
+out="$(run "$hub_host" "shelfclaude" "$opencode_stub" 1 work)"; rc=$?
+present "the shelf binary ran"            "$FX/claude.ran"
+is      "exec rc passthrough"             "$rc" "42"
+
 # The one refusal the suite did not bind: more than one argument is a usage
 # error, refused before any registry access — no stub may run.
 echo "== too many arguments: rc 64, nothing ran =="

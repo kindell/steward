@@ -2031,10 +2031,21 @@ cmd_login() {
 
   local resolved
   resolved="$(command -v "$cmd" 2>/dev/null)"
+  # THE INSTALLER'S OWN SHELF COUNTS. install.sh places the runtime binary
+  # in ~/.local/bin, but a non-login shell (sudo, cron, an ssh command)
+  # often lacks that on PATH — the first real operator hit exactly this:
+  # refused "not found on PATH" while the binary sat where the product
+  # itself had put it. A bare name falls back to the shelf before refusing.
+  if [ -z "$resolved" ]; then
+    case "$cmd" in
+      */*) ;;
+      *) [ -x "$HOME/.local/bin/$cmd" ] && resolved="$HOME/.local/bin/$cmd" ;;
+    esac
+  fi
   if [ -z "$resolved" ]; then
     case "$cmd" in
       */*) printf 'steward: login binary not found: %s (looked for it at that exact path)\n' "$cmd" >&2 ;;
-      *)   printf 'steward: login binary not found: %s (looked for it on PATH)\n' "$cmd" >&2 ;;
+      *)   printf 'steward: login binary not found: %s (looked for it on PATH and in ~/.local/bin)\n' "$cmd" >&2 ;;
     esac
     return 69
   fi
