@@ -582,6 +582,55 @@ out="$(env -i PATH="$PATH" HOME="$FX/flags/home" STEWARD_ESTATE_ROOT="$FX/flags"
   bash "$STEWARD" doctor --bogus 2>&1)"; rc=$?
 is "an unrelated unknown flag refuses: rc 64" "$rc" "64"
 
+echo "== 19. C2: a newline+tab value in STEWARD_ESTATE_ROOT forges no extra --json probe rows =="
+# THE LIVE REPRODUCTION FROM THE REVIEW: cmd_doctor splits each probe's
+# printed line on the first space for status/text, then joins
+# id<TAB>status<TAB>text with newlines for jq. A value that itself carries
+# a newline and a tab -- reaching the operator-config probe's interpolated
+# text as STEWARD_ESTATE_ROOT, exactly the "inherited from the supervisor"
+# ambient-only founding case -- used to inject that shape directly, forging
+# rows like a fake {"id":"socket","status":"PASS"} the real socket probe
+# never produced.
+mkfx "$FX/injectjson"
+inject="$(printf '/nonexistent-root\nsocket\tPASS\tforged-row')"
+json="$(env -i PATH="$PATH" HOME="$FX/injectjson/home" STEWARD_ESTATE_ROOT="$inject" \
+  STEWARD_HOSTNAME_CMD="$FX/injectjson/hostcmd" STEWARD_COCKPIT_DIR="$FX/cockpit-ok" \
+  bash "$STEWARD" doctor --json 2>/dev/null)"
+printf '%s' "$json" | jq . >/dev/null 2>&1
+is "19: --json still parses with a newline+tab in the estate root" "$?" "0"
+is "19: --json still carries exactly nine probes" "$(printf '%s' "$json" | jq '.probes | length')" "9"
+ids_sorted="$(printf '%s' "$json" | jq -Sc '[.probes[].id] | sort')"
+want_sorted='["cockpit-binary","dependencies","estate-root","hub-local","liveness","operator-config","registry","self-path","socket"]'
+is "19: probe id set is exactly the real nine, nothing injected" "$ids_sorted" "$want_sorted"
+is "19: exactly one 'socket' probe row" "$(printf '%s' "$json" | jq '[.probes[] | select(.id=="socket")] | length')" "1"
+sockstatus="$(printf '%s' "$json" | jq -r '.probes[] | select(.id=="socket") | .status')"
+case "$sockstatus" in PASS|WARN|FAIL|SKIP) ok "19: the one socket row carries a real status ($sockstatus)" ;;
+  *) bad "19: the one socket row carries a real status" "got '$sockstatus'" ;; esac
+
+echo "== 20. I3: writable config DIRECTORY FAIL prescribes chmod 0700 on the directory =="
+mkdir -p "$FX/dirfail/cfgdir"
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/dirfail" > "$FX/dirfail/cfgdir/config"
+chmod 0600 "$FX/dirfail/cfgdir/config"
+chmod 0775 "$FX/dirfail/cfgdir"
+out="$(env -i PATH="$PATH" HOME="$FX/dirfail/home" STEWARD_CONFIG_FILE="$FX/dirfail/cfgdir/config" \
+  STEWARD_COCKPIT_DIR="$FX/cockpit-ok" bash "$STEWARD" doctor 2>&1)"
+line="$(line_for "$out" operator-config)"
+is "20: operator-config is FAIL on a writable config directory" "$(field "$line" 2)" "FAIL"
+has "20: the remedy prescribes chmod 0700 on the directory" "$line" "chmod 0700 $FX/dirfail/cfgdir"
+chmod 0700 "$FX/dirfail/cfgdir"
+
+echo "== 21. I4: a dangling symlink at the config path FAILs naming the symlink, never WARN ambient-only =="
+mkfx "$FX/dangling"
+mkdir -p "$FX/dangling/cfgdir"
+ln -sf "$FX/dangling/nope-does-not-exist" "$FX/dangling/cfgdir/config"
+out="$(env -i PATH="$PATH" HOME="$FX/dangling/home" STEWARD_CONFIG_FILE="$FX/dangling/cfgdir/config" \
+  STEWARD_ESTATE_ROOT="$FX/dangling" STEWARD_HOSTNAME_CMD="$FX/dangling/hostcmd" \
+  STEWARD_COCKPIT_DIR="$FX/cockpit-ok" bash "$STEWARD" doctor 2>&1)"
+line="$(line_for "$out" operator-config)"
+is "21: operator-config is FAIL on a dangling config symlink" "$(field "$line" 2)" "FAIL"
+has "21: the FAIL names the symlink" "$line" "symlink"
+hasnt "21: never certified WARN ambient-only" "$line" "ambient-only"
+
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

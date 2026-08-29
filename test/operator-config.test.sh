@@ -195,6 +195,27 @@ is "broken config, json form: ok is false" "$(printf '%s' "$json" | jq -r '.ok' 
 has "broken config, json form: reason names the offending key" \
   "$(printf '%s' "$json" | jq -r '.reason' 2>/dev/null)" "COCKPIT_ENGINE_CMD"
 
+echo "== 6. I4: a DANGLING symlink at the config path is refused, same as a live symlink =="
+# _operator_config_load used to test [ -e "$f" ] BEFORE [ -L "$f" ], and -e
+# FOLLOWS a symlink -- so a dangling link (target does not exist) read as
+# "no file at all", rc 0, no mention of the symlink anywhere. A live
+# symlink was already refused (group 4 above); a dangling one must be
+# refused the exact same way, not treated as the unconfigured normal case.
+ln -sf "$FX/dangling-target-does-not-exist" "$FX/dangling"
+out="$(debug "$FX/dangling")"; rc=$?
+is "dangling symlink config file: rc 78" "$rc" "78"
+has "dangling symlink config file: stderr mentions symlink" "$out" "symlink"
+rm -f "$FX/dangling"
+
+# The real dispatcher gate (steward sessions), not just the debug seam.
+ln -sf "$FX/dangling2-target-does-not-exist" "$FX/dangling2"
+human="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_CONFIG_FILE="$FX/dangling2" \
+  STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
+  bash "$STEWARD" sessions 2>&1)"; hrc=$?
+is "dangling symlink, steward sessions command refuses the same way" "$hrc" "78"
+has "dangling symlink, steward sessions command names the symlink" "$human" "symlink"
+rm -f "$FX/dangling2"
+
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

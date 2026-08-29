@@ -108,12 +108,20 @@ _CFG_VALUE_OK() {
     *'$('*|*\`*|*'${'*)
       _CFG_VALUE_REASON="$key: value must not contain command or variable substitution"; return 1 ;;
   esac
-  # A CARRIAGE RETURN IS AN INVISIBLE VALUE BYTE. read strips the newline
-  # but not the CR a Windows-saved file leaves behind; a path ending in \r
-  # fails far downstream in a confusing way.
+  # CONTROL BYTES ARE INVISIBLE VALUE BYTES -- not just the CR a
+  # Windows-saved file leaves behind, but an embedded NEWLINE (which turns
+  # one config-file value into a second, operator-never-named line the
+  # parser reads back as its own key -- the STEWARD_TMUX_SOCKET/
+  # STEWARD_LIVENESS_CMD smuggle a review found against `config init`/`set`,
+  # both of which take this value straight from argv) and a TAB (the
+  # --json field separator downstream in doctor). Refusing the whole
+  # 0x00-0x1F control range in one glob character class, rather than CR
+  # alone, closes all of these at the one value-shape gate the parser and
+  # the writer both call -- never two independently maintained checks that
+  # could drift.
   case "$value" in
-    *"$(printf '\r')"*)
-      _CFG_VALUE_REASON="$key: value carries a carriage return (was the file saved with Windows line endings?)"; return 1 ;;
+    *[[:cntrl:]]*)
+      _CFG_VALUE_REASON="$key: value contains a newline or other control character (was the file saved with Windows line endings, or does the value smuggle a second line?)"; return 1 ;;
   esac
   local _tab; _tab="$(printf '\t')"
   case "$value" in
@@ -158,17 +166,23 @@ _operator_config_load() {
   [ -n "${STEWARD_TMUX_SOCKET:-}" ]  && _CFG_SOURCE_STEWARD_TMUX_SOCKET="process-environment"
   [ -n "${STEWARD_LIVENESS_CMD:-}" ] && _CFG_SOURCE_STEWARD_LIVENESS_CMD="process-environment"
 
-  # NO FILE AT ALL IS THE NORMAL STATE. Most operators never write one — the
-  # environment (a session conf, a supervisor) supplies everything. rc 0.
-  [ -e "$f" ] || return 0
-
-  # A SYMLINK IS REFUSED OUTRIGHT, before anything else is asked of it — the
-  # target could be swapped out from under an owner/mode check that ran a
-  # moment earlier.
+  # A SYMLINK IS REFUSED OUTRIGHT, before anything else is asked of it —
+  # including the "no file at all" check just below. `-L` does NOT follow
+  # the link (unlike `-e`), so this also catches a DANGLING symlink (target
+  # does not exist): checked here, ahead of `-e`, a dangling link is the
+  # same refusal a live one is, rather than reading as "no file yet" and
+  # being certified WARN(ambient-only) with no mention of the symlink at
+  # all — the target could otherwise be swapped out from under an
+  # owner/mode check that ran a moment earlier, too.
   if [ -L "$f" ]; then
     _CFG_ERROR="steward: operator config is a symlink, refusing: $f"
     return 78
   fi
+
+  # NO FILE AT ALL IS THE NORMAL STATE. Most operators never write one — the
+  # environment (a session conf, a supervisor) supplies everything. rc 0.
+  [ -e "$f" ] || return 0
+
   if [ ! -f "$f" ]; then
     _CFG_ERROR="steward: operator config is not a regular file: $f"
     return 78
@@ -391,6 +405,22 @@ _cfg_lock_release() {
   return 0
 }
 
+# _cfg_refuse_writable_dir <dir> — the SAME parent-dir group/other-writable
+# predicate _operator_config_load's reader enforces (_CFG_GROUP_OR_OTHER_
+# WRITABLE), run by the writer too, before it creates the lock or touches
+# the file. Without this the reader FAILs on a 0775 config directory
+# forever, while `config set`'s own remedy text ("run: steward config set
+# ...") reports success and never converges — the writer never checked the
+# one thing that was actually broken. `fel`s directly (rc 78), naming the
+# directory, so callers just call this ahead of the lock.
+_cfg_refuse_writable_dir() {
+  local dir="$1" dirmode
+  dirmode="$(_CFG_MODE_OF "$dir")" || fel "could not read the mode of $dir" 70
+  if _CFG_GROUP_OR_OTHER_WRITABLE "$dirmode"; then
+    fel "the directory holding the operator config is group- or other-writable (mode $dirmode), refusing: $dir" 78
+  fi
+}
+
 cmd_config_init() {
   local estate_root="" tmux_socket="" liveness_cmd=""
   while [ $# -gt 0 ]; do
@@ -436,6 +466,12 @@ cmd_config_init() {
   # ahead of the lock rather than inside it.
   ( umask 077; mkdir -p "$dir" ) || fel "could not create $dir" 70
 
+  # SAME PREDICATE THE READER ENFORCES, CHECKED BEFORE THE LOCK. A
+  # pre-existing 0775 directory (this call's own `mkdir -p` is a no-op on
+  # it) must not be allowed to accept a lock or a write it can never pass
+  # back through the reader.
+  _cfg_refuse_writable_dir "$dir"
+
   # THE LOCK COVERS THE EXISTS-CHECK AND THE CREATE TOGETHER — a concurrent
   # `init`/`set` racing on the same file is refused, never raced.
   _cfg_lock_acquire "$dir" || fel "config init: $_CFG_LOCK_ERROR" 75
@@ -479,6 +515,9 @@ cmd_config_set() {
   fi
 
   local dir; dir="$(dirname "$f")"
+  # SAME PREDICATE THE READER ENFORCES, CHECKED BEFORE THE LOCK — see
+  # _cfg_refuse_writable_dir.
+  _cfg_refuse_writable_dir "$dir"
   _cfg_lock_acquire "$dir" || fel "config set: $_CFG_LOCK_ERROR" 75
   trap '_cfg_lock_release "$_CFG_LOCK_DIR"' EXIT
 
@@ -502,19 +541,30 @@ cmd_config_set() {
   local saw_STEWARD_ESTATE_ROOT="" saw_STEWARD_TMUX_SOCKET="" saw_STEWARD_LIVENESS_CMD=""
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno+1))
-    if [ -n "$is_first" ]; then
-      is_first=""
-      # The old first line is never carried through as-is — FORMAT=1 is
-      # always synthesized below — but a first line that was NOT already
-      # exactly "FORMAT=1" is genuinely being dropped, so that gets the
-      # same loud treatment as any other refused line.
-      [ "$line" = "FORMAT=1" ] || echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
-      continue
-    fi
+    # COMMENTS/BLANKS ARE CHECKED BEFORE "is_first", MATCHING THE PARSER
+    # EXACTLY (_operator_config_load's own `case "$line" in ''|'#'*)
+    # continue ;; esac` runs before its saw_format check too). Without
+    # this ordering, "is_first" was keyed to the physical first line —
+    # so a valid file whose first line is a comment had that comment
+    # treated as "not FORMAT=1" and dropped, is_first then flipped false,
+    # and the REAL FORMAT=1 line on line 2 fell through to the key=value
+    # branch below, where FORMAT is not an allowed key — dropping FORMAT=1
+    # itself as "unreadable" too. A leading comment/blank is preserved
+    # verbatim and never counts as "the first line" for the FORMAT check.
     case "$line" in
       ''|'#'*) body="$body$line
 "; continue ;;
     esac
+    if [ -n "$is_first" ]; then
+      is_first=""
+      # The old first (non-comment/blank) line is never carried through
+      # as-is — FORMAT=1 is always synthesized below — but a first line
+      # that was NOT already exactly "FORMAT=1" is genuinely being
+      # dropped, so that gets the same loud treatment as any other
+      # refused line.
+      [ "$line" = "FORMAT=1" ] || echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+      continue
+    fi
     lkey="${line%%=*}"
     lvalue="${line#*=}"
     if ! _CFG_ALLOWED_KEY "$lkey" || ! _CFG_VALUE_OK "$lkey" "$lvalue"; then
@@ -1242,8 +1292,18 @@ _DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local live
 # `ID  STATUS  text` line. A raw embedded newline would leave a continuation
 # line with no `ID  STATUS` prefix, breaking the one-line-per-probe contract
 # every consumer of this output (including Task 5's --json) depends on.
+#
+# TABS ARE FLATTENED TOO, NOT JUST NEWLINES — a tab is the --json field
+# separator cmd_doctor joins id/status/text with (`$id\t$status\t$text`), so
+# an interpolated value carrying one would forge extra fields in that join
+# the same way an embedded newline forges extra probe rows. Any raw value
+# this file interpolates into probe text (STEWARD_ESTATE_ROOT,
+# STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD, and the resolved estate root)
+# must go through here first — a review found the operator-config probe
+# forging a fake `{"id":"socket","status":"PASS"}` row from exactly this gap
+# before this function was applied on that path.
 _doctor_oneline() {
-  printf '%s' "$1" | tr '\n' ' ' | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//'
+  printf '%s' "$1" | tr '\n\t' '  ' | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//'
 }
 
 # _doctor_mtime_of <path> — best-effort epoch mtime, BSD or GNU stat. Same
@@ -1299,6 +1359,20 @@ _doctor_probe_operator-config() {
   # patching the broken line, so it clears whatever made the old one
   # unreadable.
   if [ "${_cfg_rc:-0}" -ne 0 ]; then
+    # THE WRITABLE-DIRECTORY CASE DOES NOT CONVERGE ON 'config set'. That
+    # remedy only ever repairs the FILE's own content — it never touches
+    # the directory's mode — so prescribing it here would have `config
+    # set` report success while the reader's FAIL persists forever. Mirror
+    # the file-mode WARN's own remedy shape (chmod on the offending path)
+    # instead, matched against the reader's own error text so this stays
+    # one judgment, not a second copy of the predicate.
+    case "$_CFG_ERROR" in
+      *"directory holding the operator config is group- or other-writable"*)
+        local baddir="${_CFG_ERROR##*: }"
+        printf 'FAIL %s -- run: chmod 0700 %s\n' "$_CFG_ERROR" "$baddir"
+        return 78
+        ;;
+    esac
     printf 'FAIL %s -- run: steward config set STEWARD_ESTATE_ROOT /abs/correct-estate-root (config set rewrites the file cleanly)\n' "$_CFG_ERROR"
     return 78
   fi
@@ -1307,10 +1381,22 @@ _doctor_probe_operator-config() {
   local have_file=""
   [ -e "$cfgfile" ] && have_file=1
 
+  # EVERY RAW VALUE GOES THROUGH _doctor_oneline BEFORE IT EVER REACHES
+  # PROBE TEXT. C1 (the config-FILE value shape gate) already refuses an
+  # embedded newline/tab, but STEWARD_ESTATE_ROOT (and the other two) can
+  # still arrive newline- or tab-bearing from the PROCESS ENVIRONMENT — the
+  # plan's founding "a session inherits it from the supervisor" case — so
+  # this flattening is needed independently of C1, not merely as a backstop
+  # for it.
+  local root_v sock_v live_v
+  root_v="$(_doctor_oneline "${STEWARD_ESTATE_ROOT:-}")"
+  sock_v="$(_doctor_oneline "${STEWARD_TMUX_SOCKET:-}")"
+  live_v="$(_doctor_oneline "${STEWARD_LIVENESS_CMD:-}")"
+
   local root_txt sock_txt live_txt
-  root_txt="STEWARD_ESTATE_ROOT=${STEWARD_ESTATE_ROOT:-} source=$_CFG_SOURCE_STEWARD_ESTATE_ROOT"
-  sock_txt="STEWARD_TMUX_SOCKET=${STEWARD_TMUX_SOCKET:-} source=$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
-  live_txt="STEWARD_LIVENESS_CMD=${STEWARD_LIVENESS_CMD:-} source=$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
+  root_txt="STEWARD_ESTATE_ROOT=$root_v source=$_CFG_SOURCE_STEWARD_ESTATE_ROOT"
+  sock_txt="STEWARD_TMUX_SOCKET=$sock_v source=$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
+  live_txt="STEWARD_LIVENESS_CMD=$live_v source=$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
 
   local ambient=""
   if [ -z "$have_file" ]; then
@@ -1334,10 +1420,14 @@ _doctor_probe_operator-config() {
   local text="$root_txt; $sock_txt; $live_txt"
 
   if [ -n "$ambient" ]; then
-    local init_root="${STEWARD_ESTATE_ROOT:-/abs/correct-estate-root}"
+    # REUSES root_v/sock_v/live_v (already flattened above) rather than the
+    # raw env values — the remedy command text is part of the SAME
+    # single-line probe text as $root_txt/$sock_txt/$live_txt, so it is
+    # exactly as exposed to the newline/tab forgery C2 closes.
+    local init_root="${root_v:-/abs/correct-estate-root}"
     local init_cmd="steward config init --estate-root $init_root"
-    [ "$_CFG_SOURCE_STEWARD_TMUX_SOCKET" = "process-environment" ]  && init_cmd="$init_cmd --tmux-socket ${STEWARD_TMUX_SOCKET}"
-    [ "$_CFG_SOURCE_STEWARD_LIVENESS_CMD" = "process-environment" ] && init_cmd="$init_cmd --liveness-cmd ${STEWARD_LIVENESS_CMD}"
+    [ "$_CFG_SOURCE_STEWARD_TMUX_SOCKET" = "process-environment" ]  && init_cmd="$init_cmd --tmux-socket $sock_v"
+    [ "$_CFG_SOURCE_STEWARD_LIVENESS_CMD" = "process-environment" ] && init_cmd="$init_cmd --liveness-cmd $live_v"
     if [ -n "$mode_warn" ]; then
       printf 'WARN %s -- run: %s; also: %s\n' "$text" "$init_cmd" "$mode_warn"
     else
@@ -1360,6 +1450,13 @@ _doctor_probe_operator-config() {
 # from lib/registry.sh rather than re-deriving any of it.
 _doctor_probe_estate-root() {
   local root; root="$(_registry_estate_root)"
+  # DISPLAY-ONLY, FLATTENED. $root is STEWARD_ESTATE_ROOT (or its
+  # config-file value) verbatim — the same value that can arrive
+  # newline/tab-bearing from the process environment that C2 closes on the
+  # operator-config probe. The raw $root still drives every real
+  # filesystem check below (-d, registry_estate_file); only what gets
+  # printed into probe text is flattened.
+  local root_disp; root_disp="$(_doctor_oneline "$root")"
 
   local cfgfile="${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"
   local have_file=""
@@ -1375,13 +1472,13 @@ _doctor_probe_estate-root() {
   fi
 
   if [ ! -d "$root" ]; then
-    printf 'FAIL estate root does not exist: %s -- run: %s\n' "$root" "$remedy"
+    printf 'FAIL estate root does not exist: %s -- run: %s\n' "$root_disp" "$remedy"
     return 78
   fi
 
   local estate_file; estate_file="$(registry_estate_file)"
   if [ ! -f "$estate_file" ]; then
-    printf 'FAIL estate file missing: %s -- run: %s\n' "$estate_file" "$remedy"
+    printf 'FAIL estate file missing: %s -- run: %s\n' "$(_doctor_oneline "$estate_file")" "$remedy"
     return 78
   fi
 
@@ -1393,7 +1490,7 @@ _doctor_probe_estate-root() {
     return 78
   fi
 
-  printf 'PASS root=%s estate-file=%s\n' "$root" "$estate_file"
+  printf 'PASS root=%s estate-file=%s\n' "$root_disp" "$(_doctor_oneline "$estate_file")"
   return 0
 }
 

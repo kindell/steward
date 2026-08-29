@@ -326,6 +326,83 @@ has "13: -h mentions 'steward doctor'" "$h_out" "steward doctor"
 has "13: -h mentions 'steward config init'" "$h_out" "steward config init"
 has "13: -h mentions 'steward config set'" "$h_out" "steward config set"
 
+echo "== 14. embedded newline / control byte in a value: refused, no smuggled key (C1) =="
+# THE LIVE REPRODUCTION FROM THE REVIEW: a value that carries a second
+# line naming an unrelated allowlisted key. If the writer only refused
+# edge whitespace, this would land both lines, and the parser would read
+# STEWARD_TMUX_SOCKET back as a key the operator never named -- bypassing
+# the hub gate (STEWARD_TMUX_SOCKET) or, worse, arranging for
+# lib/liveness.sh to EXECUTE an operator-uncommanded STEWARD_LIVENESS_CMD.
+smuggle="$(printf '/a\nSTEWARD_TMUX_SOCKET=/live/socket')"
+
+mkdir -p "$FX/inject/home"
+out="$(run "$FX/inject/cfgdir/config" init --estate-root "$smuggle")"; rc=$?
+is "14: init with an embedded-newline value: rc 64" "$rc" "64"
+[ ! -e "$FX/inject/cfgdir/config" ] && ok "14: init wrote nothing" \
+  || bad "14: init wrote nothing" "file exists: $(cat "$FX/inject/cfgdir/config" 2>/dev/null)"
+
+mkdir -p "$FX/injectset/home" "$FX/injectset/cfgdir"
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/injectset/root" > "$FX/injectset/cfgdir/config"
+chmod 0600 "$FX/injectset/cfgdir/config"
+before="$(cat "$FX/injectset/cfgdir/config")"
+out="$(run "$FX/injectset/cfgdir/config" set STEWARD_ESTATE_ROOT "$smuggle")"; rc=$?
+is "14: set with an embedded-newline value: rc 64" "$rc" "64"
+after="$(cat "$FX/injectset/cfgdir/config")"
+is "14: set with an embedded-newline value: file unchanged" "$after" "$before"
+hasnt "14: the smuggled second line never landed in the file" "$after" "STEWARD_TMUX_SOCKET=/live/socket"
+
+# A follow-up parser read must never see the smuggled key -- proved through
+# the real _operator_config_load seam (STEWARD_CFG_DEBUG), not a
+# re-implementation of the parser.
+debug_out="$(env -i PATH="$PATH" HOME="$FX/injectset/home" STEWARD_CONFIG_FILE="$FX/injectset/cfgdir/config" \
+  STEWARD_CFG_DEBUG=1 bash "$STEWARD" ls 2>&1)"
+hasnt "14: parser read-back shows no smuggled STEWARD_TMUX_SOCKET" "$debug_out" "STEWARD_TMUX_SOCKET=/live/socket source=config-file"
+
+echo "== 15. group/other-writable config DIRECTORY: writer refuses before writing or locking (I3) =="
+mkdir -p "$FX/writedir/home" "$FX/writedir/cfgdir"
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/writedir/old" > "$FX/writedir/cfgdir/config"
+chmod 0600 "$FX/writedir/cfgdir/config"
+chmod 0775 "$FX/writedir/cfgdir"
+before="$(cat "$FX/writedir/cfgdir/config")"
+out="$(run "$FX/writedir/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/writedir/new")"; rc=$?
+is "15: set into a 0775 dir: rc 78" "$rc" "78"
+has "15: set refusal names the directory" "$out" "$FX/writedir/cfgdir"
+is "15: file unchanged (the remedy did not silently 'succeed')" "$(cat "$FX/writedir/cfgdir/config")" "$before"
+[ ! -e "$FX/writedir/cfgdir/.steward-config.lock" ] && ok "15: set left no stray lock directory behind" \
+  || bad "15: set left no stray lock directory behind" "lock dir exists"
+chmod 0700 "$FX/writedir/cfgdir"
+
+mkdir -p "$FX/writedirinit/home" "$FX/writedirinit/cfgdir"
+chmod 0775 "$FX/writedirinit/cfgdir"
+out="$(run "$FX/writedirinit/cfgdir/config" init --estate-root "$FX/writedirinit/estate")"; rc=$?
+is "15: init into a 0775 dir: rc 78" "$rc" "78"
+has "15: init refusal names the directory" "$out" "$FX/writedirinit/cfgdir"
+[ ! -e "$FX/writedirinit/cfgdir/config" ] && ok "15: init wrote nothing" \
+  || bad "15: init wrote nothing" "file exists"
+[ ! -e "$FX/writedirinit/cfgdir/.steward-config.lock" ] && ok "15: init left no stray lock directory behind" \
+  || bad "15: init left no stray lock directory behind" "lock dir exists"
+chmod 0700 "$FX/writedirinit/cfgdir"
+
+echo "== 16. set on a valid file with a leading comment before FORMAT=1 (M1) =="
+mkdir -p "$FX/leadcomment/home" "$FX/leadcomment/cfgdir"
+cat > "$FX/leadcomment/cfgdir/config" <<EOF
+# a leading comment before FORMAT=1
+FORMAT=1
+STEWARD_ESTATE_ROOT=$FX/leadcomment/old
+EOF
+chmod 0600 "$FX/leadcomment/cfgdir/config"
+out="$(run "$FX/leadcomment/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/leadcomment/new")"; rc=$?
+is "16: set rc 0" "$rc" "0"
+hasnt "16: no 'dropping unreadable' line for the leading comment" "$out" "dropping unreadable line 1"
+hasnt "16: FORMAT=1 itself was never reported dropped" "$out" "dropping unreadable line 2"
+content="$(cat "$FX/leadcomment/cfgdir/config")"
+is "16: first line is still FORMAT=1" "$(printf '%s\n' "$content" | head -n1)" "FORMAT=1"
+has "16: the leading comment survives" "$content" "a leading comment before FORMAT=1"
+has "16: new estate root written" "$content" "STEWARD_ESTATE_ROOT=$FX/leadcomment/new"
+env -i PATH="$PATH" HOME="$FX/leadcomment/home" STEWARD_CONFIG_FILE="$FX/leadcomment/cfgdir/config" \
+  bash "$STEWARD" -h >/dev/null 2>&1
+is "16: the real dispatcher gate accepts the rewritten file" "$?" "0"
+
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
