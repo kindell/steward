@@ -48,6 +48,203 @@ usage() {
   exit "${1:-64}"
 }
 
+# ---------------------------------------------------------------------------
+# The operator config — ~/.config/steward/config (or $STEWARD_CONFIG_FILE).
+#
+# THE FILE IS NEVER SOURCED. A shell `source` on a file an operator can edit
+# is an invitation to run whatever gets written there; this reader instead
+# does the minimum a config file needs — read a line, split on the first
+# `=`, check it against an allowlist, assign by hand through an explicit
+# `case`. No `eval`, no `source`, no expansion of a value once read. A key
+# outside the allowlist (COCKPIT_ENGINE_CMD, STEWARD_SSH, any other
+# STEWARD_*) is refused outright — those are a different authority class,
+# run via `bash -c`/argv elsewhere, and the file must never become a way to
+# steer them.
+#
+# PRECEDENCE: the process environment always wins; the file only fills in
+# what is unset. Every one of the three allowlisted variables gets a
+# _CFG_SOURCE_<KEY> of process-environment | config-file | unset, set
+# unconditionally so a caller never has to ask "did this even run."
+#
+# A BROKEN FILE IS A REFUSAL FOR THE WHOLE INVOCATION, never "skip the
+# line" — the caller (the dispatcher, just below) exits before any
+# subcommand runs. rc 0 covers both "no file" (the normal, unconfigured
+# state) and "valid file"; rc 78 is a broken file, with a reason left in
+# $_CFG_ERROR naming the file and line.
+
+_CFG_MODE_OF() { # <path> — best-effort octal mode, BSD or GNU stat.
+  local p="$1" m
+  m="$(stat -f '%Lp' "$p" 2>/dev/null)"
+  [ -n "$m" ] || m="$(stat -c '%a' "$p" 2>/dev/null)"
+  [ -n "$m" ] || return 1
+  printf '%s' "$m"
+}
+
+_CFG_GROUP_OR_OTHER_WRITABLE() { # <octal mode> — true if group or other carries the write bit.
+  local m="$1" len grp oth
+  len=${#m}
+  [ "$len" -ge 2 ] || return 1
+  grp="${m:$((len-2)):1}"
+  oth="${m:$((len-1)):1}"
+  [ $(( 8#$grp & 2 )) -ne 0 ] && return 0
+  [ $(( 8#$oth & 2 )) -ne 0 ] && return 0
+  return 1
+}
+
+_operator_config_load() {
+  _CFG_ERROR=""
+  local f="${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"
+
+  _CFG_SOURCE_STEWARD_ESTATE_ROOT="unset"
+  _CFG_SOURCE_STEWARD_TMUX_SOCKET="unset"
+  _CFG_SOURCE_STEWARD_LIVENESS_CMD="unset"
+  [ -n "${STEWARD_ESTATE_ROOT:-}" ]  && _CFG_SOURCE_STEWARD_ESTATE_ROOT="process-environment"
+  [ -n "${STEWARD_TMUX_SOCKET:-}" ]  && _CFG_SOURCE_STEWARD_TMUX_SOCKET="process-environment"
+  [ -n "${STEWARD_LIVENESS_CMD:-}" ] && _CFG_SOURCE_STEWARD_LIVENESS_CMD="process-environment"
+
+  # NO FILE AT ALL IS THE NORMAL STATE. Most operators never write one — the
+  # environment (a session conf, a supervisor) supplies everything. rc 0.
+  [ -e "$f" ] || return 0
+
+  # A SYMLINK IS REFUSED OUTRIGHT, before anything else is asked of it — the
+  # target could be swapped out from under an owner/mode check that ran a
+  # moment earlier.
+  if [ -L "$f" ]; then
+    _CFG_ERROR="steward: operator config is a symlink, refusing: $f"
+    return 78
+  fi
+  if [ ! -f "$f" ]; then
+    _CFG_ERROR="steward: operator config is not a regular file: $f"
+    return 78
+  fi
+  # OWNED BY THE EFFECTIVE USER. Cannot be fixtured without root, so this
+  # branch has no dedicated test — but a file another account can write is
+  # exactly the injection this whole reader exists to close off.
+  if [ ! -O "$f" ]; then
+    _CFG_ERROR="steward: operator config is not owned by the current user, refusing: $f"
+    return 78
+  fi
+
+  local mode
+  mode="$(_CFG_MODE_OF "$f")" || { _CFG_ERROR="steward: cannot read the mode of operator config: $f"; return 78; }
+  if _CFG_GROUP_OR_OTHER_WRITABLE "$mode"; then
+    _CFG_ERROR="steward: operator config is group- or other-writable (mode $mode), refusing: $f"
+    return 78
+  fi
+
+  local dir dirmode
+  dir="$(dirname "$f")"
+  dirmode="$(_CFG_MODE_OF "$dir")" || { _CFG_ERROR="steward: cannot read the mode of $dir"; return 78; }
+  if _CFG_GROUP_OR_OTHER_WRITABLE "$dirmode"; then
+    _CFG_ERROR="steward: the directory holding the operator config is group- or other-writable (mode $dirmode), refusing: $dir"
+    return 78
+  fi
+
+  local _tab; _tab="$(printf '\t')"
+  local lineno=0 saw_format="" line key value
+  local have_root="" have_socket="" have_liveness=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno+1))
+
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+
+    key=""; value=""
+    IFS='=' read -r key value <<EOF
+$line
+EOF
+
+    if [ -z "$saw_format" ]; then
+      if [ "$line" != "FORMAT=1" ]; then
+        if [ "$key" = "FORMAT" ]; then
+          _CFG_ERROR="steward: $f:$lineno: unknown FORMAT value '$value' (only FORMAT=1 is supported)"
+        else
+          _CFG_ERROR="steward: $f:$lineno: the file must start with FORMAT=1"
+        fi
+        return 78
+      fi
+      saw_format=1
+      continue
+    fi
+
+    case "$key" in
+      STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD) ;;
+      FORMAT)
+        _CFG_ERROR="steward: $f:$lineno: FORMAT may only appear once, as the first line"
+        return 78 ;;
+      *)
+        _CFG_ERROR="steward: $f:$lineno: unknown key '$key' (allowed: STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD)"
+        return 78 ;;
+    esac
+
+    case "$value" in
+      *\"*|*\'*)
+        _CFG_ERROR="steward: $f:$lineno: $key: value must not be quoted"
+        return 78 ;;
+    esac
+    case "$value" in
+      *'$('*)
+        _CFG_ERROR="steward: $f:$lineno: $key: value must not contain command substitution"
+        return 78 ;;
+    esac
+    case "$value" in
+      " "*|*" "|"$_tab"*|*"$_tab")
+        _CFG_ERROR="steward: $f:$lineno: $key: value has leading or trailing whitespace"
+        return 78 ;;
+    esac
+    case "$value" in
+      /*) ;;
+      *)
+        _CFG_ERROR="steward: $f:$lineno: $key must be an absolute path (leading '/'): '$value'"
+        return 78 ;;
+    esac
+
+    case "$key" in
+      STEWARD_ESTATE_ROOT)
+        if [ -n "$have_root" ]; then
+          _CFG_ERROR="steward: $f:$lineno: duplicate key 'STEWARD_ESTATE_ROOT'"
+          return 78
+        fi
+        have_root=1
+        if [ -z "${STEWARD_ESTATE_ROOT:-}" ]; then
+          STEWARD_ESTATE_ROOT="$value"; export STEWARD_ESTATE_ROOT
+          _CFG_SOURCE_STEWARD_ESTATE_ROOT="config-file"
+        fi
+        ;;
+      STEWARD_TMUX_SOCKET)
+        if [ -n "$have_socket" ]; then
+          _CFG_ERROR="steward: $f:$lineno: duplicate key 'STEWARD_TMUX_SOCKET'"
+          return 78
+        fi
+        have_socket=1
+        if [ -z "${STEWARD_TMUX_SOCKET:-}" ]; then
+          STEWARD_TMUX_SOCKET="$value"; export STEWARD_TMUX_SOCKET
+          _CFG_SOURCE_STEWARD_TMUX_SOCKET="config-file"
+        fi
+        ;;
+      STEWARD_LIVENESS_CMD)
+        if [ -n "$have_liveness" ]; then
+          _CFG_ERROR="steward: $f:$lineno: duplicate key 'STEWARD_LIVENESS_CMD'"
+          return 78
+        fi
+        have_liveness=1
+        if [ -z "${STEWARD_LIVENESS_CMD:-}" ]; then
+          STEWARD_LIVENESS_CMD="$value"; export STEWARD_LIVENESS_CMD
+          _CFG_SOURCE_STEWARD_LIVENESS_CMD="config-file"
+        fi
+        ;;
+    esac
+  done < "$f"
+
+  if [ -z "$saw_format" ]; then
+    _CFG_ERROR="steward: $f: the file must start with FORMAT=1 (file is empty or only comments)"
+    return 78
+  fi
+
+  return 0
+}
+
 # estate_las <name> — source the estate file into SSH/ESTATE_ROOT/PRODUCT_DIR,
 # refusing (not guessing) when a field is missing. A list entry that cannot be
 # read must not look like a reachable estate.
@@ -590,6 +787,33 @@ cmd_sessions() {
   fi
   return 0
 }
+
+# CALLED FIRST IN THE DISPATCHER, BEFORE ANY SUBCOMMAND — every path below
+# (add, ls, sessions, the bare cockpit invocation, an <estate> verb) must
+# see the same, already-resolved environment, and a broken config must
+# refuse before any of them has a chance to run.
+_operator_config_load; _cfg_rc=$?
+if [ "$_cfg_rc" -ne 0 ]; then
+  _cfg_json=""
+  for _cfg_a in "$@"; do [ "$_cfg_a" = "--json" ] && _cfg_json=1; done
+  if [ -n "$_cfg_json" ]; then
+    jq -cn --arg r "$_CFG_ERROR" '{ok:false,reason:$r}'
+  else
+    printf '%s\n' "$_CFG_ERROR" >&2
+  fi
+  exit "$_cfg_rc"
+fi
+# TEST-ONLY SEAM. Prints the three allowlisted values and their provenance,
+# then exits — before any subcommand dispatch. Nothing user-facing sets
+# this; it exists so operator-config.test.sh can observe
+# _CFG_SOURCE_<KEY> from outside the process without a `steward config get`
+# verb, which belongs to a later task (config init/set).
+if [ -n "${STEWARD_CFG_DEBUG:-}" ]; then
+  printf 'STEWARD_ESTATE_ROOT=%s source=%s\n'  "${STEWARD_ESTATE_ROOT:-}"  "$_CFG_SOURCE_STEWARD_ESTATE_ROOT"
+  printf 'STEWARD_TMUX_SOCKET=%s source=%s\n'  "${STEWARD_TMUX_SOCKET:-}" "$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
+  printf 'STEWARD_LIVENESS_CMD=%s source=%s\n' "${STEWARD_LIVENESS_CMD:-}" "$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
+  exit 0
+fi
 
 case "${1:-}" in
   add)      shift; cmd_add "$@" ;;
