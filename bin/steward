@@ -23,6 +23,7 @@
 #   steward doctor
 #   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
 #   steward config set KEY /abs/value
+#   steward login [session]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -1935,6 +1936,108 @@ cmd_doctor() {
   return "$worst"
 }
 
+# ---------------------------------------------------------------------------
+# `steward login [session]` — hands the operator to the runtime's OWN
+# interactive login flow, in their own tty. Defaults to the estate's hub
+# session when no name is given. Steward never touches, parses or stores the
+# credential; this verb only decides which flow to start and gets out of the
+# way before it runs.
+#
+# TWO GATES, IN THIS ORDER — the same reasoning the cockpit already applies:
+# ownership is the durable truth, reach is a capability.
+#   1. OWNERSHIP: the session's OWNER must be this viewer, or login stays
+#      with whoever it belongs to.
+#   2. HUB-LOCAL: login runs on the machine the session actually lives on,
+#      never dialed in from a laptop over ssh.
+#
+# THE RECIPE LIVES IN THIS CASE STATEMENT AND NOWHERE ELSE. A LOGIN_CMD read
+# out of a session conf would be the exact execution path the operator-config
+# parser exists to refuse — a file an operator can edit steering which binary
+# their own credentials go through. STEWARD_LOGIN_CMD_CLAUDE and
+# STEWARD_LOGIN_CMD_OPENCODE are test seams only; production always resolves
+# the bare runtime name on PATH.
+cmd_login() {
+  if [ $# -gt 1 ]; then
+    echo "steward: login takes at most one session name" >&2
+    return 64
+  fi
+  local session="${1:-}"
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  if [ -z "$session" ]; then
+    session="$(registry_hub_session)" || return 78
+  fi
+
+  # THE REGISTRY'S OWN MESSAGE PASSES THROUGH, UNCAPTURED — stderr is never
+  # redirected here. The exit code is house style regardless of what
+  # registry_load itself returns for "no such session" (a bare 1): every
+  # other caller in this file that wraps a registry-layer failure reports it
+  # as 78, and a session name is exactly that layer.
+  registry_load "$session" || return 78
+
+  local viewer="${STEWARD_VIEWER:-}"
+  [ -n "$viewer" ] || viewer="$(id -un 2>/dev/null)"
+  if [ "$OWNER" != "$viewer" ]; then
+    printf 'steward: %s is owned by %s — login stays with the owner\n' "$session" "$OWNER" >&2
+    return 77
+  fi
+
+  if ! _resolve_hub_local; then
+    local hub; hub="$(registry_hub_host 2>/dev/null)"
+    printf 'steward: login runs on the hub (%s) — this machine is not it\n' "${hub:-the hub}" >&2
+    return 69
+  fi
+
+  # NON-TTY IS AN HONEST REFUSAL, NOT A HANG. Both recipes below are
+  # interactive; started with stdin piped or redirected they would either
+  # hang waiting for input that never comes, or silently run a partial
+  # credential flow with nobody watching it.
+  #
+  # STEWARD_LOGIN_ASSUME_TTY is a TEST SEAM ONLY, documented here because
+  # nowhere else in this file names it: it lets a fixture drive this far
+  # without a real terminal. No production path ever sets it.
+  if [ -z "${STEWARD_LOGIN_ASSUME_TTY:-}" ] && [ ! -t 0 ]; then
+    echo "steward: login is interactive — run it in a terminal" >&2
+    return 64
+  fi
+
+  local cmd
+  local -a args
+  case "$RUNTIME" in
+    claude-code)
+      cmd="${STEWARD_LOGIN_CMD_CLAUDE:-claude}"
+      args=(/login)
+      ;;
+    opencode)
+      cmd="${STEWARD_LOGIN_CMD_OPENCODE:-opencode}"
+      args=(auth login)
+      ;;
+    *)
+      # BELT AND BRACES. registry_load already refuses any RUNTIME outside
+      # claude-code|opencode before this line can run — this case exists so
+      # a future closed-vocabulary addition that outpaces this file's own
+      # recipes fails by naming itself, rather than falling through with an
+      # empty $cmd.
+      printf "steward: no login recipe for runtime '%s'\n" "$RUNTIME" >&2
+      return 69
+      ;;
+  esac
+
+  local resolved
+  resolved="$(command -v "$cmd" 2>/dev/null)"
+  if [ -z "$resolved" ]; then
+    case "$cmd" in
+      */*) printf 'steward: login binary not found: %s (looked for it at that exact path)\n' "$cmd" >&2 ;;
+      *)   printf 'steward: login binary not found: %s (looked for it on PATH)\n' "$cmd" >&2 ;;
+    esac
+    return 69
+  fi
+
+  printf "steward: login for '%s' (runtime %s) — running: %s %s\n" "$session" "$RUNTIME" "$cmd" "${args[*]}"
+  exec "$resolved" "${args[@]}"
+}
+
 # CALLED FIRST IN THE DISPATCHER, BEFORE ANY SUBCOMMAND — every path below
 # (add, ls, sessions, the bare cockpit invocation, an <estate> verb) must
 # see the same, already-resolved environment, and a broken config must
@@ -1991,6 +2094,7 @@ case "${1:-}" in
   scaffold) shift; cmd_scaffold "$@" ;;
   assets)   shift; cmd_assets "$@"; exit $? ;;
   sessions) shift; cmd_sessions "$@"; exit $? ;;
+  login)    shift; cmd_login "$@"; exit $? ;;
   -h|--help) usage 0 ;;
   "")
     # No subcommand at all is the bare invocation — it starts the
