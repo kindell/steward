@@ -264,6 +264,77 @@ is "and it still has exactly eight fields" \
 is "the model column is not overwritten by the injection" \
    "$(field "$rows_nasty" eps 6)" "m"
 
+# ── THE ABSOLUTE-PATH GUARD ────────────────────────────────────────────────
+#
+# THE CONTRACT SAYS ABSOLUTE PATH; THE OLD CODE ACCEPTED ANYTHING WITH A
+# SLASH. `./shim` carries a slash and used to run exactly like a real seam —
+# the marker file below proves it no longer does.
+echo "== a relative path is refused before the shim ever runs =="
+cat > "$FX/relshim" <<'EOF'
+#!/bin/bash
+echo ran > "$(dirname "$0")/relshim.ran"
+echo "{}"
+EOF
+chmod +x "$FX/relshim"
+(
+  cd "$FX" || exit 1
+  rm -f rel.out rel.err rel.reason relshim.ran
+  STEWARD_LIVENESS_CMD="./relshim" liveness_rows >rel.out 2>rel.err
+  printf '%s' "$LIVENESS_SEAM_REASON" > rel.reason
+)
+is "relative path: stdout stays empty" "$(cat "$FX/rel.out")" ""
+is "relative path: reason is seam-not-absolute" "$(cat "$FX/rel.reason")" "seam-not-absolute"
+is "relative path: stderr says what is wrong" \
+   "$(grep -qi 'absolute' "$FX/rel.err" && echo yes || echo no)" "yes"
+is "relative path: the shim was NEVER executed" \
+   "$( [ -e "$FX/relshim.ran" ] && echo yes || echo no )" "no"
+
+# ── THE OUTER DEADLINE ─────────────────────────────────────────────────────
+#
+# A HUNG SHIM USED TO HANG `sessions`, THE COCKPIT AND `doctor` WITH IT.
+# STEWARD_LIVENESS_TIMEOUT injects the deadline so this suite never waits the
+# real 10s default. The stub spawns a SUB-SLEEP of its own — a descendant the
+# direct pid alone would not reach — and writes that child's pid to a marker
+# file before it also hangs; the assertions below prove BOTH processes are
+# gone, not just the one bash started directly.
+echo "== a hung shim is killed at the deadline, its descendant with it =="
+rm -f "$FX/hang.child.pid"
+hang="$(stub hang 'sleep 100 & echo $! > "'"$FX"'/hang.child.pid"; sleep 100')"
+t0="$(date +%s)"
+STEWARD_LIVENESS_TIMEOUT=1 STEWARD_LIVENESS_CMD="$hang" liveness_rows >"$FX/hang.out" 2>"$FX/hang.err"
+t1="$(date +%s)"
+elapsed=$((t1 - t0))
+is "hung shim: stdout stays empty" "$(cat "$FX/hang.out")" ""
+is "hung shim: reason is seam-timeout" "$LIVENESS_SEAM_REASON" "seam-timeout"
+is "hung shim: stderr names the deadline" \
+   "$(grep -qi 'timeout\|did not answer\|killed' "$FX/hang.err" && echo yes || echo no)" "yes"
+
+# ONE POLL CYCLE (up to 0.1s slop) TO LET THE CHILD PID LAND ON DISK before
+# checking it — the stub writes the pid file before it ever sleeps, so this
+# is generous, not load-bearing.
+sleep 0.2
+childpid="$(cat "$FX/hang.child.pid" 2>/dev/null)"
+is "hung shim: its own child process was reaped by the group kill" \
+   "$( [ -n "$childpid" ] && kill -0 "$childpid" 2>/dev/null && echo alive || echo dead )" "dead"
+
+# TIMING SANITY, MEASURED SEPARATELY WITH A LARGER LIMIT. `date +%s` only has
+# whole-second resolution, so a 1s deadline is not a fair thing to bound at
+# "under 2x": a run that truly takes 1.3s can read back as a 2s difference
+# purely from where its start and end land relative to a second boundary —
+# MEASURED, not assumed, this is exactly what a 1s limit did here first. A 3s
+# limit keeps that same +/-1s truncation slop tiny relative to the 6s bound,
+# so the assertion catches a real regression (a return that takes anywhere
+# near the OLD 10s default) without being sensitive to clock rounding.
+rm -f "$FX/hang3.child.pid"
+hang3="$(stub hang3 'sleep 100 & echo $! > "'"$FX"'/hang3.child.pid"; sleep 100')"
+t0="$(date +%s)"
+STEWARD_LIVENESS_TIMEOUT=3 STEWARD_LIVENESS_CMD="$hang3" liveness_rows >"$FX/hang3.out" 2>"$FX/hang3.err"
+t1="$(date +%s)"
+elapsed3=$((t1 - t0))
+is "hung shim: reason is seam-timeout at a different injected limit too" "$LIVENESS_SEAM_REASON" "seam-timeout"
+is "hung shim: returned in under 2x the injected limit" \
+   "$( [ "$elapsed3" -lt 6 ] && echo yes || echo no )" "yes"
+
 echo "== the suite never names a real socket =="
 _no_sock_pat='\.s'"ock"
 _no_tmux_s_pat='tmux'; _no_tmux_s_pat="${_no_tmux_s_pat} -S"

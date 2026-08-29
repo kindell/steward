@@ -500,6 +500,55 @@ registry_ping_msg() {
   printf '%s\n' "$_v"
 }
 
+# registry_liveness_cmd — the estate's own liveness shim, or the empty string.
+#
+# THE ONE OPTIONAL FIELD IN THIS FILE, AND THAT IS WHY IT IS NOT A CASE IN
+# _registry_estate_value. Every key that function serves is REQUIRED: a
+# missing RC_LABEL_PREFIX or HUB_HOST is a broken estate and rc 78 says so.
+# LIVENESS_CMD is different — it started life outside the estate file
+# entirely, as the operator's own STEWARD_LIVENESS_CMD, and an estate that
+# has not declared one yet is not broken, it simply has not opted in. Folding
+# a fourth outcome ("absent is fine, just for THIS key") into the shared
+# reader would give every other caller of that reader a branch to get wrong.
+#
+# THE THREE OUTCOMES, KEPT DISTINCT ON PURPOSE:
+#   - no estate file, or the file lacks the line  -> prints nothing, rc 0
+#   - the line is present and well-formed          -> prints the value, rc 0
+#   - the line is present and INVALID               -> rc 78
+# An operator who wrote a relative path deserves a refusal, not a silent
+# fallback to `seam-not-configured` that reads exactly like never having
+# written the line at all — that collapse is the whole reason this is its
+# own function instead of one more line in _registry_estate_value.
+#
+# SAME FILE, SAME "local BEFORE source" DISCIPLINE as every reader above: a
+# stale global from the caller's own shell must not survive an estate file
+# that never mentions LIVENESS_CMD, and a value the estate file sets must
+# never leak past this function's return.
+registry_liveness_cmd() {
+  local _estate; _estate="$(registry_estate_file)"
+  # NO ESTATE FILE AT ALL is not this function's refusal to make — plenty of
+  # other readers already refuse for that, the moment they are asked for a
+  # REQUIRED field. This field is optional, so absence of the whole file
+  # reads the same as absence of the one line: nothing to report, rc 0.
+  [ -f "$_estate" ] || { printf ''; return 0; }
+  local LIVENESS_CMD=""
+  # shellcheck source=/dev/null
+  if ! source "$_estate"; then
+    echo "registry: REFUSING — the estate file could not be read: $_estate" >&2
+    return 78
+  fi
+  [ -n "$LIVENESS_CMD" ] || { printf ''; return 0; }
+  # Absolute path only — the same regex the binding spec names. A relative
+  # one would resolve against whatever directory happened to be current when
+  # the seam ran, which is not a thing a liveness command may depend on.
+  if ! [[ "$LIVENESS_CMD" =~ ^/[A-Za-z0-9/._-]+$ ]]; then
+    echo "registry: REFUSING — LIVENESS_CMD in $_estate is not an absolute path: '$LIVENESS_CMD'" >&2
+    echo "registry: expected the form ^/[A-Za-z0-9/._-]+\$ — got '$LIVENESS_CMD'" >&2
+    return 78
+  fi
+  printf '%s\n' "$LIVENESS_CMD"
+}
+
 registry_dir() {
   if [ -n "${STEWARD_REGISTRY_DIR:-}" ]; then
     printf '%s\n' "$STEWARD_REGISTRY_DIR"

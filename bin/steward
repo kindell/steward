@@ -633,6 +633,56 @@ cmd_sessions() {
   . "$HERE/lib/sessions.sh"
   # shellcheck source=lib/liveness.sh
   . "$HERE/lib/liveness.sh"
+  # SOURCED EXPLICITLY HERE, not left to lib/sessions.sh's lazy load below —
+  # that load only fires once session_identity_rows runs, and the estate
+  # fallback just below needs registry_liveness_cmd before then. Sourcing
+  # twice is harmless: the file has no side effects on source, only function
+  # definitions.
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  # ── THE ESTATE FALLBACK, RESOLVED BEFORE ANY LIVENESS MEASUREMENT RUNS ──
+  #
+  # THE ENVIRONMENT ALWAYS WINS. By the time this line runs, that "environment"
+  # already includes whatever _operator_config_load filled in from the
+  # operator's own config file — an operator who set STEWARD_LIVENESS_CMD by
+  # hand, or through a future `config set`, gets exactly that shim, never a
+  # second guess. Only when NEITHER has an opinion does the estate's own
+  # LIVENESS_CMD get a turn: it is a claim about the ESTATE's shim, not about
+  # this operator's choice, so it must never override one already made.
+  #
+  # A REFUSAL HERE IS AN INVOCATION REFUSAL, IN THE REQUESTED FORMAT — the
+  # same shape as the missing-HUB_HOST refusal further down. An operator who
+  # wrote a relative path into the estate's LIVENESS_CMD gets told so; a
+  # `sessions` table that quietly rendered every liveness column as `unknown`
+  # would hide exactly the mistake this guard exists to surface.
+  if [ -z "${STEWARD_LIVENESS_CMD:-}" ]; then
+    local _lv_out _lv_err _lv_rc
+    _lv_err="$(mktemp)" || {
+      if [ -n "$want_json" ]; then jq -cn --arg r "steward: cannot create a temporary file" '{ok:false,reason:$r}'
+      else printf 'steward: cannot create a temporary file\n' >&2; fi
+      return 70
+    }
+    _lv_out="$(registry_liveness_cmd 2>"$_lv_err")"; _lv_rc=$?
+    if [ "$_lv_rc" -ne 0 ]; then
+      local _lv_diag; _lv_diag="$(cat "$_lv_err")"; rm -f "$_lv_err"
+      if [ -n "$want_json" ]; then jq -cn --arg r "$_lv_diag" '{ok:false,reason:$r}'
+      else printf '%s\n' "$_lv_diag" >&2; fi
+      return "$_lv_rc"
+    fi
+    rm -f "$_lv_err"
+    # AN ESTATE THAT NAMES NO SHIM IS NOT A REFUSAL — it is the common,
+    # unconfigured state, and liveness_rows already renders that as
+    # `seam-not-configured` further down. Only a NON-EMPTY answer is wired in.
+    if [ -n "$_lv_out" ]; then
+      STEWARD_LIVENESS_CMD="$_lv_out"; export STEWARD_LIVENESS_CMD
+      # SAME PROVENANCE VARIABLE _operator_config_load ALREADY MAINTAINS — a
+      # third source next to process-environment and config-file, so a future
+      # `doctor` probe (and STEWARD_CFG_DEBUG today) can say WHERE the value
+      # that ran came from, not just that one ran.
+      _CFG_SOURCE_STEWARD_LIVENESS_CMD="estate"
+    fi
+  fi
 
   # STDOUT AND STDERR ARE CAPTURED SEPARATELY, ON PURPOSE. `$ident` below is
   # parsed as pure TSV data by both the jq join and the human-form `read`

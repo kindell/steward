@@ -81,6 +81,18 @@ liveness_rows() {
     *) echo "liveness: STEWARD_LIVENESS_CMD must be a PATH to an executable, not the bare name '$cmd' — set it to the full path of the estate's shim" >&2
        LIVENESS_SEAM_REASON="seam-not-a-path"; return 0 ;;
   esac
+  # ABSOLUTE, NOT MERELY "CONTAINS A SLASH". `./shim` and `../estate/shim`
+  # both pass the check above — they carry a slash, and until now that was
+  # the whole test — but the binding contract says absolute path, and a
+  # relative one resolves against whatever directory happened to be current
+  # when this ran, which is not a thing this seam may depend on. Refused
+  # before the shim is ever touched: `[ -e ]` below would have happily found
+  # a `./shim` sitting in the caller's cwd and executed it.
+  case "$cmd" in
+    /*) ;;
+    *) echo "liveness: STEWARD_LIVENESS_CMD must be an absolute path (leading '/'), got '$cmd' — a relative path resolves against whatever directory happens to be current, which this seam may not depend on" >&2
+       LIVENESS_SEAM_REASON="seam-not-absolute"; return 0 ;;
+  esac
   if [ ! -e "$cmd" ]; then
     echo "liveness: STEWARD_LIVENESS_CMD points at nothing: '$cmd' — no liveness was measured" >&2
     LIVENESS_SEAM_REASON="seam-not-found"; return 0
@@ -92,12 +104,96 @@ liveness_rows() {
 
   # THE COMMAND'S OWN STDERR IS EVIDENCE, NOT NOISE. `2>/dev/null` threw away
   # the one sentence that says which of these branches an operator is in.
-  local errf; errf="$(mktemp)" || {
+  local outf; outf="$(mktemp)" || {
     echo "liveness: could not create a temporary file — no liveness was measured" >&2
     LIVENESS_SEAM_REASON="seam-failed"; return 0; }
-  local out rc cerr
-  out="$("$cmd" 2>"$errf")"; rc=$?
-  cerr="$(tr '\n' ' ' < "$errf")"; rm -f "$errf"
+  local errf; errf="$(mktemp)" || {
+    echo "liveness: could not create a temporary file — no liveness was measured" >&2
+    rm -f "$outf"
+    LIVENESS_SEAM_REASON="seam-failed"; return 0; }
+
+  # ── THE OUTER DEADLINE ─────────────────────────────────────────────────
+  # A HUNG SHIM USED TO HANG EVERYTHING DOWNSTREAM. `sessions`, the cockpit
+  # and `doctor` all call liveness_rows, and a shim that never returns took
+  # every one of them down with it — no rc, no reason, a caller that never
+  # comes back.
+  #
+  # NO GNU `timeout` ON macOS. The mechanism instead: toggle `set -m` for the
+  # one line that backgrounds the shim. MEASURED, not assumed: that toggle —
+  # and only that toggle — is what makes bash place the child in ITS OWN
+  # process group (pgid equal to its own pid) instead of this shell's. Without
+  # it, a plain `"$cmd" &` shares the calling shell's process group and
+  # `kill -- -$pid` finds no such process to kill; a child the shim itself
+  # spawned (and never waited on) would then simply outlive the timeout. `set
+  # -m` is switched back off immediately after backgrounding — the rest of
+  # this function must not run under job control, or later commands start
+  # reporting job-status lines of their own.
+  local deadline="${STEWARD_LIVENESS_TIMEOUT:-10}"
+  if ! [[ "$deadline" =~ ^[0-9]+$ ]] || [ "$deadline" -le 0 ]; then
+    deadline=10
+  fi
+
+  local pid
+  set -m
+  "$cmd" >"$outf" 2>"$errf" &
+  pid=$!
+  set +m
+
+  # A WATCHDOG THAT SIGNALS, NOT A POLL LOOP THAT SLEEPS. A `sleep 0.1s, check,
+  # repeat` loop was tried first and discarded — MEASURED, not assumed: under
+  # load a single `sleep 0.1` can itself take twice as long as asked, and that
+  # error compounds across dozens of iterations into exactly the kind of delay
+  # this deadline exists to bound. A background subshell that sleeps once for
+  # the whole deadline and then signals THIS shell has only one interval to
+  # get wrong, not dozens — and `wait` is interruptible by a trapped signal by
+  # design: it returns the moment the signal arrives, without waiting for the
+  # shim to finish on its own.
+  local timed_out=""
+  trap 'timed_out=1' USR1
+  ( sleep "$deadline"; kill -USR1 $$ 2>/dev/null ) &
+  local watchdog=$!
+
+  local rc
+  wait "$pid" 2>/dev/null; rc=$?
+  # IGNORE THE SIGNAL BEFORE TOUCHING THE WATCHDOG, NOT AFTER. A watchdog
+  # signal that arrives in the gap between `wait` returning on its own (the
+  # shim finished first) and this shell killing the watchdog would otherwise
+  # hit USR1's DEFAULT disposition — which terminates the process — the
+  # instant the trap is simply removed instead of first silenced. `trap -`
+  # only runs once the watchdog is confirmed reaped, when no signal can still
+  # be in flight.
+  trap '' USR1
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  trap - USR1
+
+  local out cerr
+  if [ -n "$timed_out" ]; then
+    # THE WHOLE PROCESS GROUP, NOT JUST THE ONE PID BASH KNOWS ABOUT — a shim
+    # that spawned its own child and never waited on it would otherwise
+    # survive this function reporting `seam-timeout` and moving on. TERM
+    # first, a short grace period, then KILL: the same escalation an operator
+    # would use by hand. The braces and the trailing `2>/dev/null` swallow
+    # bash's own job-control notification ("Terminated") about the process
+    # THIS shell just killed — that notification is not evidence of anything
+    # a caller of this function needs to see.
+    { kill -TERM -- "-$pid" 2>/dev/null
+      sleep 0.2
+      kill -KILL -- "-$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+    } 2>/dev/null
+    rm -f "$outf" "$errf"
+    echo "liveness: the liveness command did not answer within ${deadline}s and was killed: '$cmd'" >&2
+    LIVENESS_SEAM_REASON="seam-timeout"; return 0
+  fi
+
+  # rc WAS ALREADY CAPTURED ABOVE, by the `wait "$pid"` that the watchdog can
+  # interrupt. Waiting on the same pid again here — now that it has already
+  # been reaped once — would not re-measure anything; it would only replace a
+  # real exit status with "no such job".
+  out="$(cat "$outf")"
+  cerr="$(tr '\n' ' ' < "$errf")"
+  rm -f "$outf" "$errf"
 
   if [ "$rc" -ne 0 ]; then
     echo "liveness: the liveness command failed (rc $rc): '$cmd'${cerr:+ — it said: $cerr}" >&2

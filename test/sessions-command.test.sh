@@ -222,6 +222,103 @@ is "plain refusal is non-zero too" "$( [ "$eorc" -ne 0 ] && echo yes || echo no 
 is "plain refusal's stdout is empty" "$eo" ""
 has "plain refusal's reason lands on stderr" "$et" "registry"
 
+# ── THE ESTATE FALLBACK RESOLUTION ──────────────────────────────────────────
+#
+# A SEPARATE, MINIMAL FIXTURE TREE — not a mutation of $FX above. Adding a
+# LIVENESS_CMD line to $FX/estate/steward.conf would silently change what
+# "== with no liveness command ==" measures (it would stop being the
+# unconfigured case), and the earlier assertions in this file would then be
+# testing an accident of insertion order rather than the contract they claim.
+FX2="$(mktemp -d)"
+FX3="$(mktemp -d)"
+trap 'rm -rf "$FX" "$FX2" "$FX3"' EXIT
+mkdir -p "$FX2/sessions.d" "$FX2/entities.d" "$FX2/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\nLIVENESS_CMD="%s"\n' \
+  "$FX2/estate-shim" > "$FX2/estate/steward.conf"
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="alpha"\n' \
+  > "$FX2/sessions.d/alpha.conf"
+printf 'NAME="Acme"\n' > "$FX2/entities.d/acme.conf"
+
+cat > "$FX2/estate-shim" <<'EOF'
+#!/bin/bash
+echo ran > "$(dirname "$0")/estate-shim.ran"
+cat <<'J'
+{"sessions":{"alpha":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code"}}}
+J
+EOF
+chmod +x "$FX2/estate-shim"
+
+cat > "$FX2/env-shim" <<'EOF'
+#!/bin/bash
+echo ran > "$(dirname "$0")/env-shim.ran"
+cat <<'J'
+{"sessions":{"alpha":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code"}}}
+J
+EOF
+chmod +x "$FX2/env-shim"
+
+# THE PROCESS ENVIRONMENT WINS, EVEN THOUGH THE ESTATE ALSO NAMES A SHIM.
+# Which stub actually ran is proved by its OWN marker file, not just by the
+# json coming back healthy — a resolution bug that ran the wrong stub could
+# still answer correctly if both stubs happen to agree on alpha's liveness.
+echo "== resolution: an explicit STEWARD_LIVENESS_CMD wins over the estate field =="
+rm -f "$FX2/env-shim.ran" "$FX2/estate-shim.ran"
+j4="$(STEWARD_REGISTRY_DIR="$FX2/sessions.d" STEWARD_ESTATE_ROOT="$FX2" STEWARD_VIEWER="a" \
+      STEWARD_LIVENESS_CMD="$FX2/env-shim" bash "$STEWARD" sessions --json 2>&1)"
+is "the env stub ran"          "$( [ -e "$FX2/env-shim.ran" ]    && echo yes || echo no )" "yes"
+is "the estate stub did not run" "$( [ -e "$FX2/estate-shim.ran" ] && echo yes || echo no )" "no"
+is "liveness measured via the env stub" \
+   "$(printf '%s' "$j4" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "up"
+
+# WITH THE ENVIRONMENT SILENT, THE ESTATE'S OWN FIELD GETS A TURN.
+echo "== resolution: with STEWARD_LIVENESS_CMD unset, the estate's own shim runs =="
+rm -f "$FX2/env-shim.ran" "$FX2/estate-shim.ran"
+j5="$(STEWARD_REGISTRY_DIR="$FX2/sessions.d" STEWARD_ESTATE_ROOT="$FX2" STEWARD_VIEWER="a" \
+      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>&1)"
+is "the estate stub ran"     "$( [ -e "$FX2/estate-shim.ran" ] && echo yes || echo no )" "yes"
+is "the env stub did not run" "$( [ -e "$FX2/env-shim.ran" ]    && echo yes || echo no )" "no"
+is "liveness measured via the estate stub" \
+   "$(printf '%s' "$j5" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "up"
+
+# NEITHER SET: the fixture at $FX (used throughout the rest of this file)
+# names no LIVENESS_CMD in its estate file, and "== with no liveness command,
+# every session is still listed and unknown ==" above already asserts the
+# seam-not-configured reason for exactly that case — this comment records the
+# coverage rather than duplicating the fixture.
+
+# AN ESTATE FIELD THAT FAILS registry_liveness_cmd'S FORM CHECK REFUSES THE
+# WHOLE INVOCATION — not a `sessions` table that quietly renders every
+# liveness column `unknown` with no clue why the estate's own line did not
+# take effect.
+mkdir -p "$FX3/sessions.d" "$FX3/entities.d" "$FX3/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\nLIVENESS_CMD="relative/shim"\n' \
+  > "$FX3/estate/steward.conf"
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="alpha"\n' \
+  > "$FX3/sessions.d/alpha.conf"
+printf 'NAME="Acme"\n' > "$FX3/entities.d/acme.conf"
+
+# SAME SHAPE AS THE EXISTING HUB_HOST REFUSAL FURTHER UP: the json form's
+# reason field IS the diagnostic text; nothing is additionally duplicated onto
+# stderr in this branch, matching every other early refusal in cmd_sessions
+# (see "an unreadable registry refuses in both forms" above, whose --json case
+# routes stderr to /dev/null and asserts on `.reason` alone). The plain form
+# below is where stderr itself is asserted on.
+echo "== resolution: an invalid estate field refuses the whole invocation (json) =="
+j6="$(STEWARD_REGISTRY_DIR="$FX3/sessions.d" STEWARD_ESTATE_ROOT="$FX3" STEWARD_VIEWER="a" \
+      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>/dev/null)"; j6rc=$?
+is "refusal rc is 78" "$j6rc" "78"
+is "ok is false"      "$(printf '%s' "$j6" | jq -r '.ok')" "false"
+has "the reason names the estate field" "$(printf '%s' "$j6" | jq -r '.reason')" "LIVENESS_CMD"
+
+echo "== resolution: an invalid estate field refuses the whole invocation (plain) =="
+p6err="$(mktemp)"
+p6out="$(STEWARD_REGISTRY_DIR="$FX3/sessions.d" STEWARD_ESTATE_ROOT="$FX3" STEWARD_VIEWER="a" \
+      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions 2>"$p6err")"; p6rc=$?
+p6errtext="$(cat "$p6err")"; rm -f "$p6err"
+is "refusal rc is 78 in the plain form too" "$p6rc" "78"
+is "plain refusal's stdout is empty"        "$p6out" ""
+has "plain refusal names the estate field on stderr" "$p6errtext" "LIVENESS_CMD"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
