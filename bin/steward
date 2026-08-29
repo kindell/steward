@@ -21,6 +21,8 @@
 #   steward assets <session> [--json]
 #   steward sessions [--json]
 #   steward doctor
+#   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
+#   steward config set KEY /abs/value
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -72,6 +74,59 @@ usage() {
 # subcommand runs. rc 0 covers both "no file" (the normal, unconfigured
 # state) and "valid file"; rc 78 is a broken file, with a reason left in
 # $_CFG_ERROR naming the file and line.
+
+# THE ALLOWLIST IS ONE LIST, NOT TWO. `_operator_config_load` below and
+# `steward config init`/`set` (further down) both decide "is this key
+# writable" through this one predicate and this one piece of text — never
+# two independently maintained copies that could quietly drift apart.
+_CFG_ALLOWED_KEYS_TEXT="STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD"
+_CFG_ALLOWED_KEY() { # <key> — true iff key is one of the three writable operator-config keys.
+  case "$1" in
+    STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _CFG_VALUE_OK <key> <value> — the value-shape contract shared by the
+# parser and the writer: no quotes/escapes, no command or variable
+# substitution, no CR, no leading/trailing whitespace, absolute path only.
+# On failure this sets $_CFG_VALUE_REASON (no file:line prefix — the parser
+# and the writer each build their own message around it) and returns 1.
+# THE ROUND-TRIP CONTRACT LIVES HERE: anything `config` writes must be
+# something this function accepts, and anything it refuses at parse time it
+# refuses at write time too — one judgment, not two.
+_CFG_VALUE_OK() {
+  local key="$1" value="$2"
+  case "$value" in
+    *\"*|*\'*)
+      _CFG_VALUE_REASON="$key: value must not be quoted"; return 1 ;;
+  esac
+  # BACKTICKS AND ${ ARE THE SAME SHAPE CLASS AS $(. Refusing only one
+  # spelling of substitution leaves the invariant depending on every future
+  # consumer staying argv-only; all three are refused at the door instead.
+  case "$value" in
+    *'$('*|*\`*|*'${'*)
+      _CFG_VALUE_REASON="$key: value must not contain command or variable substitution"; return 1 ;;
+  esac
+  # A CARRIAGE RETURN IS AN INVISIBLE VALUE BYTE. read strips the newline
+  # but not the CR a Windows-saved file leaves behind; a path ending in \r
+  # fails far downstream in a confusing way.
+  case "$value" in
+    *"$(printf '\r')"*)
+      _CFG_VALUE_REASON="$key: value carries a carriage return (was the file saved with Windows line endings?)"; return 1 ;;
+  esac
+  local _tab; _tab="$(printf '\t')"
+  case "$value" in
+    " "*|*" "|"$_tab"*|*"$_tab")
+      _CFG_VALUE_REASON="$key: value has leading or trailing whitespace"; return 1 ;;
+  esac
+  case "$value" in
+    /*) ;;
+    *)
+      _CFG_VALUE_REASON="$key must be an absolute path (leading '/'): '$value'"; return 1 ;;
+  esac
+  return 0
+}
 
 _CFG_MODE_OF() { # <path> — best-effort octal mode, BSD or GNU stat.
   local p="$1" m
@@ -141,7 +196,6 @@ _operator_config_load() {
     return 78
   fi
 
-  local _tab; _tab="$(printf '\t')"
   local lineno=0 saw_format="" line key value
   local have_root="" have_socket="" have_liveness=""
   while IFS= read -r line || [ -n "$line" ]; do
@@ -169,51 +223,19 @@ EOF
       continue
     fi
 
-    case "$key" in
-      STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD) ;;
-      FORMAT)
-        _CFG_ERROR="steward: $f:$lineno: FORMAT may only appear once, as the first line"
-        return 78 ;;
-      *)
-        _CFG_ERROR="steward: $f:$lineno: unknown key '$key' (allowed: STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD)"
-        return 78 ;;
-    esac
+    if [ "$key" = "FORMAT" ]; then
+      _CFG_ERROR="steward: $f:$lineno: FORMAT may only appear once, as the first line"
+      return 78
+    fi
+    if ! _CFG_ALLOWED_KEY "$key"; then
+      _CFG_ERROR="steward: $f:$lineno: unknown key '$key' (allowed: $_CFG_ALLOWED_KEYS_TEXT)"
+      return 78
+    fi
 
-    case "$value" in
-      *\"*|*\'*)
-        _CFG_ERROR="steward: $f:$lineno: $key: value must not be quoted"
-        return 78 ;;
-    esac
-    # BACKTICKS AND ${ ARE THE SAME SHAPE CLASS AS $(. The values are consumed
-    # as data everywhere today (argv exec, Rust env::var, quoted path
-    # expansions) — but refusing only one spelling of substitution leaves the
-    # invariant depending on every future consumer staying argv-only. All
-    # three spellings are refused at the door instead.
-    case "$value" in
-      *'$('*|*\`*|*'${'*)
-        _CFG_ERROR="steward: $f:$lineno: $key: value must not contain command or variable substitution"
-        return 78 ;;
-    esac
-    # A CARRIAGE RETURN IS AN INVISIBLE VALUE BYTE. read strips the newline
-    # but not the CR a Windows-saved file leaves behind; a path ending in \r
-    # fails far downstream in a confusing way. Refused at parse time, where
-    # the line number can say exactly where.
-    case "$value" in
-      *"$(printf '\r')"*)
-        _CFG_ERROR="steward: $f:$lineno: $key: value carries a carriage return (was the file saved with Windows line endings?)"
-        return 78 ;;
-    esac
-    case "$value" in
-      " "*|*" "|"$_tab"*|*"$_tab")
-        _CFG_ERROR="steward: $f:$lineno: $key: value has leading or trailing whitespace"
-        return 78 ;;
-    esac
-    case "$value" in
-      /*) ;;
-      *)
-        _CFG_ERROR="steward: $f:$lineno: $key must be an absolute path (leading '/'): '$value'"
-        return 78 ;;
-    esac
+    if ! _CFG_VALUE_OK "$key" "$value"; then
+      _CFG_ERROR="steward: $f:$lineno: $_CFG_VALUE_REASON"
+      return 78
+    fi
 
     case "$key" in
       STEWARD_ESTATE_ROOT)
@@ -272,6 +294,187 @@ estate_las() {
   [ -n "$SSH" ]         || fel "SSH missing in $f" 78
   [ -n "$ESTATE_ROOT" ] || fel "ESTATE_ROOT missing in $f" 78
   [ -n "$PRODUCT_DIR" ] || fel "PRODUCT_DIR missing in $f" 78
+}
+
+# ---------------------------------------------------------------------------
+# `steward config init`/`set` — the ONE writing verb over the operator
+# config (~/.config/steward/config, see the reader above). Everything else
+# in this file only ever reads that file; these two subcommands are the
+# whole surface that ever puts bytes into it.
+#
+# VALUES COME FROM ARGV ONLY. Neither verb ever picks between candidates —
+# no fallback, no environment scan, no guessing between two paths that both
+# look plausible. An operator names the value; this only ever writes what
+# it was told.
+#
+# ATOMIC BY CONSTRUCTION: every write goes through _cfg_atomic_write, a temp
+# file created in the SAME directory as the real one (so the final rename is
+# same-filesystem and therefore atomic) and moved into place with `mv`. A
+# reader can only ever see the old file or the new one, never a partial
+# write, and no temp file survives a failed attempt.
+
+# _cfg_atomic_write <path> <content> — writes content to path atomically.
+# Sets $_CFG_WRITE_ERROR and returns non-zero on any failure; the caller
+# turns that into a `fel` refusal in the requested exit-code class.
+_cfg_atomic_write() {
+  local path="$1" content="$2" dir tmp
+  dir="$(dirname "$path")"
+  if [ -L "$dir" ]; then
+    _CFG_WRITE_ERROR="the directory holding the operator config is a symlink, refusing: $dir"
+    return 78
+  fi
+  tmp="$( (umask 077; mktemp "$dir/.config.tmp.XXXXXX" 2>/dev/null) )"
+  if [ -z "$tmp" ]; then
+    _CFG_WRITE_ERROR="could not create a temporary file in $dir"
+    return 70
+  fi
+  if ! printf '%s' "$content" > "$tmp"; then
+    rm -f "$tmp"
+    _CFG_WRITE_ERROR="could not write $tmp"
+    return 70
+  fi
+  if ! chmod 0600 "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    _CFG_WRITE_ERROR="could not set mode 0600 on $tmp"
+    return 70
+  fi
+  # RECHECKED RIGHT BEFORE THE RENAME — the window between the caller's own
+  # create-only/symlink check and here is exactly where a concurrent
+  # writer could have swapped the target for a symlink. `mv` onto a symlink
+  # replaces the link itself rather than following it, so this is
+  # belt-and-braces rather than load-bearing, but it keeps the invariant
+  # honest under a hostile concurrent writer too.
+  if [ -L "$path" ]; then
+    rm -f "$tmp"
+    _CFG_WRITE_ERROR="operator config path is a symlink, refusing: $path"
+    return 78
+  fi
+  if ! mv -f "$tmp" "$path"; then
+    rm -f "$tmp"
+    _CFG_WRITE_ERROR="could not rename the temp file into place: $path"
+    return 70
+  fi
+  return 0
+}
+
+# _cfg_file — the same seam $STEWARD_CONFIG_FILE/$HOME/.config/steward/config
+# _operator_config_load reads, named once so init/set can never drift from it.
+_cfg_file() { printf '%s\n' "${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"; }
+
+cmd_config_init() {
+  local estate_root="" tmux_socket="" liveness_cmd=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --estate-root)
+        [ $# -ge 2 ] || fel "config init: --estate-root needs a value" 64
+        estate_root="$2"; shift 2 ;;
+      --tmux-socket)
+        [ $# -ge 2 ] || fel "config init: --tmux-socket needs a value" 64
+        tmux_socket="$2"; shift 2 ;;
+      --liveness-cmd)
+        [ $# -ge 2 ] || fel "config init: --liveness-cmd needs a value" 64
+        liveness_cmd="$2"; shift 2 ;;
+      *) fel "config init: unknown flag '$1' (allowed: --estate-root, --tmux-socket, --liveness-cmd)" 64 ;;
+    esac
+  done
+  [ -n "$estate_root" ] || fel "config init: --estate-root is required" 64
+
+  local f; f="$(_cfg_file)"
+  local dir; dir="$(dirname "$f")"
+
+  # CREATE-ONLY. A symlink is refused before the plain -e check — the same
+  # ordering the reader uses, so a swapped-in symlink can never look like
+  # "no file yet" for a moment longer than it has to.
+  if [ -L "$f" ]; then
+    fel "operator config path is a symlink, refusing: $f" 78
+  fi
+  if [ -e "$f" ]; then
+    fel "operator config already exists: $f — use 'steward config set KEY VALUE' to change it (config init only ever creates a new file)" 65
+  fi
+
+  _CFG_VALUE_OK STEWARD_ESTATE_ROOT "$estate_root" || fel "config init: $_CFG_VALUE_REASON" 64
+  [ -z "$tmux_socket" ]  || { _CFG_VALUE_OK STEWARD_TMUX_SOCKET "$tmux_socket"   || fel "config init: $_CFG_VALUE_REASON" 64; }
+  [ -z "$liveness_cmd" ] || { _CFG_VALUE_OK STEWARD_LIVENESS_CMD "$liveness_cmd" || fel "config init: $_CFG_VALUE_REASON" 64; }
+
+  if [ -L "$dir" ]; then
+    fel "operator config directory is a symlink, refusing: $dir" 78
+  fi
+  # 0700, ONLY WHEN THIS CALL IS THE ONE CREATING IT. An already-present
+  # directory (estates.d lives here too) is left exactly as it is —
+  # `mkdir -p` never touches a directory that already exists.
+  ( umask 077; mkdir -p "$dir" ) || fel "could not create $dir" 70
+
+  local content="FORMAT=1
+STEWARD_ESTATE_ROOT=$estate_root
+"
+  [ -z "$tmux_socket" ]  || content="${content}STEWARD_TMUX_SOCKET=$tmux_socket
+"
+  [ -z "$liveness_cmd" ] || content="${content}STEWARD_LIVENESS_CMD=$liveness_cmd
+"
+
+  _cfg_atomic_write "$f" "$content" || fel "$_CFG_WRITE_ERROR" 70
+  echo "steward: wrote $f"
+}
+
+cmd_config_set() {
+  local key="${1:-}" value="${2:-}"
+  [ -n "$key" ] && [ -n "$value" ] || fel "usage: steward config set KEY /abs/value" 64
+  if ! _CFG_ALLOWED_KEY "$key"; then
+    fel "config set: unknown key '$key' (allowed: $_CFG_ALLOWED_KEYS_TEXT)" 64
+  fi
+  _CFG_VALUE_OK "$key" "$value" || fel "config set: $_CFG_VALUE_REASON" 64
+
+  local f; f="$(_cfg_file)"
+  if [ -L "$f" ]; then
+    fel "operator config path is a symlink, refusing: $f" 78
+  fi
+  if [ ! -e "$f" ]; then
+    fel "operator config does not exist: $f — run 'steward config init --estate-root /abs/estate-root' first" 65
+  fi
+  if [ ! -f "$f" ]; then
+    fel "operator config is not a regular file: $f" 78
+  fi
+
+  # REWRITE, DON'T PATCH. The whole file is read and re-emitted: FORMAT=1 is
+  # always the canonical first line (even if the old file's own FORMAT line
+  # was corrupt — doctor's own remedy text promises `set` "rewrites the file
+  # cleanly"), every other line is carried through unchanged, and every line
+  # for the target key — including a duplicate the old file should never
+  # have had — collapses into the single new one.
+  local body="" line lkey inserted=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) body="$body$line
+"; continue ;;
+    esac
+    lkey="${line%%=*}"
+    case "$lkey" in
+      FORMAT) continue ;;
+      "$key")
+        if [ -z "$inserted" ]; then
+          body="$body$key=$value
+"
+          inserted=1
+        fi
+        continue ;;
+    esac
+    body="$body$line
+"
+  done < "$f"
+  [ -n "$inserted" ] || body="$body$key=$value
+"
+
+  _cfg_atomic_write "$f" "FORMAT=1
+$body" || fel "$_CFG_WRITE_ERROR" 70
+  echo "steward: updated $key in $f"
+}
+
+cmd_config() {
+  case "${1:-}" in
+    init) shift; cmd_config_init "$@" ;;
+    set)  shift; cmd_config_set "$@" ;;
+    *) fel "usage: steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs] | steward config set KEY /abs/value" 64 ;;
+  esac
 }
 
 cmd_add() {
@@ -914,9 +1117,9 @@ _resolve_socket() {
 #
 # EVERY PROBE READS, NEVER WRITES. No file writes, no builds, no bus, git or
 # network calls happen anywhere below — the one verb that mutates is
-# `steward config init`/`set` (not built yet), and every FAIL/WARN line names
-# the exact command to run, never a raw `export` line an operator would have
-# to remember and repeat by hand.
+# `steward config init`/`set`, and every FAIL/WARN line names the exact
+# command to run, never a raw `export` line an operator would have to
+# remember and repeat by hand.
 #
 # ONE FUNCTION PER PROBE, `_doctor_probe_<id>`, IDs EXACTLY as the spec's
 # table. Each probe prints a single `STATUS text` line on its own stdout and
@@ -1542,6 +1745,16 @@ _operator_config_load; _cfg_rc=$?
 if [ "${1:-}" = "doctor" ]; then
   shift
   cmd_doctor "$@"
+  exit $?
+fi
+
+# `config` IS THE OTHER EXCEPTION, FOR THE SAME REASON. doctor's own
+# prescribed remedy for a broken file is `steward config set ...` — it must
+# be able to repair a file the loader just refused, so it cannot sit behind
+# a gate that exits on that exact refusal first.
+if [ "${1:-}" = "config" ]; then
+  shift
+  cmd_config "$@"
   exit $?
 fi
 
