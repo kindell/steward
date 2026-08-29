@@ -320,6 +320,12 @@ is "12: init succeeds once the lock is free" "$rc" "0"
   && ok "12: no lock directory left behind after a normal init" \
   || bad "12: no lock directory left behind after a normal init" "lock directory still present"
 
+echo "== 13. steward -h names doctor and config init/set (Task 7) =="
+h_out="$(env -i PATH="$PATH" HOME="$FX/home13" bash "$STEWARD" -h 2>&1)"
+has "13: -h mentions 'steward doctor'" "$h_out" "steward doctor"
+has "13: -h mentions 'steward config init'" "$h_out" "steward config init"
+has "13: -h mentions 'steward config set'" "$h_out" "steward config set"
+
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -1204,10 +1204,13 @@ _resolve_socket() {
 
 # ---------------------------------------------------------------------------
 # `steward doctor` — the operator's first read on a fresh checkout, before
-# anything is trusted. Probes 1-5 (the core): self-path, operator-config,
-# estate-root, registry, hub-local. `--json`/`--static` and probes 6-9
-# (liveness, socket, cockpit-binary, dependencies) are a later task — see
-# docs/superpowers/specs/2026-08-29-operatorens-vag-in-design.md section 5.
+# anything is trusted. Nine probes, in dependency order, each PASS/WARN/FAIL/
+# SKIP: self-path, operator-config, estate-root, registry, hub-local (the
+# core, 1-5), then liveness, socket, cockpit-binary, dependencies (6-9). Both
+# `--json` (every probe result plus each value's provenance) and `--static`
+# (no shim/socket calls — skips the liveness contract probe) are implemented
+# below — see docs/superpowers/specs/2026-08-29-operatorens-vag-in-design.md
+# section 5 for the full probe table and the rc contract.
 #
 # EVERY PROBE READS, NEVER WRITES. No file writes, no builds, no bus, git or
 # network calls happen anywhere below — the one verb that mutates is

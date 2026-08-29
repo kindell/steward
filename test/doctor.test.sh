@@ -444,6 +444,47 @@ has "dependencies FAIL names jq missing" "$line" "jq=MISSING"
 has "dependencies FAIL says jq is required" "$line" "jq is required"
 has "dependencies FAIL still resolved tmux/cargo (exact paths, no PATH-guessing)" "$line" "tmux=$FX/deps-missing-jq/stubbin/tmux"
 
+echo "== 15b. dependencies: jq present, tmux AND cargo both missing -- WARN joins both clauses with '; ' (Task 7 pin) =="
+# PINS THE TWO-CLAUSE CONCATENATION SHAPE in _doctor_probe_dependencies
+# (bin/steward): with jq present the probe cannot FAIL, so it falls into the
+# WARN branch; with BOTH tmux and cargo missing, the second clause is
+# appended to the first with a literal '; ' separator rather than replacing
+# it or starting its own line. A test that only ever removed ONE of the two
+# tools (as test 15 above does, and as every other doctor fixture does)
+# never exercises the append branch at all -- it is fully untested until
+# both absences are staged in the same run. Parked as a Task 5 review
+# finding; the code was already correct (green on arrival), so this test's
+# only job is to pin the shape against a future regression.
+mkfx "$FX/deps-warn-both"
+mkdir -p "$FX/deps-warn-both/stubbin"
+for _tool in bash mktemp stat find sort awk sed grep basename dirname cat \
+             chmod mkdir rm tr cut wc hostname id kill sleep ls date readlink touch; do
+  _src="$(command -v "$_tool" 2>/dev/null)" || continue
+  ln -sf "$_src" "$FX/deps-warn-both/stubbin/$_tool"
+done
+_jq_src="$(command -v jq 2>/dev/null)"
+if [ -z "$_jq_src" ]; then
+  bad "15b: fixture needs a real jq on this machine's PATH to build the curated stub PATH" "none found"
+else
+  ln -sf "$_jq_src" "$FX/deps-warn-both/stubbin/jq"
+  # tmux and cargo are left OUT of stubbin entirely -- command -v must fail
+  # for both, not just resolve to a broken stub.
+  out="$(env -i PATH="$FX/deps-warn-both/stubbin" HOME="$FX/deps-warn-both/home" \
+    STEWARD_ESTATE_ROOT="$FX/deps-warn-both" STEWARD_HOSTNAME_CMD="$FX/deps-warn-both/hostcmd" \
+    STEWARD_COCKPIT_DIR="$FX/cockpit-ok" bash "$STEWARD" doctor 2>&1)"; rc=$?
+  line="$(line_for "$out" dependencies)"
+  is "15b: dependencies is WARN, not FAIL (jq present)" "$(field "$line" 2)" "WARN"
+  has "15b: names jq resolved" "$line" "jq=$FX/deps-warn-both/stubbin/jq"
+  has "15b: names tmux missing" "$line" "tmux=MISSING"
+  has "15b: names cargo missing" "$line" "cargo=MISSING"
+  has "15b: tmux clause present verbatim" "$line" \
+    "tmux missing: attach/peek and the tmux socket probe will not work"
+  has "15b: cargo clause present verbatim" "$line" \
+    "cargo missing: the cockpit cannot be built from source here (aim STEWARD_COCKPIT_BIN at a prebuilt binary instead)"
+  has "15b: the two clauses are joined with '; ', not a second line or a replacement" "$line" \
+    "tmux missing: attach/peek and the tmux socket probe will not work; cargo missing: the cockpit cannot be built from source here (aim STEWARD_COCKPIT_BIN at a prebuilt binary instead)"
+fi
+
 echo "== 16. --static skips the shim call (a marker file proves it never ran) and the socket filesystem probe -- both SKIP static =="
 mkfx "$FX/static"
 marker="$FX/static/marker"
@@ -503,6 +544,36 @@ echo "== 18. rc table: all required PASS -> 0; unsafe/missing config -> 78; miss
 is "78 is 'unsafe or missing config' (relative liveness cmd, section 8)" "78" "78"
 is "69 is 'missing facility' (missing jq, section 15)" "69" "69"
 is "75 is 'temporary measurement unknown' (timed-out shim, section 9)" "75" "75"
+
+echo "== 18b. rc CO-OCCURRENCE: a broken registry (78) and a hung liveness shim (75) in the SAME run -- worst=max wins, both surface (Task 7 pin) =="
+# Every rc-table proof above (section 18) exercises ONE failing probe per
+# run. That leaves the runner's own "worst=max wins" comparison in cmd_doctor
+# ($worst=0; ...; [ "$rc" -gt "$worst" ] && worst="$rc") completely
+# unexercised for the one case it actually exists to handle: two probes
+# failing in the SAME invocation with DIFFERENT rcs. Parked as a Task 5
+# review finding; the code was already correct (green on arrival) --
+# `[ -gt ]` already picks the larger number -- so this test's only job is to
+# pin that shape, and to prove neither failure hides the other in the
+# output.
+#
+# registry (78) is chosen over operator-config/estate-root deliberately:
+# those two are the ONLY ids that set $blocked_by and SKIP every probe after
+# them (see the runner's own comment above), which would suppress the
+# liveness line entirely and undermine what this test is meant to prove. registry sets
+# no $blocked_by, so hub-local and liveness still run for real underneath
+# it -- proven by liveness independently reaching its own 75.
+mkfx "$FX/co-occur"
+rm -rf "$FX/co-occur/sessions.d"  # registry_dir() missing -> registry probe FAILs rc 78
+hang_co="$(stub live-hang-co 'sleep 30')"
+out="$(run "$FX/co-occur" "$FX/co-occur/hostcmd" env STEWARD_LIVENESS_CMD="$hang_co" STEWARD_LIVENESS_TIMEOUT=1)"; rc=$?
+is "co-occurrence: overall rc is 78, the WORSE of {78,75} (max wins)" "$rc" "78"
+reg_line="$(line_for "$out" registry)"
+live_line="$(line_for "$out" liveness)"
+is "co-occurrence: registry probe itself is FAIL" "$(field "$reg_line" 2)" "FAIL"
+is "co-occurrence: liveness probe itself is FAIL" "$(field "$live_line" 2)" "FAIL"
+has "co-occurrence: liveness still names seam-timeout (not swallowed by registry's FAIL)" "$live_line" "seam-timeout"
+has "co-occurrence: registry still names its own refusal (not swallowed by liveness's FAIL)" "$reg_line" "REFUSING to list"
+hasnt "co-occurrence: liveness did NOT skip -- registry FAIL never sets \$blocked_by" "$live_line" "SKIP"
 
 echo "== unknown flags still refuse rc 64 =="
 mkfx "$FX/flags"
