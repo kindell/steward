@@ -212,6 +212,114 @@ is "doctor's exact prescribed command succeeds against a fresh fixture HOME" "$r
 has "the prescribed command wrote the estate root doctor named" \
   "$(cat "$FX/prescription/fresh-cfgdir/config" 2>/dev/null)" "STEWARD_ESTATE_ROOT=$FX/prescription"
 
+echo "== 11. set REPAIRS a parser-refused file for real, and drops loudly =="
+# THE THREE LIVE REPRODUCTIONS. Before the fix, `set` carried a foreign
+# unreadable line through unchanged: rc 0, "updated", and the very next
+# real parse of the file still refused. Each case below proves all four
+# parts of the contract: (1) set itself still returns rc 0, (2) stderr
+# names the exact dropped line, (3) the real dispatcher gate — the same
+# `_operator_config_load` call every subcommand goes through — accepts the
+# rewritten file (proved with a hermetic `steward -h`, which exercises that
+# gate without needing an estate list or a network reach), (4) comments,
+# blank lines and an untouched valid key all survive.
+
+echo "-- 11a. an unknown-key line --"
+mkdir -p "$FX/repairunknown/home" "$FX/repairunknown/cfgdir"
+cat > "$FX/repairunknown/cfgdir/config" <<EOF
+FORMAT=1
+# a hand-written comment that must survive
+STEWARD_TMUX_SOCKET=$FX/repairunknown/sock
+
+UNKNOWN_LEGACY_KEY=whatever
+EOF
+chmod 0600 "$FX/repairunknown/cfgdir/config"
+out="$(run "$FX/repairunknown/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/repairunknown/root")"; rc=$?
+is "11a: set rc 0" "$rc" "0"
+has "11a: stderr names the dropped line verbatim" "$out" "UNKNOWN_LEGACY_KEY=whatever"
+content="$(cat "$FX/repairunknown/cfgdir/config")"
+has "11a: new estate root written" "$content" "STEWARD_ESTATE_ROOT=$FX/repairunknown/root"
+has "11a: untouched valid key survives" "$content" "STEWARD_TMUX_SOCKET=$FX/repairunknown/sock"
+has "11a: comment survives" "$content" "a hand-written comment that must survive"
+hasnt "11a: the unreadable line is gone from the file" "$content" "UNKNOWN_LEGACY_KEY"
+env -i PATH="$PATH" HOME="$FX/repairunknown/home" STEWARD_CONFIG_FILE="$FX/repairunknown/cfgdir/config" \
+  bash "$STEWARD" -h >/dev/null 2>&1
+is "11a: the real dispatcher gate now accepts the file" "$?" "0"
+
+echo "-- 11b. a duplicate line of a DIFFERENT allowed key --"
+mkdir -p "$FX/repairdup/home" "$FX/repairdup/cfgdir"
+cat > "$FX/repairdup/cfgdir/config" <<EOF
+FORMAT=1
+# another comment that must survive
+STEWARD_TMUX_SOCKET=$FX/repairdup/first-sock
+STEWARD_TMUX_SOCKET=$FX/repairdup/second-sock
+EOF
+chmod 0600 "$FX/repairdup/cfgdir/config"
+out="$(run "$FX/repairdup/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/repairdup/root")"; rc=$?
+is "11b: set rc 0" "$rc" "0"
+has "11b: stderr names the dropped duplicate line verbatim" "$out" "STEWARD_TMUX_SOCKET=$FX/repairdup/second-sock"
+content="$(cat "$FX/repairdup/cfgdir/config")"
+has "11b: new estate root written" "$content" "STEWARD_ESTATE_ROOT=$FX/repairdup/root"
+has "11b: first occurrence of the duplicated key survives" "$content" "STEWARD_TMUX_SOCKET=$FX/repairdup/first-sock"
+has "11b: comment survives" "$content" "another comment that must survive"
+hasnt "11b: the second occurrence is gone from the file" "$content" "second-sock"
+env -i PATH="$PATH" HOME="$FX/repairdup/home" STEWARD_CONFIG_FILE="$FX/repairdup/cfgdir/config" \
+  bash "$STEWARD" -h >/dev/null 2>&1
+is "11b: the real dispatcher gate now accepts the file" "$?" "0"
+
+echo "-- 11c. a quoted value on a different key --"
+mkdir -p "$FX/repairquoted/home" "$FX/repairquoted/cfgdir"
+cat > "$FX/repairquoted/cfgdir/config" <<EOF
+FORMAT=1
+# a third comment that must survive
+STEWARD_LIVENESS_CMD="$FX/repairquoted/quoted-cmd"
+EOF
+chmod 0600 "$FX/repairquoted/cfgdir/config"
+out="$(run "$FX/repairquoted/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/repairquoted/root")"; rc=$?
+is "11c: set rc 0" "$rc" "0"
+has "11c: stderr names the dropped quoted line verbatim" "$out" "STEWARD_LIVENESS_CMD=\"$FX/repairquoted/quoted-cmd\""
+content="$(cat "$FX/repairquoted/cfgdir/config")"
+has "11c: new estate root written" "$content" "STEWARD_ESTATE_ROOT=$FX/repairquoted/root"
+has "11c: comment survives" "$content" "a third comment that must survive"
+hasnt "11c: the quoted line is gone from the file" "$content" "quoted-cmd"
+env -i PATH="$PATH" HOME="$FX/repairquoted/home" STEWARD_CONFIG_FILE="$FX/repairquoted/cfgdir/config" \
+  bash "$STEWARD" -h >/dev/null 2>&1
+is "11c: the real dispatcher gate now accepts the file" "$?" "0"
+
+echo "== 12. the lock: mkdir-based, bounded, never stolen, never left behind =="
+mkdir -p "$FX/lockset/home" "$FX/lockset/cfgdir"
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/lockset/old" > "$FX/lockset/cfgdir/config"
+chmod 0600 "$FX/lockset/cfgdir/config"
+mkdir "$FX/lockset/cfgdir/.steward-config.lock"
+out="$(run "$FX/lockset/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/lockset/new")"; rc=$?
+nonzero "12: set refuses while the lock directory is held" "$rc"
+has "12: the refusal names the lock path" "$out" ".steward-config.lock"
+is "12: the file is untouched while the lock is held" \
+  "$(cat "$FX/lockset/cfgdir/config")" "FORMAT=1
+STEWARD_ESTATE_ROOT=$FX/lockset/old"
+rmdir "$FX/lockset/cfgdir/.steward-config.lock"
+out="$(run "$FX/lockset/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/lockset/new")"; rc=$?
+is "12: set succeeds once the lock is free" "$rc" "0"
+has "12: the new value landed" "$(cat "$FX/lockset/cfgdir/config")" "STEWARD_ESTATE_ROOT=$FX/lockset/new"
+[ ! -e "$FX/lockset/cfgdir/.steward-config.lock" ] \
+  && ok "12: no lock directory left behind after a normal set" \
+  || bad "12: no lock directory left behind after a normal set" "lock directory still present"
+
+mkdir -p "$FX/lockinit/home"
+mkdir -p "$FX/lockinit/cfgdir"
+mkdir "$FX/lockinit/cfgdir/.steward-config.lock"
+out="$(run "$FX/lockinit/cfgdir/config" init --estate-root "$FX/lockinit/estate")"; rc=$?
+nonzero "12: init refuses while the lock directory is held" "$rc"
+has "12: init's refusal names the lock path" "$out" ".steward-config.lock"
+[ ! -e "$FX/lockinit/cfgdir/config" ] \
+  && ok "12: init wrote nothing while the lock is held" \
+  || bad "12: init wrote nothing while the lock is held" "file exists"
+rmdir "$FX/lockinit/cfgdir/.steward-config.lock"
+out="$(run "$FX/lockinit/cfgdir/config" init --estate-root "$FX/lockinit/estate")"; rc=$?
+is "12: init succeeds once the lock is free" "$rc" "0"
+[ ! -e "$FX/lockinit/cfgdir/.steward-config.lock" ] \
+  && ok "12: no lock directory left behind after a normal init" \
+  || bad "12: no lock directory left behind after a normal init" "lock directory still present"
+
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

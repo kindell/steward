@@ -361,6 +361,36 @@ _cfg_atomic_write() {
 # _operator_config_load reads, named once so init/set can never drift from it.
 _cfg_file() { printf '%s\n' "${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"; }
 
+# _cfg_lock_acquire <dir> — an mkdir-based lock around the operator config's
+# read-modify-write. mkdir is atomic on every filesystem this runs on and
+# needs no helper binary; flock is not portable to macOS. A held lock is
+# never stolen: a few short retries, then a refusal that names the lock
+# path so an operator can tell a genuinely stuck lock from a slow one. On
+# success sets $_CFG_LOCK_DIR (what the caller's trap releases); on failure
+# sets $_CFG_LOCK_ERROR.
+_cfg_lock_acquire() {
+  local dir="$1" lock="$dir/.steward-config.lock" tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    tries=$((tries+1))
+    if [ "$tries" -ge 10 ]; then
+      _CFG_LOCK_ERROR="another 'steward config' command holds the lock, refusing: $lock"
+      return 1
+    fi
+    sleep 0.1
+  done
+  _CFG_LOCK_DIR="$lock"
+  return 0
+}
+
+# _cfg_lock_release <lock-dir> — rmdir on a path that was never created (the
+# empty-string case, when acquire itself failed) is a silent no-op, so a
+# single `trap _cfg_lock_release ... EXIT` covers every return and every
+# `fel` exit in the caller without a matching if/else at each one.
+_cfg_lock_release() {
+  [ -n "${1:-}" ] && rmdir "$1" 2>/dev/null
+  return 0
+}
+
 cmd_config_init() {
   local estate_root="" tmux_socket="" liveness_cmd=""
   while [ $# -gt 0 ]; do
@@ -379,30 +409,43 @@ cmd_config_init() {
   done
   [ -n "$estate_root" ] || fel "config init: --estate-root is required" 64
 
-  local f; f="$(_cfg_file)"
-  local dir; dir="$(dirname "$f")"
-
-  # CREATE-ONLY. A symlink is refused before the plain -e check — the same
-  # ordering the reader uses, so a swapped-in symlink can never look like
-  # "no file yet" for a moment longer than it has to.
-  if [ -L "$f" ]; then
-    fel "operator config path is a symlink, refusing: $f" 78
-  fi
-  if [ -e "$f" ]; then
-    fel "operator config already exists: $f — use 'steward config set KEY VALUE' to change it (config init only ever creates a new file)" 65
-  fi
-
+  # VALUE SHAPE IS CHECKED BEFORE ANYTHING TOUCHES THE FILESYSTEM. The lock
+  # below needs the config directory to exist, so a bad --estate-root must
+  # be caught first — otherwise a doomed `init` would still create an empty
+  # directory on its way to refusing.
   _CFG_VALUE_OK STEWARD_ESTATE_ROOT "$estate_root" || fel "config init: $_CFG_VALUE_REASON" 64
   [ -z "$tmux_socket" ]  || { _CFG_VALUE_OK STEWARD_TMUX_SOCKET "$tmux_socket"   || fel "config init: $_CFG_VALUE_REASON" 64; }
   [ -z "$liveness_cmd" ] || { _CFG_VALUE_OK STEWARD_LIVENESS_CMD "$liveness_cmd" || fel "config init: $_CFG_VALUE_REASON" 64; }
 
+  local f; f="$(_cfg_file)"
+  local dir; dir="$(dirname "$f")"
+
+  # A SYMLINK IS REFUSED BEFORE THE PLAIN -e CHECK — the same ordering the
+  # reader uses, so a swapped-in symlink can never look like "no file yet"
+  # for a moment longer than it has to.
+  if [ -L "$f" ]; then
+    fel "operator config path is a symlink, refusing: $f" 78
+  fi
   if [ -L "$dir" ]; then
     fel "operator config directory is a symlink, refusing: $dir" 78
   fi
   # 0700, ONLY WHEN THIS CALL IS THE ONE CREATING IT. An already-present
   # directory (estates.d lives here too) is left exactly as it is —
-  # `mkdir -p` never touches a directory that already exists.
+  # `mkdir -p` never touches a directory that already exists. The
+  # directory must exist before the lock can live in it, so this runs
+  # ahead of the lock rather than inside it.
   ( umask 077; mkdir -p "$dir" ) || fel "could not create $dir" 70
+
+  # THE LOCK COVERS THE EXISTS-CHECK AND THE CREATE TOGETHER — a concurrent
+  # `init`/`set` racing on the same file is refused, never raced.
+  _cfg_lock_acquire "$dir" || fel "config init: $_CFG_LOCK_ERROR" 75
+  trap '_cfg_lock_release "$_CFG_LOCK_DIR"' EXIT
+
+  # CREATE-ONLY. Checked here, inside the lock, so a concurrent `init`
+  # cannot both see "no file yet" and both write.
+  if [ -e "$f" ]; then
+    fel "operator config already exists: $f — use 'steward config set KEY VALUE' to change it (config init only ever creates a new file)" 65
+  fi
 
   local content="FORMAT=1
 STEWARD_ESTATE_ROOT=$estate_root
@@ -435,34 +478,85 @@ cmd_config_set() {
     fel "operator config is not a regular file: $f" 78
   fi
 
-  # REWRITE, DON'T PATCH. The whole file is read and re-emitted: FORMAT=1 is
-  # always the canonical first line (even if the old file's own FORMAT line
-  # was corrupt — doctor's own remedy text promises `set` "rewrites the file
-  # cleanly"), every other line is carried through unchanged, and every line
-  # for the target key — including a duplicate the old file should never
-  # have had — collapses into the single new one.
-  local body="" line lkey inserted=""
+  local dir; dir="$(dirname "$f")"
+  _cfg_lock_acquire "$dir" || fel "config set: $_CFG_LOCK_ERROR" 75
+  trap '_cfg_lock_release "$_CFG_LOCK_DIR"' EXIT
+
+  # REPAIR FOR REAL, NOT JUST THE TOUCHED KEY. The old behavior only ever
+  # rewrote the target key's own line(s) and carried every other line
+  # through unchanged — including a line the parser would refuse, so a
+  # file broken by something `set` never touched stayed broken after `set`
+  # claimed success. The contract now: KEEP FORMAT=1 first (always
+  # synthesized fresh — a corrupt or missing first line is silently
+  # replaced, since it is not a value line and there is nothing meaningful
+  # to quote), every comment and blank line, and the first occurrence of
+  # every line that passes the SAME predicates the parser itself enforces
+  # (_CFG_ALLOWED_KEY + _CFG_VALUE_OK). DROP everything else — an unknown
+  # key, a bad value shape, or a later duplicate of an already-kept key —
+  # LOUDLY: each dropped line is echoed to stderr, quoted, with its line
+  # number, as it is dropped. Nothing is dropped silently. This is what
+  # makes doctor's own remedy text ("config set rewrites the file cleanly")
+  # true: the file _operator_config_load refused before this call is one
+  # this call's own output is guaranteed to pass.
+  local body="" line lineno=0 is_first=1 lkey lvalue
+  local saw_STEWARD_ESTATE_ROOT="" saw_STEWARD_TMUX_SOCKET="" saw_STEWARD_LIVENESS_CMD=""
   while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno+1))
+    if [ -n "$is_first" ]; then
+      is_first=""
+      # The old first line is never carried through as-is — FORMAT=1 is
+      # always synthesized below — but a first line that was NOT already
+      # exactly "FORMAT=1" is genuinely being dropped, so that gets the
+      # same loud treatment as any other refused line.
+      [ "$line" = "FORMAT=1" ] || echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+      continue
+    fi
     case "$line" in
       ''|'#'*) body="$body$line
 "; continue ;;
     esac
     lkey="${line%%=*}"
+    lvalue="${line#*=}"
+    if ! _CFG_ALLOWED_KEY "$lkey" || ! _CFG_VALUE_OK "$lkey" "$lvalue"; then
+      echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+      continue
+    fi
     case "$lkey" in
-      FORMAT) continue ;;
-      "$key")
-        if [ -z "$inserted" ]; then
-          body="$body$key=$value
-"
-          inserted=1
+      STEWARD_ESTATE_ROOT)
+        if [ -n "$saw_STEWARD_ESTATE_ROOT" ]; then
+          echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+          continue
         fi
-        continue ;;
+        saw_STEWARD_ESTATE_ROOT=1 ;;
+      STEWARD_TMUX_SOCKET)
+        if [ -n "$saw_STEWARD_TMUX_SOCKET" ]; then
+          echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+          continue
+        fi
+        saw_STEWARD_TMUX_SOCKET=1 ;;
+      STEWARD_LIVENESS_CMD)
+        if [ -n "$saw_STEWARD_LIVENESS_CMD" ]; then
+          echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+          continue
+        fi
+        saw_STEWARD_LIVENESS_CMD=1 ;;
     esac
-    body="$body$line
+    if [ "$lkey" = "$key" ]; then
+      body="$body$key=$value
 "
+    else
+      body="$body$line
+"
+    fi
   done < "$f"
-  [ -n "$inserted" ] || body="$body$key=$value
-"
+  case "$key" in
+    STEWARD_ESTATE_ROOT)  [ -n "$saw_STEWARD_ESTATE_ROOT" ]  || body="$body$key=$value
+" ;;
+    STEWARD_TMUX_SOCKET)  [ -n "$saw_STEWARD_TMUX_SOCKET" ]  || body="$body$key=$value
+" ;;
+    STEWARD_LIVENESS_CMD) [ -n "$saw_STEWARD_LIVENESS_CMD" ] || body="$body$key=$value
+" ;;
+  esac
 
   _cfg_atomic_write "$f" "FORMAT=1
 $body" || fel "$_CFG_WRITE_ERROR" 70
