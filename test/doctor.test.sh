@@ -177,7 +177,7 @@ echo h1
 EOF
 chmod +x "$FX/nosessions/hostcmd"
 out="$(run "$FX/nosessions" "$FX/nosessions/hostcmd")"; rc=$?
-is "missing sessions.d: rc 78" "$rc" "78"
+is "an absent registry dir refuses: rc 78" "$rc" "78"
 is "estate-root PASS (sessions.d is registry's own concern)" "$(field "$(line_for "$out" estate-root)" 2)" "PASS"
 is "registry itself is FAIL" "$(field "$(line_for "$out" registry)" 2)" "FAIL"
 assert_all_lines_shaped "missing-sessions.d: every output line matches the probe-line shape" "$out"
