@@ -135,6 +135,38 @@ NAV="$(registry_hub_session)" || exit 78
 # a guessed ping is a keystroke into a live pane.
 PING_MSG="$(registry_ping_msg)" || exit 78
 
+# ── THE SOCKET IS THE ESTATE'S, NEVER A BARE DEFAULT ───────────────────────
+# MEASURED ON wise-lynx 2026-08-30: this file's tmux calls carried no -S at
+# all, so every one of them talked to the bare default socket
+# (/tmp/tmux-1001/default) while the rest of the product — install's own
+# verification, doctor's derivation, the cockpit's attach — agrees the
+# estate's sessions live on ~/.tmux/<TMUX_SOCKET from estate/steward.conf>.
+# driftwood-hub started on the wrong socket while doctor and the cockpit both
+# aimed at ~/.tmux/driftwood.sock: the product's own layers disagreed about
+# where the session lives, and nothing here ever saw the pane it thought it
+# was supervising.
+#
+# STEWARD_TMUX_SOCKET — a full path, the same variable and precedence the
+# cockpit's _resolve_socket and the hub's bus_tmux_sock already use — wins
+# untouched when set. Otherwise the estate's own declared TMUX_SOCKET,
+# resolved under ~/.tmux/, and NEVER a guessed or bare default: a supervisor
+# that guesses a socket writes keystrokes toward the wrong universe, which is
+# the exact sin the cockpit refuses to commit.
+if [ -n "${STEWARD_TMUX_SOCKET:-}" ]; then
+  SOCK="$STEWARD_TMUX_SOCKET"
+else
+  _sock_name="$(registry_tmux_socket)" || {
+    echo "session-supervisor: $NAME — REFUSING: TMUX_SOCKET is missing or invalid in the estate ($(registry_estate_file 2>/dev/null))." >&2
+    exit 78
+  }
+  SOCK="$HOME/.tmux/$_sock_name"
+fi
+mkdir -p "$HOME/.tmux"
+# ONE WRAPPER, EVERY CALL THROUGH IT. No bare `tmux` may remain in this file
+# outside this function — everything below talks to the socket resolved
+# above, never to whatever server happens to be listening on the default path.
+tmuxc() { command tmux -S "$SOCK" "$@"; }
+
 # THE REPO IS READ FROM THE REGISTRY, not from an assumed path. The unit
 # hardcoded %h/Projects/%i, which held as long as every session had a repo named
 # after the session. One session broke it: its workspace is
@@ -494,7 +526,7 @@ fi
 # something ADJACENT (does a matching process exist?) instead of what it
 # wanted to know (is MY claude running, tied to MY tmux?).
 matching_claude_pids() { pgrep -u "$(id -u)" -f "$CLAUDE_PAT" 2>/dev/null; }
-session_pane_pid()     { tmux list-panes -t "=$NAME" -F '#{pane_pid}' 2>/dev/null | head -1; }
+session_pane_pid()     { tmuxc list-panes -t "=$NAME" -F '#{pane_pid}' 2>/dev/null | head -1; }
 # Is $1 equal to or a descendant of $2? Follow ppid upwards until target, init
 # (1) or a ceiling is reached — the ceiling protects against a broken ps that
 # cycles.
@@ -522,7 +554,7 @@ claude_alive_in_session() {
 # live session the process belongs to it and is left alone (that is the
 # suspect flow's responsibility).
 reap_orphan_claude() {
-  tmux has-session -t "=$NAME" 2>/dev/null && return 0
+  tmuxc has-session -t "=$NAME" 2>/dev/null && return 0
   local pid
   # STEWARD_KILL overrides only in the test — kill is a bash builtin and
   # cannot be stubbed via PATH, so the test aims it at a script of its own.
@@ -736,9 +768,9 @@ if claude_alive_in_session; then
       # established, and tmux resolves an existing exact name before any
       # prefix match (also measured, against the sibling pair that found the
       # original trap).
-      if ! tmux capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
-        tmux send-keys -t "$NAME" -l "$PING_MSG" 2>/dev/null
-        tmux send-keys -t "$NAME" Enter 2>/dev/null
+      if ! tmuxc capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
+        tmuxc send-keys -t "$NAME" -l "$PING_MSG" 2>/dev/null
+        tmuxc send-keys -t "$NAME" Enter 2>/dev/null
         printf '%s %s' "$OLDEST_FILE" "$(date +%s)" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
@@ -846,11 +878,11 @@ fi
 
 # No tmux at all (e.g. after boot): creating anew is risk-free — there is no
 # live session to write into. No two-round rule here.
-if ! tmux has-session -t "=$NAME" 2>/dev/null; then
+if ! tmuxc has-session -t "=$NAME" 2>/dev/null; then
   ensure_workspace_trusted
   reap_orphan_claude   # a killed tmux session may have left an orphaned claude
   rm -f "$SUSPECT"
-  tmux new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
+  tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
     "$HOME/.local/bin/$CLAUDE_CMD; exec bash"
   exit 0
 fi
@@ -865,6 +897,6 @@ fi
 rm -f "$SUSPECT"
 # Plain name, exact-guarded: this line is only reached when has-session -t
 # "=$NAME" answered yes above — see the pane-vs-session note at the re-ping.
-tmux send-keys -t "$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
-tmux send-keys -t "$NAME" Enter 2>/dev/null
+tmuxc send-keys -t "$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
+tmuxc send-keys -t "$NAME" Enter 2>/dev/null
 exit 0
