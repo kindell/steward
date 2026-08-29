@@ -3,7 +3,8 @@
 #
 # THE FILE IS NEVER SOURCED. This is the whole reason the parser exists: a
 # strict key=value reader that refuses anything shaped like shell (quotes,
-# `$(`, escapes, `~`) rather than one that would silently execute it. Every
+# `$(`, backticks, `${`, CR bytes; `~` falls to the absolute-path rule)
+# rather than one that would silently execute it. Every
 # refusal branch below exists because a plain `source` would have accepted
 # that same line and run it.
 #
@@ -119,6 +120,27 @@ STEWARD_ESTATE_ROOT=/abs/$(whoami)
 check_refuse "value with leading whitespace" \
   "FORMAT=1
 STEWARD_ESTATE_ROOT= /abs/path
+"
+
+# The same injection shape class as \$( — a reader that refuses one and lets
+# the other in leaves the invariant depending on every future consumer of the
+# value staying argv-only. Traced data-only today; refused anyway.
+check_refuse "value with backticks" \
+  'FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/`whoami`
+'
+
+check_refuse "value with brace expansion" \
+  'FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/${HOME}
+'
+
+# A file saved with Windows line endings leaves a trailing carriage return
+# inside the value (read strips the newline, not the CR) — an invisible byte
+# that would fail far downstream in a confusing way. Refused at parse time.
+check_refuse "value with a trailing carriage return" \
+  "FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/path$(printf '\r')
 "
 
 # Line-number evidence, once, for the class of refusal the brief asks for by

@@ -183,9 +183,23 @@ EOF
         _CFG_ERROR="steward: $f:$lineno: $key: value must not be quoted"
         return 78 ;;
     esac
+    # BACKTICKS AND ${ ARE THE SAME SHAPE CLASS AS $(. The values are consumed
+    # as data everywhere today (argv exec, Rust env::var, quoted path
+    # expansions) — but refusing only one spelling of substitution leaves the
+    # invariant depending on every future consumer staying argv-only. All
+    # three spellings are refused at the door instead.
     case "$value" in
-      *'$('*)
-        _CFG_ERROR="steward: $f:$lineno: $key: value must not contain command substitution"
+      *'$('*|*\`*|*'${'*)
+        _CFG_ERROR="steward: $f:$lineno: $key: value must not contain command or variable substitution"
+        return 78 ;;
+    esac
+    # A CARRIAGE RETURN IS AN INVISIBLE VALUE BYTE. read strips the newline
+    # but not the CR a Windows-saved file leaves behind; a path ending in \r
+    # fails far downstream in a confusing way. Refused at parse time, where
+    # the line number can say exactly where.
+    case "$value" in
+      *"$(printf '\r')"*)
+        _CFG_ERROR="steward: $f:$lineno: $key: value carries a carriage return (was the file saved with Windows line endings?)"
         return 78 ;;
     esac
     case "$value" in
