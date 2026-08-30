@@ -1046,7 +1046,8 @@ cmd_registry() {
         add) shift; cmd_registry_session_add "$@" ;;
         *) fel "steward registry session: unknown verb '${1:-}' (allowed: add)" 64 ;;
       esac ;;
-    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, project, session)" 64 ;;
+    migrate-session) shift; cmd_registry_migrate_session "$@" ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, project, session, migrate-session)" 64 ;;
   esac
 }
 
@@ -1794,6 +1795,308 @@ cmd_registry_session_add() {
   else
     printf 'steward: wrote %s.conf into the session register (slug %s in account %s, on %s %s, host %s)\n' \
       "$id" "$slug" "$account" "$tkind" "$tslug" "$host"
+  fi
+  return 0
+}
+
+# _migrate_snap <conf> <FIELD> — prints the value FIELD holds after sourcing
+# <conf>, IN A SUBSHELL. The subshelled source is the whole safety story: a
+# hostile conf is sourced in a child process, so nothing it assigns reaches
+# this verb's own locals (bash's dynamic scoping cannot cross the fork), and
+# any command substitution it carries executes and dies there. Only the ONE
+# named field crosses back, through `${!name}` indirection. Reset to empty
+# before the source so a field the conf omits reads as empty, never as a
+# value the parent environment happened to hold.
+#
+# BASH 3.2: no arrays of the modern kind, no mapfile — so each field is
+# snapshotted with its own call rather than a NUL-delimited bulk read. A
+# session conf is a handful of fields and this is a rare admin operation;
+# the cost is a few extra subshelled sources, and the payoff is the exact
+# containment the account-slug scanner already relies on.
+_migrate_snap() {
+  local __conf="$1" __name="$2"
+  ( eval "$__name=''"; unset "$__name" 2>/dev/null; eval "$__name=''"
+    # shellcheck source=/dev/null
+    source "$__conf" 2>/dev/null; printf '%s' "${!__name}" )
+}
+
+# cmd_registry_migrate_session <old-slug> --account <slug> ( --project <slug>
+# | --entity <slug> ) --slug <per-account-slug> [--json]
+#
+# THE NAMING-MODEL CUTOVER'S ONE-WAY CONVERTER. An OLD-SHAPE session conf
+# (legacy DOMAIN/OWNER/RC_LABEL, no identity fields) becomes a NEW-SHAPE
+# identity row IN PLACE, then the old row is unlinked — but ONLY after the
+# new one reads back green through registry_load. Anything that fails before
+# that leaves the old conf exactly as it was: the migration is abortable
+# with no loss.
+#
+# WHAT IT CARRIES, AND WHAT IT CHANGES. Every OPERATIONAL field on the old
+# row is carried forward UNCHANGED — RUNTIME, MODEL, OPENCODE_*, AUTO_APPROVE,
+# CLAUDE_MEMORY_ROOT, ASSETS, REPO_PATH, HOST, the browser rig, the env and
+# permission fields, the lifecycle. Dropping any one of them would break a
+# working session, so the carry set is registry_load's OWN field-reset list,
+# minus the fields this verb replaces. It ADDS the identity fields (a minted
+# opaque ID, ACCOUNT, SLUG, exactly one TARGET_*) and rewrites OWNER to the
+# account's PRINCIPAL — the visibility/enter bridge, which keys on OWNER. It
+# REMOVES the legacy DOMAIN and RC_LABEL: the display now DERIVES from the
+# target, and a stale RC_LABEL would override that derivation.
+#
+# EVERY RESOLVING LOAD IS SUBSHELLED — the same lesson `session add` carries:
+# registry_account_load, registry_project_load, registry_entity_load and the
+# old-conf snapshot all SOURCE an untrusted conf, and a hostile row assigning
+# this function's own lowercase locals would clobber them the moment it
+# sourced. The writer transaction and the atomic (ACCOUNT, SLUG) gate are the
+# SAME registry_session_write / _registry_validate_session_stage that
+# `session add` publishes through — a row this verb writes is by construction
+# a row every reader loads.
+cmd_registry_migrate_session() {
+  local want_json="" old="" account="" project="" entity="" slug="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --account)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry migrate-session: --account needs a value" 64; return 64; }
+        account="$2"; shift 2 ;;
+      --project)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry migrate-session: --project needs a value" 64; return 64; }
+        project="$2"; shift 2 ;;
+      --entity)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry migrate-session: --entity needs a value" 64; return 64; }
+        entity="$2"; shift 2 ;;
+      --slug)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry migrate-session: --slug needs a value" 64; return 64; }
+        slug="$2"; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry migrate-session: unknown flag '$1'" 64; return 64 ;;
+      *)
+        # The one positional operand is the OLD slug — the row to convert.
+        if [ -n "$old" ]; then
+          _reg_fail "$want_json" "steward registry migrate-session: unexpected argument '$1' (the new id is minted, never given)" 64
+          return 64
+        fi
+        old="$1"; shift ;;
+    esac
+  done
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  # 0. THE OLD SLUG — required, form-checked before any path is built from it.
+  [ -n "$old" ] || { _reg_fail "$want_json" "steward registry migrate-session: an old session slug is required" 64; return 64; }
+  if ! [[ "$old" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: invalid old slug '$old' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  local dir; dir="$(registry_dir)"
+  local old_conf="$dir/$old.conf"
+  # 1. THE OLD ROW MUST EXIST. rc 78 — a missing subject is an environment
+  # fault (the wrong slug, the wrong estate), not a usage error.
+  if [ ! -f "$old_conf" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: no such session '$old' (no $old_conf)" 78
+    return 78
+  fi
+  # 1b. IT MUST BE OLD-SHAPE. A row that already carries ACCOUNT= or an opaque
+  # ID=s-… has been migrated; converting it again would mint a SECOND identity
+  # for one session. Refuse rc 65, and touch nothing. Detected by LINE
+  # presence, the same way registry_load detects a present-but-empty label.
+  if grep -qE '^ACCOUNT=' "$old_conf" || grep -qE '^ID="?s-[0-9a-f]' "$old_conf"; then
+    _reg_fail "$want_json" "steward registry migrate-session: '$old' is already new-shape (carries ACCOUNT/opaque ID) — refusing to double-migrate" 65
+    return 65
+  fi
+
+  # 1c. SNAPSHOT the old row's fields, each through a subshelled source. REPO
+  # is required (registry_load refuses a row without it); everything else is
+  # carried only when present.
+  local old_repo old_host
+  old_repo="$(_migrate_snap "$old_conf" REPO_PATH)"
+  old_host="$(_migrate_snap "$old_conf" HOST)"
+  if [ -z "$old_repo" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: '$old' carries no REPO_PATH — not a migratable session" 65
+    return 65
+  fi
+
+  # 2. THE ACCOUNT — required, must RESOLVE, and its PRINCIPAL becomes OWNER.
+  # SUBSHELLED, principal SNAPSHOTTED out through the substitution.
+  [ -n "$account" ] || { _reg_fail "$want_json" "steward registry migrate-session: --account is required" 64; return 64; }
+  if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: invalid --account '$account' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  local principal
+  principal="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+  if [ -z "$principal" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: --account '$account' does not resolve to a known account" 78
+    return 78
+  fi
+  if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: account '$account' carries an invalid principal" 70
+    return 70
+  fi
+
+  # 3. THE TARGET — a TYPED UNION: exactly one of --project/--entity, and it
+  # must resolve (the display is DERIVED from it on every read).
+  if [ -n "$project" ] && [ -n "$entity" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: --project and --entity are a typed union — give exactly one" 64
+    return 64
+  fi
+  if [ -z "$project" ] && [ -z "$entity" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: a target is required — --project <slug> or --entity <slug>" 64
+    return 64
+  fi
+  local tkind tslug
+  if [ -n "$project" ]; then tkind="project"; tslug="$project"; else tkind="entity"; tslug="$entity"; fi
+  if ! [[ "$tslug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: invalid --$tkind '$tslug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  local load_rc
+  if [ "$tkind" = "project" ]; then
+    ( registry_project_load "$tslug" >/dev/null 2>&1 ); load_rc=$?
+  else
+    ( registry_entity_load "$tslug" >/dev/null 2>&1 ); load_rc=$?
+  fi
+  if [ "$load_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: --$tkind '$tslug' does not resolve to a valid $tkind" 78
+    return 78
+  fi
+
+  # 4. THE SLUG, and THE COMPOSITE GATE — (ACCOUNT, SLUG) is unique. The old
+  # row carries no ACCOUNT/SLUG, so it never collides with itself here.
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry migrate-session: --slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: invalid --slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  if ! registry_account_slug_available "$account" "$slug"; then
+    _reg_fail "$want_json" "steward registry migrate-session: slug '$slug' is already taken in account '$account'" 65
+    return 65
+  fi
+
+  # 5. THE HOST — carried from the old row when present, else the estate hub
+  # (registry_load's own default), and form-checked either way.
+  local host="$old_host"
+  if [ -z "$host" ]; then
+    host="$(registry_hub_host)" || {
+      _reg_fail "$want_json" "steward registry migrate-session: the estate declares no usable HUB_HOST to default HOST from" 78
+      return 78
+    }
+  fi
+  if ! [[ "$host" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: '$old' carries an invalid HOST '$host'" 65
+    return 65
+  fi
+
+  # 6. MINT THE ID — opaque, immutable, NEVER derived from account or slug.
+  # Sixteen hex digits from urandom behind the fixed "s-" mark; the shared
+  # writer is create-only, and this remint loop is the belt on top.
+  local id="" candidate tries=0
+  while [ "$tries" -lt 5 ]; do
+    candidate="s-$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    if [[ "$candidate" =~ ^s-[0-9a-f]{16}$ ]] && [ ! -e "$dir/$candidate.conf" ]; then
+      id="$candidate"; break
+    fi
+    tries=$((tries+1))
+  done
+  if [ -z "$id" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: could not mint a unique id" 70
+    return 70
+  fi
+
+  # 7. SERIALIZE — every value through _registry_emit_kv (escaping); its
+  # refusal is captured to a temp file, never leaked to real stderr. The
+  # carry set is registry_load's field-reset list MINUS what this verb
+  # replaces: OWNER (rewritten to the principal), DOMAIN and RC_LABEL
+  # (removed), and the identity fields (added below). REPO_PATH and HOST are
+  # always emitted; the rest only when the old row carried them.
+  local kv_err; kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry migrate-session: cannot create a temporary file" 70; return 70; }
+  local body="" _mig_rc=0
+  # _mig_add KEY VALUE [required] — appends one escaped kv line to $body,
+  # skipping an empty optional value. On a serializer refusal it records the
+  # rc and every later call short-circuits.
+  _mig_add() {
+    local key="$1" val="$2" required="${3:-}" line
+    [ "$_mig_rc" -eq 0 ] || return
+    if [ -z "$val" ] && [ -z "$required" ]; then return; fi
+    line="$(_registry_emit_kv "$key" "$val" 2>>"$kv_err")" || { _mig_rc=$?; return; }
+    body="$body$line
+"
+  }
+  # Identity first, then the OWNER bridge, then every carried operational
+  # field. Order is immaterial to sourcing; this order reads top-down as
+  # "who it is, then what it runs".
+  _mig_add ID "$id" required
+  _mig_add ACCOUNT "$account" required
+  _mig_add SLUG "$slug" required
+  if [ "$tkind" = "project" ]; then _mig_add TARGET_PROJECT "$tslug" required
+  else _mig_add TARGET_ENTITY "$tslug" required; fi
+  _mig_add OWNER "$principal" required
+  _mig_add REPO_PATH "$old_repo" required
+  _mig_add HOST "$host" required
+  # THE CARRIED OPERATIONAL FIELDS — every one registry_load resets and reads,
+  # save those replaced above. Snapshotted from the old conf, emitted only
+  # when present.
+  local _cf
+  for _cf in PERMISSION_MODE ENV_REFRESH OP_RUN ENV_FILE ENV_SOURCE OP_TOKEN_FILE \
+             KIND LIFECYCLE ASSETS VISIBILITY VISIBLE_TO \
+             BROWSER_RIG BROWSER_DISPLAY BROWSER_CDP BROWSER_VNC BROWSER_PROFILE \
+             RUNTIME MODEL OPENCODE_VERSION OPENCODE_PORT AUTO_APPROVE CLAUDE_MEMORY_ROOT; do
+    _mig_add "$_cf" "$(_migrate_snap "$old_conf" "$_cf")"
+  done
+  local carried_pm; carried_pm="$(_migrate_snap "$old_conf" PERMISSION_MODE)"
+  rm -f "$kv_err"
+  if [ "$_mig_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: could not serialize the row (a field carries a control character or newline)" 70
+    return 70
+  fi
+
+  # 8. WRITE through the shared hardened writer; the validate_fn runs the
+  # atomic (ACCOUNT, SLUG) gate inside the sessions.d lock. Same expectations
+  # `session add` sets, so the SAME validator applies.
+  _REGW_EXPECT_ID="$id"
+  _REGW_EXPECT_ACCOUNT="$account"
+  _REGW_EXPECT_SLUG="$slug"
+  if [ "$tkind" = "project" ]; then
+    _REGW_EXPECT_TARGET_PROJECT="$tslug"; _REGW_EXPECT_TARGET_ENTITY=""
+  else
+    _REGW_EXPECT_TARGET_ENTITY="$tslug"; _REGW_EXPECT_TARGET_PROJECT=""
+  fi
+  _REGW_EXPECT_HOST="$host"
+  _REGW_EXPECT_REPO_PATH="$old_repo"
+  _REGW_EXPECT_OWNER="$principal"
+  _REGW_EXPECT_PERMISSION_MODE="$carried_pm"
+  # A LITERAL newline joins the header to the body — a command substitution
+  # would strip it and glue the first field onto the comment line, hiding it
+  # from every reader that sources the row.
+  local content
+  content="# $id — session, migrated from $old by steward registry migrate-session.
+$body"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry migrate-session: cannot create a temporary file" 70
+    return 70
+  }
+  registry_session_write "$id" "$content" _registry_validate_session_stage 2>"$rw_err"
+  local rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    # THE OLD ROW IS UNTOUCHED — nothing has removed it, so the migration is
+    # abortable with no loss. Report and stop.
+    _reg_fail "$want_json" "steward registry migrate-session: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  # 9. ONLY NOW, after the new row reads back green, remove the old one.
+  rm -f "$old_conf"
+
+  local file="$dir/$id.conf"
+  local display; display="$(registry_session_display "$id" 2>/dev/null)"
+  if [ -n "$want_json" ]; then
+    jq -cn --arg from "$old" --arg id "$id" --arg account "$account" --arg slug "$slug" \
+      --arg tkind "$tkind" --arg tslug "$tslug" --arg display "$display" --arg file "$file" \
+      '{ok:true,kind:"migrate-session",from:$from,id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},display:$display,file:$file}'
+  else
+    printf 'migrated %s -> %s (display: %s)\n' "$old" "$id" "$display"
   fi
   return 0
 }
