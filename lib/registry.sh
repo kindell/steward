@@ -757,12 +757,17 @@ registry_account_slug_available() {
   [ -d "$d" ] || return 0
   for f in "$d"/*.conf; do
     [ -e "$f" ] || continue
-    (
-      ACCOUNT=""; SLUG=""
-      # shellcheck source=/dev/null
-      source "$f" 2>/dev/null
-      [ "$ACCOUNT" = "$account" ] && [ "$SLUG" = "$slug" ]
-    ) && return 1
+    # SOURCE IN A COMMAND SUBSTITUTION, COMPARE IN THE PARENT. `source` can
+    # set ANY variable, so no operand name in the same scope is safe — a conf
+    # declaring the comparison's own `account`/`slug` would overwrite the
+    # query and make the scan report its own taken pair as available (a false
+    # negative on its one job). Extracting only ACCOUNT/SLUG through `$( )`
+    # (the visibility.sh pattern) keeps the sourced file from ever touching
+    # the operands `$account`/`$slug`, which live only in this parent shell.
+    local f_account f_slug
+    f_account="$( ACCOUNT=""; source "$f" 2>/dev/null; printf '%s' "$ACCOUNT" )"
+    f_slug="$( SLUG=""; source "$f" 2>/dev/null; printf '%s' "$SLUG" )"
+    [ "$f_account" = "$account" ] && [ "$f_slug" = "$slug" ] && return 1
   done
   return 0
 }

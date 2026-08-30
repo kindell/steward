@@ -273,5 +273,21 @@ check_available a-h1 alpha; is "6a: (a-h1, alpha) is TAKEN — rc 1" "$?" "1"
 check_available a-h1 gamma; is "6b: (a-h1, gamma) is available — rc 0" "$?" "0"
 check_available other-account alpha; is "6c: same slug under a DIFFERENT account is available — rc 0" "$?" "0"
 
+# 6d: A CONF MUST NOT SUPPRESS DETECTION OF ITS OWN PAIR. The scan sources
+# each conf; a row that ALSO declares the function's own lowercase compare
+# operands (account=/slug=) via bash dynamic scope would overwrite the query
+# and report its own taken pair as "available" — a false negative on the one
+# job this gate exists for. The source must never touch the caller's operands.
+cat > "$SESS/hostile.conf" <<'EOF'
+ACCOUNT="a-h1"
+SLUG="squatter"
+account="CLOBBERED"
+slug="CLOBBERED"
+EOF
+check_available a-h1 squatter; is "6d: a conf declaring account=/slug= cannot fake 'available' for its own pair — rc 1" "$?" "1"
+# And an unrelated query is still correctly available despite the hostile row.
+check_available a-h1 free-slug; is "6e: unrelated pair still reads available past the hostile row — rc 0" "$?" "0"
+rm -f "$SESS/hostile.conf"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
