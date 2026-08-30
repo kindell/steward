@@ -406,6 +406,19 @@ _registry_display_component() {
       echo "registry: registry_display_for: refusing — a NAME contains the display separator itself" >&2
       return 1 ;;
   esac
+  # UNICODE BIDIRECTIONAL CONTROLS ARE A VISUAL-REORDER SPOOF. RLO/LRO/RLE/LRE
+  # (U+202A-202E) and the isolates (U+2066-2069) are format characters
+  # (category Cf) — not [[:cntrl:]] and not the arrow, so the gates above miss
+  # them — that can visually reorder a rendered string in any terminal or UI
+  # honoring bidi. A NAME carrying one could make the derived display READ as a
+  # different ancestry than the tree is. Refused by their UTF-8 byte sequences
+  # (E2 80 AA-AE and E2 81 A6-A9), which match regardless of locale.
+  case "$v" in
+    *$'\xe2\x80\xaa'*|*$'\xe2\x80\xab'*|*$'\xe2\x80\xac'*|*$'\xe2\x80\xad'*|*$'\xe2\x80\xae'*|\
+    *$'\xe2\x81\xa6'*|*$'\xe2\x81\xa7'*|*$'\xe2\x81\xa8'*|*$'\xe2\x81\xa9'*)
+      echo "registry: registry_display_for: refusing — a NAME contains a Unicode bidirectional control character" >&2
+      return 1 ;;
+  esac
   return 0
 }
 

@@ -117,6 +117,22 @@ disp entity tab-entity
 is "5e: rc 1"       "$RC"  "1"
 is "5e: no output"  "$OUT" ""
 
+echo "-- 5f: a NAME with a Unicode bidi override (U+202E RLO) refuses rc 1 — visual-reorder spoofing --"
+# RLO/LRO/isolates are Unicode format chars (category Cf), NOT [:cntrl:] and
+# not the arrow, so the earlier gates miss them; unchecked, a NAME could
+# visually reorder the rendered display in a bidi-honoring terminal/UI and
+# read as a different ancestry than the tree actually is.
+printf 'NAME="a\xe2\x80\xaeb"\n' > "$ENT/rlo-entity.conf"
+disp entity rlo-entity
+is "5f: rc 1"       "$RC"  "1"
+is "5f: no output"  "$OUT" ""
+
+echo "-- 5g: a NAME with a bidi isolate (U+2066 LRI) also refuses rc 1 --"
+printf 'NAME="a\xe2\x81\xa6b"\n' > "$ENT/lri-entity.conf"
+disp entity lri-entity
+is "5g: rc 1"       "$RC"  "1"
+is "5g: no output"  "$OUT" ""
+
 echo "== 6. SUBSHELLED-LOAD PROOF — a row's own lowercase name/parent/slug cannot clobber the walk =="
 cat > "$ENT/clobber.conf" <<'EOF'
 NAME="Clobber"
