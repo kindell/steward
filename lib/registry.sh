@@ -906,13 +906,13 @@ registry_account_write() {
 # registry_account_slug_available <account-slug> <session-slug> — PURE: 0 if
 # no session declares that (ACCOUNT, SLUG) pair, 1 if one does.
 #
-# NOT WIRED INTO ANY WRITER YET. Sessions do not carry ACCOUNT/SLUG fields
-# today — a later step teaches `session add` to write them — so scanning
-# sessions.d finds none and this reports "available" for every pair,
-# always. That is not a placeholder return value; it is what scanning the
-# current register honestly finds. Building and testing it now, ahead of
-# the writer that will call it, is what lets that later step add ONE call
-# instead of also inventing this scan under time pressure.
+# WIRED INTO `steward registry session add` (bin/steward, 2026-08-30) —
+# the composite gate that verb refuses on (rc 65) before minting an id.
+# Built and tested AHEAD of that writer, which is exactly why wiring it in
+# was one call and not an invention under time pressure. On a register
+# whose rows predate the identity model the scan honestly finds no pair
+# and reports available — old-shape rows carry no ACCOUNT/SLUG, and the
+# gate begins to bite precisely as new-shape rows land.
 #
 # SUBSHELLED SOURCE, same reasoning as the host/managed-by loads elsewhere
 # in this file: a hostile sessions.d row is exactly as untrusted as a
@@ -939,6 +939,27 @@ registry_account_slug_available() {
     [ "$f_account" = "$account" ] && [ "$f_slug" = "$slug" ] && return 1
   done
   return 0
+}
+
+# registry_session_write <id> <content> <validate_fn> — THIN WRAPPER over
+# registry_row_write, the session-register sibling of the entity/project/
+# account wrappers above: resolves the session directory (registry_dir,
+# honoring STEWARD_REGISTRY_DIR), reads back through registry_load — the
+# SAME reader every consumer of this register uses, so "written ok" means
+# exactly what a reader will see — and labels refusals "session".
+#
+# FLAT STORAGE IS THE EXPLICIT CHOICE HERE, not an omission. The design
+# spec deliberately deferred the physical layout and named the safe
+# option: a flat sessions.d/<opaque-id>.conf where the FILENAME carries
+# only the minted, immutable id and the account-scoped slug lives as a
+# FIELD inside the row. An account move is then a field change, never a
+# rename, and everything that globs the register's *.conf survives. A
+# nested projection can be layered on later, on measured grounds, without
+# this writer changing.
+registry_session_write() {
+  local id="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_dir)" || return 78
+  registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_load "session"
 }
 
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
@@ -1423,6 +1444,18 @@ registry_load() {
   fi
   # DOMAIN: which business the session belongs to. The
   # machine layer only carries it; fleet and reporting group by it.
+  #
+  # LEGACY ON A NEW-SHAPE ROW (2026-08-30). A row that carries a target
+  # reference stores no DOMAIN line — the target IS the grouping — so the
+  # legacy value is DERIVED for old consumers: the target's own slug,
+  # already shape-validated above. A derivation, never a guess, and never a
+  # RESOLUTION — the reader does not walk the target's parent chain here
+  # (that belongs to the display derivation); a consumer that needs the
+  # owning ENTITY of a project-targeted row resolves the reference itself.
+  # An old-shape row without DOMAIN refuses exactly as before.
+  if [ -z "$DOMAIN" ] && [ -n "$TARGET_ENTITY$TARGET_PROJECT" ]; then
+    DOMAIN="${TARGET_PROJECT:-$TARGET_ENTITY}"
+  fi
   if ! [[ "$DOMAIN" =~ ^[a-z0-9-]+$ ]]; then
     echo "registry: $project.conf missing/invalid DOMAIN (a-z 0-9 -)" >&2
     return 1

@@ -28,6 +28,7 @@
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
 #   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
 #   steward registry project add <slug> --parent <entity-slug> --name "Display Name" [--json]
+#   steward registry session add --account <slug> ( --project <slug> | --entity <slug> ) --slug <slug> --repo /abs/path [--host <host>] [--json]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -955,6 +956,28 @@ _registry_validate_account_stage() {
   return 0
 }
 
+# _registry_validate_session_stage <staged-file> — same shape as the team,
+# client, account and project validators around it, for the session row's
+# full field set: the minted ID, the identity pair (ACCOUNT, SLUG), the
+# typed-union target, HOST, REPO_PATH, the OWNER bridge and the permission
+# mode. Every field is compared — a row where any of them drifted from what
+# the verb meant to write must never publish.
+_registry_validate_session_stage() {
+  local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
+        HOST="" REPO_PATH="" OWNER="" PERMISSION_MODE=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: staged session file did not source: $file" >&2; return 70; }
+  local k v
+  for k in ID ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT HOST REPO_PATH OWNER PERMISSION_MODE; do
+    eval "v=\"\$_REGW_EXPECT_$k\""
+    if [ "${!k}" != "$v" ]; then
+      echo "registry: staged session file's $k does not match what was written: $file" >&2
+      return 70
+    fi
+  done
+  return 0
+}
+
 # _registry_validate_project_stage <staged-file> — same shape as the team,
 # client and account validators above, for the project row's NAME and
 # PARENT.
@@ -974,8 +997,8 @@ _registry_validate_project_stage() {
 }
 
 # cmd_registry — the `registry` noun's own tiny dispatcher: team|client,
-# account, project — add. A later scope adds `session` and non-`add`
-# verbs; this refuses anything else by name rather than falling through to
+# account, project, session — add. A later scope adds non-`add` verbs;
+# this refuses anything else by name rather than falling through to
 # the estate-client fallback the top-level dispatcher owns.
 cmd_registry() {
   case "${1:-}" in
@@ -1003,7 +1026,13 @@ cmd_registry() {
         add) shift; cmd_registry_project_add "$@" ;;
         *) fel "steward registry project: unknown verb '${1:-}' (allowed: add)" 64 ;;
       esac ;;
-    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, project)" 64 ;;
+    session)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_session_add "$@" ;;
+        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add)" 64 ;;
+      esac ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, project, session)" 64 ;;
   esac
 }
 
@@ -1491,6 +1520,266 @@ cmd_registry_project_add() {
     _json ok true kind project slug "$slug" name "$name" parent "$parent" file "$file"
   else
     printf 'steward: wrote projects.d/%s.conf (project '\''%s'\'', parent %s)\n' "$slug" "$name" "$parent"
+  fi
+  return 0
+}
+
+# cmd_registry_session_add --account <slug> ( --project <slug> | --entity
+# <slug> ) --slug <per-account-slug> --repo /abs/path [--host <host>] [--json]
+#
+# THE CAPSTONE OF THE IDENTITY MODEL: the one verb where account, target,
+# derived display and the composite (ACCOUNT, SLUG) uniqueness all meet.
+# Writes sessions.d/<minted-id>.conf through the SAME serializer and writer
+# transaction as the four org verbs above — registry_session_write is a thin
+# wrapper over registry_row_write, and the readback is registry_load itself,
+# so a row this verb publishes is by construction a row every reader loads.
+#
+# WHAT THE ROW STORES, AND WHAT IT DOES NOT. It stores REFERENCES — the
+# account, the per-account slug, exactly one target — plus HOST, REPO_PATH,
+# OWNER and the permission mode. It stores NO RC_LABEL (the display DERIVES
+# from the target at read time; a stored label would be a second truth that
+# rots) and NO DOMAIN (legacy; the target replaces it, and registry_load
+# derives a legacy value for old consumers).
+#
+# THE OWNER BRIDGE. visibility.sh and the cockpit's enter gate key on OWNER,
+# so a new-shape row MUST carry OWNER = its account's PRINCIPAL to stay
+# visible and enterable exactly like an old-shape one. The principal is
+# snapshotted out of the subshelled account load — never trusted from a
+# flag, never re-read after other loads have run.
+#
+# EVERY RESOLVING LOAD IS SUBSHELLED — the same lesson every org verb above
+# carries: registry_account_load, registry_project_load and
+# registry_entity_load all SOURCE an untrusted conf, and a hostile row
+# assigning this function's own lowercase locals (slug, repo, account, id…)
+# would clobber them via bash's dynamic scoping the moment it sourced.
+cmd_registry_session_add() {
+  local want_json="" account="" project="" entity="" slug="" repo="" host="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --account)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --account needs a value" 64; return 64; }
+        account="$2"; shift 2 ;;
+      --project)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --project needs a value" 64; return 64; }
+        project="$2"; shift 2 ;;
+      --entity)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --entity needs a value" 64; return 64; }
+        entity="$2"; shift 2 ;;
+      --slug)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --slug needs a value" 64; return 64; }
+        slug="$2"; shift 2 ;;
+      --repo)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --repo needs a value" 64; return 64; }
+        repo="$2"; shift 2 ;;
+      --host)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --host needs a value" 64; return 64; }
+        host="$2"; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry session add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        # No positional operand exists on this verb: the row's name is the
+        # MINTED id, never something the operator hands in.
+        _reg_fail "$want_json" "steward registry session add: unexpected argument '$1' (the id is minted, never given)" 64
+        return 64 ;;
+    esac
+  done
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  # 1. THE ACCOUNT — required, must RESOLVE, and its PRINCIPAL is the OWNER.
+  [ -n "$account" ] || { _reg_fail "$want_json" "steward registry session add: --account is required" 64; return 64; }
+  if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session add: invalid --account '$account' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  # SUBSHELLED, and the principal SNAPSHOTTED out through the substitution —
+  # the load's own stdout (including anything a hostile conf prints) goes to
+  # /dev/null; only the loader's validated ACCOUNT_PRINCIPAL crosses back.
+  local principal
+  principal="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+  if [ -z "$principal" ]; then
+    _reg_fail "$want_json" "steward registry session add: --account '$account' does not resolve to a known account" 78
+    return 78
+  fi
+  # Belt on the snapshot: the loader validated this form already, but the
+  # value crossed a process boundary and becomes the row's OWNER — re-check.
+  if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session add: account '$account' carries an invalid principal" 70
+    return 70
+  fi
+
+  # 2. THE TARGET — a TYPED UNION: exactly one of --project/--entity. Both is
+  # two contradictory claims about the same session; neither is no claim.
+  if [ -n "$project" ] && [ -n "$entity" ]; then
+    _reg_fail "$want_json" "steward registry session add: --project and --entity are a typed union — give exactly one" 64
+    return 64
+  fi
+  if [ -z "$project" ] && [ -z "$entity" ]; then
+    _reg_fail "$want_json" "steward registry session add: a target is required — --project <slug> or --entity <slug>" 64
+    return 64
+  fi
+  local tkind tslug
+  if [ -n "$project" ]; then tkind="project"; tslug="$project"; else tkind="entity"; tslug="$entity"; fi
+  if ! [[ "$tslug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session add: invalid --$tkind '$tslug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  # SUBSHELLED resolve — the display will be DERIVED from this reference on
+  # every read, so a target that does not resolve today would mint a row
+  # whose display refuses tomorrow.
+  local load_rc
+  if [ "$tkind" = "project" ]; then
+    ( registry_project_load "$tslug" >/dev/null 2>&1 ); load_rc=$?
+  else
+    ( registry_entity_load "$tslug" >/dev/null 2>&1 ); load_rc=$?
+  fi
+  if [ "$load_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry session add: --$tkind '$tslug' does not resolve to a valid $tkind" 78
+    return 78
+  fi
+
+  # 3. THE SLUG, and THE COMPOSITE GATE — (ACCOUNT, SLUG) is unique. The
+  # helper was built and tested ahead of this verb (lib/registry.sh); this
+  # is the step that finally wires it in.
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry session add: --slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session add: invalid --slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  if ! registry_account_slug_available "$account" "$slug"; then
+    _reg_fail "$want_json" "steward registry session add: slug '$slug' is already taken in account '$account'" 65
+    return 65
+  fi
+
+  # 4. THE REPO — an absolute path, no dot-dot, no control bytes. The value
+  # is stored verbatim (escaped by the serializer), never interpreted here.
+  [ -n "$repo" ] || { _reg_fail "$want_json" "steward registry session add: --repo is required" 64; return 64; }
+  case "$repo" in
+    *[[:cntrl:]]*)
+      _reg_fail "$want_json" "steward registry session add: --repo contains a control character or newline" 64
+      return 64 ;;
+    *..*)
+      _reg_fail "$want_json" "steward registry session add: --repo must not contain '..'" 64
+      return 64 ;;
+    /*) ;;
+    *)
+      _reg_fail "$want_json" "steward registry session add: --repo must be an absolute path" 64
+      return 64 ;;
+  esac
+
+  # 5. THE HOST — default is the estate's hub; an explicit one is checked
+  # for form (the same shape registry_load enforces on every read).
+  if [ -z "$host" ]; then
+    host="$(registry_hub_host)" || {
+      _reg_fail "$want_json" "steward registry session add: the estate declares no usable HUB_HOST to default --host from" 78
+      return 78
+    }
+  fi
+  if ! [[ "$host" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session add: invalid --host '$host' (allowed: a-z, then a-z0-9-)" 64
+    return 64
+  fi
+
+  # 6. MINT THE ID — opaque, immutable, and NEVER derived from account or
+  # slug (the design's one-way door: an id that encoded either would change
+  # identity on an account move). Sixteen hex digits from urandom behind the
+  # fixed "s-" mark. The shared writer below is create-only and refuses an
+  # existing file anyway; the remint loop here is the belt on top — a
+  # colliding mint retries instead of surfacing as a writer refusal, and a
+  # machine whose entropy source cannot produce a fresh id in a handful of
+  # tries refuses loudly rather than looping forever.
+  #
+  # FLAT STORAGE, CHOSEN EXPLICITLY: the minted id is the FILENAME, and the
+  # account-scoped slug lives as a FIELD — see registry_session_write
+  # (lib/registry.sh) for the full note.
+  local dir id="" candidate tries=0
+  dir="$(registry_dir)"
+  while [ "$tries" -lt 5 ]; do
+    candidate="s-$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    if [[ "$candidate" =~ ^s-[0-9a-f]{16}$ ]] && [ ! -e "$dir/$candidate.conf" ]; then
+      id="$candidate"; break
+    fi
+    tries=$((tries+1))
+  done
+  if [ -z "$id" ]; then
+    _reg_fail "$want_json" "steward registry session add: could not mint a unique id" 70
+    return 70
+  fi
+
+  # 7. SERIALIZE — every value through _registry_emit_kv, its refusal
+  # captured, never leaked to real stderr. Only --repo can still carry a
+  # byte the serializer refuses (everything else is shape-locked above);
+  # any other refusal here is a bug, reported as one (rc 70).
+  local kv_id kv_account kv_slug kv_target kv_host kv_repo kv_owner kv_pm rc kv_err
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry session add: cannot create a temporary file" 70; return 70; }
+  kv_repo="$(_registry_emit_kv REPO_PATH "$repo" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry session add: --repo contains a control character or newline" 64
+    return 64
+  fi
+  kv_id="$(_registry_emit_kv ID "$id" 2>"$kv_err")"; rc=$?
+  [ "$rc" -eq 0 ] && { kv_account="$(_registry_emit_kv ACCOUNT "$account" 2>"$kv_err")"; rc=$?; }
+  [ "$rc" -eq 0 ] && { kv_slug="$(_registry_emit_kv SLUG "$slug" 2>"$kv_err")"; rc=$?; }
+  if [ "$rc" -eq 0 ]; then
+    if [ "$tkind" = "project" ]; then
+      kv_target="$(_registry_emit_kv TARGET_PROJECT "$tslug" 2>"$kv_err")"; rc=$?
+    else
+      kv_target="$(_registry_emit_kv TARGET_ENTITY "$tslug" 2>"$kv_err")"; rc=$?
+    fi
+  fi
+  [ "$rc" -eq 0 ] && { kv_host="$(_registry_emit_kv HOST "$host" 2>"$kv_err")"; rc=$?; }
+  [ "$rc" -eq 0 ] && { kv_owner="$(_registry_emit_kv OWNER "$principal" 2>"$kv_err")"; rc=$?; }
+  [ "$rc" -eq 0 ] && { kv_pm="$(_registry_emit_kv PERMISSION_MODE "bypassPermissions" 2>"$kv_err")"; rc=$?; }
+  rm -f "$kv_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry session add: could not serialize the row" 70
+    return 70
+  fi
+
+  _REGW_EXPECT_ID="$id"
+  _REGW_EXPECT_ACCOUNT="$account"
+  _REGW_EXPECT_SLUG="$slug"
+  if [ "$tkind" = "project" ]; then
+    _REGW_EXPECT_TARGET_PROJECT="$tslug"; _REGW_EXPECT_TARGET_ENTITY=""
+  else
+    _REGW_EXPECT_TARGET_ENTITY="$tslug"; _REGW_EXPECT_TARGET_PROJECT=""
+  fi
+  _REGW_EXPECT_HOST="$host"
+  _REGW_EXPECT_REPO_PATH="$repo"
+  _REGW_EXPECT_OWNER="$principal"
+  _REGW_EXPECT_PERMISSION_MODE="bypassPermissions"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry session add: cannot create a temporary file" 70
+    return 70
+  }
+  # HEADER + TRAILING NEWLINE — see the matching comment in
+  # cmd_registry_team_add. No RC_LABEL line, no DOMAIN line — deliberate,
+  # see the function header.
+  local content
+  content="$(printf '# %s — session, written by steward registry session add.\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$id" "$kv_id" "$kv_account" "$kv_slug" "$kv_target" "$kv_host" "$kv_repo" "$kv_owner" "$kv_pm")"$'\n'
+  registry_session_write "$id" "$content" _registry_validate_session_stage 2>"$rw_err"
+  rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry session add: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  local file="$dir/$id.conf"
+  if [ -n "$want_json" ]; then
+    jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
+      --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
+      --arg owner "$principal" --arg repo "$repo" --arg file "$file" \
+      '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file}'
+  else
+    printf 'steward: wrote %s.conf into the session register (slug %s in account %s, on %s %s, host %s)\n' \
+      "$id" "$slug" "$account" "$tkind" "$tslug" "$host"
   fi
   return 0
 }
