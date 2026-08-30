@@ -26,6 +26,7 @@
 #   steward login [session]
 #   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
+#   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -931,6 +932,28 @@ _registry_validate_client_stage() {
   return 0
 }
 
+# _registry_validate_account_stage <staged-file> — same shape as the team
+# and client validators above, for the account row's PRINCIPAL, HOST and
+# USERNAME.
+_registry_validate_account_stage() {
+  local file="$1" PRINCIPAL="" HOST="" USERNAME=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: staged account file did not source: $file" >&2; return 70; }
+  if [ "$PRINCIPAL" != "$_REGW_EXPECT_PRINCIPAL" ]; then
+    echo "registry: staged account file's PRINCIPAL does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$HOST" != "$_REGW_EXPECT_HOST" ]; then
+    echo "registry: staged account file's HOST does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$USERNAME" != "$_REGW_EXPECT_USERNAME" ]; then
+    echo "registry: staged account file's USERNAME does not match what was written: $file" >&2
+    return 70
+  fi
+  return 0
+}
+
 # cmd_registry — the `registry` noun's own tiny dispatcher: team|client, add.
 # A later scope adds `session`/`project` and non-`add` verbs; this refuses
 # anything else by name rather than falling through to the estate-client
@@ -949,7 +972,13 @@ cmd_registry() {
         add) shift; cmd_registry_client_add "$@" ;;
         *) fel "steward registry client: unknown verb '${1:-}' (allowed: add)" 64 ;;
       esac ;;
-    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client)" 64 ;;
+    account)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_account_add "$@" ;;
+        *) fel "steward registry account: unknown verb '${1:-}' (allowed: add)" 64 ;;
+      esac ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account)" 64 ;;
   esac
 }
 
@@ -1178,6 +1207,139 @@ cmd_registry_client_add() {
     _json ok true kind client slug "$slug" name "$name" file "$file" managedBy "$managed_by"
   else
     printf 'steward: wrote entities.d/%s.conf (client '\''%s'\'', managed by %s)\n' "$slug" "$name" "$managed_by"
+  fi
+  return 0
+}
+
+# cmd_registry_account_add <slug> --principal <p> --host <h> [--username <u>] [--json]
+#
+# Writes accounts.d/<slug>.conf through the same shared serializer and
+# writer transaction as team/client add — registry_account_write is a thin
+# wrapper over the ONE writer core (registry_row_write, lib/registry.sh),
+# not a second implementation.
+#
+# THE HOST MUST ALREADY RESOLVE. Not "a file with that name exists" any
+# more than client add's --managed-by is — a relation aiming at a host that
+# does not resolve reads as structure while carrying none. registry_host_load
+# reports that by itself (it fails on a missing/unreadable conf).
+cmd_registry_account_add() {
+  local want_json="" slug="" principal="" host="" username="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --principal)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry account add: --principal needs a value" 64; return 64; }
+        principal="$2"; shift 2 ;;
+      --host)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry account add: --host needs a value" 64; return 64; }
+        host="$2"; shift 2 ;;
+      --username)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry account add: --username needs a value" 64; return 64; }
+        username="$2"; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry account add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        if [ -n "$slug" ]; then
+          _reg_fail "$want_json" "steward registry account add: one slug at a time" 64; return 64
+        fi
+        slug="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry account add: a slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry account add: invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  [ -n "$principal" ] || { _reg_fail "$want_json" "steward registry account add: --principal is required" 64; return 64; }
+  if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry account add: invalid --principal '$principal' (allowed: a-z, then a-z0-9-)" 64
+    return 64
+  fi
+  [ -n "$host" ] || { _reg_fail "$want_json" "steward registry account add: --host is required" 64; return 64; }
+  if ! [[ "$host" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry account add: invalid --host '$host' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  if [ -z "$username" ]; then
+    username="$principal"
+  elif ! [[ "$username" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry account add: invalid --username '$username' (allowed: a-z, then a-z0-9-)" 64
+    return 64
+  fi
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  # SUBSHELLED, NEVER DIRECT — same reasoning as client add's --managed-by
+  # lookup above. registry_host_load SOURCES the host's own conf and does
+  # NOT declare its own fields `local` (OWNER, LEGAL_OWNER, …); called
+  # un-subshelled, a hosts.d row carrying `slug=`/`principal=` (lowercase,
+  # matching this function's own locals) would clobber them via bash's
+  # dynamic scoping the moment this line ran — the exact class of bug the
+  # entity writer's C1 case closed on the write side, arriving here through
+  # the READ.
+  local hostdir hostconf load_rc
+  hostdir="$(registry_host_dir)"
+  hostconf="$hostdir/$host.conf"
+  ( registry_host_load "$hostconf" >/dev/null 2>&1 )
+  load_rc=$?
+  if [ "$load_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry account add: --host '$host' does not resolve to a known host" 78
+    return 78
+  fi
+
+  # See the matching comment in cmd_registry_team_add: _registry_emit_kv's
+  # own refusal is CAPTURED, never left to leak onto whatever real stderr
+  # this process has.
+  local kv_principal kv_host kv_username rc kv_err
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry account add: cannot create a temporary file" 70; return 70; }
+  kv_principal="$(_registry_emit_kv PRINCIPAL "$principal" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry account add: --principal contains a control character or newline" 64
+    return 64
+  fi
+  kv_host="$(_registry_emit_kv HOST "$host" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry account add: --host contains a control character or newline" 64
+    return 64
+  fi
+  kv_username="$(_registry_emit_kv USERNAME "$username" 2>"$kv_err")"; rc=$?
+  rm -f "$kv_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry account add: --username contains a control character or newline" 64
+    return 64
+  fi
+
+  _REGW_EXPECT_PRINCIPAL="$principal"
+  _REGW_EXPECT_HOST="$host"
+  _REGW_EXPECT_USERNAME="$username"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry account add: cannot create a temporary file" 70
+    return 70
+  }
+  # HEADER + TRAILING NEWLINE — see the matching comment in
+  # cmd_registry_team_add.
+  local content
+  content="$(printf '# %s — account, written by steward registry account add.\n%s\n%s\n%s' \
+    "$slug" "$kv_principal" "$kv_host" "$kv_username")"$'\n'
+  registry_account_write "$slug" "$content" _registry_validate_account_stage 2>"$rw_err"
+  rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry account add: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  local file; file="$(registry_account_dir)/$slug.conf"
+  if [ -n "$want_json" ]; then
+    _json ok true kind account slug "$slug" principal "$principal" host "$host" username "$username" file "$file"
+  else
+    printf 'steward: wrote accounts.d/%s.conf (account for %s@%s, username %s)\n' "$slug" "$principal" "$host" "$username"
   fi
   return 0
 }

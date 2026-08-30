@@ -408,10 +408,16 @@ _registry_stat_id() {
   return 1
 }
 
-# ── THE ENTITY WRITER TRANSACTION — ONE SHARED PRIMITIVE ───────────────────
+# ── THE ROW WRITER TRANSACTION — ONE SHARED PRIMITIVE ──────────────────────
 #
-# registry_entity_write <slug> <content> <validate_fn>
+# registry_row_write <dir> <slug> <content> <validate_fn> <readback_fn> <label>
 #
+#   dir         the register directory the CALLER already resolved (e.g.
+#               registry_entity_dir, registry_account_dir). This function
+#               never resolves a directory on its own — a caller that honors
+#               an override (STEWARD_ENTITY_DIR, STEWARD_ACCOUNT_DIR) keeps
+#               doing so, and the lock below is keyed on whatever dir it is
+#               handed, exactly as before the extraction.
 #   slug        SHOULD already be validated by the CALLER against the
 #               entity-id form (^[a-z0-9][a-z0-9-]*$) for a better error
 #               message earlier — but this function re-checks it too, and
@@ -424,17 +430,28 @@ _registry_stat_id() {
 #               `validate_fn <staged-file-path>`. It must re-read the staged
 #               file and confirm the row it is about to publish is the row
 #               that was meant — this function does not know the schema of
-#               what it is writing (team vs. client have different keys).
+#               what it is writing (team vs. client vs. account have
+#               different keys).
+#   readback_fn the name of the register's OWN loader (registry_entity_load,
+#               registry_account_load, …), called as `readback_fn <slug>`
+#               under the SAME lock right after publish — "written ok" means
+#               exactly what a reader will see, never a second definition of
+#               "valid" invented here.
+#   label       a short noun ("entity", "account", …) spliced into the
+#               refusal prose below ("the $label register is not readable",
+#               "the staged $label file") — the ONLY thing that varies
+#               between register types; every rc and every sequencing
+#               decision is shared.
 #
 # THE SEQUENCE, each step named for the failure it closes:
 #   0. SLUG      — validated against the entity-id form by THIS function,
 #                  not just the caller (see above). rc 64 on a bad slug,
 #                  before any path is built from it.
-#   1. LOCK      — keyed on the ENTITY DIRECTORY (registry_entity_dir), not
-#                  the estate root: registry_entity_dir honors
-#                  STEWARD_ENTITY_DIR independently of the estate root, so a
-#                  lock keyed on the estate root let two writers pointed at
-#                  the same entities.d (via different estate roots) take
+#   1. LOCK      — keyed on the DIRECTORY THE CALLER PASSED, not the estate
+#                  root: a caller's own dir-resolver honors its own
+#                  override independently of the estate root, so a lock
+#                  keyed on the estate root let two writers pointed at the
+#                  same register (via different estate roots) take
 #                  different locks and race. mkdir is atomic on every
 #                  filesystem this runs on; bounded retries, never stolen,
 #                  rc 75 names the lock when it is genuinely held (EEXIST),
@@ -464,14 +481,14 @@ _registry_stat_id() {
 #                  untouched. The lock plus the recheck in step 2 already
 #                  closed the ordinary race; this closes the case where
 #                  something appeared in the window anyway.
-#   7. READBACK  — under the SAME lock, through the registry's OWN loader
-#                  (registry_entity_load) — the same function every reader
-#                  uses, so "written ok" means exactly what a reader will
-#                  see. On failure the row is removed. The removal is
-#                  UNCONDITIONAL unless stat POSITIVELY proves the file on
-#                  disk is no longer the one just staged (inode+size differ,
-#                  both readable) — an empty/unavailable stat (no BSD or GNU
-#                  stat on PATH, a restricted PATH) must never be read as
+#   7. READBACK  — under the SAME lock, through the register's OWN loader
+#                  (readback_fn) — the same function every reader uses, so
+#                  "written ok" means exactly what a reader will see. On
+#                  failure the row is removed. The removal is UNCONDITIONAL
+#                  unless stat POSITIVELY proves the file on disk is no
+#                  longer the one just staged (inode+size differ, both
+#                  readable) — an empty/unavailable stat (no BSD or GNU stat
+#                  on PATH, a restricted PATH) must never be read as
 #                  permission to leave a bad row published while the
 #                  message claims "refusing". Refusing to publish is safe;
 #                  refusing to clean up is not.
@@ -480,36 +497,34 @@ _registry_stat_id() {
 #                  caller in the same shell can retry.
 #
 # rc 64 invalid slug · 65 destination exists (names the file) · 75 lock held
-# · 78 the entity register could not be resolved, or is unwritable · 70 any
-# other write/validate/chmod/publish/readback failure.
+# · 78 the register directory could not be resolved, or is unwritable · 70
+# any other write/validate/chmod/publish/readback failure.
 #
-# NOT THE ONLY ENTITY/SESSION WRITER IN THE PRODUCT. session-new.sh (on the
-# estate host) and hub/enroll each hold their own serializer for their own
-# conf shape, and unifying all three is a later scope — this function covers
-# only the two org verbs asking for it now.
-registry_entity_write() {
-  local slug="$1" content="$2" validate_fn="$3"
+# EXTRACTED 2026-08-30 out of what was registry_entity_write, the day the
+# account register needed the exact same transaction over a different
+# directory and a different loader. registry_entity_write below is now a
+# THIN WRAPPER over this function — same directory resolution
+# (registry_entity_dir), same loader (registry_entity_load), same label
+# ("entity") it always used, so its behavior is unchanged byte for byte;
+# test/registry-org-verbs.test.sh pins that unchanged.
+registry_row_write() {
+  local dir="$1" slug="$2" content="$3" validate_fn="$4" readback_fn="$5" label="$6"
   # THIS PRIMITIVE VALIDATES ITS OWN SLUG. Documented above as "already
   # validated by the CALLER" is not a boundary — a caller whose validation
-  # is bypassed, buggy, or simply doesn't exist yet (a future session/project
-  # writer built against this same function) would otherwise inherit an
-  # unchecked path straight into $dir/$slug.conf. Refuse before that path is
-  # ever built.
+  # is bypassed, buggy, or simply doesn't exist yet would otherwise inherit
+  # an unchecked path straight into $dir/$slug.conf. Refuse before that
+  # path is ever built.
   if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
     echo "registry: refusing — invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" >&2
     return 64
   fi
-  local dir; dir="$(registry_entity_dir)" || return 78
   if [ ! -d "$dir" ]; then
-    echo "registry: REFUSING — the entity register is not readable: $dir" >&2
+    echo "registry: REFUSING — the $label register is not readable: $dir" >&2
     return 78
   fi
   local final="$dir/$slug.conf"
-  # 1. LOCK. Derived from the ENTITY DIRECTORY itself (registry_entity_dir),
-  # not the estate root — registry_entity_dir independently honors
-  # STEWARD_ENTITY_DIR, so two writers pointed at the same entities.d via
-  # different estate roots must still contend for the SAME lock. A lock
-  # keyed on the estate root let them take different locks and race.
+  # 1. LOCK. Derived from the DIRECTORY THE CALLER PASSED, not the estate
+  # root — see the header above.
   local lock="$dir/.write.lock"
   local tries=0
   while ! mkdir "$lock" 2>/dev/null; do
@@ -520,7 +535,7 @@ registry_entity_write() {
     # and only distinguishing the two after the whole retry budget was spent
     # left the stall in place while merely correcting the message.
     if [ ! -d "$lock" ]; then
-      echo "registry: could not create the write lock — the entity register may be unwritable: $lock" >&2
+      echo "registry: could not create the write lock — the $label register may be unwritable: $lock" >&2
       return 78
     fi
     tries=$((tries+1))
@@ -559,7 +574,7 @@ registry_entity_write() {
     return 70
   fi
   if ! printf '%s' "$content" > "$stage"; then
-    echo "registry: could not write the staged entity file: $stage" >&2
+    echo "registry: could not write the staged $label file: $stage" >&2
     rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 70
   fi
@@ -573,7 +588,7 @@ registry_entity_write() {
 
   # 5. chmod, hard refuse on failure.
   if ! chmod 0600 "$stage"; then
-    echo "registry: could not set the mode of the staged entity file: $stage" >&2
+    echo "registry: could not set the mode of the staged $label file: $stage" >&2
     rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 70
   fi
@@ -611,9 +626,9 @@ registry_entity_write() {
   fi
   rm -f "$stage"
 
-  # 7. CANONICAL READBACK, same lock, registry's own loader.
+  # 7. CANONICAL READBACK, same lock, the register's own loader.
   local staged_id; staged_id="$(_registry_stat_id "$final")"
-  if ! ( registry_entity_load "$slug" >/dev/null 2>&1 ); then
+  if ! ( "$readback_fn" "$slug" >/dev/null 2>&1 ); then
     local now_id; now_id="$(_registry_stat_id "$final" 2>/dev/null)"
     # Remove UNCONDITIONALLY unless stat POSITIVELY proves $final is no
     # longer the file just staged (both ids present AND different). An
@@ -632,6 +647,123 @@ registry_entity_write() {
   # 8. RELEASE.
   rmdir "$lock" 2>/dev/null
   _registry_restore_exit_trap "$_prev_trap"
+  return 0
+}
+
+# registry_entity_write <slug> <content> <validate_fn> — THIN WRAPPER over
+# registry_row_write: resolves the entity directory (honoring
+# STEWARD_ENTITY_DIR), reads back through registry_entity_load, and labels
+# refusals "entity" — the exact directory, loader and wording this function
+# used before the 2026-08-30 extraction. NOT THE ONLY ENTITY/SESSION WRITER
+# IN THE PRODUCT. session-new.sh (on the estate host) and hub/enroll hold
+# their own serializer for their own conf shape, and unifying all three is a
+# later scope — this function covers the org verbs and the account verb
+# asking for it now.
+registry_entity_write() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_entity_dir)" || return 78
+  registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_entity_load "entity"
+}
+
+# ── ACCOUNTS: (PRINCIPAL, HOST, USERNAME) — THE THING SLUG AND DISPLAY
+# BOTH SIT UNDER ─────────────────────────────────────────────────────────
+#
+# WHY THIS REGISTER EXISTS AT ALL. A bare username is not an identity — the
+# same human already runs sessions under more than one host, and a username
+# is neither unique across hosts nor stable enough to carry a bus address,
+# history, or process ownership. An ACCOUNT names the (principal, host)
+# pair a session's SLUG is scoped inside — ID stays global and immutable,
+# ACCOUNT can change on a move, SLUG is unique only within its own account,
+# and DISPLAY is derived and never used for identity.
+#
+# ESTATE-GLOBAL, next to entities.d — the slug convention is
+# "<principal>-<host>" (readable, stable, never guessed from username
+# alone), but that composition is GUIDANCE, not something this layer
+# parses out of the slug: the slug is validated for SHAPE only
+# (^[a-z0-9][a-z0-9-]*$), the same entity-id form every other register
+# here uses.
+registry_account_dir() {
+  if [ -n "${STEWARD_ACCOUNT_DIR:-}" ]; then printf '%s\n' "$STEWARD_ACCOUNT_DIR"; return 0; fi
+  printf '%s\n' "$(_registry_estate_root)/accounts.d"
+}
+
+# registry_account_load <slug>: sets ACCOUNT_PRINCIPAL, ACCOUNT_HOST,
+# ACCOUNT_USERNAME. rc 1 on any missing/invalid field, matching
+# registry_entity_load's own contract.
+#
+# RESET BEFORE SOURCING — the same leak-guard pattern every loader in this
+# file follows: a caller that gets rc 1 for a missing or invalid account
+# must not still see the last account that loaded successfully. The
+# uppercase locals (PRINCIPAL, HOST, USERNAME) are read via `local` BEFORE
+# the source too, so nothing the conf assigns ever reaches this function's
+# caller except through the ACCOUNT_* globals set at the very end.
+registry_account_load() {
+  ACCOUNT_PRINCIPAL=""; ACCOUNT_HOST=""; ACCOUNT_USERNAME=""
+  local slug="${1:-}" d f
+  [ -n "$slug" ] || return 1
+  d="$(registry_account_dir)" || return 78
+  f="$d/$slug.conf"
+  [ -f "$f" ] || { echo "registry: no such account: $slug" >&2; return 1; }
+  local PRINCIPAL="" HOST="" USERNAME=""
+  # shellcheck source=/dev/null
+  source "$f" || return 1
+  # PRINCIPAL is the human this account belongs to — the OWNER/member form
+  # (^[a-z][a-z0-9-]*$), matching entities' own MEMBERS entries.
+  if ! [[ "$PRINCIPAL" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    echo "registry: $slug.conf missing/invalid PRINCIPAL" >&2
+    return 1
+  fi
+  if [ -z "$HOST" ]; then
+    echo "registry: $slug.conf missing HOST" >&2
+    return 1
+  fi
+  # USERNAME defaults to PRINCIPAL — most accounts run under a unix account
+  # that shares the human's own name, and forcing every row to repeat it
+  # would be a field that is nearly always a copy of another.
+  : "${USERNAME:=$PRINCIPAL}"
+  ACCOUNT_PRINCIPAL="$PRINCIPAL"; ACCOUNT_HOST="$HOST"; ACCOUNT_USERNAME="$USERNAME"
+}
+
+# registry_account_write <slug> <content> <validate_fn> — THIN WRAPPER over
+# registry_row_write, the account-register twin of registry_entity_write
+# above: resolves the account directory (honoring STEWARD_ACCOUNT_DIR),
+# reads back through registry_account_load, and labels refusals "account".
+registry_account_write() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_account_dir)" || return 78
+  registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_account_load "account"
+}
+
+# registry_account_slug_available <account-slug> <session-slug> — PURE: 0 if
+# no session declares that (ACCOUNT, SLUG) pair, 1 if one does.
+#
+# NOT WIRED INTO ANY WRITER YET. Sessions do not carry ACCOUNT/SLUG fields
+# today — a later step teaches `session add` to write them — so scanning
+# sessions.d finds none and this reports "available" for every pair,
+# always. That is not a placeholder return value; it is what scanning the
+# current register honestly finds. Building and testing it now, ahead of
+# the writer that will call it, is what lets that later step add ONE call
+# instead of also inventing this scan under time pressure.
+#
+# SUBSHELLED SOURCE, same reasoning as the host/managed-by loads elsewhere
+# in this file: a hostile sessions.d row is exactly as untrusted as a
+# hostile hosts.d or entities.d row, and this function's own ACCOUNT/SLUG
+# locals must never be overwritten by bash's dynamic scoping when a
+# candidate conf happens to assign the same names.
+registry_account_slug_available() {
+  local account="${1:-}" slug="${2:-}" d f
+  [ -n "$account" ] && [ -n "$slug" ] || return 1
+  d="$(registry_dir)"
+  [ -d "$d" ] || return 0
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    (
+      ACCOUNT=""; SLUG=""
+      # shellcheck source=/dev/null
+      source "$f" 2>/dev/null
+      [ "$ACCOUNT" = "$account" ] && [ "$SLUG" = "$slug" ]
+    ) && return 1
+  done
   return 0
 }
 
