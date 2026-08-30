@@ -348,6 +348,147 @@ registry_project_load() {
   PROJECT_ID="$id"; PROJECT_NAME="$NAME"; PROJECT_PARENT="$PARENT"
 }
 
+# ── DISPLAY DERIVATION — PRESENTATION, NEVER IDENTITY ───────────────────────
+#
+# registry_display_for <entity|project> <slug> — prints the root-to-leaf
+# ancestry NAMEs joined with the U+2192 arrow (→), the ONE separator this
+# function itself generates. An ENTITY's display walks its MANAGED_BY chain
+# to the root (a team with no MANAGED_BY is just its own NAME). A PROJECT's
+# display is its own NAME as the leaf, prepended by its PARENT entity's own
+# derived display — a project two hops under a team still reads
+# root→…→leaf.
+#
+# PURE. Reads through registry_entity_dir/registry_project_dir (honoring
+# STEWARD_ENTITY_DIR/STEWARD_PROJECT_DIR), writes nothing.
+#
+# COMPONENT VALIDATION BEFORE THE JOIN — THE HARD RULE. A NAME is never
+# pushed through the join until it is checked for the one byte sequence
+# this function itself generates (the arrow) and for control bytes/
+# newlines. A NAME allowed to carry the arrow could forge a fake ancestor
+# or split the string a caller might parse back apart; a control byte
+# could make one row's display bleed into the next line of output. THE
+# SEPARATOR IS NEVER MATCHED BACK OUT OF AN OLD ASCII REGEX — each
+# component is validated OUT of the arrow BEFORE this function ever joins
+# it in, not filtered afterward.
+#
+# SUBSHELLED LOADS, THE SAME LESSON registry_account_slug_available above
+# and cmd_registry_client_add's --managed-by lookup (bin/steward) both
+# already carry: registry_entity_load/registry_project_load SOURCE an
+# untrusted conf. Called directly in THIS function's own shell, a hostile
+# row assigning the walk's own lowercase locals (name, parent, managed_by,
+# slug) would clobber them via bash's dynamic scoping the moment the row
+# sourced — not a defence against the ENTITY_*/PROJECT_* globals the
+# loaders themselves already guard by declaring their own uppercase
+# locals, but against a second, independent path to the exact same class
+# of corruption, through THIS function's own local variable names. Every
+# extraction below therefore happens inside a command-substitution
+# subshell — a separate process, so anything a hostile conf assigns dies
+# with it and never reaches this function's own locals.
+#
+# CYCLE/DEPTH GUARD. registry_entity_load already refuses (rc 1) to load
+# ANY entity sitting in a MANAGED_BY cycle — its own chain-walk guard
+# (_REGISTRY_MANAGED_BY_CHAIN) fires before the loop below can iterate
+# more than once over a cycle. The chain-set and depth cap in the loop
+# below are defensive belt-and-braces on top of that, not the only thing
+# standing between a cycle and an infinite loop.
+
+# _registry_display_component <name> — 0 if the component is safe to join,
+# or prints a refusal and returns 1. Internal to registry_display_for.
+_registry_display_component() {
+  local v="$1"
+  case "$v" in
+    *[[:cntrl:]]*)
+      echo "registry: registry_display_for: refusing — a NAME contains a control character or newline" >&2
+      return 1 ;;
+  esac
+  case "$v" in
+    *"→"*)
+      echo "registry: registry_display_for: refusing — a NAME contains the display separator itself" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+
+# _registry_display_entity_chain <entity-id> -> the root-to-leaf display for
+# that entity, walking MANAGED_BY upward one subshelled load at a time.
+# Internal to registry_display_for; also the PARENT half of a project's
+# display below.
+_registry_display_entity_chain() {
+  local id="${1:-}" depth=0 chain=" " out load_rc name managed_by result=""
+  [ -n "$id" ] || return 1
+  while [ -n "$id" ]; do
+    case "$chain" in
+      *" $id "*)
+        echo "registry: registry_display_for: MANAGED_BY forms a cycle at: $id" >&2
+        return 1 ;;
+    esac
+    chain="$chain$id "
+    depth=$((depth + 1))
+    if [ "$depth" -gt 64 ]; then
+      echo "registry: registry_display_for: MANAGED_BY chain exceeds the depth cap at: $id" >&2
+      return 1
+    fi
+    # SUBSHELLED — see the header above. `out` carries MANAGED_BY on line
+    # one, NAME on line two — MANAGED_BY FIRST BECAUSE IT CAN BE EMPTY (the
+    # root of the chain) AND NAME NEVER IS (registry_entity_load already
+    # refuses a row with no NAME). Command substitution strips ALL
+    # trailing newlines from its output, not just one — printing the
+    # possibly-empty field last would collapse "Alpha\n\n" to a bare
+    # "Alpha" with the separating newline gone too, and the split below
+    # would then read the whole two-field payload back as a single NAME.
+    # Printing the guaranteed-non-empty NAME last means the captured
+    # string always ends in real content, so exactly one newline always
+    # survives to split on.
+    out="$( registry_entity_load "$id" >/dev/null 2>&1 && printf '%s\n%s\n' "$ENTITY_MANAGED_BY" "$ENTITY_NAME" )"
+    load_rc=$?
+    if [ "$load_rc" -ne 0 ]; then
+      echo "registry: registry_display_for: entity does not resolve: $id" >&2
+      return 1
+    fi
+    managed_by="${out%%$'\n'*}"
+    name="${out#*$'\n'}"; name="${name%$'\n'}"
+    _registry_display_component "$name" || return 1
+    if [ -z "$result" ]; then result="$name"; else result="$name→$result"; fi
+    id="$managed_by"
+  done
+  printf '%s' "$result"
+}
+
+# registry_display_for <entity|project> <slug> — see the header above.
+registry_display_for() {
+  local kind="${1:-}" slug="${2:-}"
+  case "$kind" in
+    entity)
+      [ -n "$slug" ] || return 1
+      _registry_display_entity_chain "$slug"
+      ;;
+    project)
+      [ -n "$slug" ] || return 1
+      local out load_rc name parent parent_display
+      # SUBSHELLED — see the header above. Same PARENT-then-NAME ordering
+      # as the entity chain walk above, for the same reason: NAME is the
+      # field registry_project_load guarantees non-empty, so it is safe to
+      # put last where command substitution's trailing-newline stripping
+      # cannot collapse it into the field ahead of it.
+      out="$( registry_project_load "$slug" >/dev/null 2>&1 && printf '%s\n%s\n' "$PROJECT_PARENT" "$PROJECT_NAME" )"
+      load_rc=$?
+      if [ "$load_rc" -ne 0 ]; then
+        echo "registry: registry_display_for: project does not resolve: $slug" >&2
+        return 1
+      fi
+      parent="${out%%$'\n'*}"
+      name="${out#*$'\n'}"; name="${name%$'\n'}"
+      _registry_display_component "$name" || return 1
+      parent_display="$(_registry_display_entity_chain "$parent")" || return 1
+      printf '%s→%s' "$parent_display" "$name"
+      ;;
+    *)
+      echo "registry: registry_display_for: unknown target-kind '$kind' (allowed: entity, project)" >&2
+      return 64
+      ;;
+  esac
+}
+
 # ── THE ENTITY SERIALIZER — ONE FUNCTION, BECAUSE THESE CONFS ARE SOURCED ──
 #
 # registry_entity_load ABOVE calls `source` on entities.d/<id>.conf. That is
@@ -663,6 +804,18 @@ registry_entity_write() {
   local slug="$1" content="$2" validate_fn="$3"
   local dir; dir="$(registry_entity_dir)" || return 78
   registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_entity_load "entity"
+}
+
+# registry_project_write <slug> <content> <validate_fn> — THIN WRAPPER over
+# registry_row_write, the project-register twin of registry_entity_write
+# above: resolves the project directory (honoring STEWARD_PROJECT_DIR),
+# reads back through registry_project_load, and labels refusals "project".
+# Same writer transaction, same lock discipline, same eight-step sequence —
+# `steward registry project add` (bin/steward) is the only caller.
+registry_project_write() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_project_dir)" || return 78
+  registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_project_load "project"
 }
 
 # ── ACCOUNTS: (PRINCIPAL, HOST, USERNAME) — THE THING SLUG AND DISPLAY

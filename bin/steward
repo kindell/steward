@@ -27,6 +27,7 @@
 #   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
 #   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
+#   steward registry project add <slug> --parent <entity-slug> --name "Display Name" [--json]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -954,10 +955,28 @@ _registry_validate_account_stage() {
   return 0
 }
 
-# cmd_registry — the `registry` noun's own tiny dispatcher: team|client, add.
-# A later scope adds `session`/`project` and non-`add` verbs; this refuses
-# anything else by name rather than falling through to the estate-client
-# fallback the top-level dispatcher owns.
+# _registry_validate_project_stage <staged-file> — same shape as the team,
+# client and account validators above, for the project row's NAME and
+# PARENT.
+_registry_validate_project_stage() {
+  local file="$1" NAME="" PARENT=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: staged project file did not source: $file" >&2; return 70; }
+  if [ "$NAME" != "$_REGW_EXPECT_NAME" ]; then
+    echo "registry: staged project file's NAME does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$PARENT" != "$_REGW_EXPECT_PARENT" ]; then
+    echo "registry: staged project file's PARENT does not match what was written: $file" >&2
+    return 70
+  fi
+  return 0
+}
+
+# cmd_registry — the `registry` noun's own tiny dispatcher: team|client,
+# account, project — add. A later scope adds `session` and non-`add`
+# verbs; this refuses anything else by name rather than falling through to
+# the estate-client fallback the top-level dispatcher owns.
 cmd_registry() {
   case "${1:-}" in
     team)
@@ -978,7 +997,13 @@ cmd_registry() {
         add) shift; cmd_registry_account_add "$@" ;;
         *) fel "steward registry account: unknown verb '${1:-}' (allowed: add)" 64 ;;
       esac ;;
-    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account)" 64 ;;
+    project)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_project_add "$@" ;;
+        *) fel "steward registry project: unknown verb '${1:-}' (allowed: add)" 64 ;;
+      esac ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, project)" 64 ;;
   esac
 }
 
@@ -1340,6 +1365,132 @@ cmd_registry_account_add() {
     _json ok true kind account slug "$slug" principal "$principal" host "$host" username "$username" file "$file"
   else
     printf 'steward: wrote accounts.d/%s.conf (account for %s@%s, username %s)\n' "$slug" "$principal" "$host" "$username"
+  fi
+  return 0
+}
+
+# cmd_registry_project_add <slug> --parent <entity-slug> --name "Display Name" [--json]
+#
+# Writes projects.d/<slug>.conf through the same shared serializer and
+# writer transaction as the other three registry verbs above —
+# registry_project_write is a thin wrapper over the ONE writer core
+# (registry_row_write, lib/registry.sh), not a second implementation.
+#
+# THE PARENT MUST ALREADY RESOLVE AS AN ENTITY. Not "a file with that name
+# exists" — registry_entity_load must succeed. UNLIKE client add's
+# --managed-by, a project's PARENT does NOT have to be a team with
+# members: a project can hang directly under a client just as well as
+# under a team (registry_project_load itself makes only that one check,
+# and this verb makes no stronger one than its own loader will enforce on
+# every future read).
+#
+# THE SLUG IS GLOBALLY UNIQUE IN projects.d TODAY, not parent-scoped. The
+# model this register is heading toward (2026-08-30 design spec, the
+# section on what it deliberately leaves open) is a slug unique only
+# WITHIN its parent — two clients may each want a project called
+# "website" — but projects.d today is a
+# flat directory keyed on slug alone, the same create-only writer every
+# other register here uses. That is a stricter constraint than the model
+# calls for, not a looser one, and it relaxes only once a storage layout
+# is chosen for the register as a whole (a later, separate step) — it is
+# forward-compatible, never a correctness gap in the meantime.
+cmd_registry_project_add() {
+  local want_json="" slug="" name="" parent="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --name)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry project add: --name needs a value" 64; return 64; }
+        name="$2"; shift 2 ;;
+      --parent)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry project add: --parent needs a value" 64; return 64; }
+        parent="$2"; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry project add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        if [ -n "$slug" ]; then
+          _reg_fail "$want_json" "steward registry project add: one slug at a time" 64; return 64
+        fi
+        slug="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry project add: a slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry project add: invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  [ -n "$name" ] || { _reg_fail "$want_json" "steward registry project add: --name is required" 64; return 64; }
+  [ -n "$parent" ] || { _reg_fail "$want_json" "steward registry project add: --parent is required" 64; return 64; }
+  if ! [[ "$parent" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry project add: invalid --parent slug '$parent'" 64
+    return 64
+  fi
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  # SUBSHELLED, NEVER DIRECT — same reasoning as client add's --managed-by
+  # lookup and account add's --host lookup above: registry_entity_load
+  # SOURCES the parent's conf, and a parent conf that happens to assign a
+  # variable sharing a name with one of THIS function's own locals (slug,
+  # name, parent — lowercase; not the uppercase ENTITY_* names
+  # registry_entity_load itself declares local) would overwrite that local
+  # via bash's dynamic scoping if the load ran un-subshelled. The
+  # command-substitution subshell confines any such clobbering to a
+  # process that exits before this function sees another line of its own.
+  local load_rc
+  ( registry_entity_load "$parent" >/dev/null 2>&1 )
+  load_rc=$?
+  if [ "$load_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry project add: --parent '$parent' does not resolve to a valid entity" 78
+    return 78
+  fi
+
+  # See the matching comment in cmd_registry_team_add: _registry_emit_kv's
+  # own refusal is CAPTURED, never left to leak onto whatever real stderr
+  # this process has.
+  local kv_name kv_parent rc kv_err
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry project add: cannot create a temporary file" 70; return 70; }
+  kv_name="$(_registry_emit_kv NAME "$name" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry project add: --name contains a control character or newline" 64
+    return 64
+  fi
+  kv_parent="$(_registry_emit_kv PARENT "$parent" 2>"$kv_err")"; rc=$?
+  rm -f "$kv_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry project add: --parent contains a control character or newline" 64
+    return 64
+  fi
+
+  _REGW_EXPECT_NAME="$name"
+  _REGW_EXPECT_PARENT="$parent"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry project add: cannot create a temporary file" 70
+    return 70
+  }
+  # HEADER + TRAILING NEWLINE — see the matching comment in
+  # cmd_registry_team_add.
+  local content
+  content="$(printf '# %s — project, written by steward registry project add.\n%s\n%s' \
+    "$slug" "$kv_name" "$kv_parent")"$'\n'
+  registry_project_write "$slug" "$content" _registry_validate_project_stage 2>"$rw_err"
+  rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry project add: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  local file; file="$(registry_project_dir)/$slug.conf"
+  if [ -n "$want_json" ]; then
+    _json ok true kind project slug "$slug" name "$name" parent "$parent" file "$file"
+  else
+    printf 'steward: wrote projects.d/%s.conf (project '\''%s'\'', parent %s)\n' "$slug" "$name" "$parent"
   fi
   return 0
 }
