@@ -152,6 +152,31 @@ no  "a session with no readable owner"           alice noowner
 echo "== an empty viewer is refused, not treated as everyone =="
 no  "empty viewer sees nothing"                  "" own
 
+# ── NEW-SHAPE PROJECT-TARGET SESSIONS (naming model step 7) ─────────────────
+# projects.d: a project owned by team-a, and one owned by client-x (the one-hop
+# case). A new-shape session aims at a project via TARGET_PROJECT and carries a
+# legacy-derived DOMAIN equal to the project slug — NOT an entity. The team that
+# owns the work must still see it.
+mkdir -p "$FX/projects.d"
+printf 'NAME="Site"\nPARENT="team-a"\n'   > "$FX/projects.d/site.conf"
+printf 'NAME="Shop"\nPARENT="client-x"\n' > "$FX/projects.d/shop.conf"
+# owner is carol (in no relevant team) so only the derived team view can grant.
+printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="site"\nTARGET_PROJECT="site"\nREPO_PATH="/tmp/x"\nID="s-proja"\n' > "$FX/sessions.d/s-proja.conf"
+printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="shop"\nTARGET_PROJECT="shop"\nREPO_PATH="/tmp/x"\nID="s-projb"\n' > "$FX/sessions.d/s-projb.conf"
+
+yes "a team member sees their team's PROJECT session (rule 4b)"        alice s-proja
+yes "another team member sees it too"                                  bob   s-proja
+yes "the owner sees their own project session"                         carol s-proja
+no  "a non-member does not see the team's project session"             dave  s-proja
+# one hop: team-a manages client-x; team-a members see client-x's project work.
+yes "the managing team sees a CLIENT project session (4b + rule 5 hop)" alice s-projb
+no  "a stranger does not see the client project session"               dave  s-projb
+# the deep hop the rule must NOT take still must not: a project under a client
+# under a client is two hops — team-a must not reach it.
+printf 'NAME="Far"\nPARENT="deep"\n' > "$FX/projects.d/far.conf"
+printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="far"\nTARGET_PROJECT="far"\nREPO_PATH="/tmp/x"\nID="s-far"\n' > "$FX/sessions.d/s-far.conf"
+no  "the two-hop project is NOT reachable (rule 5 is one hop only)"     alice s-far
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

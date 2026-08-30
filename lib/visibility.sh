@@ -60,6 +60,7 @@ session_visible_to() {
   registry_load "$session" >/dev/null 2>&1 || return 1
   local owner="${OWNER:-}" domain="${DOMAIN:-}"
   local vis="${VISIBILITY:-}" grants="${VISIBLE_TO:-}"
+  local target_project="${TARGET_PROJECT:-}"
   [ -n "$owner" ] || return 1
 
   # 1. The owner, always — a private session is private FROM others, never from
@@ -99,6 +100,22 @@ session_visible_to() {
   # 4. The derived team view: the entity that owns the work.
   [ -n "$domain" ] || return 1
   _visibility_member_of "$viewer" "$domain" && return 0
+
+  # 4b. A NEW-SHAPE SESSION AIMED AT A PROJECT. Its DOMAIN is a legacy-derived
+  #     value equal to the project slug — NOT an entity — so rule 4 missed it,
+  #     and a member of the team that owns the project's work could not see it.
+  #     The owning entity is the project's PARENT: resolve it, check membership,
+  #     and hand it to rule 5 below so the one MANAGED_BY hop (a client's work
+  #     seen by the managing team) still applies. Old-shape sessions carry no
+  #     TARGET_PROJECT and skip this block entirely — their reading is unchanged.
+  if [ -n "$target_project" ]; then
+    local proj_parent
+    proj_parent="$( registry_project_load "$target_project" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}" )"
+    if [ -n "$proj_parent" ]; then
+      _visibility_member_of "$viewer" "$proj_parent" && return 0
+      domain="$proj_parent"
+    fi
+  fi
 
   # 5. ONE hop up MANAGED_BY, and only one. registry_entity_load follows the
   #    chain further with cycle detection, but visibility deliberately does not:
