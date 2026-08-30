@@ -16,8 +16,13 @@
 #   - IT ADDS the identity fields (minted opaque ID, ACCOUNT, SLUG, the typed
 #     union TARGET_*) and rewrites OWNER to the account's PRINCIPAL — the
 #     visibility/enter bridge.
-#   - IT REMOVES the legacy DOMAIN and RC_LABEL — the display now DERIVES from
-#     the target, and a stale RC_LABEL would override that derivation.
+#   - IT REMOVES the legacy RC_LABEL — the display now DERIVES from the target,
+#     and a stale RC_LABEL would override that derivation.
+#   - IT DERIVES DOMAIN to the target slug and writes it as a LITERAL line. The
+#     Linux supervisor SOURCES the conf raw (not through registry_load) and
+#     REFUSES a session with no DOMAIN — it derives the per-domain credential
+#     directory from it. `session add` writes the same derived DOMAIN, so the
+#     two verbs agree and a migrated session can actually start.
 #   - IT IS ABORTABLE WITH NO LOSS: every gate (already-migrated, missing
 #     row, unresolvable account/target, taken slug) refuses BEFORE the old
 #     conf is touched. The old row is unlinked only after the new one is
@@ -144,9 +149,11 @@ is "1: OWNER rewritten to the account principal" "$(load_field "$ID1" OWNER)" "a
 is "1: ACCOUNT added"      "$(load_field "$ID1" ACCOUNT)" "a-h1"
 is "1: SLUG added"         "$(load_field "$ID1" SLUG)" "hub"
 is "1: TARGET_ENTITY added" "$(load_field "$ID1" TARGET_ENTITY)" "alpha"
-# THE LEGACY FIELDS, removed from the file.
+# RC_LABEL removed; DOMAIN DERIVED to the target slug and stored as a literal
+# line (the raw-sourcing supervisor reads it, and registry_load agrees).
 is "1: no RC_LABEL line stored" "$(grep -c '^RC_LABEL=' "$SESS/$ID1.conf")" "0"
-is "1: no DOMAIN line stored"   "$(grep -c '^DOMAIN='   "$SESS/$ID1.conf")" "0"
+is "1: DOMAIN derived to the target slug, stored literally" "$(grep -c '^DOMAIN="alpha"$' "$SESS/$ID1.conf")" "1"
+is "1: registry_load reads DOMAIN=<target slug>" "$(load_field "$ID1" DOMAIN)" "alpha"
 # THE DISPLAY now derives from the target.
 is "1: display derives from the entity" "$(display_of "$ID1")" "Alpha"
 
@@ -163,6 +170,8 @@ ID2="$(printf '%s' "$out" | jq -r '.id')"
 is "2: target kind project" "$(printf '%s' "$out" | jq -r '.target.kind')" "project"
 is "2: TARGET_PROJECT set" "$(load_field "$ID2" TARGET_PROJECT)" "site"
 is "2: no TARGET_ENTITY line stored" "$(grep -c '^TARGET_ENTITY=' "$SESS/$ID2.conf")" "0"
+is "2: DOMAIN derived to the PROJECT slug" "$(load_field "$ID2" DOMAIN)" "site"
+is "2: DOMAIN stored as a literal line" "$(grep -c '^DOMAIN="site"$' "$SESS/$ID2.conf")" "1"
 is "2: display walks Alpha->Site" "$(display_of "$ID2")" "Alpha→Site"
 is "2: display echoed in JSON" "$(printf '%s' "$out" | jq -r '.display')" "Alpha→Site"
 absent "2: old row removed" "$SESS/oldproj.conf"

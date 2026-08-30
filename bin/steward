@@ -1553,8 +1553,10 @@ cmd_registry_project_add() {
 # account, the per-account slug, exactly one target — plus HOST, REPO_PATH,
 # OWNER and the permission mode. It stores NO RC_LABEL (the display DERIVES
 # from the target at read time; a stored label would be a second truth that
-# rots) and NO DOMAIN (legacy; the target replaces it, and registry_load
-# derives a legacy value for old consumers).
+# rots). It DOES store DOMAIN, derived to the target slug: the Linux
+# supervisor sources the conf raw and refuses a session with no DOMAIN, so the
+# line must be on disk (registry_load would derive the same value, but the
+# supervisor never sees that). `migrate-session` writes the identical value.
 #
 # THE OWNER BRIDGE. visibility.sh and the cockpit's enter gate key on OWNER,
 # so a new-shape row MUST carry OWNER = its account's PRINCIPAL to stay
@@ -1729,7 +1731,7 @@ cmd_registry_session_add() {
   # captured, never leaked to real stderr. Only --repo can still carry a
   # byte the serializer refuses (everything else is shape-locked above);
   # any other refusal here is a bug, reported as one (rc 70).
-  local kv_id kv_account kv_slug kv_target kv_host kv_repo kv_owner kv_pm rc kv_err
+  local kv_id kv_account kv_slug kv_target kv_domain kv_host kv_repo kv_owner kv_pm rc kv_err
   kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry session add: cannot create a temporary file" 70; return 70; }
   kv_repo="$(_registry_emit_kv REPO_PATH "$repo" 2>"$kv_err")"; rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -1747,6 +1749,11 @@ cmd_registry_session_add() {
       kv_target="$(_registry_emit_kv TARGET_ENTITY "$tslug" 2>"$kv_err")"; rc=$?
     fi
   fi
+  # DOMAIN DERIVES TO THE TARGET SLUG. The display derives from the target, but
+  # DOMAIN is NOT dropped: the Linux supervisor sources the conf raw and refuses
+  # a session with no DOMAIN (it builds the per-domain credential directory from
+  # it). `migrate-session` writes the same derived value, so the two verbs agree.
+  [ "$rc" -eq 0 ] && { kv_domain="$(_registry_emit_kv DOMAIN "$tslug" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_host="$(_registry_emit_kv HOST "$host" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_owner="$(_registry_emit_kv OWNER "$principal" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_pm="$(_registry_emit_kv PERMISSION_MODE "bypassPermissions" 2>"$kv_err")"; rc=$?; }
@@ -1773,11 +1780,11 @@ cmd_registry_session_add() {
     return 70
   }
   # HEADER + TRAILING NEWLINE — see the matching comment in
-  # cmd_registry_team_add. No RC_LABEL line, no DOMAIN line — deliberate,
-  # see the function header.
+  # cmd_registry_team_add. No RC_LABEL line — deliberate (the display derives).
+  # DOMAIN IS written, derived to the target slug — see the emit above.
   local content
-  content="$(printf '# %s — session, written by steward registry session add.\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
-    "$id" "$kv_id" "$kv_account" "$kv_slug" "$kv_target" "$kv_host" "$kv_repo" "$kv_owner" "$kv_pm")"$'\n'
+  content="$(printf '# %s — session, written by steward registry session add.\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$id" "$kv_id" "$kv_account" "$kv_slug" "$kv_target" "$kv_domain" "$kv_host" "$kv_repo" "$kv_owner" "$kv_pm")"$'\n'
   registry_session_write "$id" "$content" _registry_validate_session_stage 2>"$rw_err"
   rc=$?
   local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
@@ -1838,8 +1845,11 @@ _migrate_snap() {
 # minus the fields this verb replaces. It ADDS the identity fields (a minted
 # opaque ID, ACCOUNT, SLUG, exactly one TARGET_*) and rewrites OWNER to the
 # account's PRINCIPAL — the visibility/enter bridge, which keys on OWNER. It
-# REMOVES the legacy DOMAIN and RC_LABEL: the display now DERIVES from the
-# target, and a stale RC_LABEL would override that derivation.
+# REMOVES the legacy RC_LABEL: the display now DERIVES from the target, and a
+# stale RC_LABEL would override that derivation. It DERIVES DOMAIN to the
+# target slug and writes it as a literal line — the Linux supervisor sources
+# the conf raw and refuses a session with no DOMAIN, so `session add`'s derived
+# DOMAIN and this verb's must agree.
 #
 # EVERY RESOLVING LOAD IS SUBSHELLED — the same lesson `session add` carries:
 # registry_account_load, registry_project_load, registry_entity_load and the
@@ -2007,9 +2017,10 @@ cmd_registry_migrate_session() {
   # 7. SERIALIZE — every value through _registry_emit_kv (escaping); its
   # refusal is captured to a temp file, never leaked to real stderr. The
   # carry set is registry_load's field-reset list MINUS what this verb
-  # replaces: OWNER (rewritten to the principal), DOMAIN and RC_LABEL
-  # (removed), and the identity fields (added below). REPO_PATH and HOST are
-  # always emitted; the rest only when the old row carried them.
+  # replaces: OWNER (rewritten to the principal), RC_LABEL (removed), DOMAIN
+  # (derived to the target slug), and the identity fields (added below).
+  # REPO_PATH and HOST are always emitted; the rest only when the old row
+  # carried them.
   local kv_err; kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry migrate-session: cannot create a temporary file" 70; return 70; }
   local body="" _mig_rc=0
   # _mig_add KEY VALUE [required] — appends one escaped kv line to $body,
@@ -2031,6 +2042,14 @@ cmd_registry_migrate_session() {
   _mig_add SLUG "$slug" required
   if [ "$tkind" = "project" ]; then _mig_add TARGET_PROJECT "$tslug" required
   else _mig_add TARGET_ENTITY "$tslug" required; fi
+  # DOMAIN DERIVES TO THE TARGET SLUG, and is written as a LITERAL line — NOT
+  # removed. The Linux supervisor SOURCES the conf raw (not through
+  # registry_load) and refuses a session with no DOMAIN: it builds the
+  # per-domain credential directory from it. registry_load derives the same
+  # value when the line is absent, but the supervisor never sees that
+  # derivation, so the line must be on disk. `session add` writes the same
+  # derived DOMAIN, so the two verbs agree and a migrated session can start.
+  _mig_add DOMAIN "$tslug" required
   _mig_add OWNER "$principal" required
   _mig_add REPO_PATH "$old_repo" required
   _mig_add HOST "$host" required

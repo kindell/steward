@@ -25,8 +25,11 @@
 #     derived from account or slug — a future account move is a field
 #     change, not a rename. Flat storage is the explicit choice: the
 #     account-scoped slug lives as a FIELD, the filename carries only the id.
-#   - NO LEGACY FIELDS: the row stores a target REFERENCE, never an RC_LABEL,
-#     and no DOMAIN — the display derives from the target at read time.
+#   - NO RC_LABEL: the row stores a target REFERENCE, never a label — the
+#     display derives from the target at read time. DOMAIN, however, IS stored
+#     as a literal line, DERIVED to the target slug: the Linux supervisor
+#     sources the conf raw and refuses a session without DOMAIN, and
+#     `migrate-session` writes the same derived value so the two verbs agree.
 #
 # HERMETIC: a fresh mktemp estate per run, STEWARD_CONFIG_FILE pinned to a
 # path that cannot exist. Owner names in fixtures are "a" and "b", the letter
@@ -141,7 +144,7 @@ is  "1: registry_load round trip (account, slug, target, owner, host, repo)" \
     "$(load_session "$ID1")" "a-h1|web|site||a|h1|/tmp/fixture-repo"
 is  "1: display derives from the target" "$(in_lib registry_session_display "$ID1" 2>/dev/null)" "Alpha→Site"
 is  "1: no RC_LABEL line stored"  "$(grep -c '^RC_LABEL='  "$SESS/$ID1.conf")" "0"
-is  "1: no DOMAIN line stored"    "$(grep -c '^DOMAIN='    "$SESS/$ID1.conf")" "0"
+is  "1: DOMAIN derived to the target slug, stored literally" "$(grep -c '^DOMAIN="site"$' "$SESS/$ID1.conf")" "1"
 is  "1: PERMISSION_MODE stored"   "$(grep -c '^PERMISSION_MODE="bypassPermissions"$' "$SESS/$ID1.conf")" "1"
 
 echo "== 2. the gates: account, typed union, slug, repo, host =="

@@ -395,12 +395,31 @@ export CLOUDSDK_CONFIG="$CRED_HOME/gcloud"
 #                            the pane-descendant check alone (the label was
 #                            only ever a FINDER of candidate pids — the pane
 #                            binding has carried identity since 2026-08-12)
-#   no RC_LABEL line      -> the old construction, prefix+name, so every
-#                            existing estate behaves exactly as before
+#   no RC_LABEL line      -> a NEW-SHAPE row: the display is DERIVED from the
+#                            target, so ask registry_session_display (the one
+#                            owner of that derivation) instead of building
+#                            prefix+name. A migrated session (no RC_LABEL,
+#                            ACCOUNT/SLUG/TARGET_*) would otherwise show the
+#                            ugly fallback "<prefix><opaque-id>" rather than
+#                            the target's derived display name. The projection
+#                            short-circuits to prefix+name for a truly
+#                            OLD-shape row (no target, no label), so those
+#                            estates are byte-identical.
+#
+# THE RC_LABEL-PRESENT PATH IS UNTOUCHED — a session whose conf carries a label
+# line reads it verbatim through the sed above, byte-for-byte as today. ONLY
+# the no-label branch derives.
+#
+# NEVER EMPTY: if the projection refuses or returns empty (a target that does
+# not resolve, a derivation refused), keep the old prefix+name construction.
+# The label doubles as the pid-finder's anchor and the session's display name;
+# an empty one widens the pattern to "any claude" and leaves the session
+# nameless — the supervisor's own doctrine forbids it.
 if grep -q '^RC_LABEL=' "$CONF" 2>/dev/null; then
   RC_LABEL="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$CONF" | head -1)"
 else
-  RC_LABEL="$RC_PREFIX$NAME"
+  RC_LABEL="$(registry_session_display "$NAME" 2>/dev/null)" || RC_LABEL=""
+  [ -n "$RC_LABEL" ] || RC_LABEL="$RC_PREFIX$NAME"
 fi
 # SESSION_NAME (optional) -> --name, the DISPLAY name in the app's session list.
 #
