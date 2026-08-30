@@ -256,5 +256,48 @@ fi
 # colliding mint that somehow survived the remint loop still cannot clobber.
 
 echo
+echo "== 6. ATOMIC gate: the composite (account,slug) check runs INSIDE the write lock =="
+# A parallel race is non-reproducible; the deterministic proof is that the
+# validate_fn (which registry_row_write calls UNDER its lock, before publish)
+# itself refuses a staged row whose (account,slug) is already published — with
+# cmd's advisory pre-check bypassed. Pre-fix, validate_fn only field-matched
+# and this write SUCCEEDED (a TOCTOU winner); now it refuses under the lock.
+cat > "$SESS/s-aaaaaaaaaaaaaaaa.conf" <<'EOF'
+ID="s-aaaaaaaaaaaaaaaa"
+ACCOUNT="a-h1"
+SLUG="locked"
+TARGET_PROJECT="tgt"
+HOST="h1"
+REPO_PATH="/tmp/fixture-repo"
+OWNER="a"
+PERMISSION_MODE="bypassPermissions"
+EOF
+_DUP='ID="s-bbbbbbbbbbbbbbbb"
+ACCOUNT="a-h1"
+SLUG="locked"
+TARGET_PROJECT="tgt"
+HOST="h1"
+REPO_PATH="/tmp/fixture-repo"
+OWNER="a"
+PERMISSION_MODE="bypassPermissions"'
+_rc=0
+( export STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config"
+  . "$here/lib/registry.sh"
+  eval "$(sed -n '/^_registry_validate_session_stage()/,/^}/p' "$STEWARD")"
+  export _REGW_EXPECT_ID="s-bbbbbbbbbbbbbbbb" _REGW_EXPECT_ACCOUNT="a-h1" _REGW_EXPECT_SLUG="locked"          _REGW_EXPECT_TARGET_ENTITY="" _REGW_EXPECT_TARGET_PROJECT="tgt" _REGW_EXPECT_HOST="h1"          _REGW_EXPECT_REPO_PATH="/tmp/fixture-repo" _REGW_EXPECT_OWNER="a" _REGW_EXPECT_PERMISSION_MODE="bypassPermissions"
+  registry_session_write "s-bbbbbbbbbbbbbbbb" "$_DUP" _registry_validate_session_stage ) >/dev/null 2>&1 || _rc=$?
+is "6: a duplicate (account,slug) is refused INSIDE the locked write path" "$( [ "$_rc" -ne 0 ] && echo refused || echo passed )" "refused"
+if [ -e "$SESS/s-bbbbbbbbbbbbbbbb.conf" ]; then bad "6: the duplicate row must NOT be published"; else ok "6: no duplicate row published"; fi
+rm -f "$SESS/s-aaaaaaaaaaaaaaaa.conf" "$SESS/s-bbbbbbbbbbbbbbbb.conf"
+
+echo "== 6b: PARALLEL sanity — a real race never yields more than one winner =="
+for i in $(seq 1 40); do
+  ( STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config"     bash "$STEWARD" registry session add --account a-h1 --project tgt --slug raced --repo /tmp/fixture-repo >/dev/null 2>&1 ) &
+done
+wait
+_won="$(grep -l 'SLUG="raced"' "$SESS"/*.conf 2>/dev/null | wc -l | tr -d ' ')"
+is "6b: at most one winner under a 40-way race (got $_won)" "$( [ "${_won:-0}" -le 1 ] && echo ok || echo TOOMANY )" "ok"
+grep -l 'SLUG="raced"' "$SESS"/*.conf 2>/dev/null | xargs rm -f 2>/dev/null || true
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

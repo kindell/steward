@@ -685,14 +685,16 @@ registry_row_write() {
   local lock="$dir/.write.lock"
   local tries=0
   while ! mkdir "$lock" 2>/dev/null; do
-    # A failed mkdir that left NO lock dir on disk is not a held lock
-    # (EEXIST) — it is ENOENT or EACCES on an unwritable register, and no
-    # amount of retrying resolves it. Diagnose that on the FIRST failure and
-    # fail fast: the original defect was blamed for a multi-second stall,
-    # and only distinguishing the two after the whole retry budget was spent
-    # left the stall in place while merely correcting the message.
-    if [ ! -d "$lock" ]; then
-      echo "registry: could not create the write lock — the $label register may be unwritable: $lock" >&2
+    # A failed mkdir that left NO lock dir on disk AND an unwritable register
+    # dir is a genuine ENOENT/EACCES that no retry resolves — fail fast (the
+    # original defect was blamed for a multi-second stall). But a WRITABLE dir
+    # with no lock present means a holder rmdir'd it in the window between our
+    # failed mkdir and this check: pure contention, not unwritability.
+    # Concluding 78 there (measured under a 60-way session-add race) reports a
+    # merely-busy register as broken; require BOTH conditions, then loop and
+    # let the next mkdir take the freed lock.
+    if [ ! -d "$lock" ] && [ ! -w "$dir" ]; then
+      echo "registry: could not create the write lock — the $label register is not writable: $lock" >&2
       return 78
     fi
     tries=$((tries+1))

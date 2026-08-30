@@ -975,6 +975,20 @@ _registry_validate_session_stage() {
       return 70
     fi
   done
+  # THE (ACCOUNT, SLUG) GATE MUST BE ATOMIC, AND THIS IS WHERE. cmd's pre-check
+  # is only advisory: it scans sessions.d BEFORE any lock, so two concurrent
+  # adds of the same pair both pass it and both write (each under a DIFFERENT
+  # opaque-id filename, so the writer's no-clobber never fires) — the
+  # uniqueness the model swears is broken. This validate_fn runs INSIDE
+  # registry_row_write's sessions.d lock, before publish, so re-checking here
+  # makes scan+write one critical section: a concurrent winner has already
+  # published its row by the time the loser reaches this line, and the scan
+  # sees it. Exactly one wins; the loser refuses. (The staged file is a
+  # .stage.* name, so the *.conf scan never matches the row being written.)
+  if ! registry_account_slug_available "$ACCOUNT" "$SLUG"; then
+    echo "registry: slug '$SLUG' was taken in account '$ACCOUNT' by a concurrent write — refusing" >&2
+    return 70
+  fi
   return 0
 }
 
