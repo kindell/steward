@@ -23,6 +23,17 @@ bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 is()    { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 has()   { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 absent(){ if [ ! -e "$2" ]; then ok "$1"; else bad "$1" "unexpectedly exists: $2"; fi; }
+neq()   { if [ "$2" != "$3" ]; then ok "$1"; else bad "$1" "wanted anything but '$3'"; fi; }
+# no_stage_leftover <label> <dir> — an UNQUOTED "$dir/.stage."* glob check
+# expands (or is silently left literal) at the CALL SITE before the function
+# ever runs; quoting it there would prove nothing. This walks the glob
+# itself, inside the function, so a real leftover stage file is actually
+# detected.
+no_stage_leftover() {
+  local label="$1" dir="$2" f found=""
+  for f in "$dir"/.stage.*; do [ -e "$f" ] && found="$f"; done
+  if [ -z "$found" ]; then ok "$label"; else bad "$label" "unexpectedly exists: $found"; fi
+}
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/entities.d" "$FX/sessions.d"
@@ -166,6 +177,9 @@ inj_case() { # <label> <slug> <name-literal> <marker-or-empty>
     printf '%s' "$ENTITY_NAME"
   )"
   is "$label: ENTITY_NAME equals the literal input byte-for-byte" "$loaded" "$namelit"
+  if [ -n "$marker" ]; then
+    absent "$label: no side-effect file AFTER the explicit load either — nothing executed at read time" "$marker"
+  fi
 }
 
 MARK1="$FX/PWNED-cmdsub-$$"
@@ -211,12 +225,14 @@ absent "10h: no side-effect file" "$MARK3"
 is "10h: client NAME loads back byte-for-byte" "$?" "0"
 
 echo "== 11. writer: lock held refuses rc 75, names it, nothing written =="
-mkdir -p "$FX/.registry-write.lock"
+# C4: the lock lives UNDER THE ENTITY DIR now (registry_entity_dir), not at
+# the estate root — see section C4 below for why that distinction matters.
+mkdir -p "$CONF/.write.lock"
 out="$(run team add lockvictim --name "x" --json)"; rc=$?
 is "11: rc 75" "$rc" "75"
-has "11: reason names the lock" "$(printf '%s' "$out" | jq -r '.reason')" ".registry-write.lock"
+has "11: reason names the lock" "$(printf '%s' "$out" | jq -r '.reason')" ".write.lock"
 absent "11: nothing written" "$CONF/lockvictim.conf"
-rmdir "$FX/.registry-write.lock"
+rmdir "$CONF/.write.lock"
 
 echo "== 12. writer: a chmod failure is a hard refuse, nothing published =="
 # A STUBBED chmod earlier on PATH, not a mode argument — the real call site
@@ -232,7 +248,7 @@ chmod +x "$STUBDIR/chmod"
 out="$(PATH="$STUBDIR:$PATH" run team add chmodvictim --name "x" --json)"; rc=$?
 is "12: rc 70" "$rc" "70"
 absent "12: nothing published" "$CONF/chmodvictim.conf"
-absent "12: no leftover stage file either" "$CONF/.stage."*
+no_stage_leftover "12: no leftover stage file either" "$CONF"
 
 echo "== 13. writer: a readback refusal leaves no .conf under the final name =="
 # Calls registry_entity_write DIRECTLY (bypassing the command layer's own
@@ -257,7 +273,180 @@ MANAGED_BY="does-not-exist-anywhere"'
 rc=$?
 is "13: registry_entity_write itself refuses (rc 70)" "$rc" "70"
 absent "13: no .conf left under the final name" "$CONF/readback-victim.conf"
-absent "13: no leftover stage file either" "$CONF/.stage."*
+no_stage_leftover "13: no leftover stage file either" "$CONF"
+
+echo "== C1: a hostile managed-by conf must not clobber the caller's slug/name via bash's dynamic scope =="
+# cmd_registry_client_add calls registry_entity_load "$managed_by" to check
+# the manager resolves and has members. registry_entity_load SOURCES that
+# conf. If that source ever runs un-subshelled in the caller's own shell,
+# an assignment in the conf using the SAME NAME as one of the caller's own
+# `local` variables (slug, name — lowercase, not the uppercase ENTITY_*
+# ones registry_entity_load itself declares local) overwrites that local
+# via bash's dynamic scoping. The PoC slug "../pwned" resolves relative to
+# entities.d and lands in the estate root, which already exists (unlike
+# "../victim/pwned", which needs an intermediate dir mv can't create) —
+# arbitrary file write, one directory up, outside entities.d entirely.
+cat > "$CONF/evil.conf" <<'EOF'
+NAME="Evil Team"
+MEMBERS="a"
+slug="../pwned"
+name="CLOBBERED"
+EOF
+out="$(run client add goodslug --managed-by evil --name Innocent --json)"; rc=$?
+is "C1: rc 0 — the legitimate write still succeeds" "$rc" "0"
+is "C1: the response names the CALLER's slug, not the injected one" \
+  "$(printf '%s' "$out" | jq -r '.slug')" "goodslug"
+(
+  NAME=""; MANAGED_BY=""
+  . "$CONF/goodslug.conf"
+  [ "$NAME" = "Innocent" ] && [ "$MANAGED_BY" = "evil" ]
+)
+is "C1: goodslug.conf carries the CALLER's NAME/MANAGED_BY, not the injected ones" "$?" "0"
+absent "C1: nothing written outside entities.d via the injected slug (../pwned)" "$FX/pwned.conf"
+is "C1: no file OTHER than the attack fixture itself carries the injected name" \
+  "$(grep -rl 'CLOBBERED' "$FX" 2>/dev/null | grep -v '/evil\.conf$' || true)" ""
+
+echo "== C1b: registry_entity_write is a shared primitive — it validates its OWN slug, never trusting the caller =="
+# A primitive whose safety rests entirely on "the caller already checked"
+# is not a boundary. Call it directly with a path-traversal slug the way a
+# future session/project writer might, bypassing the command layer's own
+# regex check entirely.
+_c1b_always_ok() { return 0; }
+(
+  . "$here/lib/registry.sh"
+  STEWARD_ESTATE_ROOT="$FX"
+  STEWARD_ENTITY_DIR="$CONF"
+  registry_entity_write "../c1b-pwned" 'NAME="x"' _c1b_always_ok
+)
+rc=$?
+is "C1b: registry_entity_write itself refuses a non-entity-id slug (rc 64)" "$rc" "64"
+absent "C1b: nothing written via the primitive's own path-traversal slug" "$FX/c1b-pwned.conf"
+
+echo "== C2: publish must not silently report success when \$final appears in the publish window =="
+# mv -n exits 0 when it DECLINES to overwrite an existing destination — the
+# writer would return 0 ("wrote ...") while a foreign row sits under the
+# final name untouched. The seam here is the validate_fn, called just
+# before publish, standing in for a foreign writer that raced into the
+# window between the recheck (step 2) and the publish (step 6).
+_c2_race_final="$CONF/c2race.conf"
+_c2_create_final_race() { printf 'NAME="Foreign Row"\n' > "$_c2_race_final"; return 0; }
+(
+  . "$here/lib/registry.sh"
+  STEWARD_ESTATE_ROOT="$FX"
+  STEWARD_ENTITY_DIR="$CONF"
+  registry_entity_write "c2race" 'NAME="Legit"' _c2_create_final_race
+)
+rc=$?
+neq "C2: registry_entity_write does NOT report success when \$final raced in" "$rc" "0"
+(
+  NAME=""
+  . "$_c2_race_final"
+  [ "$NAME" = "Foreign Row" ]
+)
+is "C2: the foreign row is untouched" "$?" "0"
+no_stage_leftover "C2: no leftover stage file either" "$CONF"
+
+echo "== C3: rollback must not fail OPEN when stat is unavailable =="
+# Step 7's rollback only removed the bad row if _registry_stat_id returned a
+# NON-EMPTY value that matched — an empty stat (host without BSD/GNU stat,
+# restricted PATH) left the bad row PUBLISHED while the message said
+# "refusing". Stub `stat` on PATH to always fail, pair it with a permissive
+# validate_fn and a hand-built row whose MANAGED_BY does not resolve (the
+# same isolation section 13 uses for the readback check itself), and assert
+# the row does NOT survive just because identity couldn't be confirmed.
+STUBDIR_C3="$FX/stubbin-c3"; mkdir -p "$STUBDIR_C3"
+cat > "$STUBDIR_C3/stat" <<'SH'
+#!/bin/bash
+exit 1
+SH
+chmod +x "$STUBDIR_C3/stat"
+_permissive_validate_c3() { return 0; }
+(
+  . "$here/lib/registry.sh"
+  export PATH="$STUBDIR_C3:$PATH"
+  STEWARD_ESTATE_ROOT="$FX"
+  STEWARD_ENTITY_DIR="$CONF"
+  content='NAME="Bad Row"
+MANAGED_BY="does-not-exist-anywhere"'
+  registry_entity_write "c3-stat-victim" "$content" _permissive_validate_c3
+)
+rc=$?
+is "C3: registry_entity_write refuses (rc 70) even when stat is unavailable" "$rc" "70"
+absent "C3: no .conf left under the final name when stat can't confirm identity" "$CONF/c3-stat-victim.conf"
+no_stage_leftover "C3: no leftover stage file either" "$CONF"
+
+echo "== C4: the lock is keyed on the entity dir, not the estate root =="
+# registry_entity_dir honors STEWARD_ENTITY_DIR INDEPENDENTLY of the estate
+# root. Two writers pointed at the SAME entities.d but different estate
+# roots used to take DIFFERENT locks (one per estate root) and could run
+# concurrently — a bypass, not just a false negative. Simulate "another
+# writer, using estate root FX, already holds the lock" the OLD way
+# (mkdir at $FX/.registry-write.lock) and confirm a SECOND writer using a
+# DIFFERENT estate root (FX2) but the SAME entities.d is still blocked,
+# because the lock now lives under the entities.d both of them share.
+FX2="$(mktemp -d)"; mkdir -p "$FX2/estate"
+cp "$FX/estate/steward.conf" "$FX2/estate/steward.conf"
+mkdir -p "$CONF/.write.lock"
+out="$(STEWARD_ESTATE_ROOT="$FX2" STEWARD_ENTITY_DIR="$CONF" \
+       STEWARD_CONFIG_FILE="$FX/no-such-config" STEWARD_VIEWER="a" \
+       bash "$STEWARD" registry team add lockshare --name "x" --json 2>&1)"
+rc=$?
+is "C4: rc 75 — a different estate root sharing the same entities.d still contends" "$rc" "75"
+has "C4: reason names the entity-dir lock" "$(printf '%s' "$out" | jq -r '.reason')" ".write.lock"
+absent "C4: nothing written" "$CONF/lockshare.conf"
+rmdir "$CONF/.write.lock"
+rm -rf "$FX2"
+
+echo "== C4b: mkdir failing for a reason OTHER than contention is rc 78, never misdiagnosed as 'lock held' =="
+# An unwritable (but present and listable) entities.d makes every mkdir of
+# the lock fail with EACCES, never EEXIST — that must read as "the register
+# is unwritable" (78), not "another write holds the lock" (75).
+chmod 500 "$CONF"
+out="$(run team add unwritable --name "x" --json)"; rc=$?
+chmod 700 "$CONF"
+is "C4b: rc 78, not 75 — mkdir failing structurally is not the same as EEXIST" "$rc" "78"
+absent "C4b: nothing written" "$CONF/unwritable.conf"
+
+echo "== L1: --json purity — the serializer's own refusal must not leak a bare prose line onto stdout+stderr =="
+# _registry_emit_kv's own refusal used to go straight to the process's real
+# stderr, uncaptured — fine when a caller separates the streams, but a
+# combined capture (2>&1 — exactly what this suite's own run() does, and
+# exactly what a caller piping both streams into a log would do) got a bare
+# prose line landing BEFORE the JSON object, breaking any parser expecting
+# one JSON value on that stream.
+out="$(run team add ctrlchar --name "$(printf 'a\nb')" --json)"; rc=$?
+is "L1: rc 64" "$rc" "64"
+printf '%s' "$out" | jq . >/dev/null 2>&1
+is "L1: combined stdout+stderr parses as ONE pure JSON value" "$?" "0"
+is "L1: ok is false" "$(printf '%s' "$out" | jq -r '.ok')" "false"
+absent "L1: nothing written" "$CONF/ctrlchar.conf"
+
+echo "== L1b: same purity guarantee on client add's NAME field =="
+out="$(run client add ctrlchar2 --managed-by acme --name "$(printf 'a\nb')" --json)"; rc=$?
+is "L1b: rc 64" "$rc" "64"
+printf '%s' "$out" | jq . >/dev/null 2>&1
+is "L1b: combined stdout+stderr parses as ONE pure JSON value" "$?" "0"
+absent "L1b: nothing written" "$CONF/ctrlchar2.conf"
+
+echo "== L2: register rows match scaffold's shape — header comment, trailing newline =="
+out="$(run team add shapecheck --name "Shape Team" --json)"; rc=$?
+is "L2: rc 0" "$rc" "0"
+first_line="$(head -n1 "$CONF/shapecheck.conf")"
+has "L2: first line is a '# <slug> — ...' header comment, like scaffold's rows" "$first_line" "# shapecheck —"
+last_byte="$(tail -c1 "$CONF/shapecheck.conf" | od -An -c | tr -d ' \n')"
+is "L2: file ends with a trailing newline" "$last_byte" '\n'
+(
+  NAME=""; MEMBERS=""
+  . "$CONF/shapecheck.conf"
+  [ "$NAME" = "Shape Team" ]
+)
+is "L2: still loads correctly with the header line present" "$?" "0"
+
+echo "== L2b: client rows carry the same header shape =="
+out="$(run client add shapecheck-client --managed-by acme --name "Shape Client" --json)"; rc=$?
+is "L2b: rc 0" "$rc" "0"
+first_line="$(head -n1 "$CONF/shapecheck-client.conf")"
+has "L2b: first line is a '# <slug> — ...' header comment" "$first_line" "# shapecheck-client —"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

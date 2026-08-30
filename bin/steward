@@ -1019,13 +1019,21 @@ cmd_registry_team_add() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
-  local kv_name kv_members rc
-  kv_name="$(_registry_emit_kv NAME "$name")"; rc=$?
+  # _registry_emit_kv's own refusal goes to stderr. CAPTURED here (the same
+  # way rw_err captures registry_entity_write's below), never left to leak
+  # onto whatever real stderr this process has — a --json caller combining
+  # stdout+stderr must see exactly one JSON value, never a bare prose line
+  # ahead of it.
+  local kv_name kv_members rc kv_err
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry team add: cannot create a temporary file" 70; return 70; }
+  kv_name="$(_registry_emit_kv NAME "$name" 2>"$kv_err")"; rc=$?
   if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
     _reg_fail "$want_json" "steward registry team add: --name contains a control character or newline" 64
     return 64
   fi
-  kv_members="$(_registry_emit_kv MEMBERS "$members_joined")"; rc=$?
+  kv_members="$(_registry_emit_kv MEMBERS "$members_joined" 2>"$kv_err")"; rc=$?
+  rm -f "$kv_err"
   if [ "$rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry team add: an invalid member slipped past validation" 64
     return 64
@@ -1037,7 +1045,13 @@ cmd_registry_team_add() {
     _reg_fail "$want_json" "steward registry team add: cannot create a temporary file" 70
     return 70
   }
-  local content; content="$kv_name"$'\n'"$kv_members"
+  # HEADER + TRAILING NEWLINE, matching lib/scaffold.sh's shape — the
+  # register has one row form, not one shape for scaffold-written rows and
+  # another for these. $slug is already validated against the entity-id
+  # form above, so interpolating it into a comment carries nothing unsafe.
+  local content
+  content="$(printf '# %s — team, written by steward registry team add.\n%s\n%s' \
+    "$slug" "$kv_name" "$kv_members")"$'\n'
   registry_entity_write "$slug" "$content" _registry_validate_team_stage 2>"$rw_err"
   rc=$?
   local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
@@ -1100,22 +1114,45 @@ cmd_registry_client_add() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
-  if ! registry_entity_load "$managed_by" >/dev/null 2>&1; then
+  # SUBSHELLED, NEVER DIRECT. registry_entity_load SOURCES the manager's
+  # conf. Called un-subshelled in this shell, a manager conf that happens to
+  # assign a variable sharing a name with one of THIS function's own locals
+  # (slug, name — lowercase; not the uppercase ENTITY_* names
+  # registry_entity_load itself declares local) would overwrite that local
+  # via bash's dynamic scoping — the same never-source-unsubshelled class of
+  # danger as the WRITE side below, but arriving through the READ. The
+  # command-substitution subshell confines any such clobbering to a process
+  # that exits before this function sees another line of its own — the same
+  # pattern lib/visibility.sh:108 already uses for exactly this reason.
+  local mgr_members load_rc
+  mgr_members="$( registry_entity_load "$managed_by" >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS" )"
+  load_rc=$?
+  if [ "$load_rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry client add: --managed-by '$managed_by' does not resolve to a valid entity" 78
     return 78
   fi
-  if [ -z "$ENTITY_MEMBERS" ]; then
+  if [ -z "$mgr_members" ]; then
     _reg_fail "$want_json" "steward registry client add: --managed-by '$managed_by' has no members — it is not a team" 78
     return 78
   fi
 
-  local kv_name kv_managed rc
-  kv_name="$(_registry_emit_kv NAME "$name")"; rc=$?
+  # See the matching comment in cmd_registry_team_add: _registry_emit_kv's
+  # own refusal is CAPTURED, never left to leak onto whatever real stderr
+  # this process has.
+  local kv_name kv_managed rc kv_err
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry client add: cannot create a temporary file" 70; return 70; }
+  kv_name="$(_registry_emit_kv NAME "$name" 2>"$kv_err")"; rc=$?
   if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
     _reg_fail "$want_json" "steward registry client add: --name contains a control character or newline" 64
     return 64
   fi
-  kv_managed="$(_registry_emit_kv MANAGED_BY "$managed_by")"
+  kv_managed="$(_registry_emit_kv MANAGED_BY "$managed_by" 2>"$kv_err")"; rc=$?
+  rm -f "$kv_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry client add: --managed-by contains a control character or newline" 64
+    return 64
+  fi
 
   _REGW_EXPECT_NAME="$name"
   _REGW_EXPECT_MANAGED_BY="$managed_by"
@@ -1123,7 +1160,11 @@ cmd_registry_client_add() {
     _reg_fail "$want_json" "steward registry client add: cannot create a temporary file" 70
     return 70
   }
-  local content; content="$kv_name"$'\n'"$kv_managed"
+  # HEADER + TRAILING NEWLINE — see the matching comment in
+  # cmd_registry_team_add.
+  local content
+  content="$(printf '# %s — client, written by steward registry client add.\n%s\n%s' \
+    "$slug" "$kv_name" "$kv_managed")"$'\n'
   registry_entity_write "$slug" "$content" _registry_validate_client_stage 2>"$rw_err"
   rc=$?
   local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"

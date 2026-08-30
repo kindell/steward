@@ -412,8 +412,11 @@ _registry_stat_id() {
 #
 # registry_entity_write <slug> <content> <validate_fn>
 #
-#   slug        already validated by the CALLER against the entity-id form
-#               (^[a-z0-9][a-z0-9-]*$) — this function does not re-check it.
+#   slug        SHOULD already be validated by the CALLER against the
+#               entity-id form (^[a-z0-9][a-z0-9-]*$) for a better error
+#               message earlier — but this function re-checks it too, and
+#               refuses on its own if it isn't. A primitive whose safety
+#               rests on "the caller checked" is not a boundary.
 #   content     the full file body, already built entirely out of
 #               _registry_emit_kv lines — so every value inside it has
 #               already been escaped or the caller never got this far.
@@ -424,18 +427,27 @@ _registry_stat_id() {
 #               what it is writing (team vs. client have different keys).
 #
 # THE SEQUENCE, each step named for the failure it closes:
-#   1. LOCK      — registry-wide, at the ESTATE ROOT (not per-directory: a
-#                  session writer and an entity writer must never race each
-#                  other either, even though only entities are written here
-#                  today). mkdir is atomic on every filesystem this runs on;
-#                  bounded retries, never stolen, rc 75 names the lock.
+#   0. SLUG      — validated against the entity-id form by THIS function,
+#                  not just the caller (see above). rc 64 on a bad slug,
+#                  before any path is built from it.
+#   1. LOCK      — keyed on the ENTITY DIRECTORY (registry_entity_dir), not
+#                  the estate root: registry_entity_dir honors
+#                  STEWARD_ENTITY_DIR independently of the estate root, so a
+#                  lock keyed on the estate root let two writers pointed at
+#                  the same entities.d (via different estate roots) take
+#                  different locks and race. mkdir is atomic on every
+#                  filesystem this runs on; bounded retries, never stolen,
+#                  rc 75 names the lock when it is genuinely held (EEXIST),
+#                  rc 78 when mkdir cannot succeed for any other reason
+#                  (ENOENT/EACCES) — that is an unwritable register, not
+#                  contention, and must never be reported as one.
 #   2. RECHECK   — under the lock, not before it: the destination must not
 #                  exist and must not be a symlink. A caller's own pre-check
 #                  (if any) happened before the lock was held and cannot be
 #                  trusted against a concurrent writer.
 #   3. STAGE     — write to a NON-.conf temp name in the same directory
-#                  (umask 077), so a reader globbing *.conf never observes a
-#                  half-written row.
+#                  (umask 077 around the mktemp+write), so a reader globbing
+#                  *.conf never observes a half-written row.
 #   4. VALIDATE  — the caller's validate_fn re-reads the STAGED file and
 #                  confirms it matches, before the row is ever visible under
 #                  its final name. A bad row must never be readable as
@@ -444,23 +456,32 @@ _registry_stat_id() {
 #   5. chmod     — 0600, and a chmod FAILURE IS A HARD REFUSE. Publishing a
 #                  file whose mode could not be verified narrow would be
 #                  worse than not publishing at all.
-#   6. PUBLISH   — no-clobber `mv` onto the final name. The lock plus the
-#                  recheck in step 2 already closed the race; this is the
-#                  atomic rename onto a name just confirmed free.
+#   6. PUBLISH   — `ln` (hardlink) onto the final name, then remove the
+#                  stage. `ln` FAILS (EEXIST, non-zero) when the destination
+#                  already exists — unlike `mv -n`, which exits 0 when it
+#                  DECLINES to overwrite, which let this step report
+#                  "wrote" while a foreign row sat under the final name
+#                  untouched. The lock plus the recheck in step 2 already
+#                  closed the ordinary race; this closes the case where
+#                  something appeared in the window anyway.
 #   7. READBACK  — under the SAME lock, through the registry's OWN loader
 #                  (registry_entity_load) — the same function every reader
 #                  uses, so "written ok" means exactly what a reader will
-#                  see. On failure the row is removed, but ONLY after
-#                  confirming the file on disk is still the one just staged
-#                  (inode+size) — never a file some other process wrote
-#                  there in the meantime.
+#                  see. On failure the row is removed. The removal is
+#                  UNCONDITIONAL unless stat POSITIVELY proves the file on
+#                  disk is no longer the one just staged (inode+size differ,
+#                  both readable) — an empty/unavailable stat (no BSD or GNU
+#                  stat on PATH, a restricted PATH) must never be read as
+#                  permission to leave a bad row published while the
+#                  message claims "refusing". Refusing to publish is safe;
+#                  refusing to clean up is not.
 #   8. RELEASE   — trap-guarded, so an interrupt mid-transaction still frees
 #                  the lock; every explicit return path also clears it so a
 #                  caller in the same shell can retry.
 #
-# rc 65 destination exists (names the file) · 75 lock held · 78 the entity
-# register could not be resolved · 70 any other write/validate/chmod/
-# readback failure.
+# rc 64 invalid slug · 65 destination exists (names the file) · 75 lock held
+# · 78 the entity register could not be resolved, or is unwritable · 70 any
+# other write/validate/chmod/publish/readback failure.
 #
 # NOT THE ONLY ENTITY/SESSION WRITER IN THE PRODUCT. session-new.sh (on the
 # estate host) and hub/enroll each hold their own serializer for their own
@@ -468,22 +489,44 @@ _registry_stat_id() {
 # only the two org verbs asking for it now.
 registry_entity_write() {
   local slug="$1" content="$2" validate_fn="$3"
+  # THIS PRIMITIVE VALIDATES ITS OWN SLUG. Documented above as "already
+  # validated by the CALLER" is not a boundary — a caller whose validation
+  # is bypassed, buggy, or simply doesn't exist yet (a future session/project
+  # writer built against this same function) would otherwise inherit an
+  # unchecked path straight into $dir/$slug.conf. Refuse before that path is
+  # ever built.
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: refusing — invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" >&2
+    return 64
+  fi
   local dir; dir="$(registry_entity_dir)" || return 78
   if [ ! -d "$dir" ]; then
     echo "registry: REFUSING — the entity register is not readable: $dir" >&2
     return 78
   fi
   local final="$dir/$slug.conf"
-  local estate_root; estate_root="$(_registry_estate_root)"
-  local lock="$estate_root/.registry-write.lock"
-
-  # 1. LOCK.
+  # 1. LOCK. Derived from the ENTITY DIRECTORY itself (registry_entity_dir),
+  # not the estate root — registry_entity_dir independently honors
+  # STEWARD_ENTITY_DIR, so two writers pointed at the same entities.d via
+  # different estate roots must still contend for the SAME lock. A lock
+  # keyed on the estate root let them take different locks and race.
+  local lock="$dir/.write.lock"
   local tries=0
   while ! mkdir "$lock" 2>/dev/null; do
     tries=$((tries+1))
     if [ "$tries" -ge 20 ]; then
-      echo "registry: another write holds the registry lock, refusing: $lock" >&2
-      return 75
+      # A lock dir that still doesn't exist after every attempt failed is
+      # NOT the same failure as one held by another writer (EEXIST) — mkdir
+      # can also fail with ENOENT or EACCES, which will never resolve no
+      # matter how long this loops. Misreporting that as "held" cost a 2s
+      # stall and the wrong remedy; distinguish by what's actually on disk.
+      if [ -d "$lock" ]; then
+        echo "registry: another write holds the registry lock, refusing: $lock" >&2
+        echo "registry: if no write is in progress, remove it with: rmdir $lock" >&2
+        return 75
+      fi
+      echo "registry: could not create the write lock — the entity register may be unwritable: $lock" >&2
+      return 78
     fi
     sleep 0.1
   done
@@ -501,9 +544,14 @@ registry_entity_write() {
     return 65
   fi
 
-  # 3. STAGE.
+  # 3. STAGE (umask 077 for the create, saved/restored immediately — this
+  # function runs in the CALLER's shell, so leaving the umask changed would
+  # leak into every command the caller runs afterward).
+  local _prev_umask; _prev_umask="$(umask)"
+  umask 077
   local stage
   stage="$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null)"
+  umask "$_prev_umask"
   if [ -z "$stage" ]; then
     echo "registry: could not create a staging file in $dir" >&2
     rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
@@ -529,18 +577,29 @@ registry_entity_write() {
     return 70
   fi
 
-  # 6. PUBLISH, no-clobber.
-  if ! mv -n "$stage" "$final"; then
-    echo "registry: could not publish $final" >&2
+  # 6. PUBLISH via hardlink, no-clobber. `ln` FAILS (EEXIST, non-zero) when
+  # $final already exists — unlike `mv -n`, which exits 0 when it DECLINES
+  # to overwrite, which let this step report "wrote" while a foreign row
+  # sat under the final name untouched and a reader's next load would see
+  # THAT row, not this one.
+  if ! ln "$stage" "$final" 2>/dev/null; then
+    echo "registry: refusing — already exists: $final" >&2
     rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
-    return 70
+    return 65
   fi
+  rm -f "$stage"
 
   # 7. CANONICAL READBACK, same lock, registry's own loader.
   local staged_id; staged_id="$(_registry_stat_id "$final")"
   if ! ( registry_entity_load "$slug" >/dev/null 2>&1 ); then
     local now_id; now_id="$(_registry_stat_id "$final" 2>/dev/null)"
-    if [ -n "$staged_id" ] && [ "$staged_id" = "$now_id" ]; then
+    # Remove UNCONDITIONALLY unless stat POSITIVELY proves $final is no
+    # longer the file just staged (both ids present AND different). An
+    # empty/unavailable stat on either side — no BSD or GNU stat on PATH, a
+    # restricted PATH — must never be read as permission to leave a bad row
+    # published while this message says "refusing". Refusing to publish is
+    # safe; refusing to clean up is not.
+    if [ -z "$staged_id" ] || [ -z "$now_id" ] || [ "$staged_id" = "$now_id" ]; then
       rm -f "$final"
     fi
     echo "registry: wrote $final but it does not load back through the registry — refusing" >&2
