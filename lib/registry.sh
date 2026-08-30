@@ -348,6 +348,212 @@ registry_project_load() {
   PROJECT_ID="$id"; PROJECT_NAME="$NAME"; PROJECT_PARENT="$PARENT"
 }
 
+# ── THE ENTITY SERIALIZER — ONE FUNCTION, BECAUSE THESE CONFS ARE SOURCED ──
+#
+# registry_entity_load ABOVE calls `source` on entities.d/<id>.conf. That is
+# the same class of danger as any other shell-sourced config: a value written
+# into a double-quoted assignment without escaping lets `$(cmd)`, a backtick,
+# `$VAR` or a bare backslash EXECUTE OR EXPAND the moment a reader loads the
+# row back — not a rendering bug, an injection.
+#
+# _registry_emit_kv KEY VALUE prints `KEY="<escaped-value>"` on stdout and
+# returns 0, or prints nothing and returns 64 if VALUE carries a control byte
+# or a newline. Both writer verbs (team add, client add) route every field
+# they write through this one function — never two independently maintained
+# escapers that could drift apart, the same reasoning the estate-value reader
+# above already follows for READING.
+#
+# THE ESCAPE ORDER MATTERS: backslash FIRST. Escaping `"`, `$` or `` ` `` before
+# backslash would have this function's OWN inserted backslashes re-escaped on
+# the next substitution; escaping backslash first means every later
+# substitution's find-pattern (`"`, `$`, `` ` ``) can never match a byte this
+# function itself just inserted.
+#
+# AN APOSTROPHE NEEDS NONE OF THIS. Inside a double-quoted bash string a `'`
+# has no meaning at all — a validator that rejected it would be both too
+# strict (refusing an ordinary display name like "O'Brien") and pointless (it
+# closes no hole this serializer actually has).
+_registry_emit_kv() {
+  local key="$1" value="$2"
+  case "$value" in
+    *[[:cntrl:]]*)
+      echo "registry: refusing to write $key — value contains a control character or newline" >&2
+      return 64 ;;
+  esac
+  local esc="$value"
+  esc="${esc//\\/\\\\}"
+  esc="${esc//\"/\\\"}"
+  esc="${esc//\$/\\\$}"
+  esc="${esc//\`/\\\`}"
+  printf '%s="%s"\n' "$key" "$esc"
+}
+
+# _registry_restore_exit_trap <saved-trap-string> — restores whatever EXIT
+# trap `trap -p EXIT` captured before this file's own lock trap replaced it,
+# or clears the trap entirely if there was none. A caller's own
+# `trap ... EXIT` (a test fixture's cleanup, say) must survive a call into
+# registry_entity_write in the same shell — this is what makes that true.
+_registry_restore_exit_trap() {
+  if [ -n "$1" ]; then eval "$1"; else trap - EXIT; fi
+}
+
+# _registry_stat_id <path> — "<inode>:<size>", BSD or GNU stat, or empty on
+# failure. Used only to tell "the file I just staged" from "a file some other
+# process wrote under the same name a moment later" — a name match is not an
+# identity match.
+_registry_stat_id() {
+  local p="$1" out
+  out="$(stat -f '%i:%z' "$p" 2>/dev/null)" && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+  out="$(stat -c '%i:%s' "$p" 2>/dev/null)" && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+  return 1
+}
+
+# ── THE ENTITY WRITER TRANSACTION — ONE SHARED PRIMITIVE ───────────────────
+#
+# registry_entity_write <slug> <content> <validate_fn>
+#
+#   slug        already validated by the CALLER against the entity-id form
+#               (^[a-z0-9][a-z0-9-]*$) — this function does not re-check it.
+#   content     the full file body, already built entirely out of
+#               _registry_emit_kv lines — so every value inside it has
+#               already been escaped or the caller never got this far.
+#   validate_fn the name of a function the CALLER defines, called as
+#               `validate_fn <staged-file-path>`. It must re-read the staged
+#               file and confirm the row it is about to publish is the row
+#               that was meant — this function does not know the schema of
+#               what it is writing (team vs. client have different keys).
+#
+# THE SEQUENCE, each step named for the failure it closes:
+#   1. LOCK      — registry-wide, at the ESTATE ROOT (not per-directory: a
+#                  session writer and an entity writer must never race each
+#                  other either, even though only entities are written here
+#                  today). mkdir is atomic on every filesystem this runs on;
+#                  bounded retries, never stolen, rc 75 names the lock.
+#   2. RECHECK   — under the lock, not before it: the destination must not
+#                  exist and must not be a symlink. A caller's own pre-check
+#                  (if any) happened before the lock was held and cannot be
+#                  trusted against a concurrent writer.
+#   3. STAGE     — write to a NON-.conf temp name in the same directory
+#                  (umask 077), so a reader globbing *.conf never observes a
+#                  half-written row.
+#   4. VALIDATE  — the caller's validate_fn re-reads the STAGED file and
+#                  confirms it matches, before the row is ever visible under
+#                  its final name. A bad row must never be readable as
+#                  <slug>.conf even for the instant between mv and the next
+#                  check.
+#   5. chmod     — 0600, and a chmod FAILURE IS A HARD REFUSE. Publishing a
+#                  file whose mode could not be verified narrow would be
+#                  worse than not publishing at all.
+#   6. PUBLISH   — no-clobber `mv` onto the final name. The lock plus the
+#                  recheck in step 2 already closed the race; this is the
+#                  atomic rename onto a name just confirmed free.
+#   7. READBACK  — under the SAME lock, through the registry's OWN loader
+#                  (registry_entity_load) — the same function every reader
+#                  uses, so "written ok" means exactly what a reader will
+#                  see. On failure the row is removed, but ONLY after
+#                  confirming the file on disk is still the one just staged
+#                  (inode+size) — never a file some other process wrote
+#                  there in the meantime.
+#   8. RELEASE   — trap-guarded, so an interrupt mid-transaction still frees
+#                  the lock; every explicit return path also clears it so a
+#                  caller in the same shell can retry.
+#
+# rc 65 destination exists (names the file) · 75 lock held · 78 the entity
+# register could not be resolved · 70 any other write/validate/chmod/
+# readback failure.
+#
+# NOT THE ONLY ENTITY/SESSION WRITER IN THE PRODUCT. session-new.sh (on the
+# estate host) and hub/enroll each hold their own serializer for their own
+# conf shape, and unifying all three is a later scope — this function covers
+# only the two org verbs asking for it now.
+registry_entity_write() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_entity_dir)" || return 78
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING — the entity register is not readable: $dir" >&2
+    return 78
+  fi
+  local final="$dir/$slug.conf"
+  local estate_root; estate_root="$(_registry_estate_root)"
+  local lock="$estate_root/.registry-write.lock"
+
+  # 1. LOCK.
+  local tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    tries=$((tries+1))
+    if [ "$tries" -ge 20 ]; then
+      echo "registry: another write holds the registry lock, refusing: $lock" >&2
+      return 75
+    fi
+    sleep 0.1
+  done
+  # Save whatever EXIT trap the caller already had, so this function's own
+  # cleanup can restore it rather than wipe it out — a caller's own
+  # `trap ... EXIT` (a test fixture's cleanup, say) must survive a call into
+  # this function in the same shell.
+  local _prev_trap; _prev_trap="$(trap -p EXIT)"
+  trap 'rmdir "'"$lock"'" 2>/dev/null' EXIT
+
+  # 2. RECHECK, under the lock.
+  if [ -e "$final" ] || [ -L "$final" ]; then
+    echo "registry: refusing — already exists: $final" >&2
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 65
+  fi
+
+  # 3. STAGE.
+  local stage
+  stage="$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null)"
+  if [ -z "$stage" ]; then
+    echo "registry: could not create a staging file in $dir" >&2
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+  if ! printf '%s' "$content" > "$stage"; then
+    echo "registry: could not write the staged entity file: $stage" >&2
+    rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 4. VALIDATE THE STAGED BYTES — before the row is visible under its final
+  # name.
+  if ! "$validate_fn" "$stage"; then
+    rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 5. chmod, hard refuse on failure.
+  if ! chmod 0600 "$stage"; then
+    echo "registry: could not set the mode of the staged entity file: $stage" >&2
+    rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 6. PUBLISH, no-clobber.
+  if ! mv -n "$stage" "$final"; then
+    echo "registry: could not publish $final" >&2
+    rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 7. CANONICAL READBACK, same lock, registry's own loader.
+  local staged_id; staged_id="$(_registry_stat_id "$final")"
+  if ! ( registry_entity_load "$slug" >/dev/null 2>&1 ); then
+    local now_id; now_id="$(_registry_stat_id "$final" 2>/dev/null)"
+    if [ -n "$staged_id" ] && [ "$staged_id" = "$now_id" ]; then
+      rm -f "$final"
+    fi
+    echo "registry: wrote $final but it does not load back through the registry — refusing" >&2
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 8. RELEASE.
+  rmdir "$lock" 2>/dev/null
+  _registry_restore_exit_trap "$_prev_trap"
+  return 0
+}
+
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
 # The same shape as the prefix lookup above, and for the same reasons: `local`
 # before `source` so the estate file never leaks a global to the caller, form

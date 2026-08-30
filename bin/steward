@@ -24,6 +24,8 @@
 #   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
 #   steward config set KEY /abs/value
 #   steward login [session]
+#   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
+#   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -858,6 +860,285 @@ cmd_scaffold() {
     [ "$rc" -ne 0 ] && printf '%s\n' "$err" >&2
   fi
   return "$rc"
+}
+
+# ── `steward registry team|client add` — THE TWO ORG VERBS ────────────────
+#
+# CREATE-ONLY, DELIBERATELY. Changing a team's membership or a client's
+# manager is a different verb (`member add/remove`, a later scope) with a
+# different safety story (an existing row, not a fresh one) — folding that
+# into `add` would make one verb answer two questions.
+#
+# Both write entities.d/<slug>.conf through the ONE shared serializer and the
+# ONE shared writer transaction in lib/registry.sh (_registry_emit_kv,
+# registry_entity_write) — see that file for the injection story and the
+# writer's eight-step sequence. Nothing here builds a KV line, a lock, or a
+# staged file by hand.
+
+# _reg_fail <want_json> <message> — prints the refusal in the requested
+# shape (json {ok:false,reason:...} or a plain stderr line), the same
+# json-or-stderr shape cmd_assets already repeats inline at each of its own
+# refusals, pulled out once here so the two org verbs share it instead of
+# copying it a second time. Does NOT return an exit code — every call site
+# still does its own `return N` right after, so the rc lives at the call
+# site next to the condition that produced it, not buried in this helper.
+_reg_fail() {
+  local wj="$1" msg="$2"
+  if [ -n "$wj" ]; then jq -cn --arg r "$msg" '{ok:false,reason:$r}'
+  else printf '%s\n' "$msg" >&2; fi
+}
+
+# _registry_validate_team_stage <staged-file> — the validate_fn
+# registry_entity_write calls before publishing a team row. Re-reads the
+# STAGED file (not the eventual final name) and confirms NAME and MEMBERS
+# equal what cmd_registry_team_add meant to write, byte for byte — a defence
+# against a bug in the serializer or the writer producing a row that quotes
+# or truncates something differently than intended, never a defence against
+# injection (the serializer already closed that before this file was ever
+# written to disk). Reads its expectation from _REGW_EXPECT_NAME/_MEMBERS,
+# set by the caller immediately before it calls registry_entity_write —
+# bash has no closures, so a plain global is how this function learns what
+# "correct" means for THIS call.
+_registry_validate_team_stage() {
+  local file="$1" NAME="" MEMBERS=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: staged team file did not source: $file" >&2; return 70; }
+  if [ "$NAME" != "$_REGW_EXPECT_NAME" ]; then
+    echo "registry: staged team file's NAME does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$MEMBERS" != "$_REGW_EXPECT_MEMBERS" ]; then
+    echo "registry: staged team file's MEMBERS does not match what was written: $file" >&2
+    return 70
+  fi
+  return 0
+}
+
+# _registry_validate_client_stage <staged-file> — same shape as the team
+# validator above, for the client row's NAME and MANAGED_BY.
+_registry_validate_client_stage() {
+  local file="$1" NAME="" MANAGED_BY=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: staged client file did not source: $file" >&2; return 70; }
+  if [ "$NAME" != "$_REGW_EXPECT_NAME" ]; then
+    echo "registry: staged client file's NAME does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$MANAGED_BY" != "$_REGW_EXPECT_MANAGED_BY" ]; then
+    echo "registry: staged client file's MANAGED_BY does not match what was written: $file" >&2
+    return 70
+  fi
+  return 0
+}
+
+# cmd_registry — the `registry` noun's own tiny dispatcher: team|client, add.
+# A later scope adds `session`/`project` and non-`add` verbs; this refuses
+# anything else by name rather than falling through to the estate-client
+# fallback the top-level dispatcher owns.
+cmd_registry() {
+  case "${1:-}" in
+    team)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_team_add "$@" ;;
+        *) fel "steward registry team: unknown verb '${1:-}' (allowed: add)" 64 ;;
+      esac ;;
+    client)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_client_add "$@" ;;
+        *) fel "steward registry client: unknown verb '${1:-}' (allowed: add)" 64 ;;
+      esac ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client)" 64 ;;
+  esac
+}
+
+# cmd_registry_team_add <slug> --name "Display Name" [--member p]... [--json]
+#
+# MEMBERS DEFAULTS TO THE VIEWER, NEVER TO EMPTY. An entity with nobody in it
+# is not a team (registry_entity_load's own MANAGED_BY check treats "no
+# members" as "not a team" for exactly this reason) — so a team add with no
+# --member at all still has to produce a team, and the only name it can use
+# without asking is whoever is running the command. --json reports which
+# happened (membersSource: default|flags) so a caller never has to guess.
+cmd_registry_team_add() {
+  local want_json="" slug="" name="" saw_member="" a
+  local members=()
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --name)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry team add: --name needs a value" 64; return 64; }
+        name="$2"; shift 2 ;;
+      --member)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry team add: --member needs a value" 64; return 64; }
+        members+=("$2"); saw_member=1; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry team add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        if [ -n "$slug" ]; then
+          _reg_fail "$want_json" "steward registry team add: one slug at a time" 64; return 64
+        fi
+        slug="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry team add: a slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry team add: invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  [ -n "$name" ] || { _reg_fail "$want_json" "steward registry team add: --name is required" 64; return 64; }
+
+  local members_source="default"
+  if [ -z "$saw_member" ]; then
+    local viewer="${STEWARD_VIEWER:-}"
+    [ -n "$viewer" ] || viewer="$(id -un 2>/dev/null)"
+    if [ -z "$viewer" ]; then
+      _reg_fail "$want_json" "steward registry team add: no --member given and no viewer could be determined (set STEWARD_VIEWER)" 64
+      return 64
+    fi
+    members=("$viewer")
+  else
+    members_source="flags"
+  fi
+  local m
+  for m in "${members[@]}"; do
+    if ! [[ "$m" =~ ^[a-z][a-z0-9-]*$ ]]; then
+      _reg_fail "$want_json" "steward registry team add: invalid member '$m' (allowed: a-z, then a-z0-9-)" 64
+      return 64
+    fi
+  done
+  local members_joined=""
+  for m in "${members[@]}"; do
+    members_joined="${members_joined:+$members_joined }$m"
+  done
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  local kv_name kv_members rc
+  kv_name="$(_registry_emit_kv NAME "$name")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry team add: --name contains a control character or newline" 64
+    return 64
+  fi
+  kv_members="$(_registry_emit_kv MEMBERS "$members_joined")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry team add: an invalid member slipped past validation" 64
+    return 64
+  fi
+
+  _REGW_EXPECT_NAME="$name"
+  _REGW_EXPECT_MEMBERS="$members_joined"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry team add: cannot create a temporary file" 70
+    return 70
+  }
+  local content; content="$kv_name"$'\n'"$kv_members"
+  registry_entity_write "$slug" "$content" _registry_validate_team_stage 2>"$rw_err"
+  rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry team add: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  local file; file="$(registry_entity_dir)/$slug.conf"
+  if [ -n "$want_json" ]; then
+    _json ok true kind team slug "$slug" name "$name" file "$file" membersSource "$members_source"
+  else
+    printf 'steward: wrote entities.d/%s.conf (team '\''%s'\'', members: %s)\n' "$slug" "$name" "$members_joined"
+  fi
+  return 0
+}
+
+# cmd_registry_client_add <slug> --managed-by <team-slug> --name "Display Name" [--json]
+#
+# THE MANAGER MUST ALREADY RESOLVE AS A TEAM. Not "a file with that name
+# exists" — registry_entity_load must succeed AND report at least one
+# member. An entity with no members is not a team, and a MANAGED_BY pointing
+# at one would read as structure while carrying none — the same distinction
+# registry_entity_load itself already draws for MANAGED_BY resolution.
+cmd_registry_client_add() {
+  local want_json="" slug="" name="" managed_by="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --name)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry client add: --name needs a value" 64; return 64; }
+        name="$2"; shift 2 ;;
+      --managed-by)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry client add: --managed-by needs a value" 64; return 64; }
+        managed_by="$2"; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry client add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        if [ -n "$slug" ]; then
+          _reg_fail "$want_json" "steward registry client add: one slug at a time" 64; return 64
+        fi
+        slug="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry client add: a slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry client add: invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  [ -n "$name" ] || { _reg_fail "$want_json" "steward registry client add: --name is required" 64; return 64; }
+  [ -n "$managed_by" ] || { _reg_fail "$want_json" "steward registry client add: --managed-by is required" 64; return 64; }
+  if ! [[ "$managed_by" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry client add: invalid --managed-by slug '$managed_by'" 64
+    return 64
+  fi
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  if ! registry_entity_load "$managed_by" >/dev/null 2>&1; then
+    _reg_fail "$want_json" "steward registry client add: --managed-by '$managed_by' does not resolve to a valid entity" 78
+    return 78
+  fi
+  if [ -z "$ENTITY_MEMBERS" ]; then
+    _reg_fail "$want_json" "steward registry client add: --managed-by '$managed_by' has no members — it is not a team" 78
+    return 78
+  fi
+
+  local kv_name kv_managed rc
+  kv_name="$(_registry_emit_kv NAME "$name")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry client add: --name contains a control character or newline" 64
+    return 64
+  fi
+  kv_managed="$(_registry_emit_kv MANAGED_BY "$managed_by")"
+
+  _REGW_EXPECT_NAME="$name"
+  _REGW_EXPECT_MANAGED_BY="$managed_by"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry client add: cannot create a temporary file" 70
+    return 70
+  }
+  local content; content="$kv_name"$'\n'"$kv_managed"
+  registry_entity_write "$slug" "$content" _registry_validate_client_stage 2>"$rw_err"
+  rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry client add: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  local file; file="$(registry_entity_dir)/$slug.conf"
+  if [ -n "$want_json" ]; then
+    _json ok true kind client slug "$slug" name "$name" file "$file" managedBy "$managed_by"
+  else
+    printf 'steward: wrote entities.d/%s.conf (client '\''%s'\'', managed by %s)\n' "$slug" "$name" "$managed_by"
+  fi
+  return 0
 }
 
 # cmd_assets <session> [--json] — the declared list joined with probed health.
@@ -2111,6 +2392,12 @@ case "${1:-}" in
   assets)   shift; cmd_assets "$@"; exit $? ;;
   sessions) shift; cmd_sessions "$@"; exit $? ;;
   login)    shift; cmd_login "$@"; exit $? ;;
+  # NAMESPACED, NOT TOP-LEVEL. `steward team` or `steward client` at the top
+  # would collide with the estate-client fallback in the `*)` branch below
+  # (`steward <estate> attach|peek|ls`) the moment an operator's own estate
+  # happened to be named "team" or "client". `registry` is the one word this
+  # dispatcher does not already use for a dispatch route into an estate.
+  registry) shift; cmd_registry "$@"; exit $? ;;
   -h|--help) usage 0 ;;
   "")
     # No subcommand at all is the bare invocation — it starts the
