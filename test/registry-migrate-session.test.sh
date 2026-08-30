@@ -207,6 +207,35 @@ is "2c: rc 0" "$rc" "0"
 IDB="$(printf '%s' "$out" | jq -r '.id')"
 is "2c: DOMAIN falls back to the target slug (the supervisor requires a line)" "$(load_field "$IDB" DOMAIN)" "site"
 
+echo "== 2d. FAIL-CLOSED on an unmodeled field: refuse and name it; dead knowns are ignored =="
+# The carry-loop is a hand-maintained allowlist. A field OUTSIDE the model
+# must never be dropped silently at rc 0 — a future optional operational
+# field forgotten in the loop would vanish across the cut. Refusal names the
+# field so a human decides: extend the model, or clean the conf. SESSION_NAME
+# is the known-dead exception: three live confs carry it, and registry_load
+# overwrites it unconditionally, so dropping it is correct, not a loss.
+cat > "$SESS/oldunknown.conf" <<'EOF'
+OWNER="a"
+DOMAIN="alpha"
+REPO_PATH="/p"
+FUTURE_FIELD="x"
+EOF
+out="$(run oldunknown --account a-h1 --entity alpha --slug unk 2>&1)"; rc=$?
+is "2d: unmodeled field refused rc 65" "$rc" "65"
+case "$out" in *FUTURE_FIELD*) ok "2d: the refusal names the field" ;; *) bad "2d: the refusal names the field" "got: $out" ;; esac
+is "2d: old conf untouched by the refusal" "$(grep -c '^FUTURE_FIELD="x"$' "$SESS/oldunknown.conf")" "1"
+rm -f "$SESS/oldunknown.conf"
+cat > "$SESS/olddead.conf" <<'EOF'
+OWNER="a"
+DOMAIN="alpha"
+REPO_PATH="/p"
+SESSION_NAME="olddead"
+EOF
+out="$(run olddead --account a-h1 --entity alpha --slug deadok --json)"; rc=$?
+is "2d: known-dead SESSION_NAME still migrates rc 0" "$rc" "0"
+IDD="$(printf '%s' "$out" | jq -r '.id')"
+is "2d: the dead line is not carried" "$(grep -c '^SESSION_NAME=' "$SESS/$IDD.conf")" "0"
+
 echo "== 3. idempotence and safety: abortable with no loss =="
 # 3a. Already NEW-SHAPE (carries ACCOUNT) — refuse, touch nothing.
 cat > "$SESS/already.conf" <<'EOF'

@@ -1927,6 +1927,26 @@ cmd_registry_migrate_session() {
     return 65
   fi
 
+  # 1d. FAIL-CLOSED ON UNMODELED FIELDS. The carry-loop below is a
+  # hand-maintained allowlist; a key on the old conf that no branch of this
+  # verb models would otherwise be DROPPED SILENTLY at rc 0 — and a future
+  # optional operational field forgotten in the loop would vanish across the
+  # cut looking like success. Refuse instead, naming the field, so a human
+  # decides: extend the model, or clean the conf. Nothing has been written
+  # yet, so the refusal costs nothing. SESSION_NAME is the one known-dead
+  # key: live confs still carry it, and registry_load overwrites it
+  # unconditionally on every read, so dropping it is correct, not a loss.
+  local _mig_known=" ID ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT OWNER DOMAIN RC_LABEL REPO_PATH HOST SESSION_NAME PERMISSION_MODE ENV_REFRESH OP_RUN ENV_FILE ENV_SOURCE OP_TOKEN_FILE KIND LIFECYCLE ASSETS VISIBILITY VISIBLE_TO BROWSER_RIG BROWSER_DISPLAY BROWSER_CDP BROWSER_VNC BROWSER_PROFILE RUNTIME MODEL OPENCODE_VERSION OPENCODE_PORT AUTO_APPROVE CLAUDE_MEMORY_ROOT "
+  local _mig_key
+  for _mig_key in $(grep -oE '^[A-Z_]+=' "$old_conf" 2>/dev/null | sed 's/=$//' | sort -u); do
+    case "$_mig_known" in
+      *" $_mig_key "*) ;;
+      *)
+        _reg_fail "$want_json" "steward registry migrate-session: the old conf carries a field this migration does not model: $_mig_key — extend the model or clean the conf; nothing was changed" 65
+        return 65 ;;
+    esac
+  done
+
   # 2. THE ACCOUNT — required, must RESOLVE, and its PRINCIPAL becomes OWNER.
   # SUBSHELLED, principal SNAPSHOTTED out through the substitution.
   [ -n "$account" ] || { _reg_fail "$want_json" "steward registry migrate-session: --account is required" 64; return 64; }
