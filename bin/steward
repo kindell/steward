@@ -2042,14 +2042,22 @@ cmd_registry_migrate_session() {
   _mig_add SLUG "$slug" required
   if [ "$tkind" = "project" ]; then _mig_add TARGET_PROJECT "$tslug" required
   else _mig_add TARGET_ENTITY "$tslug" required; fi
-  # DOMAIN DERIVES TO THE TARGET SLUG, and is written as a LITERAL line — NOT
-  # removed. The Linux supervisor SOURCES the conf raw (not through
-  # registry_load) and refuses a session with no DOMAIN: it builds the
-  # per-domain credential directory from it. registry_load derives the same
-  # value when the line is absent, but the supervisor never sees that
-  # derivation, so the line must be on disk. `session add` writes the same
-  # derived DOMAIN, so the two verbs agree and a migrated session can start.
-  _mig_add DOMAIN "$tslug" required
+  # DOMAIN IS CARRIED, NOT DERIVED — credential continuity across the cut.
+  # The Linux supervisor SOURCES the conf raw (not through registry_load),
+  # refuses a session with no DOMAIN, and builds the per-domain credential
+  # directory from it with NO inheritance chain. Deriving the LEAF target
+  # slug here (the first shape of this fix) silently moved that directory
+  # for every session migrated to a sub-project: the migrated session
+  # started against an EMPTY credential dir, the tools read "not logged
+  # in", and the estate's own findings record that symptom minting second
+  # identities against customer tenants. The same drift narrowed the bus
+  # same-DOMAIN gate between sessions that share an entity. So the OLD
+  # conf's DOMAIN survives the migration verbatim; only a conf with no
+  # DOMAIN at all falls back to the target slug, so the supervisor's
+  # DOMAIN-required start never refuses. `session add` still derives the
+  # target slug — a FRESH session has no credential history to preserve.
+  local old_domain; old_domain="$(_migrate_snap "$old_conf" DOMAIN)"
+  _mig_add DOMAIN "${old_domain:-$tslug}" required
   _mig_add OWNER "$principal" required
   _mig_add REPO_PATH "$old_repo" required
   _mig_add HOST "$host" required

@@ -170,8 +170,17 @@ ID2="$(printf '%s' "$out" | jq -r '.id')"
 is "2: target kind project" "$(printf '%s' "$out" | jq -r '.target.kind')" "project"
 is "2: TARGET_PROJECT set" "$(load_field "$ID2" TARGET_PROJECT)" "site"
 is "2: no TARGET_ENTITY line stored" "$(grep -c '^TARGET_ENTITY=' "$SESS/$ID2.conf")" "0"
-is "2: DOMAIN derived to the PROJECT slug" "$(load_field "$ID2" DOMAIN)" "site"
-is "2: DOMAIN stored as a literal line" "$(grep -c '^DOMAIN="site"$' "$SESS/$ID2.conf")" "1"
+# THE CREDENTIAL-DRIFT RULE (adversarial review of 5b3b165): the old conf's
+# DOMAIN is an OPERATIONAL field — the Linux supervisor builds the per-domain
+# credential directory from it, with no inheritance chain. Deriving the LEAF
+# target slug here silently orphaned the shared credential dir for every
+# session migrated to a sub-project (the tool then reads "not logged in" — the
+# exact symptom class the identity spec's findings warn mints second identities
+# against customer tenants) and narrowed the bus same-DOMAIN gate. So migrate
+# CARRIES the old DOMAIN; only a conf with none at all falls back to the
+# target slug (so the supervisor's DOMAIN-required start never refuses).
+is "2: DOMAIN CARRIED from the old conf (credential continuity), not the leaf slug" "$(load_field "$ID2" DOMAIN)" "alpha"
+is "2: carried DOMAIN stored as a literal line" "$(grep -c '^DOMAIN="alpha"$' "$SESS/$ID2.conf")" "1"
 is "2: display walks Alpha->Site" "$(display_of "$ID2")" "Alpha→Site"
 is "2: display echoed in JSON" "$(printf '%s' "$out" | jq -r '.display')" "Alpha→Site"
 absent "2: old row removed" "$SESS/oldproj.conf"
@@ -187,6 +196,16 @@ plain="$(run oldplain --account a-h1 --entity alpha --slug plainslug)"; rc=$?
 is  "2b: rc 0" "$rc" "0"
 has "2b: mapping names the old slug and the arrow" "$plain" "migrated oldplain ->"
 has "2b: mapping carries the derived display" "$plain" "display: Alpha"
+
+echo "== 2c. an old conf with NO DOMAIN at all: fall back to the target slug =="
+cat > "$SESS/olddomless.conf" <<'EOF'
+OWNER="a"
+REPO_PATH="/p"
+EOF
+out="$(run olddomless --account a-h1 --project site --slug domless --json)"; rc=$?
+is "2c: rc 0" "$rc" "0"
+IDB="$(printf '%s' "$out" | jq -r '.id')"
+is "2c: DOMAIN falls back to the target slug (the supervisor requires a line)" "$(load_field "$IDB" DOMAIN)" "site"
 
 echo "== 3. idempotence and safety: abortable with no loss =="
 # 3a. Already NEW-SHAPE (carries ACCOUNT) — refuse, touch nothing.
