@@ -513,20 +513,21 @@ registry_entity_write() {
   local lock="$dir/.write.lock"
   local tries=0
   while ! mkdir "$lock" 2>/dev/null; do
-    tries=$((tries+1))
-    if [ "$tries" -ge 20 ]; then
-      # A lock dir that still doesn't exist after every attempt failed is
-      # NOT the same failure as one held by another writer (EEXIST) — mkdir
-      # can also fail with ENOENT or EACCES, which will never resolve no
-      # matter how long this loops. Misreporting that as "held" cost a 2s
-      # stall and the wrong remedy; distinguish by what's actually on disk.
-      if [ -d "$lock" ]; then
-        echo "registry: another write holds the registry lock, refusing: $lock" >&2
-        echo "registry: if no write is in progress, remove it with: rmdir $lock" >&2
-        return 75
-      fi
+    # A failed mkdir that left NO lock dir on disk is not a held lock
+    # (EEXIST) — it is ENOENT or EACCES on an unwritable register, and no
+    # amount of retrying resolves it. Diagnose that on the FIRST failure and
+    # fail fast: the original defect was blamed for a multi-second stall,
+    # and only distinguishing the two after the whole retry budget was spent
+    # left the stall in place while merely correcting the message.
+    if [ ! -d "$lock" ]; then
       echo "registry: could not create the write lock — the entity register may be unwritable: $lock" >&2
       return 78
+    fi
+    tries=$((tries+1))
+    if [ "$tries" -ge 20 ]; then
+      echo "registry: another write holds the registry lock, refusing: $lock" >&2
+      echo "registry: if no write is in progress, remove it with: rmdir $lock" >&2
+      return 75
     fi
     sleep 0.1
   done
@@ -582,10 +583,31 @@ registry_entity_write() {
   # to overwrite, which let this step report "wrote" while a foreign row
   # sat under the final name untouched and a reader's next load would see
   # THAT row, not this one.
+  # A directory (or any non-regular file) appearing under $final between the
+  # recheck above and this publish is the one shape `ln` does NOT refuse:
+  # `ln SRC DIR` links INTO the directory instead of failing EEXIST, and a
+  # later `rm -f` cannot remove a directory — the slug would be squatted for
+  # good with the staged bytes leaked inside it. Re-guard immediately before
+  # the link, then confirm what actually landed is our own regular file.
+  if [ -e "$final" ] || [ -L "$final" ]; then
+    echo "registry: refusing — already exists: $final" >&2
+    rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 65
+  fi
   if ! ln "$stage" "$final" 2>/dev/null; then
     echo "registry: refusing — already exists: $final" >&2
     rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 65
+  fi
+  if [ ! -f "$final" ]; then
+    # `ln` linked into a directory that raced in during the link syscall
+    # itself: the staged bytes now sit at $final/<stage-basename>. Remove
+    # that nested link, leave the raced directory (not ours to delete), and
+    # refuse — never report a write that did not land where it claims.
+    rm -f "$final/$(basename "$stage")" 2>/dev/null
+    echo "registry: refusing — $final is not a regular file (a directory raced the publish)" >&2
+    rm -f "$stage"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
   fi
   rm -f "$stage"
 

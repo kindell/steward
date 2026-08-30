@@ -346,6 +346,48 @@ neq "C2: registry_entity_write does NOT report success when \$final raced in" "$
 is "C2: the foreign row is untouched" "$?" "0"
 no_stage_leftover "C2: no leftover stage file either" "$CONF"
 
+
+echo "== C2-dir: a DIRECTORY racing into the publish window must not be linked into, littered, or squatted =="
+# `ln SRC DIR` does NOT fail EEXIST — it links INTO the directory. A later
+# `rm -f` cannot remove a directory, so the slug would be squatted forever
+# with the staged bytes leaked nested inside. The validate_fn seam creates
+# $final as a directory in the window between recheck and publish.
+_c2d_final="$CONF/c2dir.conf"
+_c2d_make_dir_race() { mkdir -p "$_c2d_final"; return 0; }
+(
+  . "$here/lib/registry.sh"
+  STEWARD_ESTATE_ROOT="$FX"; STEWARD_ENTITY_DIR="$CONF"
+  registry_entity_write "c2dir" 'NAME="Legit"' _c2d_make_dir_race
+)
+rc=$?
+neq "C2-dir: writer refuses (non-zero) when a directory raced the publish" "$rc" "0"
+[ -d "$_c2d_final" ]; is "C2-dir: the raced directory is left alone (not ours to delete)" "$?" "0"
+# THE REAL PROOF: no staged bytes leaked nested inside the squatted directory.
+_c2d_nested="$(find "$_c2d_final" -type f 2>/dev/null | head -1)"
+is "C2-dir: no staged file leaked inside the directory" "$_c2d_nested" ""
+# And the slug is NOT permanently squatted for a real writer: remove the
+# raced dir (as an operator would) and a legit add now succeeds.
+rmdir "$_c2d_final" 2>/dev/null
+out="$(run team add c2dir --name "Recovered")"; rc=$?
+is "C2-dir: after the raced dir is cleared, the slug is writable (rc 0)" "$rc" "0"
+
+echo "== C4-fast: an unwritable register fails FAST (rc 78), never a multi-second stall =="
+# The lock-acquire loop must distinguish EEXIST (held) from ENOENT/EACCES
+# (unwritable) on the FIRST failed mkdir, not after the whole retry budget —
+# correcting only the message left the stall the defect was blamed for.
+RO_C4="$FX/readonly-entdir"; mkdir -p "$RO_C4"; chmod 555 "$RO_C4"
+_t0="$(date +%s)"
+(
+  . "$here/lib/registry.sh"
+  STEWARD_ESTATE_ROOT="$FX"; STEWARD_ENTITY_DIR="$RO_C4"
+  registry_entity_write "cantwrite" 'NAME="x"' _permissive_validate_c3
+) 2>/dev/null
+rc=$?
+_t1="$(date +%s)"
+chmod 755 "$RO_C4"
+is "C4-fast: unwritable register refuses rc 78" "$rc" "78"
+[ "$((_t1 - _t0))" -le 1 ]; is "C4-fast: it fails within a second, no retry-budget stall" "$?" "0"
+
 echo "== C3: rollback must not fail OPEN when stat is unavailable =="
 # Step 7's rollback only removed the bad row if _registry_stat_id returned a
 # NON-EMPTY value that matched — an empty stat (host without BSD/GNU stat,
