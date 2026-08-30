@@ -232,7 +232,11 @@ REPO="${2:-${REPO_PATH:-$HOME/Projects/$NAME}}"
 # momentary window proves nothing.
 #
 # Claude Code stores conversations per project path with / replaced by -.
-HIST="$HOME/.claude/projects/$(printf '%s' "$REPO" | sed 's|/|-|g')"
+# The munge is EVERY non-alphanumeric character, not just the slash. Measured
+# on a real checkout: a repo path with a dot maps to a directory where the dot
+# is also a dash. With slash-only munging the lookup globs an empty directory
+# for any dotted repo path and silently forks a fresh thread on every respawn.
+HIST="$HOME/.claude/projects/$(printf '%s' "$REPO" | sed 's|[^a-zA-Z0-9]|-|g')"
 # STATE_DIR/SUSPECT/RESUME_TRY are set at the top, at the pause check — they
 # derive from $HOME and $NAME and had to move there together with it.
 
