@@ -164,7 +164,10 @@ registry_estate_name() {
 # Bump it in the same commit that teaches the library a new field, never before:
 # the number is a promise about what the code can read, not a label on what the
 # estate happens to contain.
-REGISTRY_SCHEMA_MAX=3
+# 4 (2026-08-30): the identity fields — ACCOUNT, SLUG, TARGET_ENTITY,
+# TARGET_PROJECT — became readable in registry_load, and a session conf may
+# carry a target reference in place of an RC_LABEL line.
+REGISTRY_SCHEMA_MAX=4
 
 # registry_schema_check: rc 0 if this checkout understands the estate's schema,
 # rc 78 if the estate is NEWER than the code reading it.
@@ -1228,6 +1231,7 @@ registry_load() {
   # Reset before sourcing so a prior load never leaks into this one.
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""; RC_FRI=""
   ID=""; KIND=""; LIFECYCLE=""; ASSETS=""
+  ACCOUNT=""; SLUG=""; TARGET_ENTITY=""; TARGET_PROJECT=""
   VISIBILITY=""; VISIBLE_TO=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
@@ -1272,6 +1276,40 @@ registry_load() {
   # materialized by ENV_REFRESH (e.g. via sops). OP_RUN already sources .env.
   : "${ENV_SOURCE:=}"
   if [ -z "$REPO_PATH" ]; then echo "registry: $project.conf missing REPO_PATH" >&2; return 1; fi
+  # ── THE IDENTITY FIELDS (naming-model design, 2026-08-30) ────────────────
+  # ACCOUNT      which (principal, host) account the session belongs to —
+  #              references an accounts.d slug.
+  # SLUG         the session's short name, unique within its ACCOUNT.
+  # TARGET_*     what the session works ON — a reference the display is
+  #              DERIVED from, never a stored label.
+  #
+  # READ LENIENTLY: a gap is not a failure. Every conf that predates the
+  # model omits all four, and omission must read EXACTLY as before — the
+  # fields are validated for SHAPE only, and only when non-empty. They are
+  # never RESOLVED here: an account or target that does not exist in its
+  # register is a gap for the reader, and strictness belongs to the writer
+  # that sets the fields. (The composite (ACCOUNT, SLUG) uniqueness gate,
+  # registry_account_slug_available above, stays unwired for the same
+  # reason — it is the writer's gate, not the reader's.)
+  #
+  # The shape refused here is refused for the same reason OWNER's is: these
+  # values index other registers, so a path escape or a control byte would
+  # reach outside the register the moment a consumer built a path from one.
+  local _idf
+  for _idf in ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT; do
+    if [ -n "${!_idf}" ] && ! [[ "${!_idf}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      echo "registry: $project.conf invalid $_idf (allowed: a-z 0-9 and hyphen, starting with a letter or digit)" >&2
+      return 1
+    fi
+  done
+  # THE TARGET IS A TYPED UNION. A session works on a project OR directly on
+  # an entity (a team session with no project is legitimate) — a row claiming
+  # both is two contradictory claims about the same session, and picking one
+  # silently would make the display disagree with whichever claim lost.
+  if [ -n "$TARGET_ENTITY" ] && [ -n "$TARGET_PROJECT" ]; then
+    echo "registry: $project.conf sets both TARGET_ENTITY and TARGET_PROJECT — the target is a typed union, declare exactly one" >&2
+    return 1
+  fi
   # RC-FREE SESSION: THE MACHINE SESSION. One standing session per machine under
   # the machine steward's account, started WITHOUT --remote-control. It is reached
   # over the bus and through the client's peek/attach.
@@ -1302,6 +1340,13 @@ registry_load() {
   if grep -q '^RC_LABEL=' "$conf" 2>/dev/null; then
     RC_FRI=""
     [ -z "$RC_LABEL" ] && RC_FRI="yes"
+  elif [ -n "$TARGET_ENTITY$TARGET_PROJECT" ]; then
+    # A NEW-SHAPE row: the display is a REFERENCE (the target above), not a
+    # stored label, so there is no label line to forget — the refusal below
+    # exists to catch a FORGOTTEN label, and nothing is forgotten here.
+    # registry_session_display derives the string. An old-shape row (no
+    # target fields) never reaches this branch and refuses exactly as before.
+    RC_FRI=""
   else
     echo "registry: $project.conf missing RC_LABEL (write RC_LABEL=\"\" for an RC-free machine session)" >&2
     return 1
@@ -1516,6 +1561,103 @@ registry_load() {
   else
     LOG_PATH="$OWNER_HOME/.claude/claude-$project.log"
   fi
+}
+
+# registry_session_display <session> — prints the session's display string.
+# THE ONE PLACE a session's display is computed: a consumer that shows a
+# session (supervisor, cockpit, status) calls this instead of reading
+# RC_LABEL raw, so the derivation has a single owner when it changes.
+#
+# PRECEDENCE, in order:
+#   1. RC_LABEL non-empty        -> printed VERBATIM. The legacy override: a
+#                                   row that carries a label has chosen its
+#                                   display, byte-identical to what the
+#                                   supervisor shows today.
+#   2. TARGET_PROJECT            -> registry_display_for project (root→leaf).
+#   3. TARGET_ENTITY             -> registry_display_for entity.
+#   4. neither                   -> prefix+name, the EXACT construction the
+#                                   Linux supervisor builds when a conf has
+#                                   no RC_LABEL line — the old-shape path,
+#                                   and it must not change what old sessions
+#                                   display.
+#
+# A target that fails to derive (renamed away, a forged NAME) PROPAGATES
+# registry_display_for's refusal — a display is never invented, because an
+# invented one would look exactly like a working derivation.
+#
+# DISPLAY IS PRESENTATION, NEVER IDENTITY. Nothing may match a process, a
+# pane or a bus address against this string — supervision keys on ID +
+# ACCOUNT (+ tmux/pid). Duplicates between sessions are deliberate.
+#
+# THE LOAD IS SUBSHELLED and the fields are SNAPSHOTTED out. registry_load
+# sources an untrusted conf; run in this function's own shell, a row
+# assigning this function's lowercase locals would clobber them via dynamic
+# scoping the moment the row sourced. Everything the conf can influence
+# crosses the boundary as printed field values only; the name used by the
+# fallback is this function's own argument, captured before any load runs.
+registry_session_display() {
+  local slug="${1:-}"
+  if ! registry_valid_name "$slug"; then
+    echo "registry: registry_session_display: invalid session name '$slug' (allowed: a-z 0-9 -)" >&2
+    return 1
+  fi
+  local conf; conf="$(registry_dir)/$slug.conf"
+  if [ ! -f "$conf" ]; then
+    echo "registry: registry_session_display: unknown session '$slug' (no $conf)" >&2
+    return 1
+  fi
+  # THE OLDER-ESTATE SHAPE: no RC_LABEL line and no target reference.
+  # registry_load REFUSES that conf (a forgotten label must never quietly
+  # become an invisible session) — but the supervisor serves those estates
+  # by BUILDING the label as prefix+name, and this projection must match it
+  # byte-for-byte. Detected the same way both registry_load and the
+  # supervisor detect the label line: the LINE's presence, not the value.
+  if ! grep -q -e '^RC_LABEL=' -e '^TARGET_ENTITY=' -e '^TARGET_PROJECT=' "$conf" 2>/dev/null; then
+    local _prefix
+    _prefix="$(registry_rc_label_prefix)" || return 78
+    printf '%s\n' "$_prefix$slug"
+    return 0
+  fi
+  # SUBSHELLED — see the header. The snapshot prints the two targets first
+  # (guaranteed newline-free: registry_load validated their shape, or they
+  # are empty) and RC_LABEL last, behind a sentinel byte so an empty label
+  # cannot be collapsed by command substitution's trailing-newline
+  # stripping into the field ahead of it. stderr flows through, so a
+  # refusing load explains itself in registry_load's own words.
+  local snap rc
+  snap="$(
+    registry_load "$slug" >/dev/null || exit $?
+    printf '%s\n%s\n%s' "$TARGET_PROJECT" "$TARGET_ENTITY" "x$RC_LABEL"
+  )"
+  rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  local tproj tent label rest
+  tproj="${snap%%$'\n'*}"
+  rest="${snap#*$'\n'}"
+  tent="${rest%%$'\n'*}"
+  label="${rest#*$'\n'}"
+  label="${label#x}"
+  if [ -n "$label" ]; then
+    printf '%s\n' "$label"
+    return 0
+  fi
+  local disp
+  if [ -n "$tproj" ]; then
+    disp="$(registry_display_for project "$tproj")" || return $?
+    printf '%s\n' "$disp"
+    return 0
+  fi
+  if [ -n "$tent" ]; then
+    disp="$(registry_display_for entity "$tent")" || return $?
+    printf '%s\n' "$disp"
+    return 0
+  fi
+  # RC_LABEL line present but empty (the RC-FREE choice) and no target: the
+  # session still needs a name a human can read in a list, and prefix+name
+  # is the one construction that already means "this session, unlabeled".
+  local _prefix
+  _prefix="$(registry_rc_label_prefix)" || return 78
+  printf '%s\n' "$_prefix$slug"
 }
 
 registry_render_plist() {
