@@ -89,6 +89,15 @@ STATE_DIR="$HOME/.local/state/${_STATE_NAME:-.}"
 [ -n "$_STATE_NAME" ] && mkdir -p "$STATE_DIR"
 SUSPECT="$STATE_DIR/$NAME.suspect"
 RESUME_TRY="$STATE_DIR/$NAME.resume-try"
+# THE LAST CONFIRMED-ALIVE SID AND THE LAUNCH MARK (ported from the macOS twin
+# 2026-08-31). The macOS supervisor holds in the foreground and notes the held
+# sid in-process once the session has provably survived; this supervisor is a
+# one-shot timer, so the start round writes WHAT IT LAUNCHED to the launch
+# mark, and the next round that finds the session alive turns that into
+# last-sid (or clears last-sid after a fresh start). Same state directory,
+# same file shapes as the twin.
+LAST_SID_FILE="$STATE_DIR/$NAME.last-sid"
+LAUNCH_MARK="$STATE_DIR/$NAME.launched"
 if [ -n "$_PAUSED_NAME" ] && [ -f "$HOME/.local/state/$_PAUSED_NAME/$NAME" ]; then
   rm -f "$SUSPECT"
   exit 0
@@ -280,8 +289,22 @@ SID=""
 # thread reliably rather than occasionally, and the session went on answering
 # in the job own format for its own errand. The chooser now prints TWO lines:
 # the class ("human"/"job") and the path.
+#
+# THE LAST HELD SID IS PREFERRED over every heuristic below (ported from the
+# macOS twin 2026-08-31, measured the same night on a machine-session restart
+# here: the chooser silently landed on a different thread than the live one).
+# The sid supervision itself last CONFIRMED ALIVE is the only thread known to
+# be the session's own; class-then-newest is the fallback when no last-sid
+# exists or its thread is gone. [ -f ] also covers the FIFO and the directory.
+_latest=""
+if [ -f "$LAST_SID_FILE" ]; then
+  _last_sid=""
+  IFS=' ' read -r _last_sid _ < "$LAST_SID_FILE" 2>/dev/null || true
+  [ -n "${_last_sid:-}" ] && [ -f "$HIST/$_last_sid.jsonl" ] && _latest="$HIST/$_last_sid.jsonl"
+fi
 _kind=""
-_pick="$(python3 - "$HIST" <<'PY' 2>/dev/null
+_pick=""
+[ -n "$_latest" ] || _pick="$(python3 - "$HIST" <<'PY' 2>/dev/null
 import glob, json, os, sys
 # THE FIRST RECORD SEPARATES THE SESSION'S OWN THREAD FROM AN ERRAND THREAD.
 # Measured over every thread file under the projects directory: exactly three
@@ -366,7 +389,6 @@ for kind in ("human", "job"):
         break
 PY
 )"
-_latest=""
 if [ -n "$_pick" ]; then
   _kind="$(printf '%s\n' "$_pick" | sed -n '1p')"
   _latest="$(printf '%s\n' "$_pick" | sed -n '2p')"
@@ -446,6 +468,12 @@ if [ -n "$SID" ]; then
   _tries=0
   [ -f "$RESUME_TRY" ] && IFS=' ' read -r _prev_sid _tries < "$RESUME_TRY" 2>/dev/null
   [ "${_prev_sid:-}" = "$SID" ] || _tries=0
+  # GARBAGE IN THE COUNTER = 0, NEVER A DEAD START (ported from the macOS
+  # twin's fix round). A non-numeric tries field (torn write, hand edit)
+  # crashed the arithmetic at the attempt count under set -u BEFORE anything
+  # started — the session lay down on the guard's own state, precisely the
+  # outcome the guard exists to prevent. Same fail-open as the empty file.
+  case "${_tries:-}" in ''|*[!0-9]*) _tries=0 ;; esac
   if [ "${_tries:-0}" -ge 3 ]; then
     # STARTING CLEAN IS FORKING. One session's objection, and it is correct:
     # this is the right call when the alternative is a session that lies down
@@ -599,12 +627,9 @@ CRED_ENV_ARGS=(
   -e "GH_CONFIG_DIR=$GH_CONFIG_DIR"
   -e "CLOUDSDK_CONFIG=$CLOUDSDK_CONFIG"
 )
-# The same environment as a prefix on the command line, for the send-keys
-# path: there is no new pane to set environment on — the shell is already
-# alive and carries the server's environment. A VAR=value prefix applies only
-# to the started process, which is exactly what we want.
-CRED_ENV_PREFIX="$(printf 'CRED_HOME=%q AZURE_CONFIG_DIR=%q GH_CONFIG_DIR=%q CLOUDSDK_CONFIG=%q ' \
-  "$CRED_HOME" "$AZURE_CONFIG_DIR" "$GH_CONFIG_DIR" "$CLOUDSDK_CONFIG")"
+# (The send-keys variant of this environment is gone WITH the send-keys
+# repair: every start path below creates a fresh pane via new-session -e, so
+# the array above is the whole story.)
 
 # THE PAUSE MARKER WINS OVER EVERYTHING — and is therefore read at the TOP of
 # the file, not here. A session deliberately shut down must not be revived by
@@ -678,6 +703,28 @@ claude_alive_in_session() {
   [ -n "$pane" ] || return 1   # no tmux session -> no live session, period
   local pid
   for pid in $(matching_claude_pids); do
+    is_descendant "$pid" "$pane" && return 0
+  done
+  return 1
+}
+# THE KILL DECISION IS BROADER THAN THE ALIVE DECISION. The zombie repair
+# below kills a tmux session, and a kill must never reach a living runtime —
+# so its veto does not trust the label-anchored pattern above (a drifted
+# label, or a pattern bug, would otherwise turn into a killed conversation)
+# and it counts EVERY interactive runtime: claude under any label, and the
+# opencode adapter, whose process line carries "opencode" in a path word
+# rather than as claude argv. The match is deliberately loose ((^|[ /]) word
+# start, no end anchor): a false ALIVE here merely postpones a repair one
+# round and warns, while a false DEAD kills — the asymmetry picks the
+# direction. The label-anchored check keeps deciding "healthy"; this one only
+# vetoes destruction.
+RUNTIME_VETO_PAT='(^|[ /])(claude|opencode)'
+matching_runtime_pids() { pgrep -u "$(id -u)" -f "$RUNTIME_VETO_PAT" 2>/dev/null; }
+runtime_alive_in_session() {
+  local pane; pane="$(session_pane_pid)"
+  [ -n "$pane" ] || return 1
+  local pid
+  for pid in $(matching_runtime_pids); do
     is_descendant "$pid" "$pane" && return 0
   done
   return 1
@@ -814,6 +861,23 @@ bus_signalera() { # <what> <text>
 
 if claude_alive_in_session; then
   rm -f "$SUSPECT" "$RESUME_TRY"   # live session = the resume took, reset the counter
+  # SURVIVAL TURNS THE LAUNCH MARK INTO last-sid (the macOS twin's hold-loop
+  # round two, translated to the one-shot model: a full timer interval alive
+  # is a stronger survival proof than the twin's ten seconds). A start with a
+  # sid records that sid as the last one known alive; a FRESH start clears
+  # last-sid, so the next respawn finds the NEW thread via newest-by-content
+  # instead of the old one via last-sid. A round that did not start anything
+  # leaves no mark and touches nothing.
+  if [ -f "$LAUNCH_MARK" ]; then
+    _l_sid=""
+    IFS=' ' read -r _l_sid _ < "$LAUNCH_MARK" 2>/dev/null || true
+    if [ -n "${_l_sid:-}" ]; then
+      printf '%s\n' "$_l_sid" > "$LAST_SID_FILE"
+    else
+      rm -f "$LAST_SID_FILE"
+    fi
+    rm -f "$LAUNCH_MARK"
+  fi
   # ...but "alive" is not "able to work". See the comment at
   # ensure_workspace_trusted: a session waiting at the trust prompt is a live
   # process accomplishing zero, and without this line it looks like any
@@ -1006,31 +1070,65 @@ if [ ! -x "$CLAUDE_BIN" ]; then
   exit 78
 fi
 
-# From here on we start something. Count the attempt so the loop protection
-# above can trigger.
-[ -n "$SID" ] && printf '%s %s\n' "$SID" "$(( ${_tries:-0} + 1 ))" > "$RESUME_TRY"
+# From here on we start something. ONE start path for both branches below:
+# the boot start and the zombie respawn must count attempts, leave the launch
+# mark and set the environment identically, or the next divergence hides in
+# whichever branch a test did not exercise.
+spawn_session() {
+  ensure_workspace_trusted
+  reap_orphan_claude   # a killed tmux session may have left an orphaned claude
+  rm -f "$SUSPECT"
+  # The attempt is counted BEFORE the launch, so a resume that is refused can
+  # never count itself; the loop protection above reads this file.
+  [ -n "$SID" ] && printf '%s %s\n' "$SID" "$(( ${_tries:-0} + 1 ))" > "$RESUME_TRY"
+  # WHAT WE LAUNCHED, for the survival round: the sid, or an empty line for a
+  # fresh start. The alive branch turns this into last-sid (or clears it).
+  printf '%s\n' "$SID" > "$LAUNCH_MARK"
+  tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
+    "$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+}
 
 # No tmux at all (e.g. after boot): creating anew is risk-free — there is no
 # live session to write into. No two-round rule here.
 if ! tmuxc has-session -t "=$NAME" 2>/dev/null; then
-  ensure_workspace_trusted
-  reap_orphan_claude   # a killed tmux session may have left an orphaned claude
-  rm -f "$SUSPECT"
-  tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
-    "$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+  spawn_session
   exit 0
 fi
 
-# tmux exists but no claude process: suspect — but write NOTHING until the
-# next round says the same. Three extra minutes of downtime are cheaper than a
-# command line injected into a live conversation.
+# tmux exists but no claude matching the label. Before anything destructive:
+# does ANY runtime live in the pane? A claude under a drifted label, or an
+# opencode adapter, is a living conversation this supervisor cannot identify —
+# it must be neither killed nor typed into. Warn every round (the same posture
+# as warn_if_untrusted_while_running: an anomaly a human should fix, never a
+# silent one), and clear the suspect mark so the zombie verdict below always
+# rests on two CONSECUTIVE runtime-free rounds.
+if runtime_alive_in_session; then
+  rm -f "$SUSPECT"
+  echo "session-supervisor: $NAME — WARNING: a claude/opencode process lives in the session's pane but does not match this session's pattern." >&2
+  echo "session-supervisor: $NAME — leaving it alone (no kill, no keystrokes). If the label changed, fix the conf; supervision cannot repair what it cannot identify." >&2
+  exit 0
+fi
+
+# No runtime at all in a session that exists: suspect — but do NOTHING until
+# the next round says the same. The launch string ends '; exec bash', so a
+# session mid-boot and a session whose claude just died look identical for one
+# measurement; three extra minutes of downtime are cheaper than killing a
+# session that was about to come up.
 if [ ! -f "$SUSPECT" ]; then
   touch "$SUSPECT"
   exit 0
 fi
 rm -f "$SUSPECT"
-# Plain name, exact-guarded: this line is only reached when has-session -t
-# "=$NAME" answered yes above — see the pane-vs-session note at the re-ping.
-tmuxc send-keys -t "$NAME" -l "$CRED_ENV_PREFIX$CLAUDE_CMD" 2>/dev/null
-tmuxc send-keys -t "$NAME" Enter 2>/dev/null
+# TWO ROUNDS WITHOUT A RUNTIME: the pane is a bare shell wearing a live
+# session's name. Measured 2026-08-31: seven sessions sat like this for ~6
+# hours — claude had exited, '; exec bash' kept the pane alive, has-session
+# kept answering yes, and bus pings were typed into bash as syntax errors,
+# with zero alarms. The old repair here was send-keys into that shell — the
+# same lossy keystroke path. Kill the zombie LOUDLY, by name, and respawn
+# through the one start path (which resumes the thread exactly like any other
+# restart).
+echo "session-supervisor: $NAME — ZOMBIE PANE: tmux session '$NAME' exists but no claude/opencode process descends from its pane, two rounds in a row." >&2
+echo "session-supervisor: $NAME — killing the zombie session and respawning." >&2
+tmuxc kill-session -t "=$NAME" 2>/dev/null
+spawn_session
 exit 0
