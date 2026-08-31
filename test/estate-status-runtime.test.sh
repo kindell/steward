@@ -138,6 +138,46 @@ STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
 [ -f "$T/WAS_EXECUTED" ] && bad "the conf WAS EXECUTED — status must only read" \
                          || ok "the conf was read without being executed"
 
+echo "== a new-shape row derives its display without executing anything =="
+# The naming model stores a REFERENCE, not a label line. "(no label line)"
+# told the truth about the file and a lie about the session. The walk must be
+# sed-only (the executed-canary guards it like every other read here), bounded,
+# and fall back to "(derived)" on any anomaly rather than inventing a name.
+mkdir -p "$T/entities.d" "$T/projects.d"
+printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$T/entities.d/alpha.conf"
+printf 'NAME="Client"\nMANAGED_BY="alpha"\n' > "$T/entities.d/client.conf"
+printf 'NAME="Site"\nPARENT="client"\n' > "$T/projects.d/site.conf"
+cat > "$T/sessions.d/s-00000000000000aa.conf" <<'EOF'
+ID="s-00000000000000aa"
+ACCOUNT="a-h"
+SLUG="hub"
+TARGET_ENTITY="alpha"
+OWNER="a"
+REPO_PATH="/tmp/x"
+EOF
+cat > "$T/sessions.d/s-00000000000000bb.conf" <<'EOF'
+ID="s-00000000000000bb"
+ACCOUNT="a-h"
+SLUG="web"
+TARGET_PROJECT="site"
+OWNER="a"
+REPO_PATH="/tmp/x"
+EOF
+cat > "$T/sessions.d/s-00000000000000cc.conf" <<'EOF'
+ID="s-00000000000000cc"
+ACCOUNT="a-h"
+SLUG="broken"
+TARGET_ENTITY="no-such-ent"
+OWNER="a"
+REPO_PATH="/tmp/x"
+EOF
+out="$( STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d"         STEWARD_TMUX_BIN="$T/bin/tmux" PATH="$T/bin:$PATH"         bash "$here/linux/estate-status.sh" 2>&1 )"
+case "$out" in *"Alpha"*) ok "entity target derives Alpha" ;; *) bad "entity target derives Alpha" "$out" ;; esac
+case "$out" in *"Alpha→Client→Site"*) ok "project target walks the chain root→leaf" ;; *) bad "project target walks the chain root→leaf" "$out" ;; esac
+case "$out" in *"(derived)"*) ok "unresolvable target says (derived), never invents" ;; *) bad "unresolvable target says (derived)" "$out" ;; esac
+case "$out" in *"(no label line)"*) bad "the old file-truth label is gone" "$out" ;; *) ok "the old file-truth label is gone" ;; esac
+rm -f "$T/sessions.d/s-000000000000"??".conf"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

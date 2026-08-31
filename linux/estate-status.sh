@@ -96,7 +96,38 @@ for conf in "$RDIR"/*.conf; do
     rc="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$conf" | head -1)"
     rc="${rc:-(RC-free)}"
   else
-    rc="(no label line)"
+    # NO LABEL LINE IS NOT A FORGOTTEN LABEL ANY MORE. A new-shape row (the
+    # naming model) stores a REFERENCE — TARGET_ENTITY or TARGET_PROJECT —
+    # and the display derives from the org tree. Printing "(no label line)"
+    # here told the truth about the FILE and a lie about the SESSION.
+    #
+    # THE WALK IS NON-EXECUTING, like every other read in this tool: sed over
+    # NAME/PARENT/MANAGED_BY, never source — these are other people's confs
+    # on shared machines. It is a bounded, display-only sibling of the real
+    # projection (registry_session_display): max four hops, and ANY anomaly —
+    # missing conf, empty NAME, a loop — falls back to "(derived)", which is
+    # true and invites the reader to ask the registry properly. The projection
+    # stays the single owner of authoritative derivation; this is a status
+    # column's best safe effort, not a second authority.
+    rc="(derived)"
+    _t="$(sed -n 's/^TARGET_PROJECT="\([a-z0-9-]*\)"$/\1/p' "$conf" | head -1)"; _kind="project"
+    [ -n "$_t" ] || { _t="$(sed -n 's/^TARGET_ENTITY="\([a-z0-9-]*\)"$/\1/p' "$conf" | head -1)"; _kind="entity"; }
+    if [ -n "$_t" ]; then
+      _root="$(_registry_estate_root 2>/dev/null)" || _root=""
+      _chain=""; _hop=0; _cur="$_t"; _curkind="$_kind"; _ok=1
+      while [ -n "$_cur" ] && [ "$_hop" -lt 4 ]; do
+        _hop=$((_hop+1))
+        if [ "$_curkind" = "project" ]; then _cf="$_root/projects.d/$_cur.conf"; else _cf="$_root/entities.d/$_cur.conf"; fi
+        [ -f "$_cf" ] || { _ok=""; break; }
+        _nm="$(sed -n 's/^NAME="\(.*\)"$/\1/p' "$_cf" | head -1)"
+        [ -n "$_nm" ] || { _ok=""; break; }
+        _chain="$_nm${_chain:+→$_chain}"
+        if [ "$_curkind" = "project" ]; then _cur="$(sed -n 's/^PARENT="\([a-z0-9-]*\)"$/\1/p' "$_cf" | head -1)"
+        else _cur="$(sed -n 's/^MANAGED_BY="\([a-z0-9-]*\)"$/\1/p' "$_cf" | head -1)"; fi
+        _curkind="entity"
+      done
+      [ -n "$_ok" ] && [ -n "$_chain" ] && [ -z "$_cur" ] && rc="$_chain"
+    fi
   fi
   # WHICH RUNTIME, AND ON WHICH MODEL. Until a second runtime existed the answer
   # was implicit and right by accident; with two, a reader cannot tell a Claude
