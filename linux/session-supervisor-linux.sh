@@ -685,7 +685,14 @@ fi
 # something ADJACENT (does a matching process exist?) instead of what it
 # wanted to know (is MY claude running, tied to MY tmux?).
 matching_claude_pids() { pgrep -u "$(id -u)" -f "$CLAUDE_PAT" 2>/dev/null; }
-session_pane_pid()     { tmuxc list-panes -t "=$NAME" -F '#{pane_pid}' 2>/dev/null | head -1; }
+# EVERY PANE IN EVERY WINDOW (-s), never just the current window. Fixture-proven
+# on real tmux 3.6b: list-panes -t "=name" lists ONLY the session's CURRENT
+# window. A human attaches, opens a second window (it becomes current),
+# detaches → claude lives on in window 0, invisible to both the alive check
+# and the kill veto → two rounds of "no runtime" → kill-session destroys the
+# live conversation. The kill must never out-scope its own veto, so both
+# checks below iterate descendants of every pane this returns.
+session_pane_pids()    { tmuxc list-panes -s -t "=$NAME" -F '#{pane_pid}' 2>/dev/null; }
 # Is $1 equal to or a descendant of $2? Follow ppid upwards until target, init
 # (1) or a ceiling is reached — the ceiling protects against a broken ps that
 # cycles.
@@ -699,11 +706,13 @@ is_descendant() {
   return 1
 }
 claude_alive_in_session() {
-  local pane; pane="$(session_pane_pid)"
-  [ -n "$pane" ] || return 1   # no tmux session -> no live session, period
-  local pid
+  local panes; panes="$(session_pane_pids)"
+  [ -n "$panes" ] || return 1   # no tmux session -> no live session, period
+  local pid pane
   for pid in $(matching_claude_pids); do
-    is_descendant "$pid" "$pane" && return 0
+    for pane in $panes; do
+      is_descendant "$pid" "$pane" && return 0
+    done
   done
   return 1
 }
@@ -718,14 +727,21 @@ claude_alive_in_session() {
 # round and warns, while a false DEAD kills — the asymmetry picks the
 # direction. The label-anchored check keeps deciding "healthy"; this one only
 # vetoes destruction.
+# OUT OF SCOPE BY DECISION: a RENAMED runtime binary — no "claude" or
+# "opencode" anywhere in any argv — is invisible to this veto and would be
+# killed as a zombie. Whoever renames the binary steps outside the contract;
+# widening the veto to "any process at all" would make every zombie pane
+# (which always holds a live bash) unkillable forever.
 RUNTIME_VETO_PAT='(^|[ /])(claude|opencode)'
 matching_runtime_pids() { pgrep -u "$(id -u)" -f "$RUNTIME_VETO_PAT" 2>/dev/null; }
 runtime_alive_in_session() {
-  local pane; pane="$(session_pane_pid)"
-  [ -n "$pane" ] || return 1
-  local pid
+  local panes; panes="$(session_pane_pids)"
+  [ -n "$panes" ] || return 1
+  local pid pane
   for pid in $(matching_runtime_pids); do
-    is_descendant "$pid" "$pane" && return 0
+    for pane in $panes; do
+      is_descendant "$pid" "$pane" && return 0
+    done
   done
   return 1
 }
@@ -734,6 +750,12 @@ runtime_alive_in_session() {
 # remote-control conflict. Only meaningful when no tmux session exists; with a
 # live session the process belongs to it and is left alone (that is the
 # suspect flow's responsibility).
+# DEPLOY-DAY RUNBOOK: do a ONE-TIME per-host read-only sweep for
+# --remote-control-labeled claudes running OUTSIDE the declared socket before
+# turning this supervisor on. This reap matches on the label alone (there is
+# no pane to bind to when no tmux session exists), so a same-label claude
+# living in an abandoned default-socket homonym session would be shot as an
+# orphan here. The sweep finds those before the first round can.
 reap_orphan_claude() {
   tmuxc has-session -t "=$NAME" 2>/dev/null && return 0
   local pid
@@ -1116,6 +1138,19 @@ fi
 # session that was about to come up.
 if [ ! -f "$SUSPECT" ]; then
   touch "$SUSPECT"
+  exit 0
+fi
+# AN ATTACHED CLIENT DEFERS THE KILL. A human working in vi or bash in the
+# pane where claude crashed must never lose their editor to a repair — the
+# old send-keys repair would have typed into their vim buffer; this makes the
+# missing guard explicit instead. While any client is attached we warn loudly
+# and keep the suspect cadence (the marker stays, so the round after the
+# client detaches kills without a fresh grace round). The cost is accepted: a
+# stale forgotten attachment blocks repair with loud warnings — the
+# false-ALIVE direction this design already accepts everywhere else.
+if [ -n "$(tmuxc list-clients -t "=$NAME" 2>/dev/null)" ]; then
+  echo "session-supervisor: $NAME — ZOMBIE-shaped, but a tmux client is ATTACHED to session '$NAME' — deferring the kill." >&2
+  echo "session-supervisor: $NAME — a human may be working in that window; repair resumes the round after the client detaches." >&2
   exit 0
 fi
 rm -f "$SUSPECT"
