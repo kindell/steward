@@ -272,10 +272,48 @@ SID=""
 # The lines' own timestamp fields are machine-independent. Files without a
 # timestamp (e.g. a migrated file's "last-prompt" entry) sort last instead of
 # being guessed.
-_latest="$(python3 - "$HIST" <<'PY' 2>/dev/null
+#
+# CLASS BEFORE TIME. Measured 2026-08-31 on three live sessions at once: the
+# project directory holds BOTH the long-lived human conversation AND the short
+# job/automation threads, and jobs run on a schedule — so the job thread is
+# almost always the newest one. Newest-by-content therefore picked the WRONG
+# thread reliably rather than occasionally, and the session went on answering
+# in the job own format for its own errand. The chooser now prints TWO lines:
+# the class ("human"/"job") and the path.
+_kind=""
+_pick="$(python3 - "$HIST" <<'PY' 2>/dev/null
 import glob, json, os, sys
-best = (None, None)   # (timestamp, path)
+# THE FIRST RECORD SEPARATES A HUMAN THREAD FROM A JOB THREAD. Measured over
+# every thread file under the projects directory: exactly three first-record
+# types exist. Every job/automation thread carried "queue-operation"; the
+# long-lived human conversations carried "last-prompt", and one carried
+# "file-history-snapshot" ahead of its first user turn.
+#
+# THE RULE IS A DENYLIST, NOT AN ALLOWLIST. Only known job types demote a
+# thread; unknown, missing and unparsable first records count as human. That
+# is the safe direction: an unrecognised job type costs us no more than the
+# old behavior, while an allowlist would demote a real human conversation the
+# day a new header type appears.
+JOB_FIRST_TYPES = ("queue-operation",)
+
+def first_record_type(path):
+    try:
+        with open(path, errors="replace") as fh:
+            head = fh.readline()
+    except OSError:
+        return None
+    try:
+        rec = json.loads(head)
+    except Exception:
+        return None
+    return rec.get("type") if isinstance(rec, dict) else None
+
+best = {}                # class -> (timestamp, path)
 for f in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
+    # Only regular files: a FIFO named .jsonl blocks open forever and a
+    # directory is not a conversation. Measured in the adversarial round.
+    if not os.path.isfile(f):
+        continue
     newest = None
     try:
         with open(f, errors="replace") as fh:
@@ -299,16 +337,65 @@ for f in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
             continue
         if ts and (newest is None or ts > newest):
             newest = ts
-    if newest and (best[0] is None or newest > best[0]):
-        best = (newest, f)
-if best[1]:
-    print(best[1])
+    if not newest:
+        continue
+    kind = "job" if first_record_type(f) in JOB_FIRST_TYPES else "human"
+    if kind not in best or newest > best[kind][0]:
+        best[kind] = (newest, f)
+# Human threads outrank job threads; WITHIN a class the newest content wins,
+# exactly as before. A job thread is chosen only when no human thread exists.
+for kind in ("human", "job"):
+    if kind in best:
+        print(kind)
+        print(best[kind][1])
+        break
 PY
 )"
+_latest=""
+if [ -n "$_pick" ]; then
+  _kind="$(printf '%s\n' "$_pick" | sed -n '1p')"
+  _latest="$(printf '%s\n' "$_pick" | sed -n '2p')"
+  [ -n "$_latest" ] || _kind=""
+fi
+
 # Last resort if python3 is missing or no line carried a timestamp: the
 # filesystem. Worse, but better than starting clean and forking.
+#
+# THE FALLBACK CARRIES THE SAME CLASS RULE. Without it the whole fix collapses
+# back to plain mtime the moment python3 is absent — and mtime prefers the job
+# thread just as reliably as content did. The class is read from the FIRST line
+# of the thread with `read`: one line per file, no python3 needed. Measured:
+# "type" is the first key in every thread file, so the pattern is anchored at
+# the start of the line. The anchoring is also the safe direction — an
+# unanchored substring match could demote a genuine human thread that happened
+# to quote the string, whereas a missed job thread merely yields the old
+# behavior.
+#
+# -d lists the glob matches THEMSELVES: without it ls lists a directory named
+# .jsonl by its CONTENTS and the fallback picks an id that is not a
+# conversation in this directory. [ -f ] for the same reason as in the chooser
+# above, and it also shuts out the FIFO that would otherwise block in `read`.
+_newest_of_class() { # <human|job> -> path, empty when the class is absent
+  ls -td "$HIST"/*.jsonl 2>/dev/null | while IFS= read -r _f; do
+    [ -f "$_f" ] || continue
+    _head=""
+    IFS= read -r _head < "$_f" 2>/dev/null
+    case "$_head" in
+      '{"type":"queue-operation"'*|'{"type": "queue-operation"'*) _k="job" ;;
+      *) _k="human" ;;
+    esac
+    [ "$_k" = "$1" ] || continue
+    printf '%s\n' "$_f"; break
+  done
+}
 if [ -z "$_latest" ]; then
-  _latest="$(ls -t "$HIST"/*.jsonl 2>/dev/null | head -1)"
+  _latest="$(_newest_of_class human)"
+  if [ -n "$_latest" ]; then
+    _kind="human"
+  else
+    _latest="$(_newest_of_class job)"
+    [ -n "$_latest" ] && _kind="job"
+  fi
   [ -n "$_latest" ] && echo "session-supervisor: $NAME — no timestamp in the threads, falling back to mtime" >&2
 fi
 if [ -n "$_latest" ]; then
@@ -324,6 +411,15 @@ if [ -n "$_latest" ]; then
   case "$_sid" in
     [0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef]-*-*-*-*) SID="$_sid" ;;
   esac
+  # THIS FORK MUST NEVER BE SILENT. Resuming a job thread beats starting fresh,
+  # but the session then answers in the JOB own format and for its errand — from
+  # the outside that looks like the assistant got dumb, not like a thread
+  # choice. The warning names the session AND the thread so the fork shows up
+  # in the log instead of in the owner patience.
+  if [ -n "$SID" ] && [ "$_kind" = "job" ]; then
+    echo "session-supervisor: $NAME — WARNING: no human thread in $HIST; resuming the JOB thread $SID." >&2
+    echo "session-supervisor: $NAME — the session will answer as that job, not as itself." >&2
+  fi
 fi
 
 # LOOP PROTECTION. A resume that fails dies as silently as --continue did, and
