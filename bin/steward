@@ -786,7 +786,7 @@ _attach_cmd() { # <session> [verb]
   local _sed='s/^TMUX_SOCKET="\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p'
   # THE HANDLE IS RESOLVED ON THE HUB, WHERE THE REGISTRY IS. After the naming
   # model the tmux session is named by the opaque id while people say the SLUG —
-  # measured 2026-08-31: `attach butler-advisor` answered "can't find session"
+  # measured 2026-08-31: attaching by slug answered "can't find session"
   # while the id worked. estate-status.sh carries the one resolver (exact
   # filename, then SLUG, ambiguity refused); we call it rather than grow a
   # fourth copy. If it is missing (an older deployed image) the raw name is used
