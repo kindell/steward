@@ -230,8 +230,23 @@ done
 if [ -n "$want_remote" ]; then
   _hosts="$(printf '%s' "$rows" | awk -F'|' -v me="$SELF_USER" -v self="$SELF_HOST" '$5==me && $6!=self {print $6}' | sort -u)"
   for _h in $_hosts; do
-    _live="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -l "$SELF_USER" "$_h" \
-              'tmux ls 2>/dev/null | cut -d: -f1' 2>/dev/null)" || _live="__UNREACHABLE__"
+    # THE PROBE MUST ASK THE DECLARED SOCKET. Measured 2026-08-31: a bare
+    # `tmux ls` asks the DEFAULT socket while every supervised session lives on
+    # the estate's declared one, so seven demonstrably live sessions were
+    # reported "down" — a false alarm in the one column a human acts on, which
+    # is worse than "?": a silent failure wearing the clothes of a measurement.
+    # Same socket-contract class as the stranger-journey finding #9 and the
+    # zombie-pane hunt. The socket name is the estate's own value; the remote
+    # HOME is the remote account's, so the path is expanded THERE (single
+    # quotes), never here.
+    _sock_name="$(registry_tmux_socket 2>/dev/null)" || _sock_name=""
+    if [ -n "$_sock_name" ]; then
+      _live="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -l "$SELF_USER" "$_h" \
+                "tmux -S \"\$HOME/.tmux/$_sock_name\" ls 2>/dev/null | cut -d: -f1" 2>/dev/null)" || _live="__UNREACHABLE__"
+    else
+      _live="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -l "$SELF_USER" "$_h" \
+                'tmux ls 2>/dev/null | cut -d: -f1' 2>/dev/null)" || _live="__UNREACHABLE__"
+    fi
     if [ "$_live" = "__UNREACHABLE__" ]; then
       rows="$(printf '%s' "$rows" | awk -F'|' -v OFS='|' -v me="$SELF_USER" -v h="$_h" \
               '{ if ($5==me && $6==h) { $7="?(" h " unreachable)"; $8=$7 } ; print }')"
