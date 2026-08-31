@@ -98,6 +98,15 @@ RESUME_TRY="$STATE_DIR/$NAME.resume-try"
 # same file shapes as the twin.
 LAST_SID_FILE="$STATE_DIR/$NAME.last-sid"
 LAUNCH_MARK="$STATE_DIR/$NAME.launched"
+# THE AUTO-RENAME CYCLE'S TRACE FILE (measured 2026-08-31): the app tile's
+# name is FROZEN at registration — --name at start never renames an existing
+# entity, and a restart reattaches under the stale name. The only rename
+# mechanism is /rename typed into the live session, verified by the receipt
+# line "Session renamed to: <name>" in the pane; no receipt means not renamed.
+# spawn_session writes this file (<attempts> <label>); ONLY a verified receipt
+# clears it. While it exists, later rounds keep driving the rename — and a
+# file that stays behind is the trace that the tile may carry a stale name.
+RENAME_PENDING="$STATE_DIR/$NAME.rename-pending"
 if [ -n "$_PAUSED_NAME" ] && [ -f "$HOME/.local/state/$_PAUSED_NAME/$NAME" ]; then
   rm -f "$SUSPECT"
   exit 0
@@ -834,6 +843,18 @@ warn_if_untrusted_while_running() {
 # lines in two days, and the guard against silent waiting was itself silently
 # gone.)
 
+# rename_pane_busy <pane-text> — 0 iff the pane shows the session mid-turn.
+# Mirrors the bus client's proven pane-busy predicate ("esc to interrupt", or
+# the "… (" spinner prefix — the same signal the watchdog's paneState reads).
+# Typing into a busy pane loses keystrokes or lands text inside a running
+# turn, which is the exact failure the two-round rule exists to prevent — so a
+# busy round is skipped and retried, never typed into and never counted.
+rename_pane_busy() {
+  case "${1:-}" in *'esc to interrupt'*) return 0 ;; esac
+  case "${1:-}" in *'… ('*) return 0 ;; esac
+  return 1
+}
+
 # bus_signalera <what> <text> — send an AUTO-ALERT to the hub and REPORT THE
 # TRUTH about why it failed. rc 0 on success, non-zero otherwise.
 #
@@ -905,6 +926,44 @@ if claude_alive_in_session; then
   # process accomplishing zero, and without this line it looks like any
   # healthy session.
   warn_if_untrusted_while_running
+  # AUTO-RENAME AFTER A SPAWN THIS SUPERVISOR PERFORMED (see RENAME_PENDING at
+  # the top for why the tile name goes stale). spawn_session wrote the pending
+  # file; this branch drives the rename one step per timer round, on a session
+  # the alive check just confirmed. The label is the round's already-resolved
+  # RC_LABEL — the single source, no re-derivation. Attempts are bounded:
+  # exhaustion is LOUD every round and leaves the pending file as the trace —
+  # a stale tile name must never be silent, and must never block the session.
+  # An RC-free session (empty label) has no name to drive in and is skipped.
+  if [ -n "$RC_LABEL" ] && [ -f "$RENAME_PENDING" ]; then
+    _rn_tries=""
+    IFS=' ' read -r _rn_tries _ < "$RENAME_PENDING" 2>/dev/null || true
+    case "${_rn_tries:-}" in ''|*[!0-9]*) _rn_tries=0 ;; esac
+    # Pane-level commands take the PLAIN name behind the exact-alive guard —
+    # the same measured rule as the re-ping below (capture-pane and send-keys
+    # refuse the =form on tmux 3.4 and 3.6b).
+    _rn_pane="$(tmuxc capture-pane -p -t "$NAME" 2>/dev/null)"
+    case "$_rn_pane" in
+      *"Session renamed to: $RC_LABEL"*)
+        # The receipt — the ONLY thing that clears the pending file. Exact
+        # string match on the whole label (spaces and arrows verbatim), never
+        # a regex: a truncated or prefix receipt must not count.
+        rm -f "$RENAME_PENDING"
+        echo "session-supervisor: $NAME — rename receipt verified: the tile now carries '$RC_LABEL'" >&2
+        ;;
+      *)
+        if rename_pane_busy "$_rn_pane"; then
+          : # busy pane: never type — the round burns no attempt, retry next round
+        elif [ "$_rn_tries" -ge 5 ]; then
+          echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no receipt 'Session renamed to: $RC_LABEL' in the pane." >&2
+          echo "session-supervisor: $NAME — the tile may carry a stale name. $RENAME_PENDING remains as the trace; later rounds keep watching for the receipt." >&2
+        else
+          tmuxc send-keys -t "$NAME" -l "/rename $RC_LABEL" 2>/dev/null
+          tmuxc send-keys -t "$NAME" Enter 2>/dev/null
+          printf '%s %s\n' "$(( _rn_tries + 1 ))" "$RC_LABEL" > "$RENAME_PENDING"
+        fi
+        ;;
+    esac
+  fi
   # RE-PING: a ping that arrived while the session was working was lost.
   #
   # send-keys against a busy session returns without error but is never seen —
@@ -1106,6 +1165,14 @@ spawn_session() {
   # WHAT WE LAUNCHED, for the survival round: the sid, or an empty line for a
   # fresh start. The alive branch turns this into last-sid (or clears it).
   printf '%s\n' "$SID" > "$LAUNCH_MARK"
+  # EVERY OWN SPAWN RESTARTS THE RENAME CYCLE (see RENAME_PENDING at the top):
+  # the entity keeps its registered name across restarts, so every (re)start
+  # must end with the tile carrying the resolved label — driven by the alive
+  # rounds, verified on the receipt line. Only a labeled session: an RC-free
+  # one (empty label) has, by definition, no name to drive in.
+  if [ -n "$RC_LABEL" ]; then
+    printf '%s %s\n' 0 "$RC_LABEL" > "$RENAME_PENDING"
+  fi
   tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
     "$HOME/.local/bin/$CLAUDE_CMD; exec bash"
 }
