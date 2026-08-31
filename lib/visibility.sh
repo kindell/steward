@@ -60,7 +60,7 @@ session_visible_to() {
   registry_load "$session" >/dev/null 2>&1 || return 1
   local owner="${OWNER:-}" domain="${DOMAIN:-}"
   local vis="${VISIBILITY:-}" grants="${VISIBLE_TO:-}"
-  local target_project="${TARGET_PROJECT:-}"
+  local target_project="${TARGET_PROJECT:-}" target_entity="${TARGET_ENTITY:-}"
   [ -n "$owner" ] || return 1
 
   # 1. The owner, always — a private session is private FROM others, never from
@@ -97,9 +97,25 @@ session_visible_to() {
   # 3. Private withdraws everything the derivation would otherwise give.
   [ "$vis" = "private" ] && return 1
 
-  # 4. The derived team view: the entity that owns the work.
-  [ -n "$domain" ] || return 1
-  _visibility_member_of "$viewer" "$domain" && return 0
+  # 4. THE TARGET IS THE ANSWER; DOMAIN IS ONLY THE LEGACY FALLBACK. A new-shape
+  #    row states which entity owns the work in TARGET_ENTITY, and its DOMAIN is
+  #    whatever the row carried before — after a migration that value can name
+  #    an entity that never existed.
+  #
+  #    MEASURED 2026-08-31: a machine session whose TARGET_ENTITY named a real
+  #    team was HIDDEN from that team's members, because this rule read the
+  #    stale DOMAIN, found no such entity, and failed closed. Failing closed is
+  #    the right DEFAULT and the WRONG ANSWER when the target resolves — and it
+  #    was silent: the engine simply reported one row fewer.
+  #
+  #    Order: the declared target first, the legacy value second. An old-shape
+  #    row carries no target and reads exactly as before.
+  local owning_entity=""
+  [ -n "$target_entity" ] && owning_entity="$target_entity"
+  [ -n "$owning_entity" ] || owning_entity="$domain"
+  [ -n "$owning_entity" ] || return 1
+  _visibility_member_of "$viewer" "$owning_entity" && return 0
+  domain="$owning_entity"
 
   # 4b. A NEW-SHAPE SESSION AIMED AT A PROJECT. Its DOMAIN is a legacy-derived
   #     value equal to the project slug — NOT an entity — so rule 4 missed it,

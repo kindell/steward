@@ -194,13 +194,27 @@ session_identity_rows() {
     # measured 2026-08-28, NAME='Acme Ltd' read as no entity at all — a false
     # `null` indistinguishable from the honest "no entity file describes this
     # domain" the dash below is for.
-    local ent_name="-" ent_rel="-" ent_conf="$entity_dir/$domain.conf"
+    # THE JOIN FOLLOWS THE TARGET, NOT THE LEGACY DOMAIN. A migrated row states
+    # its owning entity in TARGET_ENTITY (or reaches one through
+    # TARGET_PROJECT's PARENT); DOMAIN is whatever it carried before and can
+    # name an entity that never existed. Measured 2026-08-31: the entity field
+    # and the derived display could contradict each other for the same row.
+    # Same precedence the visibility rule uses, for the same reason.
+    local _ent_key="$domain"
+    if [ -n "${TARGET_ENTITY:-}" ]; then
+      _ent_key="$TARGET_ENTITY"
+    elif [ -n "${TARGET_PROJECT:-}" ]; then
+      local _pp
+      _pp="$( registry_project_load "$TARGET_PROJECT" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}" )"
+      [ -n "$_pp" ] && _ent_key="$_pp"
+    fi
+    local ent_name="-" ent_rel="-" ent_conf="$entity_dir/$_ent_key.conf"
     if [ -f "$ent_conf" ]; then
       local _ecause
       # Same reason as the load above: the ENTITY_* globals must land in this
       # shell, so the stderr goes to a file rather than through a subshell.
       : > "$_diagfile"
-      registry_entity_load "$domain" >/dev/null 2>"$_diagfile"
+      registry_entity_load "$_ent_key" >/dev/null 2>"$_diagfile"
       _ecause="$(tr '\n' ' ' < "$_diagfile")"
       if [ -n "$ENTITY_NAME" ]; then
         ent_name="$ENTITY_NAME"
@@ -222,7 +236,17 @@ session_identity_rows() {
         echo "sessions: '$n' — the entity '$domain' exists but would not load: $_ecause" >&2
       fi
     fi
-    _sessions_tsv_row "$n" "$id" "$owner" "$domain" "$host" "$ent_name" "$ent_rel" "$assets"
+    # SLUG AND DISPLAY ARE ADDITIVE — `name` KEEPS ITS MEANING. Consumers key
+    # their tmux targets, probes and queues on the technical name/id; a
+    # semantic swap would make them attach by a human label. So the handle
+    # (slug) and the resolved display travel as their OWN fields, and a
+    # consumer renders display, disambiguates with slug, and operates on id.
+    # An old-shape row has no SLUG: the dash says "this row has no handle
+    # beyond its name", never an invented one.
+    local slug="${SLUG:--}" display
+    display="$( registry_session_display "$n" 2>/dev/null )" || display=""
+    [ -n "$display" ] || display="-"
+    _sessions_tsv_row "$n" "$id" "$owner" "$domain" "$host" "$ent_name" "$ent_rel" "$assets" "$slug" "$display"
   done <<EOF
 $names
 EOF

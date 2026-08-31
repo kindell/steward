@@ -2455,6 +2455,8 @@ cmd_sessions() {
        hidden: $_hidden,
        sessions: [ inputs | select(length>0) | split("\t") |
          {name:.[0], id:.[1], owner:.[2], domain:.[3], host:.[4],
+          slug: (if .[8] == "-" then null else .[8] end),
+          display: (if .[9] == "-" then null else .[9] end),
           entity: (if .[5] == "-" then null else {name:.[5], relation:.[6]} end),
           assets: (if .[7] == "-" then [] else (.[7] | split(" ")) end),
           liveness: ($L[.[0]] // {daemon:"unknown",tmux:"unknown",agent:"unknown",
@@ -2466,7 +2468,7 @@ cmd_sessions() {
     # id, dm, ho, en, er are read but intentionally unused — they exist only
     # to keep the read positionally aligned with the 8-field TSV; dropping
     # them from the read would silently shift every field after the gap.
-    printf '%s\n' "$ident" | while IFS=$'\t' read -r n id ow dm ho en er as; do
+    printf '%s\n' "$ident" | while IFS=$'\t' read -r n id ow dm ho en er as sl di; do
       [ -n "$n" ] || continue
       local lrow; lrow="$(liveness_for "$n" "$live")"
       printf '%-24s %-10s %-8s %-12s %-14s %s\n' \

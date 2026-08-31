@@ -76,14 +76,14 @@ is "and names itself"        "$(field "$out" bare 6)" "Team One"
 # here is a cockpit that would render the shift as data.
 echo "== nothing declared is a dash, never a blank column =="
 is "no assets is a dash" "$(field "$out" bare 8)" "-"
-is "the row still has eight fields" \
-   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="bare"{print NF}')" "8"
+is "the row still has ten fields" \
+   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="bare"{print NF}')" "10"
 # ...AND SO DOES A ROW WHOSE LAST FIELD CARRIES A REAL VALUE. Counting the
-# columns only on the row whose eighth field is the literal dash verifies the
+# columns only on the row whose eighth field is the literal dash (the row is ten fields wide since slug and display were added additively) verifies the
 # dash substitution, not the row shape: a value that itself contained a tab
 # would still split into extra columns and this assertion would never see it.
-is "a row whose last field is a real value has eight fields too" \
-   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="full"{print NF}')" "8"
+is "a row whose last field is a real value has ten fields too" \
+   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="full"{print NF}')" "10"
 
 # AN UNKNOWN ENTITY IS NOT AN ERROR. A session may name a domain no entity file
 # describes yet; that is a gap in the registry, not a failure of this read.
@@ -186,12 +186,20 @@ printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
 hos_out="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
 is "one conf in the registry is one row out" \
    "$(printf '%s\n' "$hos_out" | grep -c .)" "1"
-is "the row still has exactly eight fields" \
-   "$(printf '%s\n' "$hos_out" | awk -F'\t' 'NR==1{print NF}')" "8"
-case "$hos_out" in
-  *zz-ghost*"	"*) bad "no fabricated session name reaches a column of its own" "got: $hos_out" ;;
-  *)              ok  "no fabricated session name reaches a column of its own" ;;
-esac
+is "the row still has exactly ten fields" \
+   "$(printf '%s\n' "$hos_out" | awk -F'\t' 'NR==1{print NF}')" "10"
+# THE PROPERTY IS "NO NEW COLUMN", NOT "NO TAB ANYWHERE AFTER IT". The older
+# glob asked whether a real tab followed the ghost text anywhere on the line —
+# true for any row that simply has more fields after the injected one, which is
+# what happened the day slug and display were added. It would have gone red on a
+# perfectly escaped row. The real question: does the fabricated name occupy a
+# field of its own? Ask awk, which splits on real tabs only.
+_ghost_field="$(printf '%s\n' "$hos_out" | awk -F'\t' '{for(i=1;i<=NF;i++) if ($i=="zz-ghost") print i}')"
+if [ -n "$_ghost_field" ]; then
+  bad "no fabricated session name reaches a column of its own" "zz-ghost owns field $_ghost_field in: $hos_out"
+else
+  ok  "no fabricated session name reaches a column of its own"
+fi
 is "the session that does exist is still named correctly" \
    "$(field "$hos_out" alpha 1)" "alpha"
 is "and its owner is not overwritten by the injection" \
@@ -204,8 +212,8 @@ is "and its owner is not overwritten by the injection" \
 echo "== a tab in the entity display name cannot shift the relation column =="
 printf 'NAME="Ac\tme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
 hos2="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
-is "the row still has exactly eight fields" \
-   "$(printf '%s\n' "$hos2" | awk -F'\t' 'NR==1{print NF}')" "8"
+is "the row still has exactly ten fields" \
+   "$(printf '%s\n' "$hos2" | awk -F'\t' 'NR==1{print NF}')" "10"
 rel="$(field "$hos2" alpha 7)"
 case "$rel" in
   team|client|-) ok "the relation stays inside its closed set" ;;
@@ -300,8 +308,8 @@ printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x
 argv_tab_out="$(STEWARD_REGISTRY_DIR="$ARGV/sessions.d" STEWARD_ESTATE_ROOT="$ARGV" session_identity_rows 2>/dev/null)"
 is "--tab: row count matches the registry (one session, one row)" \
    "$(printf '%s\n' "$argv_tab_out" | grep -c .)" "1"
-is "--tab: the row still has all eight fields" \
-   "$(printf '%s\n' "$argv_tab_out" | awk -F'\t' 'NR==1{print NF}')" "8"
+is "--tab: the row still has all ten fields" \
+   "$(printf '%s\n' "$argv_tab_out" | awk -F'\t' 'NR==1{print NF}')" "10"
 is "--tab: the session's own name is present" \
    "$(field "$argv_tab_out" argvtab 1)" "argvtab"
 
@@ -311,8 +319,8 @@ printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x
 argv_h_out="$(STEWARD_REGISTRY_DIR="$ARGV/sessions.d" STEWARD_ESTATE_ROOT="$ARGV" session_identity_rows 2>/dev/null)"
 is "-h: row count matches the registry (one session, one row)" \
    "$(printf '%s\n' "$argv_h_out" | grep -c .)" "1"
-is "-h: the row still has all eight fields" \
-   "$(printf '%s\n' "$argv_h_out" | awk -F'\t' 'NR==1{print NF}')" "8"
+is "-h: the row still has all ten fields" \
+   "$(printf '%s\n' "$argv_h_out" | awk -F'\t' 'NR==1{print NF}')" "10"
 is "-h: the session's own name is present" \
    "$(field "$argv_h_out" argvh 1)" "argvh"
 case "$argv_h_out" in
