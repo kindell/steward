@@ -956,6 +956,17 @@ if claude_alive_in_session; then
         elif [ "$_rn_tries" -ge 5 ]; then
           echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no receipt 'Session renamed to: $RC_LABEL' in the pane." >&2
           echo "session-supervisor: $NAME — the tile may carry a stale name. $RENAME_PENDING remains as the trace; later rounds keep watching for the receipt." >&2
+        elif ! claude_alive_in_session; then
+          # RE-ASSERT CLAUDE-IN-PANE IMMEDIATELY BEFORE TYPING. The alive-check
+          # far above ran before warn_if_untrusted_while_running spawned jq
+          # (tens of ms); the launch string ends "; exec bash", so if claude
+          # exited in that window the pane is now a SHELL, and RC_LABEL is free
+          # conf text. A hostile label typed into bash EXECUTES (proven with a
+          # canary in review). The busy predicate cannot tell a bash prompt
+          # from an idle claude, so this re-check is the only thing standing
+          # between a conf line and a shell. No claude descendant now -> skip;
+          # a later round retries once the session is genuinely up.
+          : # zombie/bash pane: never type a conf-derived label into a shell
         else
           tmuxc send-keys -t "$NAME" -l "/rename $RC_LABEL" 2>/dev/null
           tmuxc send-keys -t "$NAME" Enter 2>/dev/null
