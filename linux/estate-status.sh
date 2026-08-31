@@ -80,6 +80,12 @@ for conf in "$RDIR"/*.conf; do
   [ -f "$conf" ] || continue
   have_confs=1
   name="$(basename "$conf" .conf)"
+  # THE HUMAN HANDLE BESIDE THE OPAQUE ID. A new-shape row's filename is an
+  # opaque id; SLUG is what people address and recognize. Old-shape rows have
+  # no SLUG line — the filename IS the handle, so the column shows "-" there
+  # rather than repeating it. Same non-executing read as everything else.
+  slug="$(sed -n 's/^SLUG="\([a-z0-9-]*\)"$/\1/p' "$conf" | head -1)"
+  slug="${slug:--}"
   host="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$conf" | head -1)"
   owner="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$conf" | head -1)"
   # A DELIBERATE EMPTY IS NOT AN UNREADABLE ONE. RC_LABEL="" is a CHOICE — the
@@ -178,7 +184,7 @@ for conf in "$RDIR"/*.conf; do
   # APPENDED, NOT INSERTED. The reachability pass below rewrites fields by
   # index ($3 name, $4 owner, $5 host, $6 tmux, $7 timer); a column added in the
   # middle would silently shift what those assignments touch.
-  rows="$rows$sortkey|$mine|$name|${owner:-?}|$host|$tm|$ti|${rc}|$runtime|$model
+  rows="$rows$sortkey|$mine|$name|$slug|${owner:-?}|$host|$tm|$ti|${rc}|$runtime|$model
 "
 done
 
@@ -222,13 +228,13 @@ done
 # question about the network. Merging them turns a visible failure into a silent
 # one.
 if [ -n "$want_remote" ]; then
-  _hosts="$(printf '%s' "$rows" | awk -F'|' -v me="$SELF_USER" -v self="$SELF_HOST" '$4==me && $5!=self {print $5}' | sort -u)"
+  _hosts="$(printf '%s' "$rows" | awk -F'|' -v me="$SELF_USER" -v self="$SELF_HOST" '$5==me && $6!=self {print $6}' | sort -u)"
   for _h in $_hosts; do
     _live="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -l "$SELF_USER" "$_h" \
               'tmux ls 2>/dev/null | cut -d: -f1' 2>/dev/null)" || _live="__UNREACHABLE__"
     if [ "$_live" = "__UNREACHABLE__" ]; then
       rows="$(printf '%s' "$rows" | awk -F'|' -v OFS='|' -v me="$SELF_USER" -v h="$_h" \
-              '{ if ($4==me && $5==h) { $6="?(" h " unreachable)"; $7=$6 } ; print }')"
+              '{ if ($5==me && $6==h) { $7="?(" h " unreachable)"; $8=$7 } ; print }')"
       continue
     fi
     # NEWLINES MUST NOT TRAVEL IN AN awk -v. A variable containing line breaks
@@ -239,7 +245,7 @@ if [ -n "$want_remote" ]; then
     _live_flat="$(printf '%s' "$_live" | tr '\n' ' ')"
     rows="$(printf '%s' "$rows" | awk -F'|' -v OFS='|' -v me="$SELF_USER" -v h="$_h" -v live="$_live_flat" '
       BEGIN { n=split(live, a, " "); for (i=1;i<=n;i++) if (a[i]!="") up[a[i]]=1 }
-      { if ($4==me && $5==h) { $6 = ($3 in up) ? "up" : "down"; $7="-" } ; print }')"
+      { if ($5==me && $6==h) { $7 = ($3 in up) ? "up" : "down"; $8="-" } ; print }')"
   done
 fi
 
@@ -256,7 +262,7 @@ if [ -n "$only_mine" ]; then
 fi
 
 printf '%s\n' "$_body" | cut -d'|' -f2- | {
-  printf ' |SESSION|OWNER|HOST|TMUX|TIMER|RC_LABEL|RUNTIME|MODEL\n'
+  printf ' |SESSION|SLUG|OWNER|HOST|TMUX|TIMER|RC_LABEL|RUNTIME|MODEL\n'
   cat
 } | column -t -s '|'
 
