@@ -283,11 +283,26 @@ SID=""
 _kind=""
 _pick="$(python3 - "$HIST" <<'PY' 2>/dev/null
 import glob, json, os, sys
-# THE FIRST RECORD SEPARATES A HUMAN THREAD FROM A JOB THREAD. Measured over
-# every thread file under the projects directory: exactly three first-record
-# types exist. Every job/automation thread carried "queue-operation"; the
-# long-lived human conversations carried "last-prompt", and one carried
-# "file-history-snapshot" ahead of its first user turn.
+# THE FIRST RECORD SEPARATES THE SESSION'S OWN THREAD FROM AN ERRAND THREAD.
+# Measured over every thread file under the projects directory: exactly three
+# first-record types exist. Every job/automation thread carried
+# "queue-operation"; the long-lived conversations the session IS carried
+# "last-prompt", and one carried "file-history-snapshot" ahead of its first
+# user turn.
+#
+# THE CONVERSE IS FALSE, AND SAYING SO MATTERS. A "queue-operation" thread is
+# not automatically robot-only: the review of 2026-08-31 found real human
+# dialogue inside two of them — a message channel where a person asks the
+# session things, and an errand a person kept talking in after a job opened
+# it. What the type actually separates is OPENED BY A MACHINE from OPENED AS
+# THIS SESSION'S OWN CONVERSATION, and that is the distinction supervision
+# needs: resuming an errand makes the session answer as that errand, with its
+# narrow role, which is exactly the incident this rule exists to prevent.
+#
+# THE COST IS REAL AND IS ACCEPTED. A conversation held inside an errand
+# thread is deprioritised and not resumed. That is the lesser loss: it stays
+# on disk and reachable, while the failure it prevents ran three sessions as
+# the wrong assistant for fourteen hours before the owner noticed.
 #
 # THE RULE IS A DENYLIST, NOT AN ALLOWLIST. Only known job types demote a
 # thread; unknown, missing and unparsable first records count as human. That
@@ -417,8 +432,8 @@ if [ -n "$_latest" ]; then
   # choice. The warning names the session AND the thread so the fork shows up
   # in the log instead of in the owner patience.
   if [ -n "$SID" ] && [ "$_kind" = "job" ]; then
-    echo "session-supervisor: $NAME — WARNING: no human thread in $HIST; resuming the JOB thread $SID." >&2
-    echo "session-supervisor: $NAME — the session will answer as that job, not as itself." >&2
+    echo "session-supervisor: $NAME — WARNING: no thread of this session's own in $HIST; resuming the errand thread $SID." >&2
+    echo "session-supervisor: $NAME — the session will answer as that errand, not as itself. The thread it skipped may hold conversation too — nothing is deleted." >&2
   fi
 fi
 
