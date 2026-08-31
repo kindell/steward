@@ -178,19 +178,19 @@ printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="far"\nTARGET_PROJECT="far"\nREPO_PATH=
 no  "the two-hop project is NOT reachable (rule 5 is one hop only)"     alice s-far
 
 echo "== TARGET_ENTITY: a new-shape row aimed at an ENTITY is visible to its members =="
-# MEASURED 2026-08-31: a machine session (OWNER=plex, stale DOMAIN="maskin",
+# MEASURED 2026-08-31: a machine session (OWNER a service account, stale DOMAIN,
 # canonical TARGET_ENTITY pointing at a real team) was HIDDEN from a member of
 # that team — the engine reported hidden=1. Rule 4b got the project branch and
 # never the entity one: the rule tried the legacy DOMAIN, found no such entity,
 # and failed closed. Failing closed is the right DEFAULT and the wrong ANSWER
 # when the target exists and resolves.
 printf 'NAME="Machine"\nMEMBERS="dave"\n' > "$FX/entities.d/machineteam.conf"
-printf 'HOST="h1"\nOWNER="plex"\nDOMAIN="stale-domain"\nTARGET_ENTITY="team-a"\nREPO_PATH="/tmp/x"\nID="s-machine"\n' > "$FX/sessions.d/s-machine.conf"
+printf 'HOST="h1"\nOWNER="svc"\nDOMAIN="stale-domain"\nTARGET_ENTITY="team-a"\nREPO_PATH="/tmp/x"\nID="s-machine"\n' > "$FX/sessions.d/s-machine.conf"
 yes "TARGET_ENTITY: a team member sees the row despite the stale DOMAIN" alice s-machine
 yes "TARGET_ENTITY: another member of the same team sees it too"         bob   s-machine
-yes "the owner sees their own machine session"                           plex  s-machine
+yes "the owner sees their own machine session"                           svc   s-machine
 no  "an outsider does not see it"                                        dave  s-machine
-printf 'HOST="h1"\nOWNER="plex"\nDOMAIN="stale-domain"\nTARGET_ENTITY="no-such-ent"\nREPO_PATH="/tmp/x"\nID="s-broken"\n' > "$FX/sessions.d/s-broken.conf"
+printf 'HOST="h1"\nOWNER="svc"\nDOMAIN="stale-domain"\nTARGET_ENTITY="no-such-ent"\nREPO_PATH="/tmp/x"\nID="s-broken"\n' > "$FX/sessions.d/s-broken.conf"
 no  "an unresolvable TARGET_ENTITY stays hidden (fail-closed holds)"     alice s-broken
 
 echo
