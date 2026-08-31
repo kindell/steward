@@ -58,10 +58,50 @@ _tmux() {
   fi
 }
 
+# resolve <name> — the SESSION KEY for a human handle. Prints the conf basename
+# (the tmux/launchd/queue name) and nothing else.
+#
+# WHY IT EXISTS. After the naming model a row's filename is an opaque id and the
+# human handle is SLUG. Every consumer that takes a name from a person needs the
+# same mapping, and each one that grew its own has been a separate defect: the
+# bus (fixed), fleet (fixed), and — measured 2026-08-31 by the owner —
+# `steward <estate> attach <slug>` answering "can't find session". This is the
+# one resolver they can all call, so the next consumer borrows instead of
+# reinventing. Exact filename first (old-shape rows and migrated ids alike),
+# then a SLUG scan; ambiguity refuses rather than guesses.
+#
+# NON-EXECUTING like every read here: sed over the file, never source.
+_resolve_session_key() { # <name> -> key on stdout, rc 65 if unknown/ambiguous
+  local _q="${1:-}" _d _hit _n
+  case "$_q" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 65 ;; esac
+  _d="$RDIR"
+  [ -f "$_d/$_q.conf" ] && { printf '%s' "$_q"; return 0; }
+  _hit=""
+  for _f in "$_d"/*.conf; do
+    [ -f "$_f" ] || continue
+    _n="$(basename "$_f" .conf)"
+    case "$_n" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
+    if [ "$(sed -n 's/^SLUG="\([a-z0-9-]*\)"$/\1/p' "$_f" | head -1)" = "$_q" ]; then
+      [ -n "$_hit" ] && { echo "estate-status: '$_q' is ambiguous: $_hit and $_n" >&2; return 65; }
+      _hit="$_n"
+    fi
+  done
+  [ -n "$_hit" ] || return 65
+  printf '%s' "$_hit"
+}
+if [ "${1:-}" = "resolve" ]; then
+  _k="$(_resolve_session_key "${2:-}")" \
+    || { echo "estate-status: no session '${2:-}' in the registry (tried the filename and every SLUG)" >&2; exit 65; }
+  printf '%s\n' "$_k"
+  exit 0
+fi
+
 # peek <session> — the session's screen, right now. Read-only like everything
 # here; the exact target form for the same prefix-trap reason as below.
 if [ "${1:-}" = "peek" ]; then
   _n="${2:?usage: estate-status.sh peek <session>}"
+  # A HUMAN HANDLE IS ACCEPTED HERE TOO — peek by slug resolves to the key.
+  _n="$(_resolve_session_key "$_n" || printf '%s' "$_n")"
   # Exact guard first (=is session-target notation), THEN the plain name for
   # capture-pane, which parses its target as a PANE and rejects the =form —
   # measured on tmux 3.4/3.6b. With exact existence established, tmux resolves

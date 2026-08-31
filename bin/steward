@@ -784,8 +784,15 @@ _attach_cmd() { # <session> [verb]
   # which strips the socket to empty and sends attach to the default server —
   # measured here before this reached an ssh line.
   local _sed='s/^TMUX_SOCKET="\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p'
-  printf 'T=tmux; command -v tmux >/dev/null 2>&1 || { for c in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do [ -x "$c" ] && { T="$c"; break; }; done; }; S=$(sed -n '"'"'%s'"'"' "%s/estate/steward.conf" 2>/dev/null | tail -1); if [ -n "$S" ] && [ -S "$HOME/.tmux/$S" ]; then exec "$T" -S "$HOME/.tmux/$S" %s -t "=%s"; else exec "$T" %s -t "=%s"; fi' \
-    "$_sed" "$ESTATE_ROOT" "${2:-attach}" "$1" "${2:-attach}" "$1"
+  # THE HANDLE IS RESOLVED ON THE HUB, WHERE THE REGISTRY IS. After the naming
+  # model the tmux session is named by the opaque id while people say the SLUG —
+  # measured 2026-08-31: `attach butler-advisor` answered "can't find session"
+  # while the id worked. estate-status.sh carries the one resolver (exact
+  # filename, then SLUG, ambiguity refused); we call it rather than grow a
+  # fourth copy. If it is missing (an older deployed image) the raw name is used
+  # exactly as before, so this can never make attach worse than it was.
+  printf 'T=tmux; command -v tmux >/dev/null 2>&1 || { for c in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do [ -x "$c" ] && { T="$c"; break; }; done; }; R="%s"; N="%s"; [ -x "$R/estate-status.sh" ] && K=$("$R/estate-status.sh" resolve "$N" 2>/dev/null) && [ -n "$K" ] && N="$K"; S=$(sed -n '"'"'%s'"'"' "$R/estate/steward.conf" 2>/dev/null | tail -1); if [ -n "$S" ] && [ -S "$HOME/.tmux/$S" ]; then exec "$T" -S "$HOME/.tmux/$S" %s -t "=$N"; else exec "$T" %s -t "=$N"; fi' \
+    "$ESTATE_ROOT" "$1" "$_sed" "${2:-attach}" "${2:-attach}"
 }
 
 cmd_attach() {
