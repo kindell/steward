@@ -13,9 +13,26 @@
 # unexpected movement is a provenance conflict, rc 75, and both commits
 # survive for a human to look at. Plain --force appears nowhere in this file.
 
+# Validate id format: j- prefix followed by exactly 16 lowercase hex characters.
+_jobgit_valid_id() {
+  local id="${1:-}"
+  case "$id" in
+    j-*)
+      [ "${#id}" -eq 18 ] || { echo "jobgit: bad id '$id'" >&2; return 64; }
+      case "${id#j-}" in
+        *[!0-9a-f]*) echo "jobgit: bad id '$id'" >&2; return 64 ;;
+      esac
+      ;;
+    *)
+      echo "jobgit: bad id '$id'" >&2
+      return 64
+      ;;
+  esac
+}
+
 jobgit_branch() {
   local id="${1:-}"
-  case "$id" in j-????????????????) ;; *) echo "jobgit: bad id '$id'" >&2; return 64 ;; esac
+  _jobgit_valid_id "$id" || return $?
   printf 'steward/jobs/%s/delivery\n' "$id"
 }
 
@@ -57,6 +74,7 @@ jobgit_receipt() {
 # job's refs. The guard is called by deliver and by anything else that pushes.
 jobgit_push_guard() {
   local id="$1"; shift
+  _jobgit_valid_id "$id" || return $?
   local ref
   for ref in "$@"; do
     case "$ref" in

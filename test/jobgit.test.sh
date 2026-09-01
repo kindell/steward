@@ -24,6 +24,9 @@ git clone -q "$T/origin.git" "$T/src" 2>/dev/null
 id="j-00000000000000ab"
 [ "$(jobgit_branch "$id")" = "steward/jobs/$id/delivery" ] && ok "branch keyed on full id" || bad "branch" "$(jobgit_branch "$id")"
 jobgit_branch "not-an-id" 2>/dev/null && bad "bad id accepted" || ok "bad id refused"
+jobgit_branch "j-/etc/passwd/xxxx" 2>/dev/null && bad "slash in id accepted" || ok "slash in id refused"
+jobgit_branch "j-ABCDEF0123456789" 2>/dev/null && bad "uppercase id accepted" || ok "uppercase id refused"
+jobgit_branch "j-0123456789abcdef" >/dev/null && ok "lowercase hex id accepted" || bad "lowercase hex id refused"
 
 base_out="$(jobgit_checkout "$id" "$T/src" "$T/work")"
 [ -d "$T/work/.git" ] && ok "checkout: job owns a clone" || bad "no clone"
@@ -42,6 +45,11 @@ del_sha="${del_out#DELIVERY_SHA=}"
 jobgit_receipt "$id" "$T/work" "$del_sha" && ok "receipt: exact tip verified" || bad "receipt failed on honest delivery"
 jobgit_receipt "$id" "$T/work" "$base_sha" 2>/dev/null && bad "receipt: wrong sha accepted" || ok "receipt: wrong sha refused"
 
+# Deliver again with empty expectation (branch already exists on remote).
+( cd "$T/work" && echo again2 > f.txt && git add f.txt && git commit -qm again2 )
+jobgit_deliver "$id" "$T/work" "" >/dev/null 2>&1
+[ $? -eq 75 ] && ok "deliver: already-exists with empty expectation refused rc 75" || bad "already-exists not refused"
+
 # UNEXPECTED REMOTE MOVEMENT IS rc 75, NEVER A FORCE. Simulate a foreign push.
 git clone -q "$T/origin.git" "$T/intruder" 2>/dev/null
 ( cd "$T/intruder" && git checkout -qb "steward/jobs/$id/delivery" "$del_sha" && echo moved > f.txt && git add f.txt && git commit -qm moved && git push -q origin HEAD )
@@ -55,6 +63,7 @@ jobgit_push_guard "$id" "refs/heads/steward/jobs/$id/delivery" && ok "guard: own
 jobgit_push_guard "$id" "refs/heads/main" 2>/dev/null && bad "guard: main allowed" || ok "guard: main refused"
 jobgit_push_guard "$id" "refs/tags/v1" 2>/dev/null && bad "guard: tag allowed" || ok "guard: tag refused"
 jobgit_push_guard "$id" "refs/heads/steward/jobs/j-00000000000000ff/delivery" 2>/dev/null && bad "guard: another job's ref allowed" || ok "guard: another job's ref refused"
+jobgit_push_guard "*" "refs/heads/steward/jobs/*/delivery" 2>/dev/null && bad "guard: wildcard id accepted" || ok "guard: wildcard id refused"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
