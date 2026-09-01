@@ -149,6 +149,59 @@ esac
 [ "$NAMN" = "${DOMAN}-${PROJEKT}-${PERSON}" ] || \
   fel "the name '$NAMN' does not match the convention doman-projekt-person ('${DOMAN}-${PROJEKT}-${PERSON}')"
 
+# ── EVERY FIELD THAT LANDS IN THE CONF IS CHARSET-GUARDED ───────────────────
+# THE GAP, measured 2026-09-01. The five fields above were guarded; repo= and
+# rc_label= were not — and both are interpolated UNQUOTED into a conf that is
+# then sourced, by this file's own gate a few lines further down and by every
+# later reader of the register. So
+#
+#     repo=/x$(touch PWNED)y
+#
+# registered with rc 0 and executed its payload as the hub's owner on every
+# single read of that row. The sender is any registered session, including
+# another human's account — the very population this path exists to grow.
+#
+# THE COMMENT THAT USED TO STAND AT THE HEREDOC made it worse: it called the
+# interpolation "deliberately unescaped — see the injection note the
+# callability gate below relies on". No such gate and no such note existed
+# anywhere in the product. The only gate below DETONATED the payload rather
+# than catching it. A false safety rationale on a live injection is worse than
+# silence, so the claim is gone and the guard is here, where it can be read
+# next to what it guards.
+#
+# REPO IS AN ALLOWLIST: an absolute path, enumerated characters only. RC_LABEL
+# is a DISPLAY STRING and cannot be an ASCII allowlist — a real label carries
+# arrows, accents, whatever a human types — so it is a DENYLIST of what breaks
+# out of a double-quoted shell assignment, plus control characters.
+case "$REPO_S" in
+  /*) : ;;
+  *) fel "field repo must be an absolute path — got '$REPO_S'" ;;
+esac
+case "$REPO_S" in
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._-]*)
+    fel "field repo contains characters outside [A-Za-z0-9/._-] — a repository path lands unquoted in a conf that is sourced, so it is an allowlist" ;;
+esac
+# One character at a time, quoted — a case pattern built by hand out of $, a
+# backquote and a backslash is exactly the kind of quoting nobody can read back
+# six months later, and a mis-escape there fails OPEN.
+_bar_farligt() { # <text> <forbidden characters>
+  local _s="$1" _bad="$2" _i=0 _c
+  while [ "$_i" -lt "${#_bad}" ]; do
+    _c="${_bad:$_i:1}"
+    case "$_s" in *"$_c"*) return 0 ;; esac
+    _i=$((_i+1))
+  done
+  return 1
+}
+if [ -n "$RC_ONSKAD" ]; then
+  if _bar_farligt "$RC_ONSKAD" '$`"\;&|<>'; then
+    fel "field rc_label contains a shell metacharacter — the label lands inside a double-quoted assignment in a conf that is sourced"
+  fi
+  case "$RC_ONSKAD" in
+    *[[:cntrl:]]*) fel "field rc_label contains a control character" ;;
+  esac
+fi
+
 # Private-key check BEFORE the format check: a genuine private key should get the PRIVATE text, not the generic format text
 case "$PUBKEY" in
   *PRIVATE*|*private*|*-----BEGIN*) fel "the key field looks PRIVATE — private keys never travel" ;;
@@ -305,9 +358,13 @@ tmpc="$(mktemp)" || exit 70
 # updated behaves exactly as before.
 RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
 # THE TARGET LINE IS A TYPED UNION, built before the heredoc so the heredoc
-# itself stays the same flat, unescaped interpolation every other field uses
-# (deliberately unescaped — see the injection note the callability gate below
-# relies on).
+# itself stays the same flat interpolation every other field uses. THAT IS SAFE
+# ONLY BECAUSE EVERY FIELD IT INTERPOLATES IS CHARSET-GUARDED FIRST — see the
+# guards above, immediately after the field parse: the five convention fields,
+# then repo (absolute-path allowlist) and rc_label (metacharacter denylist).
+# The comment that stood here used to cite a "callability gate" that existed
+# nowhere, over an interpolation that was genuinely injectable; if a field is
+# ever added to this heredoc, its guard belongs up there before it does.
 if [ -n "$TARGET_PROJECT" ]; then
   TARGET_LINE="TARGET_PROJECT=\"$TARGET_PROJECT\""
 else
