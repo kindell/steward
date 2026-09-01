@@ -323,5 +323,21 @@ n="$(grep -ciE "$TRANSLIT" "$FX/tr_en.sh")"
 [ "$n" -eq 0 ] && ok || bad "control group: English prose flagged as transliterated Swedish ($n lines) — the token list is greedy"
 
 echo
+
+# --- A VARIABLE NAME MUST NOT TOUCH A MULTIBYTE CHARACTER (2026-09-01) -------
+# An unbraced expansion glued to the arrow parsed fine under UTF-8 locales and died with "unbound
+# variable _mn<garbage>" under a single-byte locale, where the arrow's first
+# byte (0xE2, a-circumflex in Latin-1) counts as a LETTER and bash 3.2 reads
+# it into the variable name. Locale-dependent parsing is the worst kind of
+# latent: it passes every suite on the machine that wrote it. Braces make the
+# boundary explicit under every locale — so an unbraced expansion directly
+# followed by a high byte is refused here, wholesale.
+_mb_hits="$(perl -ne 'print "$ARGV:$.: $_" if /\$[A-Za-z_][A-Za-z0-9_]*[\x80-\xFF]/' $(git -C "$HERE" ls-files '*.sh' 'bin/steward' 'job-run.sh' 2>/dev/null | sed "s|^|$HERE/|") 2>/dev/null)"
+if [ -n "$_mb_hits" ]; then
+  bad "an unbraced \$var touches a multibyte character (use \${var}):" "$_mb_hits"
+else
+  ok "no unbraced expansion touches a multibyte character"
+fi
+
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

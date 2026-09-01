@@ -290,7 +290,7 @@ for conf in "$RDIR"/*.conf; do
         org="$_en"
       elif [ -f "$EROOT/entities.d/$_emb.conf" ]; then
         _mn="$(sed -n 's/^NAME="\(.*\)"$/\1/p' "$EROOT/entities.d/$_emb.conf" | head -1)"
-        _org_component_ok "$_mn" && org="$_mn→$_en"
+        _org_component_ok "$_mn" && org="${_mn}→${_en}"
       fi
       # A MANAGED_BY NAMING A ROW THAT IS NOT THERE LEAVES THE DASH. It reads
       # as structure and carries none, and the entity register's own loader

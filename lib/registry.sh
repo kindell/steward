@@ -464,7 +464,7 @@ _registry_display_entity_chain() {
     managed_by="${out%%$'\n'*}"
     name="${out#*$'\n'}"; name="${name%$'\n'}"
     _registry_display_component "$name" || return 1
-    if [ -z "$result" ]; then result="$name"; else result="$name→$result"; fi
+    if [ -z "$result" ]; then result="$name"; else result="${name}→${result}"; fi
     id="$managed_by"
   done
   printf '%s' "$result"
