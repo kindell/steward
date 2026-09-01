@@ -451,8 +451,27 @@ if [ "$_sg_rc" -ne 0 ]; then
   exit "$_sg_rc"
 fi
 
-key="$HOME/.ssh/id_busrelay"
-[ -n "$me" ] && [ -f "$HOME/.ssh/id_busrelay_$me" ] && key="$HOME/.ssh/id_busrelay_$me"
+# A NAMED SENDER WITHOUT ITS OWN KEY IS REFUSED — the generic fallback is
+# never neutral. The hub stamps the sender from the KEY, not from $me, so a
+# fallback send speaks in whichever session the generic key belongs to.
+#
+# Measured 2026-09-01: a rename swept a host's sessions to opaque ids while
+# the key files kept their old names, and this fallback silently turned six
+# sessions into a seventh for half a day. A whole thread was routed to the
+# wrong session and carried another team's customer data across a boundary —
+# and every party measured success. The nameless guard above refuses the rare
+# edge; this refuses what that rename made the NORMAL case. Same verdict,
+# same shape: loud rc, the missing key named, nothing leaves the machine.
+key="$HOME/.ssh/id_busrelay_$me"
+if [ ! -f "$key" ]; then
+  echo "bus-send: REFUSES — no key for sender '$me'." >&2
+  echo "  Expected $HOME/.ssh/id_busrelay_$me. Falling back on the generic" >&2
+  echo "  ~/.ssh/id_busrelay would send in ANOTHER session's name: the hub" >&2
+  echo "  stamps the sender from the key, and that key is bound to whoever" >&2
+  echo "  it was minted for. If this session was renamed, its key was not —" >&2
+  echo "  link or mint id_busrelay_$me, then send again." >&2
+  exit 65
+fi
 
 # A FAILED SEND MUST ALSO LEAVE A TRACE. sent/ archives AFTER ssh deliberately —
 # an archive written before the send would contain mail that never arrived. The
