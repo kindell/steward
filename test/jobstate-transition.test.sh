@@ -58,7 +58,9 @@ jobstate_lease_acquire "$id" runner-b 60 && ok "lease: acquire after expiry" || 
 mkdir "$T/jobs/$id/lease-lock"
 jobstate_lease_acquire "$id" runner-c 60 2>/dev/null
 [ $? -eq 75 ] && ok "lease: acquire with lock contention returns rc 75" || bad "lease-lock not rc 75"
-[ ! -f "$T/jobs/$id/lease" ] || { holder="$(jobstate_lease_holder "$id" 2>/dev/null)"; [ "$holder" = "runner-b" ] && ok "lease: lock contention leaves lease unchanged" || bad "lease contention modified lease"; }
+[ -f "$T/jobs/$id/lease" ] && ok "lease: lock contention did not remove the lease file" || bad "lease file missing after contention"
+holder="$(jobstate_lease_holder "$id" 2>/dev/null)"
+[ "$holder" = "runner-b" ] && ok "lease: lock contention leaves lease unchanged" || bad "lease contention modified lease" "$holder"
 rmdir "$T/jobs/$id/lease-lock"
 jobstate_lease_acquire "$id" runner-b 60 && ok "lease: acquire succeeds after lock is released" || bad "acquire failed after lock release"
 
