@@ -13,7 +13,8 @@
 # time, and failures are reported per estate rather than aborting the sweep.
 #
 #   steward add <estate> <ssh-target> [estate-root] [product-dir]
-#   steward ls [<estate>]
+#   steward ls [<estate>] [--sort name|slug|display|owner|host]
+#   steward <estate> ls [--sort name|slug|display|owner|host]
 #   steward <estate> attach <session>
 #   steward <estate> peek <session>
 #   steward init <estate> <ssh-target>
@@ -700,8 +701,8 @@ _prefix_estate() { # <estate-name>
   '
 }
 
-_ls_en() {
-  local name="$1"
+_ls_en() { # <estate-name> [extra estate-status args, e.g. --sort <key>]
+  local name="$1"; shift
   estate_las "$name"
   echo "== $name ($SSH) =="
   # THE STATUS IS CAPTURED, THEN PREFIXED — not piped.
@@ -723,7 +724,10 @@ _ls_en() {
   # which is the same hazard through the same line.
   local _out _err _rc _errf
   _errf="$(mktemp)" || { echo "  could not create a temporary file — skipping $name" >&2; return 1; }
-  _out="$("$SSH_BIN" "$SSH" "$(_status_cmd)" 2>"$_errf")"; _rc=$?
+  # EXTRA ARGS (e.g. --sort <key>) TRAVEL STRAIGHT THROUGH to the remote
+  # estate-status.sh, unexamined here — this client already validated the
+  # --sort key itself, in cmd_ls, before ever reaching ssh (see there for why).
+  _out="$("$SSH_BIN" "$SSH" "$(_status_cmd "$@")" 2>"$_errf")"; _rc=$?
   _err="$(cat "$_errf")"; rm -f "$_errf"
   # ONLY A SUCCESSFUL ANSWER IS A TABLE. A failed call returns ssh's error
   # lines, and prefixing those makes an error look like data: the first line
@@ -753,15 +757,71 @@ cmd_peek() {
   "$SSH_BIN" "$SSH" "$(_status_cmd peek "$sess")"
 }
 
+# cmd_ls [<estate>] [--sort name|slug|display|owner|host] — the personal
+# estate list (or one estate of it, over ssh). --sort reaches the SAME table
+# `steward <estate> ls` renders, whichever way that estate is named: as
+# `steward ls <estate>` here, or as `steward <estate> ls` through the
+# estate-client fallback at the bottom of this file — both call this function.
+#
+# --sort IS VALIDATED HERE, BEFORE SSH EVER RUNS. `_ls_en` shells out to a
+# remote host per estate; a bad key discovered only after that round trip
+# would either refuse late (slow, and only for the FIRST estate in a sweep) or
+# — worse — get folded into `_ls_en`'s own "UNREACHABLE or refused" handling,
+# which exists for network failures and does not propagate an exit code. A
+# silently-swallowed flag was exactly the bug this fixes; a flag that refuses
+# late, or refuses without an rc, would just be a slower version of the same
+# defect. Client-side validation costs nothing (no network) and refuses fast.
+# `_sessions_sort_field` is reused for the validity CHECK only — cmd_sessions'
+# and estate-status.sh's tables are shaped differently, so the FIELD NUMBER it
+# returns is meaningless here; only its rc (valid key vs. not) is read. The key
+# STRING is what actually crosses the wire — the remote estate-status.sh maps
+# it to its own field number, over its own row shape, using the SAME reorder
+# (lib/sort.sh's _field_sort_rows) so the two --sort flags can never silently
+# mean different things.
+#
+# ANY OTHER FLAG REFUSES, rc 64 — the silent-swallow class this whole fix
+# exists to close. `cmd_ls` accepts exactly one flag (--sort) and at most one
+# bare positional (the estate name); today, before this fix, it accepted no
+# flags at all.
 cmd_ls() {
-  local one="${1:-}"
-  if [ -n "$one" ]; then _ls_en "$one"; return; fi
+  local one="" sort_key="" a
+  local -a _ls_argv=( "$@" )
+  local _ls_i=0 _ls_n=${#_ls_argv[@]}
+  while [ "$_ls_i" -lt "$_ls_n" ]; do
+    a="${_ls_argv[$_ls_i]}"
+    case "$a" in
+      --sort)
+        _ls_i=$((_ls_i + 1))
+        sort_key="${_ls_argv[$_ls_i]:-}"
+        _sessions_sort_field "$sort_key" >/dev/null \
+          || fel "unknown --sort key '$sort_key' — valid keys: name, slug, display, owner, host" 64
+        ;;
+      -*) fel "unknown option '$a' for ls" 64 ;;
+      *)
+        [ -z "$one" ] || fel "unexpected argument '$a' for ls" 64
+        one="$a"
+        ;;
+    esac
+    _ls_i=$((_ls_i + 1))
+  done
+
+  # A PLAIN CONDITIONAL, NOT AN EMPTY ARRAY. bash 3.2 (this file also runs as
+  # macOS's stock /bin/bash) treats `"${arr[@]}"` on a zero-element array as an
+  # unbound variable under `set -u` — fixed only in bash 4.4. Two call shapes,
+  # chosen once per estate, is the portable way to make "--sort was not given"
+  # pass zero extra words through rather than one empty one.
+  if [ -n "$one" ]; then
+    if [ -n "$sort_key" ]; then _ls_en "$one" --sort "$sort_key"; else _ls_en "$one"; fi
+    return
+  fi
   [ -d "$ESTATES_D" ] || fel "no estate list yet at $ESTATES_D — start with: steward add <estate> <ssh-target>"
   local any="" f
   for f in "$ESTATES_D"/*.conf; do
     [ -f "$f" ] || continue
     any=1
-    ( _ls_en "$(basename "$f" .conf)" )   # subshell: one estate's refusal must not kill the sweep
+    # subshell: one estate's refusal must not kill the sweep
+    if [ -n "$sort_key" ]; then ( _ls_en "$(basename "$f" .conf)" --sort "$sort_key" )
+    else ( _ls_en "$(basename "$f" .conf)" ); fi
   done
   [ -n "$any" ] || fel "the estate list at $ESTATES_D is empty — start with: steward add <estate> <ssh-target>"
 }
@@ -2273,26 +2333,13 @@ EOF
 # separately and asynchronously; folding it in would make this command take half
 # a minute for a fleet of twenty.
 #
-# _sessions_sort_rows <field> — the identity TSV on stdin, stably reordered by
-# the given 1-indexed field, on stdout. LC_ALL=C: sort order must not depend on
-# the operator's locale, or the same fixture would order two ways on two
-# machines, and -s (stable) so two rows sharing a sort key keep the order the
-# registry gave them rather than swapping on a whim.
-#
-# A ROW WHOSE FIELD IS EXACTLY "-" SORTS LAST, regardless of which field. "-"
-# is lib/sessions.sh's own placeholder for "this session has no such value"
-# (SLUG most commonly, for an old-shape row with no handle) — and ASCII '-'
-# collates BEFORE every letter and digit in the C locale, so a plain sort
-# would put every session with NO value first, ahead of every session that
-# actually has the one being sorted on. That reads backwards to an operator:
-# the rows carrying real data belong first, the placeholders trail behind.
-_sessions_sort_rows() {
-  local field="$1"
-  awk -F'\t' -v f="$field" '
-    NF == 0 { next }
-    { rank = ($f == "-") ? 1 : 0; print rank "\t" $f "\t" $0 }
-  ' | LC_ALL=C sort -t $'\t' -s -k1,1 -k2,2 | cut -f3-
-}
+# The reorder itself is lib/sort.sh's _field_sort_rows, sourced lazily inside
+# cmd_sessions below (and, for the same reason, inside cmd_ls) — not a local
+# function here. `steward <estate> ls --sort` (the estate-listing form, over
+# ssh) needs the exact same stable, dash-last, LC_ALL=C reorder over a
+# differently-shaped table, and a second hand-copied awk/sort pipeline is how
+# the two --sort flags would quietly stop meaning the same thing. See
+# lib/sort.sh for the full reasoning.
 
 # cmd_sessions' own --sort key -> TSV field number. One place, so the flag's
 # validation, its usage text and its JSON refusal can never name a different
@@ -2361,6 +2408,8 @@ cmd_sessions() {
   # definitions.
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
+  # shellcheck source=lib/sort.sh
+  . "$HERE/lib/sort.sh"
 
   # ── THE ESTATE FALLBACK, RESOLVED BEFORE ANY LIVENESS MEASUREMENT RUNS ──
   #
@@ -2465,7 +2514,7 @@ cmd_sessions() {
   # the only way the two forms can never disagree about order, and the only
   # way the sort never has to parse a column back out of a printf'd table.
   if [ -n "$sort_field" ]; then
-    ident="$(printf '%s\n' "$ident" | _sessions_sort_rows "$sort_field")"
+    ident="$(printf '%s\n' "$ident" | _field_sort_rows "$sort_field")"
   fi
 
   # SAME REASON, SAME SHAPE: liveness_rows must not run in a subshell either, or
@@ -3593,7 +3642,7 @@ fi
 
 case "${1:-}" in
   add)      shift; cmd_add "$@" ;;
-  ls)       shift; cmd_ls "${1:-}" ;;
+  ls)       shift; cmd_ls "$@" ;;
   init)     shift; cmd_init "$@" ;;
   scaffold) shift; cmd_scaffold "$@" ;;
   assets)   shift; cmd_assets "$@"; exit $? ;;
@@ -3655,7 +3704,12 @@ case "${1:-}" in
     case "${1:-}" in
       attach) shift; cmd_attach "$est" "${1:-}" ;;
       peek)   shift; cmd_peek "$est" "${1:-}" ;;
-      ls)     cmd_ls "$est" ;;
+      # SHIFT PAST "ls", AND FORWARD THE REST. Measured live: `steward <estate>
+      # ls --sort slug` neither sorted nor refused — this branch called
+      # `cmd_ls "$est"` and nothing else, so `--sort slug` was never even
+      # passed to cmd_ls to accept or reject. Silent flag-swallowing is worse
+      # than the flag not existing at all.
+      ls)     shift; cmd_ls "$est" "$@" ;;
       *) fel "unknown command '${1:-}' for estate '$est' — see steward --help" 64 ;;
     esac ;;
 esac

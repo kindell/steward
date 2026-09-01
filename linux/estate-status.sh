@@ -27,6 +27,21 @@ REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 # shellcheck source=/dev/null
 . "$REG_LIB" || { echo "estate-status: REFUSING — registry library could not be read: $REG_LIB" >&2; exit 78; }
 
+# SAME SEARCH, SAME THREE CANDIDATES, for lib/sort.sh — the --sort flag's
+# shared reorder (lib/sort.sh's _field_sort_rows, also used by `steward
+# sessions --sort`). Only RESOLVED lazily, further down, when --sort is
+# actually given: unlike REG_LIB this is not required by every invocation, and
+# an estate whose deploy has not yet picked up the new file must keep working
+# for every use of this script that is not --sort.
+_sort_lib_default() {
+  local d c
+  d="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for c in "$HOME/scripts/lib/sort.sh" "$d/lib/sort.sh" "$d/../lib/sort.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  printf '%s' "$HOME/scripts/lib/sort.sh"
+}
+
 RDIR="$(registry_dir)" || exit 78
 HUB_HOST="$(registry_hub_host)" || exit 78
 SELF_HOST="${STEWARD_SELF_HOST:-$(hostname -s)}"
@@ -235,19 +250,63 @@ if [ -z "$have_confs" ]; then
   exit 0
 fi
 
+# _status_sort_field <key> -> 1-indexed field number into the pipe-delimited
+# `rows` built above ($sortkey|$mine|$name|$slug|$owner|$host|$tm|$ti|$rc|
+# $runtime|$model), or rc 1 if unknown. THE SAME KEY SET `steward sessions
+# --sort` uses (name, slug, display, owner, host) — display maps to $rc, this
+# table's human-readable RC_LABEL/derived column, the analogue of that
+# command's resolved display name. One place, so validation, the usage text
+# and the refusal message can never name a different set of keys than this
+# actually understands.
+_status_sort_field() {
+  case "$1" in
+    name)    echo 3 ;;
+    slug)    echo 4 ;;
+    owner)   echo 5 ;;
+    host)    echo 6 ;;
+    display) echo 9 ;;
+    *)       return 1 ;;
+  esac
+}
+
 # --mine: yours only. For the reader who knows what they are after and does not
 # want to read past the neighbour's rows. Without the flag everything is shown,
 # yours first — the NEIGHBOUR's sessions being visible is not a leak but the
 # point: a machine holding several people's sessions has to be understandable
 # by each of the people living on it.
-only_mine=""; want_remote=""
-for _a in "$@"; do
+#
+# --sort <key>: the SAME contract `steward sessions --sort` (1503e29) gives the
+# fleet-wide list, over THIS table instead — same key names (name, slug,
+# display, owner, host), same rc-64 refusal naming the valid ones, same
+# stable/LC_ALL=C/dash-last reorder (lib/sort.sh's _field_sort_rows, shared
+# rather than re-copied — see there). Without it the order is unchanged: yours
+# first, then by name, exactly as before this flag existed.
+#
+# --sort TAKES A VALUE, so this loop walks an index rather than a plain
+# `for _a in "$@"` — that shape sees --sort's OWN key token arrive as the NEXT
+# iteration's argument and refuses it as "unknown option 'slug'". Same
+# bash-3.2-safe indexed-array shape bin/steward's cmd_sessions already uses for
+# the identical reason.
+only_mine=""; want_remote=""; sort_key=""; sort_field=""
+_st_argv=( "$@" )
+_st_i=0; _st_n=${#_st_argv[@]}
+while [ "$_st_i" -lt "$_st_n" ]; do
+  _a="${_st_argv[$_st_i]}"
   case "$_a" in
     --mine|-m)   only_mine=1 ;;
     --remote|-r) want_remote=1 ;;
-    --help|-h)   echo "usage: estate-status.sh [--mine] [--remote]" >&2; exit 0 ;;
+    --help|-h)   echo "usage: estate-status.sh [--mine] [--remote] [--sort name|slug|display|owner|host]" >&2; exit 0 ;;
+    --sort)
+      _st_i=$((_st_i + 1))
+      sort_key="${_st_argv[$_st_i]:-}"
+      sort_field="$(_status_sort_field "$sort_key")" || {
+        echo "estate-status: unknown --sort key '$sort_key' — valid keys: name, slug, display, owner, host" >&2
+        exit 64
+      }
+      ;;
     *)           echo "estate-status: unknown option '$_a'" >&2; exit 64 ;;
   esac
+  _st_i=$((_st_i + 1))
 done
 
 # --remote: FILL IN THE QUESTION MARKS THAT ARE YOURS TO FILL IN.
@@ -304,7 +363,23 @@ if [ -n "$want_remote" ]; then
   done
 fi
 
-_body="$(printf '%s' "$rows" | sort -t'|' -k1,1 -k3,3)"
+# --sort REPLACES THE DEFAULT ORDER ENTIRELY, rather than sorting within it —
+# the same choice `steward sessions --sort` already made: an operator who
+# asked to see the table by HOST does not also want "yours first" quietly
+# still in charge of ties. lib/sort.sh is sourced LAZILY, only when --sort was
+# actually given: every other estate-status.sh invocation (the overwhelming
+# majority — --sort is new) must keep working unchanged even on an estate
+# whose deploy has not yet picked up lib/sort.sh, exactly like REG_LIB is
+# required only because every invocation needs it and this file does not.
+if [ -n "$sort_field" ]; then
+  SORT_LIB="${STEWARD_SORT_LIB:-$(_sort_lib_default)}"
+  [ -f "$SORT_LIB" ] || { echo "estate-status: REFUSING — sort library missing: $SORT_LIB" >&2; exit 78; }
+  # shellcheck source=/dev/null
+  . "$SORT_LIB" || { echo "estate-status: REFUSING — sort library could not be read: $SORT_LIB" >&2; exit 78; }
+  _body="$(printf '%s' "$rows" | _field_sort_rows "$sort_field" '|')"
+else
+  _body="$(printf '%s' "$rows" | sort -t'|' -k1,1 -k3,3)"
+fi
 if [ -n "$only_mine" ]; then
   _body="$(printf '%s\n' "$_body" | awk -F'|' '$1=="0"')"
   if [ -z "$_body" ]; then
