@@ -57,7 +57,17 @@ pub fn render_inspector(s: Option<&Session>, probe: Option<&ProbeResult>, area: 
     // IDENTITY. `engine::Session` carries name, owner and host as plain
     // `String`s — there is no `domain` or `entity` field on this struct to
     // dash out, so only what the struct actually holds is rendered here.
-    lines.push(s.name.clone());
+    // THE INSPECTOR NAMES ALL THREE, because this is where a person goes to
+    // find out exactly which row they are looking at: the display they
+    // recognise, the handle they address it by, and the opaque key everything
+    // machine-side uses. A display alone is ambiguous by design.
+    lines.push(s.label().to_string());
+    if let Some(h) = s.slug.as_deref() {
+        lines.push(format!("slug: {}", h));
+    }
+    if s.display.is_some() {
+        lines.push(format!("id: {}", s.key()));
+    }
     lines.push(format!("owner: {}", s.owner));
     lines.push(format!("host: {}", s.host));
 
@@ -157,6 +167,8 @@ mod tests {
     ) -> Session {
         Session {
             name: name.into(),
+            slug: None,
+            display: None,
             owner: owner.into(),
             host: host.into(),
             assets: assets.iter().map(|s| s.to_string()).collect(),

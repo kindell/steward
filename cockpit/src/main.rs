@@ -101,7 +101,7 @@ fn spawn_attached_pane(app: &App) -> io::Result<pane::Pane> {
         )
     })?;
     let mut argv = vec![tmux_bin()];
-    argv.extend(verb::attach_argv(&socket, &session.name, AttachMode::Interactive));
+    argv.extend(verb::attach_argv(&socket, session.key(), AttachMode::Interactive));
 
     // Size the pty to the BODY, not the whole terminal. The draw carves a
     // one-line status bar off the bottom (`Constraint::Length(1)`), so the
@@ -189,7 +189,7 @@ fn main() -> ExitCode {
         .sessions
         .iter()
         .filter(|s| !s.assets.is_empty())
-        .map(|s| s.name.clone())
+        .map(|s| s.key().to_string())
         .collect();
     let rx = probe::spawn_prober(assets_cmd(), probing_sessions);
 

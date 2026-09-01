@@ -69,16 +69,28 @@ pub fn render_list(
         // already collapses Answered/Failed into the single word
         // `asset_mark` needs; no entry for this session (not sent, or not
         // back yet) stays `None` and renders the measuring ring.
-        let status = probes.get(&s.name).and_then(probe_status_word);
+        let status = probes.get(s.key()).and_then(probe_status_word);
         let m = mark_char(asset_mark(&s.assets, status));
         let assets = if s.assets.is_empty() {
             "—".to_string()
         } else {
             s.assets.join(" ")
         };
+        // THE LABEL IS RENDERED; THE KEY IS ADDRESSED. After the naming model a
+        // row's `name` is an opaque id, and rendering it would show
+        // an opaque id where a person expects a readable name. The display can
+        // COLLIDE between rows (two teammates on the same project legitimately
+        // read the same), so the handle rides alongside to tell them apart —
+        // and every probe, target and map above still keys on `s.key()`.
+        //
+        // THE WIDTHS ARE A BUDGET, NOT A PREFERENCE. The reason column is the
+        // last thing on the row and the first thing clipped, and a clipped
+        // reason turns an explained `unknown` back into a bare one — the exact
+        // regression the reason test caught when this column was first added.
+        let handle = s.slug.as_deref().unwrap_or("—");
         let mut row = format!(
-            "{} {:<28} {:<10} {} {:<9} {:<10} {}",
-            marker, s.name, s.owner, m, s.liveness.tmux, s.liveness.agent, assets
+            "{} {:<24} {:<14} {:<10} {} {:<9} {:<10} {}",
+            marker, s.label(), handle, s.owner, m, s.liveness.tmux, s.liveness.agent, assets
         );
         // I3: A REASON IS RENDERED WHEN THE ENGINE GAVE ONE, visibly tied to
         // the row it explains. An `unknown` without a reason is the same
@@ -114,6 +126,8 @@ mod tests {
     fn sess(name: &str, assets: &[&str], tmux: &str, reason: Option<&str>) -> Session {
         Session {
             name: name.into(),
+            slug: None,
+            display: None,
             owner: "o".into(),
             host: "h".into(),
             assets: assets.iter().map(|s| s.to_string()).collect(),
@@ -304,6 +318,8 @@ mod tests {
     fn the_owner_appears_in_the_row() {
         let s = Session {
             name: "alpha".into(),
+            slug: None,
+            display: None,
             owner: "alice".into(),
             host: "h".into(),
             assets: vec![],

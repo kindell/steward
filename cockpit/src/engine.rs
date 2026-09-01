@@ -27,11 +27,37 @@ pub struct Liveness {
 
 #[derive(Debug, Deserialize)]
 pub struct Session {
+    /// The TECHNICAL key: what tmux, launchd, the queues and every probe
+    /// address. Never rendered as the primary label.
     pub name: String,
+    /// The human handle, unique within an account — `null` on an old-shape row
+    /// whose filename IS its handle. Shown to disambiguate, because displays
+    /// are allowed to collide.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// The resolved display, derived by the engine from the org tree (or a
+    /// legacy label). MAY COLLIDE between rows, and may change when a team is
+    /// renamed — which is exactly why it never keys anything here.
+    #[serde(default)]
+    pub display: Option<String>,
     pub owner: String,
     pub host: String,
     pub assets: Vec<String>,
     pub liveness: Liveness,
+}
+
+impl Session {
+    /// What a PERSON reads. The display when the engine resolved one, else the
+    /// technical key — never an invented string.
+    pub fn label(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.name)
+    }
+
+    /// What a MACHINE addresses: tmux targets, probe correlation, queue names.
+    /// Deliberately not the label — displays collide and change; this does not.
+    pub fn key(&self) -> &str {
+        &self.name
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,10 +141,53 @@ mod tests {
         let f = read_fleet(&stub(json)).expect("should parse");
         assert_eq!(f.sessions.len(), 1);
         assert_eq!(f.sessions[0].name, "alpha");
+        // An older engine answers without the new fields; they must be absent,
+        // not fatal — the rollout deploys engine and cockpit separately.
+        assert_eq!(f.sessions[0].slug, None);
+        assert_eq!(f.sessions[0].display, None);
         assert_eq!(f.sessions[0].assets, vec!["widget"]);
         assert_eq!(f.sessions[0].liveness.tmux, "up");
         assert_eq!(f.hidden, 2);
         assert_eq!(f.hub, "h1");
+    }
+
+    // THE LABEL IS THE DISPLAY; THE KEY IS THE NAME. A row after the naming
+    // model carries an opaque name, a human slug and a resolved display. The
+    // cockpit must render the display, offer the slug to tell two identical
+    // displays apart, and address tmux and probes with the name — the failure
+    // this guards is a cockpit that attaches by a human label.
+    #[test]
+    fn reads_slug_and_display_without_touching_the_key() {
+        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
+            {"name":"s-00000000000000aa","id":"s-00000000000000aa","slug":"advisor",
+             "display":"Alpha","owner":"a","domain":"d","host":"h1",
+             "entity":null,"assets":[],
+             "liveness":{"daemon":"loaded","tmux":"up","agent":"running",
+                         "runtime":"opencode","model":null,
+                         "lastActivity":null,"reason":null}}]}"#;
+        let f = read_fleet(&stub(json)).expect("should parse");
+        let s = &f.sessions[0];
+        assert_eq!(s.name, "s-00000000000000aa");
+        assert_eq!(s.slug.as_deref(), Some("advisor"));
+        assert_eq!(s.display.as_deref(), Some("Alpha"));
+        assert_eq!(s.label(), "Alpha");
+        assert_eq!(s.key(), "s-00000000000000aa");
+    }
+
+    // WITHOUT A DISPLAY THE LABEL FALLS BACK TO THE KEY, never to a guess: an
+    // older engine, or a row the derivation refused, must still render as
+    // something a person can find in the registry.
+    #[test]
+    fn label_falls_back_to_the_key() {
+        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
+            {"name":"legacy","id":"legacy","owner":"a","domain":"d","host":"h1",
+             "entity":null,"assets":[],
+             "liveness":{"daemon":"loaded","tmux":"up","agent":"running",
+                         "runtime":"claude-code","model":null,
+                         "lastActivity":null,"reason":null}}]}"#;
+        let f = read_fleet(&stub(json)).expect("should parse");
+        assert_eq!(f.sessions[0].label(), "legacy");
+        assert_eq!(f.sessions[0].key(), "legacy");
     }
 
     // THE DOCUMENT MUST SAY WHERE HOME IS. A fleet without `hub` cannot answer

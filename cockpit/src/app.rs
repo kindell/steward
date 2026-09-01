@@ -214,7 +214,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     } else {
                         app.refusal = Some(format!(
                             "{} runs on {} — remote view/enter not yet",
-                            session.name, session.host
+                            session.label(), session.host
                         ));
                     }
                 } else {
@@ -226,7 +226,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     // included.
                     app.refusal = Some(format!(
                         "{} is owned by {} — enter stays with the owner",
-                        session.name, session.owner
+                        session.label(), session.owner
                     ));
                 }
             }
@@ -294,6 +294,8 @@ mod tests {
                 .iter()
                 .map(|n| Session {
                     name: n.to_string(),
+                    slug: None,
+                    display: None,
                     owner: "alice".to_string(),
                     host: "h".to_string(),
                     assets: vec!["x".to_string()],
@@ -318,6 +320,8 @@ mod tests {
         Fleet {
             sessions: vec![Session {
                 name: name.to_string(),
+                slug: None,
+                display: None,
                 owner: owner.to_string(),
                 host: "h".to_string(),
                 assets: vec!["x".to_string()],
