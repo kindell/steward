@@ -42,5 +42,36 @@ STEWARD_JOB_STATE_HOME="$T/jobs" JOBOUTBOX_SEND=/bin/true bash "$STEWARD_BIN" jo
 STEWARD_JOB_STATE_HOME="$T/jobs" jobstate_read "$id"
 [ "$JOB_OUTCOME" = "cancelled" ] && ok "cancel: outcome cancelled" || bad "OUTCOME" "$JOB_OUTCOME"
 
+# I4: A DRIVER EXISTS. `start` with a spawn that actually RUNS job-run.sh
+# (synchronously, standing in for the detached tmux session) must end with
+# the job fully reconciled — no human ever types `steward job reconcile`.
+git init -q --bare "$T/e2e-origin.git"; git clone -q "$T/e2e-origin.git" "$T/e2e-src" 2>/dev/null
+( cd "$T/e2e-src" && echo one > f && git add f && git commit -qm one && git push -q origin HEAD )
+cat > "$T/e2e-runtime" <<'EOFRT'
+#!/bin/bash
+echo delivered >> f
+git add f
+git commit -qm "job work" >/dev/null
+printf '{"session_id":"thread-e2e","result":"done"}\n'
+exit 0
+EOFRT
+chmod +x "$T/e2e-runtime"
+cat > "$T/e2e-spawn" <<EOFSPAWN
+#!/bin/bash
+JOBRUN_RUNTIME_CMD="$T/e2e-runtime" bash "$here/../job-run.sh" "\$1"
+EOFSPAWN
+chmod +x "$T/e2e-spawn"
+e2e_id="$(SUBMIT_GOAL=g SUBMIT_CHECK_CMD=true SUBMIT_CHECK_EXPECT=0 \
+  SUBMIT_BRIEF_OBJECTIVE=o SUBMIT_BRIEF_DELIVERY=d SUBMIT_BRIEF_TOOLS=t SUBMIT_BRIEF_BOUNDS=b \
+  SUBMIT_REPO="$T/e2e-src" JOBSTART_SPAWN="$T/e2e-spawn" STEWARD_JOB_STATE_HOME="$T/jobs" \
+  JOBOUTBOX_SEND=/bin/true \
+  bash "$STEWARD_BIN" job start)"
+case "$e2e_id" in j-????????????????) ok "e2e: start returns an id" ;; *) bad "e2e start output" "$e2e_id" ;; esac
+STEWARD_JOB_STATE_HOME="$T/jobs" jobstate_read "$e2e_id"
+[ "$JOB_OUTCOME" = "succeeded" ] && ok "e2e: I4 driver reconciles automatically, OUTCOME=succeeded" || bad "e2e OUTCOME" "${JOB_OUTCOME:-}"
+[ -n "${JOB_DELIVERY_SHA:-}" ] && ok "e2e: DELIVERY_SHA recorded" || bad "e2e no DELIVERY_SHA"
+[ "$(git -C "$T/e2e-origin.git" rev-parse "refs/heads/steward/jobs/$e2e_id/delivery" 2>/dev/null)" = "${JOB_DELIVERY_SHA:-}" ] \
+  && ok "e2e: delivery actually landed on origin" || bad "e2e: origin ref does not match DELIVERY_SHA"
+
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

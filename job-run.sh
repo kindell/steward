@@ -71,17 +71,38 @@ if [ "$runtime" = "opencode" ]; then
   exit 65
 fi
 
-jobstate_lease_acquire "$id" "job-run:$$" "${JOBRUN_LEASE_TTL:-300}" || {
+home="$(jobstate_home)"
+wrapper=$$
+owner="job-run:$wrapper"
+
+# Release the lease only if THIS process still holds it — an unconditional
+# rm here is how a slow attempt-1 deletes attempt-2's lease on its way out
+# [C2].
+_jobrun_release_lease() {
+  local f="$home/$id/lease" holder until
+  [ -f "$f" ] || return 0
+  read -r holder until < "$f" 2>/dev/null || return 0
+  [ "$holder" = "$owner" ] && rm -f "$f"
+  return 0
+}
+
+jobstate_lease_acquire "$id" "$owner" "${JOBRUN_LEASE_TTL:-300}" || {
   echo "job-run: another runner holds the lease on $id" >&2; exit 75; }
 
 jobstate_read "$id"
 jobstate_transition "$id" "$JOB_VERSION" PROCESS=running ATTEMPT_ID="$attempt" || exit $?
 
-home="$(jobstate_home)"
-wrapper=$$
-( while :; do kill -0 "$wrapper" 2>/dev/null || exit 0; touch "$home/$id/heartbeat"; sleep "${JOBRUN_HEARTBEAT_SEC:-30}"; done ) &
+# The heartbeat tick RENEWS THE ACTUAL LEASE, not just a touched file [C2] —
+# jobstate_lease_renew is the only thing that keeps _jobreconcile_alive
+# meaning something for an attempt that outlives the lease's own TTL.
+( while :; do
+    kill -0 "$wrapper" 2>/dev/null || exit 0
+    touch "$home/$id/heartbeat"
+    jobstate_lease_renew "$id" "$owner" >/dev/null 2>&1
+    sleep "${JOBRUN_HEARTBEAT_SEC:-30}"
+  done ) &
 hb=$!
-trap 'kill "$hb" 2>/dev/null; rm -f "$home/$id/lease"' EXIT
+trap 'kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null; _jobrun_release_lease' EXIT
 
 cmd="${JOBRUN_RUNTIME_CMD:-claude}"
 prompt="GOAL: ${JOB_GOAL}
@@ -114,4 +135,24 @@ fi
 
 jobstate_read "$id"
 _jobrun_finalize "$id" "$rc" "$thread" "$thread_parse_failed"
+# _jobrun_finalize only returns on SUCCESS — its own second-failure path
+# exits 70 directly, preserving the lease. From here the attempt's bookkeeping
+# landed, so release this attempt's lease/heartbeat BEFORE driving the
+# reconciler, or _jobreconcile_alive would see this same process as the
+# still-live owner and skip straight past the delivery [C2].
+kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null
+_jobrun_release_lease
+trap - EXIT
+
+# A DRIVER EXISTS [I4]: nothing else calls the reconciler in production, so
+# without this a job halts forever at PROCESS=exited / OUTCOME=pending. One
+# job then runs start -> run -> reconciled without a human typing
+# `steward job reconcile`. A refusal here (e.g. a row this reconcile cannot
+# make sense of) is reported and left for a later reconcile — the wrapper
+# still decides nothing terminal.
+. "$here/lib/jobgit.sh"
+. "$here/lib/joboutbox.sh"
+. "$here/lib/jobreconcile.sh"
+jobreconcile "$id" || echo "job-run: reconcile after finalize reported rc $? for $id — a later reconcile will retry" >&2
+
 exit 0

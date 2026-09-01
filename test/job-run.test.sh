@@ -96,6 +96,28 @@ sleep 2
 mtime2="$(stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
 [ "$mtime1" = "$mtime2" ] && ok "heartbeat stopped after wrapper SIGKILL" || bad "heartbeat kept advancing after SIGKILL" "mtime1=$mtime1 mtime2=$mtime2"
 
+# C2: the heartbeat tick RENEWS THE LEASE (jobstate_lease_renew), not just a
+# touched file. A lease whose TTL is shorter than the runtime call must
+# survive to the end anyway — real wall-clock time, no JOBSTATE_NOW override.
+id7="j-00000000000000f5"
+jobstate_create "$id7" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+cat > "$T/rt-slow" <<'EOFSLOW'
+#!/bin/bash
+sleep 4
+printf '{"session_id":"thread-slow","result":"done"}\n'
+exit 0
+EOFSLOW
+chmod +x "$T/rt-slow"
+JOBRUN_RUNTIME_CMD="$T/rt-slow" JOBRUN_HEARTBEAT_SEC=1 JOBRUN_LEASE_TTL=2 \
+  bash "$here/../job-run.sh" "$id7" &
+wpid7=$!
+sleep 3
+# At t=3s the ORIGINAL 2s TTL would already have expired without renewal.
+still_held="$(jobstate_lease_holder "$id7" 2>/dev/null)"
+[ -n "$still_held" ] && ok "C2: lease survives past its original TTL via heartbeat renewal" || bad "lease expired despite heartbeats"
+wait "$wpid7" 2>/dev/null
+
 # THREAD_PARSE_FAILED: rc 0 with invalid JSON → THREAD_PARSE_FAILED=1.
 id5="j-00000000000000f3"
 jobstate_create "$id5" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
