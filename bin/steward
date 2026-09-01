@@ -24,6 +24,8 @@
 #   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
 #   steward config set KEY /abs/value
 #   steward login [session]
+#   steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)
+#   steward jobs --json
 #   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
 #   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
@@ -3351,6 +3353,121 @@ cmd_login() {
   exec "$resolved" "${args[@]}"
 }
 
+# `steward job start|cancel|reconcile` — the submission gate wired onto the
+# job engine (lib/job{state,schema,git,outbox,reconcile}.sh).
+#
+# `start` reads its WHOLE submission from SUBMIT_* in the environment (see
+# lib/jobschema.sh's usage doc), refuses an incomplete one with the schema's
+# own reason (nothing minted), then: mints an id, gives the job its OWN
+# checkout — never the submitter's — via jobgit_checkout (which also hands
+# back BASE_SHA, the source's HEAD at checkout time, written into the row),
+# creates the row DESIRED=run PROCESS=queued OUTCOME=pending
+# DELIVERY_RECEIPT=pending MESSAGE_RECEIPT=not-sent, and launches the runner
+# DETACHED (JOBSTART_SPAWN is an injectable seam for tests; the default is a
+# detached tmux session running job-run.sh) BEFORE returning — the id goes to
+# stdout immediately, the run happens off to the side.
+#
+# `cancel` and `reconcile` are thin: state the one change (or none) and let
+# the reconciler — the one place that decides outcome — do the rest.
+cmd_job() {
+  local sub="${1:-}"; shift || true
+  # shellcheck source=lib/jobstate.sh
+  . "$HERE/lib/jobstate.sh"
+  # shellcheck source=lib/jobschema.sh
+  . "$HERE/lib/jobschema.sh"
+  # shellcheck source=lib/jobgit.sh
+  . "$HERE/lib/jobgit.sh"
+  # shellcheck source=lib/joboutbox.sh
+  . "$HERE/lib/joboutbox.sh"
+  # shellcheck source=lib/jobreconcile.sh
+  . "$HERE/lib/jobreconcile.sh"
+  case "$sub" in
+    start)
+      jobschema_validate || return $?
+      # FILE-DELIVERY JOBS (DELIVERY_GLOB without REPO) ARE STAGE-2. The
+      # schema accepts them so submissions stay forward-compatible with a
+      # workdir contract that does not exist yet; the engine refuses
+      # honestly here rather than half-running one on a checkout it never
+      # had.
+      if [ -z "${SUBMIT_REPO:-}" ]; then
+        echo "steward job: file-delivery jobs (DELIVERY_GLOB without REPO) are not" >&2
+        echo "  built yet — digest pinning and a workdir contract are stage-2 work." >&2
+        echo "  The schema accepts them so submissions stay forward-compatible;" >&2
+        echo "  the engine refuses honestly rather than half-running one." >&2
+        return 65
+      fi
+      local id workroot base_out
+      id="$(jobstate_mint_id)"
+      workroot="$(jobstate_home)/$id/work"
+      base_out="$(jobgit_checkout "$id" "$SUBMIT_REPO" "$workroot")" || return $?
+      jobstate_create "$id" \
+        GOAL="$SUBMIT_GOAL" OWNER="${SUBMIT_OWNER:-$(id -un)}" \
+        DESIRED=run PROCESS=queued OUTCOME=pending \
+        DELIVERY_RECEIPT=pending MESSAGE_RECEIPT=not-sent \
+        CHECK_CMD="$SUBMIT_CHECK_CMD" CHECK_EXPECT="$SUBMIT_CHECK_EXPECT" \
+        BRIEF_OBJECTIVE="$SUBMIT_BRIEF_OBJECTIVE" BRIEF_DELIVERY="$SUBMIT_BRIEF_DELIVERY" \
+        BRIEF_TOOLS="$SUBMIT_BRIEF_TOOLS" BRIEF_BOUNDS="$SUBMIT_BRIEF_BOUNDS" \
+        WORKDIR="$workroot" RUNTIME="${SUBMIT_RUNTIME:-claude-code}" \
+        "$base_out" || return $?
+      if [ -n "${JOBSTART_SPAWN:-}" ]; then
+        "$JOBSTART_SPAWN" "$id" >/dev/null 2>&1
+      else
+        tmux new-session -d -s "$id" "$HERE/job-run.sh" "$id" >/dev/null 2>&1
+      fi || echo "steward job: runner spawn failed — run 'steward job reconcile $id' to retry" >&2
+      printf '%s\n' "$id"
+      ;;
+    cancel)
+      local id="${1:?steward job cancel <id>}"
+      jobstate_read "$id" || return $?
+      jobstate_transition "$id" "$JOB_VERSION" DESIRED=cancel || return $?
+      jobreconcile "$id"
+      ;;
+    reconcile) jobreconcile "${1:?steward job reconcile <id>}" ;;
+    *) echo "usage: steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)" >&2; return 64 ;;
+  esac
+}
+
+# `steward jobs --json` — IDENTITY FIRST. Every row that exists under the
+# state home is listed, whether or not it can be measured; a measurement
+# (the parsed fields) is then left-joined onto that identity, never the
+# other way around. A row whose `row` file cannot be parsed still appears,
+# with `reason:"unparsable row"` — it is never silently dropped and never
+# guessed at. `coverage` states listed/measured/unmeasurable so a caller can
+# tell a clean sweep from one that quietly lost rows.
+cmd_jobs() {
+  [ "${1:-}" = "--json" ] || { echo "usage: steward jobs --json" >&2; return 64; }
+  # shellcheck source=lib/jobstate.sh
+  . "$HERE/lib/jobstate.sh"
+  local home d id rows="[]" listed=0 measured=0 unmeasurable=0 now hb age
+  home="$(jobstate_home)" || return $?
+  now="$(_jobstate_now)"
+  for d in "$home"/j-*/; do
+    [ -d "$d" ] || continue
+    id="$(basename "$d")"; listed=$((listed+1))
+    if jobstate_read "$id" 2>/dev/null; then
+      measured=$((measured+1))
+      age=null
+      hb="$home/$id/heartbeat"
+      [ -f "$hb" ] && age=$((now - $(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null)))
+      rows="$(jq -n --argjson rows "$rows" \
+        --arg id "$id" --arg goal "${JOB_GOAL:-}" --arg owner "${JOB_OWNER:-}" \
+        --arg desired "${JOB_DESIRED:-}" --arg process "${JOB_PROCESS:-}" \
+        --arg outcome "${JOB_OUTCOME:-pending}" --arg receipt "${JOB_DELIVERY_RECEIPT:-pending}" \
+        --arg sha "${JOB_DELIVERY_SHA:-}" --arg attempt "${JOB_ATTEMPT_ID:-0}" --argjson age "$age" \
+        '$rows + [{id:$id, goal:$goal, owner:$owner, desired:$desired, process:$process,
+                   outcome:$outcome, delivery:{receipt:$receipt, sha:(if $sha=="" then null else $sha end)},
+                   attempt:($attempt|tonumber), heartbeatAgeSec:$age, reason:null}]')"
+    else
+      unmeasurable=$((unmeasurable+1))
+      rows="$(jq -n --argjson rows "$rows" --arg id "$id" \
+        '$rows + [{id:$id, reason:"unparsable row"}]')"
+    fi
+  done
+  jq -n --argjson jobs "$rows" --argjson l "$listed" --argjson m "$measured" --argjson u "$unmeasurable" \
+    '{ok:true, schema:1, measuredAt:(now|todate), jobs:$jobs,
+      coverage:{listed:$l, measured:$m, unmeasurable:$u}}'
+}
+
 # CALLED FIRST IN THE DISPATCHER, BEFORE ANY SUBCOMMAND — every path below
 # (add, ls, sessions, the bare cockpit invocation, an <estate> verb) must
 # see the same, already-resolved environment, and a broken config must
@@ -3408,6 +3525,8 @@ case "${1:-}" in
   assets)   shift; cmd_assets "$@"; exit $? ;;
   sessions) shift; cmd_sessions "$@"; exit $? ;;
   login)    shift; cmd_login "$@"; exit $? ;;
+  job)      shift; cmd_job "$@"; exit $? ;;
+  jobs)     shift; cmd_jobs "$@"; exit $? ;;
   # NAMESPACED, NOT TOP-LEVEL. `steward team` or `steward client` at the top
   # would collide with the estate-client fallback in the `*)` branch below
   # (`steward <estate> attach|peek|ls`) the moment an operator's own estate

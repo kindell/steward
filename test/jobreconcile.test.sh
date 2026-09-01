@@ -20,13 +20,15 @@ export JOBOUTBOX_SEND="$T/sender"
 export JOBSTATE_NOW=1000
 
 mkjob() { # <id> — fresh origin+work with one delivered-locally commit staged per caller
-  local id="$1"
+  local id="$1" base_sha
   git init -q --bare "$T/$id-origin.git"
   git clone -q "$T/$id-origin.git" "$T/$id-src" 2>/dev/null
   ( cd "$T/$id-src" && echo base > f && git add f && git commit -qm base && git push -q origin HEAD )
   jobgit_checkout "$id" "$T/$id-src" "$T/$id-work" > "$T/$id-base"
+  base_sha="$(cat "$T/$id-base")"
   jobstate_create "$id" GOAL=g OWNER=alice DESIRED=run PROCESS=exited EXIT_CODE=0 \
-    WORKDIR="$T/$id-work" RUNTIME=claude-code BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b
+    WORKDIR="$T/$id-work" RUNTIME=claude-code BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b \
+    "$base_sha"
 }
 
 # WINDOW: push happened, state did not. Reconciler verifies and finalizes —

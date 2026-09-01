@@ -26,7 +26,7 @@ jobreconcile() {
     cancelled)
       if [ -z "${JOB_LATE_DELIVERY:-}" ] && [ -d "${JOB_WORKDIR:-/nonexistent}" ]; then
         local_sha="$(git -C "$JOB_WORKDIR" rev-parse "refs/heads/$branch" 2>/dev/null)"
-        if [ -n "$local_sha" ] && [ "$local_sha" != "$(_jobreconcile_base "$id")" ]; then
+        if [ -n "$local_sha" ] && [ "$local_sha" != "${JOB_BASE_SHA:?}" ]; then
           jobstate_transition "$id" "$v" LATE_DELIVERY=1; return 0
         fi
       fi
@@ -78,12 +78,12 @@ jobreconcile() {
     have="$(git -C "$JOB_WORKDIR" ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)"
     # Crash window: push succeeded but DELIVERY_SHA not registered yet.
     # The remote tip IS a receipt; register it and verify.
-    if [ -n "$local_sha" ] && [ -z "${JOB_DELIVERY_SHA:-}" ] && [ "$local_sha" = "$have" ] && [ "$local_sha" != "$(_jobreconcile_base "$id")" ]; then
+    if [ -n "$local_sha" ] && [ -z "${JOB_DELIVERY_SHA:-}" ] && [ "$local_sha" = "$have" ] && [ "$local_sha" != "${JOB_BASE_SHA:?}" ]; then
       jobstate_transition "$id" "$v" DELIVERY_SHA="$local_sha" || return 0
       jobreconcile "$id"
       return 0
     fi
-    if [ -n "$local_sha" ] && [ "$local_sha" != "$(_jobreconcile_base "$id")" ] && [ "$local_sha" != "$have" ]; then
+    if [ -n "$local_sha" ] && [ "$local_sha" != "${JOB_BASE_SHA:?}" ] && [ "$local_sha" != "$have" ]; then
       local out
       if out="$(jobgit_deliver "$id" "$JOB_WORKDIR" "${have:-}")"; then
         jobstate_transition "$id" "$v" DELIVERY_SHA="${out#DELIVERY_SHA=}"
@@ -106,8 +106,3 @@ jobreconcile() {
 }
 
 _jobreconcile_alive() { jobstate_lease_holder "$1" >/dev/null 2>&1; }
-# _jobreconcile_base: root-commit simplification, valid for single-commit fixtures only.
-# Task 8 will replace this with JOB_BASE_SHA from the row, allowing multi-commit histories.
-_jobreconcile_base() {
-  git -C "${JOB_WORKDIR:?}" rev-list --max-parents=0 "refs/heads/$(jobgit_branch "$1")" 2>/dev/null | head -1
-}
