@@ -30,6 +30,30 @@ _reg_lib() {
   return 78
 }
 _REGROT="$repo"
+# THE ESTATE ROOT IS NEVER GUESSED TO BE $HOME. The default was "$here/..",
+# which is correct in a checkout (the product root, one step above linux/) and
+# WRONG in the layout this file actually runs in: deployed, this file is
+# <home>/scripts/bus/enroll, so $here is <home>/scripts and $here/.. is the
+# HOME DIRECTORY. A bare invocation then put the whole session register at
+# ~/sessions.d — a second register nobody reads, silently, with rc 0.
+#
+# Masked in practice because every caller exports the variable (the controller,
+# and linux/session-new.sh), which is exactly what made it a latent trap rather
+# than a live fault. The fix is not a better guess: it is to look for an estate
+# where one can actually be, and REFUSE when there is none. $here comes first
+# precisely because it is the deployed hub's own root — the same correction
+# RELAY_ROOT got below, for the same reason.
+if [ -z "${STEWARD_ESTATE_ROOT:-}" ] && [ -z "${STEWARD_ESTATE:-}" ]; then
+  for _cand in "$here" "$repo"; do
+    [ -f "$_cand/estate/steward.conf" ] && { STEWARD_ESTATE_ROOT="$_cand"; break; }
+  done
+  if [ -z "${STEWARD_ESTATE_ROOT:-}" ]; then
+    echo "nav-enroll: REFUSING — no estate found at '$here' or '$repo', and STEWARD_ESTATE_ROOT is unset." >&2
+    echo "nav-enroll:   Guessing would file the register under '$repo/sessions.d' — on a deployed hub that is \$HOME, i.e. a whole second register nobody reads." >&2
+    echo "nav-enroll:   Set STEWARD_ESTATE_ROOT (or STEWARD_ESTATE) and re-run." >&2
+    exit 78
+  fi
+fi
 : "${STEWARD_ESTATE_ROOT:=$_REGROT}"; export STEWARD_ESTATE_ROOT
 _REGLIB="$(_reg_lib "$_REGROT")" || exit 78
 # shellcheck source=/dev/null
@@ -83,7 +107,11 @@ NAV="$(registry_hub_session)"         || exit 78
 AUTH_KEYS="${STEWARD_AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"
 FROM="${STEWARD_ENROLL_FROM:-}"
 
-fel() { echo "nav-enroll: REFUSING — $1" >&2; exit 65; }
+# THE SECOND ARGUMENT IS AN EXIT CODE, and it used to be silently dropped. One
+# caller (the relay-missing refusal below) passed 78 deliberately — every other
+# refusal in this file is a 65 — and got 65 anyway, so the one distinction the
+# file tried to draw was unmeasurable. Default stays 65 for every bare call.
+fel() { echo "nav-enroll: REFUSING — $1" >&2; exit "${2:-65}"; }
 
 NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""
 forsta=1; kuvertrad_provad=""
@@ -367,13 +395,23 @@ fi
 # registry session add, lib/jobstate.sh's j- twin) — opaque, immutable, and
 # NEVER derived from account or slug: an id that encoded either would change
 # identity on an account move. The filename becomes this id, never NAMN.
+#
+# THE SHAPE ASSERTION IS HEX, NOT "SIXTEEN OF ANYTHING". The old pattern was
+# s-????????????????, which matches sixteen arbitrary characters — so a
+# truncated or garbled od/tr pipeline could still satisfy it. A hex assertion
+# is free here and is what every reader of an id assumes.
+_ar_myntat_id() { # <candidate>: rc 0 iff s- followed by exactly 16 hex digits
+  case "$1" in s-*) : ;; *) return 1 ;; esac
+  case "${1#s-}" in *[!0123456789abcdef]*|"") return 1 ;; esac
+  [ "${#1}" -eq 18 ]
+}
 ID=""
 _mint_tries=0
 while [ "$_mint_tries" -lt 5 ]; do
   _cand="s-$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
-  case "$_cand" in
-    s-????????????????) [ -e "$rdir/$_cand.conf" ] || { ID="$_cand"; break; } ;;
-  esac
+  if _ar_myntat_id "$_cand"; then
+    [ -e "$rdir/$_cand.conf" ] || { ID="$_cand"; break; }
+  fi
   _mint_tries=$((_mint_tries+1))
 done
 [ -n "$ID" ] || { echo "nav-enroll: could not mint a unique session id" >&2; exit 70; }
@@ -440,9 +478,6 @@ if ! ( set -u; . "$conf"; : "$ID" "$ACCOUNT" "$SLUG" "$HOST" "$REPO_PATH" "$OWNE
   exit 70
 fi
 
-# authorized_keys: backup BEFORE the write, then exactly the restrict,command
-# form — the sender identity lives in the KEY, never in the message.
-cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
 # $here, NOT $repo: in a deployed hub home the relay lives at
 # <home>/scripts/bus/bin/bus-relay-in and $here IS <home>/scripts; $repo is one
 # step too high and was correct only in this file's previous home.
