@@ -8,6 +8,12 @@
 # beats everything), then deadline, then receipts (delivered work must never
 # be redone), then — only when no receipt exists anywhere — the retry.
 # One decision per invocation, every write through CAS.
+#
+# RECURSION: The push path (branch 5) and receipt verification (branch 3)
+# deliberately recurse one level (two decisions in one external call).
+# The push succeeds, then the next level verifies the receipt and sets outcome.
+# This is the intentional exception to "one decision per invocation"; it catches
+# the crash window between push and registration in a single reconcile call.
 
 jobreconcile() {
   local id="$1"
@@ -30,7 +36,7 @@ jobreconcile() {
 
   # 1. Cancel beats everything else.
   if [ "${JOB_DESIRED:-run}" = "cancel" ]; then
-    jobstate_transition "$id" "$v" OUTCOME=cancelled
+    jobstate_transition "$id" "$v" OUTCOME=cancelled || return 0
     joboutbox_enqueue "$id" "$((v+1))" "job $id cancelled"
     joboutbox_drain "$id" || true
     return 0
@@ -38,7 +44,7 @@ jobreconcile() {
 
   # 2. Absolute deadline.
   if [ -n "${JOB_DEADLINE_ABSOLUT:-}" ] && [ "$(_jobstate_now)" -ge "$JOB_DEADLINE_ABSOLUT" ]; then
-    jobstate_transition "$id" "$v" OUTCOME=timed_out FAIL_REASON=absolute-deadline
+    jobstate_transition "$id" "$v" OUTCOME=timed_out FAIL_REASON=absolute-deadline || return 0
     joboutbox_enqueue "$id" "$((v+1))" "job $id timed out"
     joboutbox_drain "$id" || true
     return 0
@@ -47,11 +53,11 @@ jobreconcile() {
   # 3. A registered delivery: verify the remote tip. Moved => failed, never done.
   if [ -n "${JOB_DELIVERY_SHA:-}" ]; then
     if jobgit_receipt "$id" "$JOB_WORKDIR" "$JOB_DELIVERY_SHA" 2>/dev/null; then
-      jobstate_transition "$id" "$v" DELIVERY_RECEIPT=verified OUTCOME=succeeded
+      jobstate_transition "$id" "$v" DELIVERY_RECEIPT=verified OUTCOME=succeeded || return 0
       joboutbox_enqueue "$id" "$((v+1))" "job $id succeeded, delivery $JOB_DELIVERY_SHA on $branch"
       joboutbox_drain "$id" || true
     else
-      jobstate_transition "$id" "$v" DELIVERY_RECEIPT=failed OUTCOME=failed FAIL_REASON=remote-moved
+      jobstate_transition "$id" "$v" DELIVERY_RECEIPT=failed OUTCOME=failed FAIL_REASON=remote-moved || return 0
       joboutbox_enqueue "$id" "$((v+1))" "job $id failed: remote ref moved unexpectedly"
       joboutbox_drain "$id" || true
     fi
@@ -60,7 +66,7 @@ jobreconcile() {
 
   # 4. Slots exhausted with nothing delivered: abandoned, artifacts preserved.
   if [ "${JOB_SLOTS_EXHAUSTED:-}" = "1" ]; then
-    jobstate_transition "$id" "$v" OUTCOME=abandoned FAIL_REASON=slots-exhausted
+    jobstate_transition "$id" "$v" OUTCOME=abandoned FAIL_REASON=slots-exhausted || return 0
     joboutbox_enqueue "$id" "$((v+1))" "job $id abandoned: attempt slots exhausted; worktree preserved"
     joboutbox_drain "$id" || true
     return 0
@@ -70,6 +76,13 @@ jobreconcile() {
   if [ -d "${JOB_WORKDIR:-/nonexistent}" ] && ! _jobreconcile_alive "$id"; then
     local_sha="$(git -C "$JOB_WORKDIR" rev-parse "refs/heads/$branch" 2>/dev/null)"
     have="$(git -C "$JOB_WORKDIR" ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)"
+    # Crash window: push succeeded but DELIVERY_SHA not registered yet.
+    # The remote tip IS a receipt; register it and verify.
+    if [ -n "$local_sha" ] && [ -z "${JOB_DELIVERY_SHA:-}" ] && [ "$local_sha" = "$have" ] && [ "$local_sha" != "$(_jobreconcile_base "$id")" ]; then
+      jobstate_transition "$id" "$v" DELIVERY_SHA="$local_sha" || return 0
+      jobreconcile "$id"
+      return 0
+    fi
     if [ -n "$local_sha" ] && [ "$local_sha" != "$(_jobreconcile_base "$id")" ] && [ "$local_sha" != "$have" ]; then
       local out
       if out="$(jobgit_deliver "$id" "$JOB_WORKDIR" "${have:-}")"; then
@@ -79,7 +92,7 @@ jobreconcile() {
         # recursion, and it terminates — DELIVERY_SHA is now set.
         jobreconcile "$id"
       else
-        jobstate_transition "$id" "$v" OUTCOME=failed FAIL_REASON=remote-moved
+        jobstate_transition "$id" "$v" OUTCOME=failed FAIL_REASON=remote-moved || return 0
         joboutbox_enqueue "$id" "$((v+1))" "job $id failed: remote ref moved unexpectedly"
         joboutbox_drain "$id" || true
       fi
@@ -93,6 +106,8 @@ jobreconcile() {
 }
 
 _jobreconcile_alive() { jobstate_lease_holder "$1" >/dev/null 2>&1; }
+# _jobreconcile_base: root-commit simplification, valid for single-commit fixtures only.
+# Task 8 will replace this with JOB_BASE_SHA from the row, allowing multi-commit histories.
 _jobreconcile_base() {
   git -C "${JOB_WORKDIR:?}" rev-list --max-parents=0 "refs/heads/$(jobgit_branch "$1")" 2>/dev/null | head -1
 }

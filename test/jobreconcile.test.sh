@@ -104,5 +104,48 @@ v="$JOB_VERSION"
 jobreconcile "$id"; jobstate_read "$id"
 [ "$JOB_VERSION" = "$v" ] && ok "terminal rows are left alone" || bad "terminal row mutated"
 
+# FINDING 1 (Critical): push succeeded, DELIVERY_SHA unset. Reconciler handles
+# the crash window where remote has the commit but the row does not.
+id=j-0000000000000108; mkjob "$id"
+( cd "$T/$id-work" && echo done > f && git add f && git commit -qm work )
+del="$(jobgit_deliver "$id" "$T/$id-work" "")"; del="${del#DELIVERY_SHA=}"
+# Do NOT set DELIVERY_SHA in the row — simulate the crash point
+jobstate_read "$id"
+rm -f "$T/runnerlog"  # Clear any prior runner invocations
+jobreconcile "$id" && ok "push-crash-window: rc 0" || bad "reconcile failed"
+jobstate_read "$id"
+[ "${JOB_DELIVERY_SHA:-}" = "$del" ] && ok "push-crash-window: DELIVERY_SHA set" || bad "sha" "${JOB_DELIVERY_SHA:-}"
+[ "${JOB_OUTCOME:-}" = "succeeded" ] && ok "push-crash-window: succeeded" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+[ ! -e "$T/runnerlog" ] && ok "push-crash-window: model NOT rerun" || bad "model rerun on delivered work"
+
+# FINDING 2 (Important): terminal decision fails CAS, no notice enqueued.
+id=j-0000000000000109; mkjob "$id"
+jobstate_read "$id"
+jobstate_transition "$id" "$JOB_VERSION" DESIRED=cancel
+# Pre-create write-lock directory to block the next CAS attempt
+mkdir "$STEWARD_JOB_STATE_HOME/$id/write-lock" 2>/dev/null || true
+rm -f "$T/sendlog"  # Clear sendlog
+jobreconcile "$id" && ok "cas-refused: rc 0" || bad "reconcile failed"
+# Check that no outbox entry was created (no line in sendlog with this job)
+if [ -f "$T/sendlog" ] && grep -q "job $id" "$T/sendlog" 2>/dev/null; then
+  bad "cas-refused: notice sent despite CAS failure"
+else
+  ok "cas-refused: no notice on refused CAS"
+fi
+# Verify row is unchanged
+jobstate_read "$id"
+[ "${JOB_OUTCOME:-}" = "" ] && ok "cas-refused: row unchanged after CAS refusal" || bad "OUTCOME changed" "${JOB_OUTCOME:-}"
+# Remove lock, reconcile again, should now succeed and send notice
+rmdir "$STEWARD_JOB_STATE_HOME/$id/write-lock" 2>/dev/null || true
+rm -f "$T/sendlog"
+jobreconcile "$id"
+jobstate_read "$id"
+[ "$JOB_OUTCOME" = "cancelled" ] && ok "cas-refused: cancelled after CAS ok" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+if [ -f "$T/sendlog" ] && grep -q "job $id" "$T/sendlog" 2>/dev/null; then
+  ok "cas-refused: notice sent on second attempt"
+else
+  bad "cas-refused: no notice on second attempt"
+fi
+
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
