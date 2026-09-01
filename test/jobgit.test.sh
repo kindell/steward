@@ -59,6 +59,25 @@ jobgit_deliver "$id" "$T/work" "$del_sha" >/dev/null 2>&1
 [ $? -eq 75 ] && ok "deliver: moved remote refused with rc 75" || bad "moved remote not refused"
 [ "$(git -C "$T/origin.git" rev-parse "refs/heads/steward/jobs/$id/delivery")" = "$moved_sha" ] && ok "deliver: foreign commit NOT overwritten" || bad "force happened"
 
+# C3: an unreachable origin is an OUTAGE (rc 69), never a provenance
+# conflict (rc 75) — a network blip must not be told apart from a hostile
+# push by lying about which one happened.
+( cd "$T/work" && echo outage > f.txt && git add f.txt && git commit -qm outage )
+real_origin="$(git -C "$T/work" remote get-url origin)"
+git -C "$T/work" remote set-url origin "$T/does-not-exist.git"
+jobgit_deliver "$id" "$T/work" "$moved_sha" >/dev/null 2>&1
+[ $? -eq 69 ] && ok "deliver: unreachable origin is rc 69, not a conflict [C3]" || bad "unreachable origin not rc 69"
+git -C "$T/work" remote set-url origin "$real_origin"
+
+# I5: push.followTags must never escape the job namespace, even when the
+# workdir's OWN config asks for it — the runtime owns a shell in that
+# workdir and could set this itself.
+git -C "$T/work" config push.followTags true
+git -C "$T/work" tag -a v9.9.9 -m "escape test"
+( cd "$T/work" && echo tagtest > f.txt && git add f.txt && git commit -qm tagtest )
+jobgit_deliver "$id" "$T/work" "$moved_sha" >/dev/null 2>&1
+git -C "$T/origin.git" tag -l | grep -q '^v9\.9\.9$' && bad "deliver: a tag escaped the job namespace [I5]" || ok "deliver: push.followTags neutralised, tag stayed local [I5]"
+
 jobgit_push_guard "$id" "refs/heads/steward/jobs/$id/delivery" && ok "guard: own namespace allowed" || bad "own namespace refused"
 jobgit_push_guard "$id" "refs/heads/main" 2>/dev/null && bad "guard: main allowed" || ok "guard: main refused"
 jobgit_push_guard "$id" "refs/tags/v1" 2>/dev/null && bad "guard: tag allowed" || ok "guard: tag refused"
