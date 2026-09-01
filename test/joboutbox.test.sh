@@ -45,5 +45,10 @@ JOBOUTBOX_SEND=/bin/false joboutbox_drain "$id" 2>/dev/null
 joboutbox_drain "$id"
 [ -f "$T/jobs/$id/outbox/job-$id-terminal-v4.sent" ] && ok "redrain delivers it" || bad "redrain failed"
 
+# Re-enqueue an already-sent event (v3 was drained earlier, now has .sent marker).
+joboutbox_enqueue "$id" 3 "attempting to re-enqueue already-sent event" && ok "re-enqueue sent: rc 0" || bad "re-enqueue sent failed"
+[ ! -f "$T/jobs/$id/outbox/job-$id-terminal-v3.pending" ] && ok "re-enqueue sent: no pending file created" || bad "pending file reappeared"
+[ -f "$T/jobs/$id/outbox/job-$id-terminal-v3.sent" ] && ok "re-enqueue sent: marker preserved" || bad ".sent file lost"
+
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
