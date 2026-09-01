@@ -429,11 +429,61 @@ if [ ! -f "$RELAY_ROOT/bus/bin/bus-relay-in" ]; then
   rm -f "$conf"
   fel "the relay is missing at $RELAY_ROOT/bus/bin/bus-relay-in — the key line would name a path that does not exist, and the new session's outbound channel would be dead without it being able to say so. Run the hub from the tree where the relay lives." 78
 fi
+# THE BACKUP IS TAKEN HERE, AFTER THE LAST REFUSAL AND BEFORE THE WRITE — it
+# used to sit above the relay check, so every refusal on that path left an
+# authorized_keys.bak-<epoch> behind for a file that was never touched. Litter
+# only, but litter in the one directory an operator reads when something is
+# wrong with a key.
+cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
 # THE KEY BINDS THE ID, NEVER THE NAME. A name is a per-account SLUG and can
 # change; the id is the one thing that must never move underneath a key that
 # already exists on a real machine.
 printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
   "$RELAY_ROOT" "$ID" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+
+# ── THE NEWBORN ROW MUST REACH THE ESTATE'S GIT HISTORY ─────────────────────
+# THE GAP, measured 2026-09-01. This file wrote the row into the hub's RUNTIME
+# register only (registry_dir() → ~/scripts/sessions.d on a deployed hub).
+# Nothing wrote it into the estate's CHECKOUT — and the deploy reconciles the
+# runtime directory AGAINST the checkout, deleting the remainder (a keep-list
+# built from the repo, everything else removed). So a session born through the
+# bus lost its registry row on the next install from the laptop, while its
+# authorized_keys line, its timer and its key all survived. The same gap kept
+# the row from EVER reaching the host: hosts install FROM the checkout.
+#
+# And the NOTE at the bottom of this file tells the operator to run exactly
+# that install. The birth had no path from the hub's write to the estate's git
+# history, and nothing said so.
+#
+# So the row is written to the checkout too, byte-identical, the same way the
+# cutover's `steward registry migrate-session` writes rows an operator commits.
+# WRITTEN AFTER THE LAST REFUSAL, for the same reason the backup is: no path
+# that refuses may leave a row in the repository.
+#
+# WHEN NO CHECKOUT RESOLVES the row is still registered — the hub is live and
+# the session must be able to start — but the operator gets the whole conf and
+# its destination on stderr, LOUDLY, because the alternative is a row that
+# quietly disappears at the next deploy.
+CHECKOUT="$(registry_estate_checkout)" || exit 78
+_ckconf=""
+if [ -n "$CHECKOUT" ] && [ -d "$CHECKOUT/sessions.d" ]; then
+  _ckdir="$(CDPATH= cd -- "$CHECKOUT/sessions.d" && pwd)"
+  _rdirabs="$(CDPATH= cd -- "$rdir" && pwd)"
+  if [ "$_ckdir" = "$_rdirabs" ]; then
+    # The hub IS running out of the checkout — the row is already there.
+    _ckconf="$_rdirabs/$ID.conf"
+  elif cp "$conf" "$_ckdir/$ID.conf"; then
+    _ckconf="$_ckdir/$ID.conf"
+  fi
+fi
+if [ -n "$_ckconf" ]; then
+  echo "nav-enroll: NOTE — the row was also written to the estate checkout: $_ckconf" >&2
+  echo "nav-enroll:   COMMIT AND PUSH IT. The deploy reconciles the hub's runtime register against the checkout and deletes what the checkout does not carry, and every host installs FROM the checkout — an uncommitted row reaches no machine and does not survive the next install." >&2
+else
+  echo "nav-enroll: NOTE — NO ESTATE CHECKOUT RESOLVED (set ESTATE_CHECKOUT in the estate file, or STEWARD_ESTATE_CHECKOUT), so this row exists ONLY in the hub's runtime register at $conf." >&2
+  echo "nav-enroll:   IT WILL BE DELETED by the next install's orphan prune, and it will never reach the session's host. Put this file in the estate checkout's sessions.d and commit it:" >&2
+  sed 's/^/nav-enroll:   | /' "$conf" >&2
+fi
 
 # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, Task 2
 # envelope v2): "DRIFT enroll: <headline>". bus_send now refuses every SEND

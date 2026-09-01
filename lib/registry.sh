@@ -1165,6 +1165,53 @@ registry_liveness_cmd() {
   printf '%s\n' "$LIVENESS_CMD"
 }
 
+# registry_estate_checkout — where the estate's own git working copy lives, or
+# the empty string.
+#
+# THE DISTINCTION THIS KEY EXISTS FOR: the estate has TWO roots on the hub, and
+# until now only one of them had a name. STEWARD_ESTATE_ROOT names the
+# RUNTIME image (~/scripts on a deployed hub) — what the machine reads. The
+# CHECKOUT is what the machine is deployed FROM, and what git remembers.
+#
+# A writer that only knows the runtime root writes rows that the next deploy
+# deletes: the deploy builds a keep-list from the checkout and prunes the
+# runtime directory against it, and every host installs from the checkout. That
+# is a real cost already paid — a session enrolled through the bus lost its
+# registry row on the next install while its key line and timer survived.
+#
+# OPTIONAL, AND OPTIONAL THE SAME WAY registry_liveness_cmd IS — same three
+# outcomes, same reasons, same "local before source" discipline:
+#   - no estate file, or no ESTATE_CHECKOUT line -> prints nothing, rc 0
+#   - present and well-formed                    -> prints the value, rc 0
+#   - present and INVALID                        -> rc 78
+# An estate that has not declared a checkout is not broken; a caller that gets
+# the empty string is expected to say so loudly rather than guess a path. And
+# an operator who wrote a relative path deserves a refusal, not a directory
+# resolved against whatever happened to be the current one.
+#
+# STEWARD_ESTATE_CHECKOUT overrides, as every other resolution here allows.
+registry_estate_checkout() {
+  if [ -n "${STEWARD_ESTATE_CHECKOUT:-}" ]; then
+    printf '%s\n' "$STEWARD_ESTATE_CHECKOUT"
+    return 0
+  fi
+  local _estate; _estate="$(registry_estate_file)"
+  [ -f "$_estate" ] || { printf ''; return 0; }
+  local ESTATE_CHECKOUT=""
+  # shellcheck source=/dev/null
+  if ! source "$_estate"; then
+    echo "registry: REFUSING — the estate file could not be read: $_estate" >&2
+    return 78
+  fi
+  [ -n "$ESTATE_CHECKOUT" ] || { printf ''; return 0; }
+  if ! [[ "$ESTATE_CHECKOUT" =~ ^/[A-Za-z0-9/._-]+$ ]]; then
+    echo "registry: REFUSING — ESTATE_CHECKOUT in $_estate is not an absolute path: '$ESTATE_CHECKOUT'" >&2
+    echo "registry: expected the form ^/[A-Za-z0-9/._-]+\$ — got '$ESTATE_CHECKOUT'" >&2
+    return 78
+  fi
+  printf '%s\n' "$ESTATE_CHECKOUT"
+}
+
 registry_dir() {
   if [ -n "${STEWARD_REGISTRY_DIR:-}" ]; then
     printf '%s\n' "$STEWARD_REGISTRY_DIR"
