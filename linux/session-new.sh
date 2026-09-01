@@ -193,6 +193,15 @@ if [ "${1:-}" = "--activate" ]; then
     # the estate checkout; it reaches this host through the install.
     [ -f "$SESS_D/$ID.conf" ] || fel "no registry row '$ID.conf' in $SESS_D — the hub registered this session, but its row has not reached this host yet. Sync the estate (the install that copies the checkout's sessions.d) and re-run; supervision refuses to start a session it cannot find in the register, so activating now would only produce a timer that fails every period." 65
     if [ -n "$NAMN" ]; then
+      # VERIFY THE SLUG MATCHES THE ROW'S OWN SLUG= FIELD. The row was registered
+      # with a specific slug; a wrong second token would silently link the wrong
+      # key (the identity-swap incident, now with the trigger moved to a typo).
+      # Extract SLUG= from the conf and refuse rc 65 if they don't match, naming
+      # both values and the correct command.
+      _regslug="$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$SESS_D/$ID.conf" | head -1)"
+      if [ "$_regslug" != "$NAMN" ]; then
+        fel "slug mismatch: row '$ID' declares SLUG=\"$_regslug\", but you provided '$NAMN'. Activate with the correct form: bash ${BASH_SOURCE[0]} --activate $ID $_regslug" 65
+      fi
       # THE RESERVATION IS THIS ACCOUNT'S OWN NOTE ABOUT ITS OWN REQUEST — it
       # confirms the slug was requested from here and names the key. Absent
       # (an older request, a cleaned state dir) the key on disk is still the
