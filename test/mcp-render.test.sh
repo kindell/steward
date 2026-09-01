@@ -153,5 +153,95 @@ is  "9e a bare 'mcp' is a usage error"              "$?" "64"
 run mcp sing >/dev/null 2>&1
 is  "9f an unknown mcp verb is a usage error"       "$?" "64"
 
+echo "== 10. a level that FAILED to load never renders as an empty document =="
+# THE FAULT MUST NOT READ AS THE CONFIGURATION. Section 6 above is the honest
+# empty set — nobody granted anything. This is the other thing entirely: a
+# level of the org would not load, so the resolver could not say what was
+# granted. Rendering {} with rc 0 for both tells a spawner "start this session
+# with no tools" when the truth is "one typo hid every capability under this
+# client", and a machine reads the rc, not the sentence.
+printf 'NAME="Broke"\nMANAGED_BY="nosuchteam"\nMCP_ASSETS="chat-tool"\n' > "$ENT/broke.conf"
+sess s-broke 'DOMAIN="broke"
+RC_LABEL="L"'
+out10="$(run mcp render s-broke 2>"$FX/e10")"; rc10=$?
+err10="$(cat "$FX/e10")"
+is  "10a rc 65, not 0"                    "$rc10" "65"
+is  "10b and NOTHING on stdout"           "$out10" ""
+has "10c the session is named"            "$err10" "s-broke"
+has "10d the level that failed is named"  "$err10" "broke"
+has "10e and the actual culprit with it"  "$err10" "nosuchteam"
+
+echo "== 11. the <domain> substitution refuses a slug that is a path =="
+# The value spliced into a credential path comes from the owning-entity join,
+# and one of that join's three sources — a project row's PARENT — is
+# grammar-checked by nobody upstream. A projects.d row loads AS AN ENTITY (it
+# has a NAME), so PARENT="../projects.d/<other>" made a session render against
+# another row's credentials and inherit its grants.
+printf 'NAME="Other Work"\nPARENT="beta"\nMCP_ASSETS="secret-tool"\n' > "$PROJ/otherwork.conf"
+printf 'NAME="Own Work"\nPARENT="../projects.d/otherwork"\nMCP_ASSETS="mail-tool"\n' > "$PROJ/ownwork.conf"
+printf 'MCP_COMMAND="/opt/secret/server"\n' > "$MCPD/secret-tool.conf"
+sess s-traverse 'TARGET_PROJECT="ownwork"'
+out11="$(run mcp render s-traverse 2>"$FX/e11")"; rc11=$?
+err11="$(cat "$FX/e11")"
+is    "11a rc 65 — the join refused, so there is no document"   "$rc11" "65"
+is    "11b nothing on stdout"                                   "$out11" ""
+hasnt "11c no traversal reached a rendered path"                "$out11" "projects.d"
+hasnt "11d and the other row's capability was never inherited"  "$out11" "secret-tool"
+has   "11e the refused value is named on stderr"                "$err11" "projects.d/otherwork"
+
+echo "== 12. quotes and backslashes in a definition stay DATA =="
+# The jq construction is what keeps them data; nothing pinned it, so a future
+# hand-rolled printf would pass every other assertion in this file.
+cat > "$MCPD/odd-tool.conf" <<'ODD'
+MCP_COMMAND="/opt/o\"dd/ser\\ver"
+MCP_ARGS="--json {\"a\":1} --win C:\\\\tmp --quote \" --end"
+ODD
+printf 'NAME="Odd"\nMEMBERS="a"\nMCP_ASSETS="odd-tool"\n' > "$ENT/odd.conf"
+sess s-odd 'DOMAIN="odd"
+RC_LABEL="L"'
+out12="$(run mcp render s-odd 2>/dev/null)"; rc12=$?
+is "12a rc 0"                     "$rc12" "0"
+is "12b the document is valid JSON" \
+   "$(printf '%s' "$out12" | jq -e 'type' 2>/dev/null)" '"object"'
+is "12c the key list is exactly the one asset — nothing smuggled a second key" \
+   "$(printf '%s' "$out12" | jq -r '.mcpServers | keys_unsorted | join(",")')" "odd-tool"
+is "12d the quote and the backslash reached the command byte for byte" \
+   "$(printf '%s' "$out12" | jq -r '.mcpServers["odd-tool"].command')" \
+   '/opt/o"dd/ser\ver'
+is "12e and the args split on spaces with every byte intact" \
+   "$(printf '%s' "$out12" | jq -c '.mcpServers["odd-tool"].args')" \
+   '["--json","{\"a\":1}","--win","C:\\\\tmp","--quote","\"","--end"]'
+
+echo "== 13. the operator is told the REAL reason an asset was omitted =="
+# One catch-all sentence for three different faults — no such file, an illegal
+# slug, a row with no MCP_COMMAND — sends the operator to look for a file that
+# is sitting right there. The loader's own diagnostic is already precise; it
+# was being thrown away.
+printf 'MCP_ARGS="--nothing"\n' > "$MCPD/no-command.conf"
+printf 'NAME="Half"\nMEMBERS="a"\nMCP_ASSETS="no-command"\n' > "$ENT/half.conf"
+sess s-half 'DOMAIN="half"
+RC_LABEL="L"'
+run mcp render s-half >/dev/null 2>"$FX/e13"
+err13="$(cat "$FX/e13")"
+has "13a the missing FIELD is named, not just the asset" "$err13" "MCP_COMMAND"
+has "13b the asset too"                                  "$err13" "no-command"
+# A slug carrying a carriage return: the real cause is the grammar, and the CR
+# must never reach the terminal, where it overwrites the line being read.
+printf 'NAME="Crlf"\nMEMBERS="a"\nMCP_ASSETS="chat-tool\r"\n' > "$ENT/crlf.conf"
+sess s-crlf 'DOMAIN="crlf"
+RC_LABEL="L"'
+run mcp render s-crlf >/dev/null 2>"$FX/e13b"
+err13b="$(cat "$FX/e13b")"
+has   "13c the grammar is named as the cause"  "$err13b" "invalid mcp asset name"
+hasnt "13d and no raw carriage return reached the operator's terminal" \
+      "$err13b" "$(printf '\r')"
+
+echo "== 14. the verb is in the usage banner, and only the verb =="
+# usage() seds every `#   ` line out of this file, so a comment block indented
+# that way anywhere below turns prose into what reads as four more verbs.
+help="$(run --help 2>&1)"
+has   "14a the verb is listed"                        "$help" "steward mcp render <session-id>"
+hasnt "14b and the rc-contract prose is not listed as a verb" "$help" "rc 0 with servers"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

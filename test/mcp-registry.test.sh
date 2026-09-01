@@ -169,7 +169,7 @@ is "10c and stderr is SILENT — an entity with no grants is not a fault" \
 echo "== 11. a level that FAILS to load is named, never silent =="
 out="$(registry_session_mcp_assets s-orphan 2>"$FX/e11")"; rc=$?
 err="$(cat "$FX/e11")"
-is  "11a rc 0 — one broken level is not a broken resolution" "$rc" "0"
+is  "11a rc 65 — a level that would not load is a fault a caller can READ, not an empty set" "$rc" "65"
 is  "11b it contributes nothing"      "$out" ""
 has "11c the entity is NAMED"         "$err" "nowhere"
 has "11d and so is the session"       "$err" "s-orphan"
@@ -177,7 +177,7 @@ has "11d and so is the session"       "$err" "s-orphan"
 echo "== 12. a project row that will not load is named too =="
 out="$(registry_session_mcp_assets s-broken 2>"$FX/e12")"; rc=$?
 err="$(cat "$FX/e12")"
-is  "12a rc 0"                          "$rc" "0"
+is  "12a rc 65 — the project level failed to load"  "$rc" "65"
 is  "12b nothing was inherited from it" "$out" ""
 has "12c the project is NAMED"          "$err" "delta"
 hasnt "12d and its assets never leaked into the set" "$out" "mail-tool"
@@ -210,6 +210,125 @@ registry_session_mcp_assets s-project >/dev/null 2>&1
 is "15a MCP_COMMAND untouched"        "$MCP_COMMAND" "sentinel"
 is "15b ENTITY_MCP_ASSETS untouched"  "$ENTITY_MCP_ASSETS" "sentinel"
 is "15c PROJECT_MCP_ASSETS untouched" "$PROJECT_MCP_ASSETS" "sentinel"
+
+echo "== 16. the owning entity is VALIDATED before anyone splices it into a path =="
+# THE HOLE THIS PINS. DOMAIN and TARGET_ENTITY are grammar-checked by
+# registry_load, but PROJECT_PARENT is checked by nobody: registry_project_load
+# only asks "does this resolve through registry_entity_load", and that loader
+# concatenates the id into a filename without a grammar check of its own. So a
+# projects.d row carrying PARENT="../projects.d/<other>" resolves — a project
+# row has a NAME, so it loads AS AN ENTITY — and the session inherits another
+# row's grants. The join is the one place every consumer goes through
+# (lib/sessions.sh and lib/visibility.sh run it too), so the check belongs
+# INSIDE it rather than at each caller.
+printf 'NAME="Other Work"\nPARENT="beta"\nMCP_ASSETS="secret-tool"\n' > "$PROJ/otherwork.conf"
+printf 'NAME="Own Work"\nPARENT="../projects.d/otherwork"\nMCP_ASSETS="chat-tool"\n' > "$PROJ/ownwork.conf"
+sess s-traverse 'TARGET_PROJECT="ownwork"'
+out="$( registry_session_owning_entity s-traverse 2>"$FX/e16" )"; rc=$?
+err="$(cat "$FX/e16")"
+is  "16a a slug that is a path refuses"  "$( [ "$rc" -ne 0 ] && echo yes || echo no )" "yes"
+is  "16b and prints NOTHING on stdout — a caller reading it must get no path" \
+    "$out" ""
+has "16c the refused value is named"     "$err" "projects.d/otherwork"
+has "16d and so is the session"          "$err" "s-traverse"
+
+out="$(registry_session_mcp_assets s-traverse 2>"$FX/e16b")"
+hasnt "16e the other row's grant was NOT inherited" "$out" "secret-tool"
+is    "16f the project's own grant still stands"    "$out" "chat-tool"
+has   "16g and the failure is named, never silent"  "$(cat "$FX/e16b")" "s-traverse"
+
+is "16h a LEGAL owning entity still resolves — the check refuses paths, not work" \
+   "$(registry_session_owning_entity s-project 2>/dev/null)" "beta"
+is "16i and so does a legacy DOMAIN row" \
+   "$(registry_session_owning_entity s-legacy 2>/dev/null)" "acme"
+
+echo "== 17. ONE MANAGED_BY hop, and only one — the grandparent grants nothing =="
+# A CUSTOMER OF A CUSTOMER IS NOT THE SAME WORK. Without a three-deep fixture a
+# resolver that walked the whole chain would stay green forever, and what it
+# would be handing out is the right to run a program with somebody's
+# credentials.
+printf 'NAME="Top"\nMEMBERS="a"\nMCP_ASSETS="secret-tool"\n'                  > "$ENT/topteam.conf"
+printf 'NAME="Middle"\nMANAGED_BY="topteam"\nMCP_ASSETS="chat-tool"\n'        > "$ENT/midteam.conf"
+printf 'NAME="Leaf"\nMANAGED_BY="midteam"\nMCP_ASSETS="mail-tool"\n'          > "$ENT/leafclient.conf"
+printf 'NAME="Deep"\nPARENT="leafclient"\nMCP_ASSETS="notes-tool"\n'          > "$PROJ/deepwork.conf"
+sess s-deep 'TARGET_PROJECT="deepwork"'
+out="$(registry_session_mcp_assets s-deep 2>"$FX/e17")"; rc=$?
+is    "17a rc 0 — every level loaded"  "$rc" "0"
+is    "17b the manager, the client, then the project" \
+      "$out" "$(printf 'chat-tool\nmail-tool\nnotes-tool')"
+hasnt "17c the GRANDPARENT team's grant is absent — the hop limit holds" \
+      "$out" "secret-tool"
+is    "17d and a hop limit is not a fault: stderr is silent" "$(cat "$FX/e17")" ""
+
+echo "== 18. an entity whose MANAGED_BY names a missing row =="
+# The owning entity itself will not load, so it contributes nothing — and the
+# CULPRIT is the manager, not the entity. Naming only the entity sends the
+# operator to a file that is sitting right there and is fine.
+printf 'NAME="Stray"\nMANAGED_BY="nosuchteam"\nMCP_ASSETS="chat-tool"\n' > "$ENT/stray.conf"
+sess s-stray 'DOMAIN="stray"
+RC_LABEL="L"'
+out="$(registry_session_mcp_assets s-stray 2>"$FX/e18")"; rc=$?
+err="$(cat "$FX/e18")"
+is  "18a rc 65 — a level that FAILED to load is not an empty set" "$rc" "65"
+is  "18b it contributed nothing"                 "$out" ""
+has "18c the owning entity is named"             "$err" "stray"
+has "18d the ACTUAL culprit is named too"        "$err" "nosuchteam"
+has "18e and the session"                        "$err" "s-stray"
+
+echo "== 19. the resolver's rc says WHICH of three things happened =="
+# rc 0 — resolved, the set on stdout is the whole grant (empty is a grant of
+#        nothing, and an honest answer).
+# rc 65 — at least one level would not load: the set on stdout is PARTIAL and
+#        must never be read as the whole grant.
+# rc 1 — the session's own row would not load: nothing was resolved at all.
+# Without the middle one a caller cannot tell a fault from a configuration,
+# and one mistyped team name silently strips every capability under it.
+printf 'PARENT="beta"\nMCP_ASSETS="secret-tool"\n' > "$PROJ/nameless.conf"
+sess s-partial 'DOMAIN="beta"
+TARGET_PROJECT="nameless"
+RC_LABEL="L"'
+out="$(registry_session_mcp_assets s-partial 2>"$FX/e19")"; rc=$?
+err="$(cat "$FX/e19")"
+is    "19a rc 65 — the project level failed"  "$rc" "65"
+is    "19b the levels that DID load are still on stdout" \
+      "$out" "$(printf 'chat-tool\nmail-tool')"
+hasnt "19c the failed level granted nothing"  "$out" "secret-tool"
+has   "19d and it is named"                   "$err" "nameless"
+out="$(registry_session_mcp_assets s-quiet 2>/dev/null)"; rc=$?
+is    "19e a clean resolution is still rc 0, even when it resolves to nothing" "$rc" "0"
+
+echo "== 20. the schema max covers the mcp register and MCP_ASSETS =="
+# The number is a promise about what the CODE can read. mcp.d and the
+# MCP_ASSETS field are new readable surface, so the promise moved.
+is "20a REGISTRY_SCHEMA_MAX is at least 5" \
+   "$( [ "${REGISTRY_SCHEMA_MAX:-0}" -ge 5 ] && echo yes || echo no )" "yes"
+mkdir -p "$FX/s5/estate" "$FX/s6/estate"
+for v in 5 6; do
+  { cat "$FX/estate/steward.conf"; printf 'SCHEMA_VERSION="%s"\n' "$v"; } > "$FX/s$v/estate/steward.conf"
+done
+( STEWARD_ESTATE_ROOT="$FX/s5" registry_schema_check ) >/dev/null 2>&1
+is "20b an estate declaring schema 5 is READ, not refused" "$?" "0"
+( STEWARD_ESTATE_ROOT="$FX/s6" registry_schema_check ) >/dev/null 2>&1
+is "20c an estate NEWER than the code still refuses with 78" "$?" "78"
+# AN ABSENT MCP_ASSETS IS "NO ASSETS DECLARED", read explicitly and not as a
+# leftover. This is the compatibility decision the schema comment records: the
+# field is additive, an older checkout reads it as absent, and absent grants
+# ZERO — fail closed, never open.
+ENTITY_MCP_ASSETS="leftover"
+registry_entity_load quiet >/dev/null 2>&1
+is "20d a row without the field reads empty, never the previous row's grant" \
+   "${ENTITY_MCP_ASSETS:-}" ""
+
+echo "== 21. a scaffolded estate has a READABLE mcp register =="
+# registry_mcp_list draws the register's own distinction — unreadable is not
+# empty — so an estate scaffolded without mcp.d refuses with 78 the first time
+# anything asks what capabilities exist.
+( bash "$here/bin/steward" scaffold "$FX/fresh" org=fixture team=onlyteam \
+    owner=someone session=first ) >/dev/null 2>&1
+is "21a the scaffold made mcp.d next to entities.d" \
+   "$( [ -d "$FX/fresh/mcp.d" ] && echo yes || echo no )" "yes"
+( STEWARD_ESTATE_ROOT="$FX/fresh" registry_mcp_list ) >/dev/null 2>&1
+is "21b so the register READS as empty rather than refusing with 78" "$?" "0"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

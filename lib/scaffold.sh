@@ -47,7 +47,13 @@ estate_scaffold() {
     echo "scaffold: an estate already exists at $dir/estate/steward.conf — refusing to overwrite" >&2
     return 65
   fi
-  mkdir -p "$dir"/{estate,sessions.d,entities.d,projects.d,jobs.d,services.d,browsers.d,hosts.d} 2>/dev/null \
+  # mcp.d IS IN THE LIST FOR THE SAME REASON entities.d IS. Every register here
+  # draws the distinction between EMPTY and UNREADABLE — registry_mcp_list
+  # refuses with 78 on a missing directory rather than printing nothing — so an
+  # estate scaffolded without it answers "the capability register cannot be
+  # read" the first time anything asks what a session is granted, which is not
+  # what a fresh estate means.
+  mkdir -p "$dir"/{estate,sessions.d,entities.d,projects.d,mcp.d,jobs.d,services.d,browsers.d,hosts.d} 2>/dev/null \
     || { echo "scaffold: could not create $dir" >&2; return 70; }
 
   # SIXTEEN FIELDS. The 14 the installer already wrote, plus ESTATE_NAME and

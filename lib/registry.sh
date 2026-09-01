@@ -167,7 +167,31 @@ registry_estate_name() {
 # 4 (2026-08-30): the identity fields — ACCOUNT, SLUG, TARGET_ENTITY,
 # TARGET_PROJECT — became readable in registry_load, and a session conf may
 # carry a target reference in place of an RC_LABEL line.
-REGISTRY_SCHEMA_MAX=4
+# 5 (2026-09-01): the mcp register (mcp.d, one row per capability) and the
+# MCP_ASSETS field on an entities.d and a projects.d row.
+#
+# NO ESTATE BUMP CAME WITH 5, AND THAT IS THE DECISION, NOT AN OVERSIGHT.
+# The number above is a promise about what this CODE can read; the estate's own
+# SCHEMA_VERSION is a demand about what a reader must understand before it may
+# read at all. Raising the estate's number would make every host still running
+# an older checkout refuse the whole register — every session on it — the day
+# one MCP_ASSETS line was written. That is an outage bought to protect against
+# a degradation that is already safe:
+#
+#   AN OLDER READER FINDS MCP_ASSETS ABSENT, AND ABSENT IS AN ANSWER — "no
+#   assets declared", read explicitly (registry_entity_load and
+#   registry_project_load both clear the field before sourcing and copy it out
+#   by name, so absent can never come back as the previous row's grant). The
+#   session is handed ZERO capabilities. A capability field may only ever
+#   degrade in that direction: fewer tools than granted is a session that says
+#   a server is missing, MORE tools than granted is somebody else's
+#   credentials. Fail closed, never open.
+#
+# So the estate stays at its current number and old readers grant nothing. The
+# day a field lands that an old reader would MISREAD rather than miss — one
+# that changes what an existing key means — the estate's number moves with it
+# and the refusal above is the right answer.
+REGISTRY_SCHEMA_MAX=5
 
 # registry_schema_check: rc 0 if this checkout understands the estate's schema,
 # rc 78 if the estate is NEWER than the code reading it.
@@ -426,7 +450,11 @@ registry_mcp_asset_load() {
   local slug="${1:-}" d f
   [ -n "$slug" ] || return 1
   if ! registry_valid_name "$slug"; then
-    echo "registry: invalid mcp asset name '$slug' (allowed: a-z 0-9 -)" >&2
+    # NAMED THROUGH registry_printable: this is the one diagnostic that prints
+    # a value the grammar has already rejected, so it is the one that can be
+    # handed a carriage return — and a raw CR here returns the cursor and lets
+    # the rest of the sentence overwrite the slug it was naming.
+    echo "registry: invalid mcp asset name '$(registry_printable "$slug")' (allowed: a-z 0-9 -)" >&2
     return 1
   fi
   d="$(registry_mcp_dir)" || return 78
@@ -465,6 +493,22 @@ _registry_words() {
   [ -n "$_had_f" ] || set +f
 }
 
+# registry_printable <string> — the string with every control byte replaced by
+# `?`, for NAMING a rejected value in a diagnostic and never for using one.
+#
+# A REFUSAL MUST NOT BE STEERED BY WHAT IT REFUSES. The values named below come
+# from a conf, and a conf saved with CRLF line endings carries a carriage
+# return inside a slug: printed raw, it returns the cursor and the rest of the
+# sentence overwrites the part that named the culprit, so the operator reads a
+# message that no longer says what went wrong. A newline is worse — one value
+# becomes two apparent lines of output. Pure parameter expansion, so it costs
+# no process and behaves the same under every locale (a multibyte character is
+# not a control byte and survives untouched).
+registry_printable() {
+  local _s="${1:-}"
+  printf '%s' "${_s//[[:cntrl:]]/?}"
+}
+
 # registry_session_owning_entity <session-id> — prints the entity slug that
 # OWNS the session's work, or rc 1 and nothing.
 #
@@ -475,6 +519,30 @@ _registry_words() {
 # existed (measured 2026-08-31: a machine session hidden from the very team
 # that owned it). A fourth copy of that order would be a fourth chance to
 # drift, so this one is written to be called, and the resolver below calls it.
+#
+# THE ANSWER IS VALIDATED HERE, BECAUSE HERE IS WHERE THE THREE SOURCES MEET.
+# Every consumer splices this slug into a path — `steward mcp render` into a
+# credential file, lib/sessions.sh and lib/visibility.sh into a register
+# lookup — and only two of the three sources are grammar-checked upstream:
+# registry_load checks DOMAIN and TARGET_ENTITY, and NOBODY checks a projects.d
+# row's PARENT. registry_project_load asks only "does this resolve through
+# registry_entity_load", and that loader concatenates the id into a filename
+# without a grammar check of its own. A projects.d row carries a NAME, so it
+# loads AS AN ENTITY — which made PARENT="../projects.d/<other>" resolve, and
+# a session under it inherited another row's capabilities and rendered against
+# another client's credential file (measured 2026-09-01, both).
+#
+# So the check is here rather than at each caller: one join, one grammar, and a
+# fourth consumer added later cannot forget it.
+#
+# THREE EXIT CODES, because "there is no owning entity" and "the owning entity
+# is not a name" are different facts and a caller must be able to tell them
+# apart — the first is a session shape, the second is a fault that has to be
+# named:
+#   rc 0  — the slug is on stdout.
+#   rc 1  — no owning entity could be derived at all; nothing on stdout.
+#   rc 65 — one was derived and it is NOT a legal slug; nothing on stdout,
+#           the value named on stderr.
 #
 # SUBSHELLED WHOLE: registry_load and registry_project_load both write into
 # the shell they run in, and this function's caller is mid-render holding its
@@ -493,13 +561,36 @@ registry_session_owning_entity() {
       [ -n "$pp" ] && owning="$pp"
     fi
     [ -n "$owning" ] || exit 1
+    # BEFORE IT IS PRINTED, NOT AFTER IT IS USED. The caller has no way to know
+    # which of the three sources answered, so it cannot know whether the value
+    # was checked; the only place that can is this one.
+    if ! registry_valid_name "$owning"; then
+      echo "registry: session '$sid' — the owning entity resolves to '$(registry_printable "$owning")', which is not a legal slug (allowed: a-z 0-9 -); refusing to hand it to anything that builds a path" >&2
+      exit 65
+    fi
     printf '%s\n' "$owning"
   )
 }
 
 # registry_session_mcp_assets <session-id> — the session's EFFECTIVE set, one
-# asset slug per line on stdout. rc 0 (including an empty set) · rc 1 when the
-# session itself could not be read.
+# asset slug per line on stdout.
+#
+# THE EXIT CODE SAYS WHICH OF THREE THINGS HAPPENED, and the middle one is the
+# reason this is not simply "return the union it managed to build":
+#   rc 0  — resolved. The set on stdout is the WHOLE grant; empty means nobody
+#           granted anything, which is a configuration and an honest answer.
+#   rc 65 — at least one level would not LOAD. The set on stdout is PARTIAL and
+#           must never be read as the whole grant; every failure is named on
+#           stderr.
+#   rc 1  — the session's own row would not load. Nothing was resolved.
+#
+# WITHOUT THE MIDDLE ONE A FAULT READS AS A CONFIGURATION. The stderr sentence
+# is for a person; the exit code is the part a machine reads, and the machine
+# here is whatever spawns the session. One typo in a team name would otherwise
+# come back as rc 0 and an empty set — "nobody granted anything" — and every
+# session under that client would start with no tools and no signal. That is
+# the exact nightmare this register exists to prevent, arriving through the one
+# layer the rc contract did not cover.
 #
 # THREE LEVELS, IN THIS ORDER: the managing team, the owning entity, the
 # target project's own row. Broadest grant first, narrowest last — a reader of
@@ -518,12 +609,19 @@ registry_session_owning_entity() {
 # alternative is a duplicate key in the rendered document, where the last
 # writer silently wins.
 #
-# A LEVEL THAT FAILS TO LOAD CONTRIBUTES NOTHING AND IS NAMED. This is the
-# whole reason the function does not simply return the union it managed to
-# build: a client row with a typo would otherwise take its whole grant out of
-# every session under it, with rc 0 and an empty line where a capability used
-# to be. The failure is not fatal — the levels that DID load still grant — but
-# it is never silent, and the sentence carries both the level and the session.
+# A LEVEL THAT FAILS TO LOAD CONTRIBUTES NOTHING, IS NAMED, AND MOVES THE RC.
+# The levels that DID load still grant — the partial set is on stdout, because
+# a caller that wants it should have it — but the answer is flagged as partial
+# rather than handed over as if it were whole.
+#
+# THE FAILING LOADER'S OWN STDERR IS LET THROUGH, NOT SWALLOWED. Suppressing it
+# left the sentence below naming the level that would not load — and the level
+# is usually not the culprit. An entity whose MANAGED_BY names a row that does
+# not exist reports as "the owning entity would not load", sending the operator
+# to a file that is sitting right there and is fine; the loader had already
+# written the true cause and it was being thrown away. Only stdout is
+# redirected here, and only because a sourced conf must not be able to write
+# into the set being built.
 #
 # SUBSHELLED WHOLE, for the reason registry_session_owning_entity is: the
 # loads below write into the shell that runs them.
@@ -548,9 +646,23 @@ registry_session_mcp_assets() {
     fi
     local target_project="${out%%$'\n'*}"
 
-    local owning; owning="$( registry_session_owning_entity "$sid" )" || owning=""
+    # A LEVEL FAILED is carried in a flag rather than returned from where it
+    # happened: three levels may fail independently, every one of them has to
+    # be named, and an early return would silence the two after the first.
+    _MCP_SEEN=""; _MCP_OUT=""; _MCP_LEVEL_FAILED=""
 
-    _MCP_SEEN=""; _MCP_OUT=""
+    local owning own_rc
+    owning="$( registry_session_owning_entity "$sid" )"; own_rc=$?
+    if [ "$own_rc" -eq 65 ]; then
+      # NAMED BY registry_session_owning_entity ITSELF, which knows the value;
+      # this line adds the session, so the two sentences together say what was
+      # refused and whose work it cost.
+      echo "registry: mcp assets for '$sid' — the owning entity is not a legal slug (named above); no level of the org could be read from it" >&2
+      _MCP_LEVEL_FAILED=1
+      owning=""
+    elif [ "$own_rc" -ne 0 ]; then
+      owning=""
+    fi
 
     # LEVEL 1 AND LEVEL 2 COME OFF ONE READ OF THE OWNING ENTITY. Its
     # MANAGED_BY (the team) and its own MCP_ASSETS are both on that row;
@@ -559,11 +671,12 @@ registry_session_mcp_assets() {
     # constant last.
     if [ -n "$owning" ]; then
       local ent_out ent_rc mgr ent_assets rest
-      ent_out="$( registry_entity_load "$owning" >/dev/null 2>&1 \
+      ent_out="$( registry_entity_load "$owning" >/dev/null \
                   && printf '%s\n%s\n%s\n' "${ENTITY_MANAGED_BY:-}" "${ENTITY_MCP_ASSETS:-}" "ok" )"
       ent_rc=$?
       if [ "$ent_rc" -ne 0 ]; then
         echo "registry: mcp assets for '$sid' — the owning entity '$owning' would not load; it grants nothing here" >&2
+        _MCP_LEVEL_FAILED=1
       else
         mgr="${ent_out%%$'\n'*}"
         rest="${ent_out#*$'\n'}"
@@ -571,11 +684,12 @@ registry_session_mcp_assets() {
         # LEVEL 1 — the managing team, one hop.
         if [ -n "$mgr" ]; then
           local mgr_out mgr_rc
-          mgr_out="$( registry_entity_load "$mgr" >/dev/null 2>&1 \
+          mgr_out="$( registry_entity_load "$mgr" >/dev/null \
                       && printf '%s\n%s\n' "${ENTITY_MCP_ASSETS:-}" "ok" )"
           mgr_rc=$?
           if [ "$mgr_rc" -ne 0 ]; then
             echo "registry: mcp assets for '$sid' — the managing team '$mgr' would not load; it grants nothing here" >&2
+            _MCP_LEVEL_FAILED=1
           else
             _registry_mcp_collect "${mgr_out%%$'\n'*}"
           fi
@@ -590,17 +704,22 @@ registry_session_mcp_assets() {
     # and says nothing.
     if [ -n "$target_project" ]; then
       local proj_out proj_rc
-      proj_out="$( registry_project_load "$target_project" >/dev/null 2>&1 \
+      proj_out="$( registry_project_load "$target_project" >/dev/null \
                    && printf '%s\n%s\n' "${PROJECT_MCP_ASSETS:-}" "ok" )"
       proj_rc=$?
       if [ "$proj_rc" -ne 0 ]; then
         echo "registry: mcp assets for '$sid' — the project '$target_project' would not load; it grants nothing here" >&2
+        _MCP_LEVEL_FAILED=1
       else
         _registry_mcp_collect "${proj_out%%$'\n'*}"
       fi
     fi
 
+    # THE PARTIAL SET IS STILL PRINTED, and then flagged. Printing first means
+    # a caller that reads stdout and ignores the rc is no worse off than
+    # before; the rc is what stops it being read as the whole grant.
     printf '%s' "$_MCP_OUT"
+    [ -z "$_MCP_LEVEL_FAILED" ] || exit 65
   )
 }
 
