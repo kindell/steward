@@ -26,14 +26,19 @@ the new id on stdout:
 | `SUBMIT_DELIVERY_GLOB` | satisfies the schema instead of `REPO`, but see below |
 | `SUBMIT_OWNER` | optional, defaults to `id -un` |
 | `SUBMIT_RUNTIME` | optional, defaults to `claude-code` |
+| `SUBMIT_PERMISSION_MODE` | optional, closed set: `default`, `acceptEdits`, `bypassPermissions`, `plan`; empty means unset |
 
 The gate refuses (rc 65) and mints nothing when any of the seven named fields is
 empty, when neither `SUBMIT_REPO` nor `SUBMIT_DELIVERY_GLOB` is set, or when
 `SUBMIT_REPO` is not a git checkout. **Every defect is named in one refusal** —
-fix the whole submission and resubmit once. Two more refusals follow the schema,
-also rc 65: a `DELIVERY_GLOB`-only submission passes the schema but the engine
-refuses it (file delivery is stage-2 work), and a `SUBMIT_REPO` with no `origin`
-remote is refused by the checkout — a delivery needs somewhere to land.
+fix the whole submission and resubmit once. Three more refusals follow the
+schema, also rc 65: a `DELIVERY_GLOB`-only submission passes the schema but the
+engine refuses it (file delivery is stage-2 work), a `SUBMIT_REPO` with no
+`origin` remote is refused by the checkout — a delivery needs somewhere to land
+— and a `SUBMIT_PERMISSION_MODE` outside the closed set is refused before
+anything is minted, with the whole set named. The run is detached: a mode the
+runtime does not know would otherwise fail an id, a clone and a branch that
+were already spent.
 
 On acceptance the job gets its **own** clone of the submitter's origin at
 `<state>/jobs/<id>/work`, on branch `steward/jobs/<id>/delivery` cut from the
@@ -56,8 +61,10 @@ only if this process still holds it.
 
 **The run.** `claude -p --output-format json` (`JOBRUN_RUNTIME_CMD`) inside the
 workdir, prompted with GOAL / OBJECTIVE / DELIVERY / TOOLS / BOUNDS from the row.
-`RUNTIME=opencode` is refused (exit 65): headless thread resume is not a measured
-capability there.
+A row carrying `PERMISSION_MODE` adds `--permission-mode <value>`; a row without
+it adds nothing — the runner never supplies a default of its own, on the first
+attempt or on a resume. `RUNTIME=opencode` is refused (exit 65): headless thread
+resume is not a measured capability there.
 
 **Exact-thread retry.** Attempt 1 records the runtime's `session_id` as
 `RUNTIME_THREAD`; attempt 2+ resumes *that exact thread* (`--resume`) — the

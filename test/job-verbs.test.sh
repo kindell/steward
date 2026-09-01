@@ -165,6 +165,42 @@ gone_out="$(STEWARD_JOB_STATE_HOME="$tbl" bash "$STEWARD_BIN" job show j-0000000
 [ "$gone_rc" -eq 0 ] && ok "show: an absent workdir is rc 0" || bad "gone rc" "$gone_rc"
 printf '%s\n' "$gone_out" | grep -q '^  workdir: gone$' && ok "show: says the workdir is gone" || bad "gone line" "$gone_out"
 
+# ── THE PERMISSION MODE IS PART OF THE SUBMISSION ──────────────────────────
+# `start` writes SUBMIT_PERMISSION_MODE into the row so the runner can honour
+# it without a wrapper of its own. The set is CLOSED: a value outside it is a
+# submission the runtime would reject halfway through a detached run, so the
+# gate names the whole set and mints nothing.
+perm_id="$(SUBMIT_GOAL=g SUBMIT_CHECK_CMD=true SUBMIT_CHECK_EXPECT=0 \
+  SUBMIT_BRIEF_OBJECTIVE=o SUBMIT_BRIEF_DELIVERY=d SUBMIT_BRIEF_TOOLS=t SUBMIT_BRIEF_BOUNDS=b \
+  SUBMIT_REPO="$T/src" JOBSTART_SPAWN="$T/spawn" STEWARD_JOB_STATE_HOME="$T/jobs" \
+  SUBMIT_PERMISSION_MODE=bypassPermissions \
+  bash "$STEWARD_BIN" job start)"
+case "$perm_id" in j-????????????????) ok "permission mode: an accepted value still returns an id" ;;
+  *) bad "start with a permission mode" "$perm_id" ;; esac
+STEWARD_JOB_STATE_HOME="$T/jobs" jobstate_read "$perm_id"
+[ "${JOB_PERMISSION_MODE:-}" = "bypassPermissions" ] \
+  && ok "permission mode: the row carries the submitted value" || bad "PERMISSION_MODE" "${JOB_PERMISSION_MODE:-unset}"
+
+# A submission without the field leaves it OFF the row — never a default nobody chose.
+STEWARD_JOB_STATE_HOME="$T/jobs" jobstate_read "$id"
+[ -z "${JOB_PERMISSION_MODE:-}" ] \
+  && ok "permission mode: unset stays unset on the row" || bad "row invented a mode" "${JOB_PERMISSION_MODE:-}"
+
+before="$(ls "$T/jobs" | wc -l | tr -d ' ')"
+perm_err="$T/perm-err"
+SUBMIT_GOAL=g SUBMIT_CHECK_CMD=true SUBMIT_CHECK_EXPECT=0 \
+  SUBMIT_BRIEF_OBJECTIVE=o SUBMIT_BRIEF_DELIVERY=d SUBMIT_BRIEF_TOOLS=t SUBMIT_BRIEF_BOUNDS=b \
+  SUBMIT_REPO="$T/src" JOBSTART_SPAWN="$T/spawn" STEWARD_JOB_STATE_HOME="$T/jobs" \
+  SUBMIT_PERMISSION_MODE=nonsense \
+  bash "$STEWARD_BIN" job start >/dev/null 2>"$perm_err"; perm_rc=$?
+[ "$perm_rc" -eq 65 ] && ok "permission mode: a value outside the set is rc 65" || bad "nonsense rc" "$perm_rc"
+for word in default acceptEdits bypassPermissions plan; do
+  grep -q -- "$word" "$perm_err" && ok "permission mode: the refusal names $word" \
+    || bad "refusal omits $word" "$(cat "$perm_err")"
+done
+[ "$(ls "$T/jobs" | wc -l | tr -d ' ')" = "$before" ] \
+  && ok "permission mode: the refusal minted nothing" || bad "row minted on a refused mode"
+
 # A NAME NOBODY HAS: rc 66, and the message says WHICH id was not found.
 show_err="$T/show-err"
 STEWARD_JOB_STATE_HOME="$tbl" bash "$STEWARD_BIN" job show j-0000000000000fff 2>"$show_err"; miss_rc=$?

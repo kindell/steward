@@ -111,11 +111,20 @@ DELIVERY: ${JOB_BRIEF_DELIVERY:-}
 TOOLS: ${JOB_BRIEF_TOOLS:-}
 BOUNDS: ${JOB_BRIEF_BOUNDS:-}"
 
+# THE ROW DECIDES THE PERMISSION MODE, AND ONLY THE ROW. A row that carries
+# PERMISSION_MODE gets the flag with exactly that value; a row without it gets
+# NO flag at all — not a default chosen here. A hardcoded fallback in the
+# wrapper would silently overrule every submission and run the whole fleet
+# under one policy nobody asked for, which is the same class of lie as
+# deciding an outcome [A3].
+perm=()
+[ -n "${JOB_PERMISSION_MODE:-}" ] && perm=(--permission-mode "$JOB_PERMISSION_MODE")
+
 out="" ; rc=0
 if [ "$attempt" -eq 1 ] || [ -z "${JOB_RUNTIME_THREAD:-}" ]; then
-  out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p --output-format json "$prompt")" || rc=$?
+  out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
 else
-  out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p --resume "$JOB_RUNTIME_THREAD" --output-format json "$prompt")" || rc=$?
+  out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p --resume "$JOB_RUNTIME_THREAD" ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
 fi
 
 thread="${JOB_RUNTIME_THREAD:-}"

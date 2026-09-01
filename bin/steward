@@ -3581,6 +3581,25 @@ cmd_job() {
         echo "  the engine refuses honestly rather than half-running one." >&2
         return 65
       fi
+      # THE PERMISSION MODE IS A CLOSED SET, CHECKED BEFORE ANYTHING IS MINTED.
+      # The runner hands this straight to the runtime, and a value the runtime
+      # does not know fails halfway through a DETACHED run — an id, a clone and
+      # a branch already spent on a submission that could never start. Empty
+      # means unset: no field on the row, no flag in the argv, no default this
+      # gate invented on the submitter's behalf.
+      local perm_kv=()
+      if [ -n "${SUBMIT_PERMISSION_MODE:-}" ]; then
+        case "$SUBMIT_PERMISSION_MODE" in
+          default|acceptEdits|bypassPermissions|plan)
+            perm_kv=(PERMISSION_MODE="$SUBMIT_PERMISSION_MODE") ;;
+          *)
+            echo "steward job: REFUSES — SUBMIT_PERMISSION_MODE='$SUBMIT_PERMISSION_MODE' is not a mode" >&2
+            echo "  the runtime knows. The whole set: default, acceptEdits," >&2
+            echo "  bypassPermissions, plan. Leave it empty to say nothing about" >&2
+            echo "  permissions at all. Nothing was minted." >&2
+            return 65 ;;
+        esac
+      fi
       local id workroot base_out
       id="$(jobstate_mint_id)"
       workroot="$(jobstate_home)/$id/work"
@@ -3593,6 +3612,7 @@ cmd_job() {
         BRIEF_OBJECTIVE="$SUBMIT_BRIEF_OBJECTIVE" BRIEF_DELIVERY="$SUBMIT_BRIEF_DELIVERY" \
         BRIEF_TOOLS="$SUBMIT_BRIEF_TOOLS" BRIEF_BOUNDS="$SUBMIT_BRIEF_BOUNDS" \
         WORKDIR="$workroot" RUNTIME="${SUBMIT_RUNTIME:-claude-code}" \
+        ${perm_kv+"${perm_kv[@]}"} \
         "$base_out" || return $?
       if [ -n "${JOBSTART_SPAWN:-}" ]; then
         "$JOBSTART_SPAWN" "$id" >/dev/null 2>&1

@@ -192,5 +192,43 @@ chmod +x "$T/test-finalize-ok.sh"
 "$T/test-finalize-ok.sh" "$here" "$T" "$id6" >/dev/null 2>&1; finalize_rc=$?
 [ "$finalize_rc" -eq 0 ] && ok "finalize succeeds after lock removed" || bad "finalize_rc after unlock" "$finalize_rc"
 
+
+# ── THE ROW CARRIES THE PERMISSION MODE, THE RUNNER OBEYS IT ───────────────
+# A run's permission policy belongs to the submission, not to the wrapper. So
+# the assertions read the runtime's OWN argv: a row that carries
+# PERMISSION_MODE must reach the runtime as `--permission-mode <value>`, and a
+# row without the field must send NOTHING. A hardcoded default here would
+# quietly overrule every submission and run the whole fleet under a policy
+# nobody chose.
+export JOBRUN_RUNTIME_CMD="$T/rt"
+echo 0 > "$T/rtrc"
+
+id8="j-00000000000000f6"
+jobstate_create "$id8" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  PERMISSION_MODE=bypassPermissions
+: > "$T/rtlog"
+bash "$here/../job-run.sh" "$id8" >/dev/null 2>&1
+grep -q -- "--permission-mode bypassPermissions" "$T/rtlog" \
+  && ok "row with PERMISSION_MODE: the runtime saw the flag and the value" \
+  || bad "permission mode never reached the runtime" "$(cat "$T/rtlog")"
+
+id9="j-00000000000000f7"
+jobstate_create "$id9" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+: > "$T/rtlog"
+bash "$here/../job-run.sh" "$id9" >/dev/null 2>&1
+grep -q -- "--permission-mode" "$T/rtlog" \
+  && bad "runner invented a permission mode for a row that carries none" "$(cat "$T/rtlog")" \
+  || ok "row without PERMISSION_MODE: no --permission-mode in the argv at all"
+
+# The same rule on the resume path: attempt 2 keeps the row's mode.
+: > "$T/rtlog"
+echo 1 > "$T/rtrc"
+bash "$here/../job-run.sh" "$id8" >/dev/null 2>&1
+grep -q -- "--permission-mode bypassPermissions" "$T/rtlog" \
+  && ok "attempt 2: the resumed run keeps the row's permission mode" \
+  || bad "resume dropped the permission mode" "$(cat "$T/rtlog")"
+
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
