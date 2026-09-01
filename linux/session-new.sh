@@ -90,8 +90,74 @@ RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
 NAV="$(registry_hub_session)" || exit 78
 
 if [ "${1:-}" = "--activate" ]; then
-  NAMN="${2:?bash ~/scripts/session-new.sh --activate <name>}"
-  [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
+  ARG="${2:?bash ~/scripts/session-new.sh --activate <name-or-id> [<name>]}"
+  # NEW-SHAPE VS OLD-SHAPE, TOLD APART BY THE ARGUMENT'S OWN SHAPE. ENROLL-
+  # CONFIRM's printed activate line is `--activate s-<hex>` — ONE argument,
+  # copy-pasteable — because that is the identity the new session's row is
+  # actually filed under (the minted id, never NAMN). session-new itself is
+  # what still knows the SLUG this id belongs to on THIS host: the request it
+  # sent earlier reserved a local conf under $SESS_D/$NAMN.conf (unless the
+  # request went hub-local, in which case that pairing was already resolved
+  # and the key already linked at request time — see the hub-local branch
+  # below). Reading that local conf back is the chosen shape (over a second
+  # CLI argument) because it keeps the printed command a single token; an
+  # explicit second argument is still accepted for disambiguation when more
+  # than one request is in flight at once.
+  case "$ARG" in
+    s-????????????????)
+      ID="$ARG"
+      if [ -f "$SSH_DIR/id_busrelay_$ID" ]; then
+        # Already linked — the hub-local request path (below) links the key
+        # itself in the same invocation that registered it, since there is
+        # no separate bus hop during which a later --activate could learn
+        # the pairing. Nothing left to discover here.
+        NAMN=""
+      elif [ -n "${3:-}" ]; then
+        NAMN="$3"
+        [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
+      else
+        # DISCOVERY: the local reservation this script itself wrote at
+        # request time — owned by this account, carrying no ID line yet (the
+        # hub's answer has not been synced into this host's copy of the
+        # register), with the key this script generated still sitting where
+        # it left it. Exactly one candidate is required; more than one is
+        # genuine ambiguity between requests in flight and is refused rather
+        # than guessed.
+        _kand=""; _n=0
+        for _c in "$SESS_D"/*.conf; do
+          [ -f "$_c" ] || continue
+          _cid="$(sed -n 's/^ID="\(.*\)"/\1/p' "$_c" | head -1)"
+          [ -z "$_cid" ] || continue
+          _cowner="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$_c" | head -1)"
+          [ "$_cowner" = "$(id -un)" ] || continue
+          _cn="$(basename "$_c" .conf)"
+          [ -f "$SSH_DIR/id_busrelay_$_cn" ] || continue
+          _kand="$_cn"; _n=$((_n+1))
+        done
+        [ "$_n" -eq 1 ] || fel "cannot find the pending request for '$ID' unambiguously ($_n candidates) — disambiguate: bash ${BASH_SOURCE[0]} --activate $ID <name>" 65
+        NAMN="$_kand"
+      fi
+      if [ -n "$NAMN" ]; then
+        [ -f "$SSH_DIR/id_busrelay_$NAMN" ] || fel "no key '$SSH_DIR/id_busrelay_$NAMN' for '$NAMN' — send the request first"
+        # THE KEY LINKS TO THE ID, NEVER RENAMES. The original file stays
+        # addressable by the name it was generated under; the symlink is
+        # what the relay's forced command (bound to the id in
+        # authorized_keys, hub/enroll) and the launchd/systemd unit under
+        # the id both need to find.
+        ln -sf "id_busrelay_$NAMN" "$SSH_DIR/id_busrelay_$ID" || fel "could not link the key under the id" 70
+        ln -sf "id_busrelay_$NAMN.pub" "$SSH_DIR/id_busrelay_$ID.pub" || fel "could not link the public key under the id" 70
+      fi
+      INSTANCE="$ID"
+      ;;
+    *)
+      # OLD-SHAPE, UNCHANGED: the name IS the identity, exactly as before the
+      # new-shape rows existed. Kept for every requester and every recipient
+      # that has not been touched by this migration.
+      NAMN="$ARG"
+      [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
+      INSTANCE="$NAMN"
+      ;;
+  esac
   systemctl --user cat agent-session@.timer >/dev/null 2>&1 \
     || fel "supervision template agent-session@.timer missing — per-user supervision is a precondition" 65
   # THE ESTATE IS BOUND PER SESSION, NOT PER ACCOUNT. The template's environment
@@ -102,7 +168,12 @@ if [ "${1:-}" = "--activate" ]; then
   # writes a per-instance drop-in and reloads BEFORE the first start. On a
   # single-estate account the drop-in states what the template already implied —
   # harmless, and every session becomes self-describing.
-  _dropdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-session@$NAMN.service.d"
+  #
+  # THE INSTANCE IS THE ID FOR A NEW-SHAPE ROW, NEVER THE NAME — the timer,
+  # the drop-in directory and (via authorized_keys, hub/enroll) the tmux
+  # session all key off the same opaque id so a later account move or slug
+  # rename never has to touch supervision.
+  _dropdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-session@$INSTANCE.service.d"
   mkdir -p "$_dropdir" || fel "could not create $_dropdir" 70
   # Canonicalized: the resolver's default form carries a trailing /.. — correct
   # to cd through, wrong to burn into a unit file that outlives this call.
@@ -111,9 +182,9 @@ if [ "${1:-}" = "--activate" ]; then
   printf '[Service]\nEnvironment=STEWARD_ESTATE_ROOT=%s\n' "$_eroot" \
     > "$_dropdir/50-estate.conf" || fel "could not write the estate drop-in" 70
   systemctl --user daemon-reload
-  systemctl --user enable --now "agent-session@$NAMN.timer" \
+  systemctl --user enable --now "agent-session@$INSTANCE.timer" \
     || fel "could not enable the timer" 70
-  echo "session-new: timer active for '$NAMN' — supervision will start the session within one period."
+  echo "session-new: timer active for '$INSTANCE' — supervision will start the session within one period."
   echo "  estate bound per instance: $_dropdir/50-estate.conf"
   echo "  next: once the session is live it runs the approval command stated in its ENROLL-PROOF."
   exit 0
@@ -285,12 +356,29 @@ if [ "$SJALV" = "$NAV" ]; then
   # (no estate file) or, worse, reads a stranger's. This script has already
   # resolved the estate through the registry; the child must see the same one,
   # not re-derive a different answer from somewhere else entirely.
-  bygg_begaran | STEWARD_ESTATE_ROOT="$(_registry_estate_root)" \
-    STEWARD_ENROLL_FROM="$SJALV" bash "$ENROLL" --send
+  # CAPTURED, NOT STREAMED — enroll's own stdout still reaches the operator
+  # (printed back below), but capturing it first lets this branch pull the
+  # minted id out of enroll's success line ("... registered as s-<hex> ...").
+  # There is no separate bus hop here for a later --activate to bridge, so
+  # this is the ONLY moment that ever holds both the local name and the id
+  # together — the key is linked right here, or never conveniently again.
+  _out="$(bygg_begaran | STEWARD_ESTATE_ROOT="$(_registry_estate_root)" \
+    STEWARD_ENROLL_FROM="$SJALV" bash "$ENROLL" --send 2>&1)"
   rc=$?
+  printf '%s\n' "$_out"
   [ "$rc" -eq 0 ] || fel "enrolment refused — enroll wrote nothing (the key remains), the reason is above" "$rc"
+  _id="$(printf '%s' "$_out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
   echo "session-new: '$NAMN' registered hub-locally — no bus hop, enroll was the sole writer."
-  echo "  next: bash ${BASH_SOURCE[0]} --activate $NAMN"
+  if [ -n "$_id" ]; then
+    ln -sf "id_busrelay_$NAMN" "$SSH_DIR/id_busrelay_$_id" || fel "could not link the key under the id" 70
+    ln -sf "id_busrelay_$NAMN.pub" "$SSH_DIR/id_busrelay_$_id.pub" || fel "could not link the public key under the id" 70
+    echo "  next: bash ${BASH_SOURCE[0]} --activate $_id"
+  else
+    # enroll answered form=new but this build's output shape changed under
+    # us, or an older enroll is on PATH — fall back to the pre-migration
+    # instruction rather than print a next step that cannot possibly work.
+    echo "  next: bash ${BASH_SOURCE[0]} --activate $NAMN"
+  fi
   exit 0
 fi
 

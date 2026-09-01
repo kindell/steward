@@ -159,10 +159,40 @@ case "$PUBKEY" in
 esac
 
 rdir="$(registry_dir)"
-[ -f "$rdir/$FROM.conf" ] || fel "requesting session '$FROM' is not in the registry"
+# THE REQUESTER MAY BE NAMED BY A SLUG, NOT ONLY BY THE FILENAME. A new-shape
+# row is filed under its opaque id; its human-readable identity lives in the
+# SLUG field. The envelope's from= (bound to the relay key, never trusted
+# from the payload) still carries whatever the sender authenticates as — for
+# a new-shape session that is its SLUG, not its filename. Exact filename
+# wins first (the common, cheap, old-shape case); only on a miss is the
+# register scanned for a matching SLUG — mirroring estate-status.sh's own
+# _resolve_session_key. Two rows sharing a SLUG in different accounts is a
+# real ambiguity: refuse and name the accounts, rather than guess one.
+FROMKEY=""
+if [ -f "$rdir/$FROM.conf" ]; then
+  FROMKEY="$FROM"
+else
+  case "$FROM" in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) : ;;
+    *)
+      _famounts=""
+      for _ff in "$rdir"/*.conf; do
+        [ -f "$_ff" ] || continue
+        [ "$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$_ff" | head -1)" = "$FROM" ] || continue
+        _fn="$(basename "$_ff" .conf)"
+        _facc="$(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$_ff" | head -1)"
+        if [ -n "$FROMKEY" ]; then
+          fel "requesting session '$FROM' is ambiguous: accounts '${_famounts}' and '${_facc:-<none>}' both declare that slug"
+        fi
+        FROMKEY="$_fn"; _famounts="${_facc:-<none>}"
+      done
+      ;;
+  esac
+fi
+[ -n "$FROMKEY" ] || fel "requesting session '$FROM' is not in the registry"
 
-F_OWNER="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$rdir/$FROM.conf" | head -1)"
-F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROM.conf" | head -1)"
+F_OWNER="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
+F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
 [ "$F_OWNER" = "$PERSON" ] || \
   fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}', the request names '$PERSON'"
 # A conf without HOST lives on the hub — the same default registry_load applies.
@@ -170,11 +200,51 @@ F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROM.conf" | head -1)"
   fel "host check: '$FROM' lives on '${F_HOST:-$NAV_VARD}', the request names '$VARD'"
 
 [ ! -f "$rdir/$NAMN.conf" ] || fel "name collision: '$NAMN' already exists in the registry"
-if grep -qF "bus-relay-in $NAMN\"" "$AUTH_KEYS" 2>/dev/null; then
-  fel "authorized_keys already carries a line for '$NAMN'"
-fi
 if grep -qF "$PUBKEY" "$AUTH_KEYS" 2>/dev/null; then
   fel "the public key is already registered — one key, one identity"
+fi
+
+# ── THE ORG TREE IS A PRECONDITION, NOT AN AFTERTHOUGHT ─────────────────────
+# A session must aim at something the org tree already knows: a project if
+# one exists under this name, otherwise the domain's own entity row. Minting
+# an id and writing a row that references nothing would publish a session
+# whose display derivation refuses on every future read — the failure would
+# land on the reader, not on the request that caused it.
+TARGET_PROJECT=""; TARGET_ENTITY=""
+if ( registry_project_load "$PROJEKT" >/dev/null 2>&1 ); then
+  TARGET_PROJECT="$PROJEKT"
+elif ( registry_entity_load "$DOMAN" >/dev/null 2>&1 ); then
+  TARGET_ENTITY="$DOMAN"
+else
+  fel "register the project or entity first — the org tree is a precondition, not an afterthought"
+fi
+
+# ── THE ACCOUNT THE NEW SESSION BELONGS TO ───────────────────────────────────
+# Resolved from (OWNER, HOST) against accounts.d — never taken from the
+# request itself. A requester that could name its own account slug could
+# file a session under an account it does not own.
+_ACDIR="$(registry_account_dir)" || exit 78
+ACCOUNT_SLUG=""
+for _af in "$_ACDIR"/*.conf; do
+  [ -f "$_af" ] || continue
+  _aslug="$(basename "$_af" .conf)"
+  # SUBSHELLED, twice — the same pattern registry_account_slug_available uses
+  # below: a hostile or merely malformed accounts.d row must not clobber this
+  # loop's own locals via bash's dynamic scoping.
+  _ap="$( registry_account_load "$_aslug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+  _ah="$( registry_account_load "$_aslug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_HOST" )"
+  [ "$_ap" = "$PERSON" ] && [ "$_ah" = "$VARD" ] || continue
+  ACCOUNT_SLUG="$_aslug"
+  break
+done
+[ -n "$ACCOUNT_SLUG" ] || fel "no account resolves for owner '$PERSON' on host '$VARD' — register the account in accounts.d first"
+
+# ── THE COMPOSITE (ACCOUNT, SLUG) GATE ───────────────────────────────────────
+# THE FILENAME COLLISION CHECK ABOVE CATCHES OLD-SHAPE ROWS (filename ==
+# NAMN); a new-shape row is filed under its minted id, so the SAME name in the
+# SAME account is caught only here, through the registry's own composite gate.
+if ! registry_account_slug_available "$ACCOUNT_SLUG" "$NAMN"; then
+  fel "slug '$NAMN' is already taken in account '$ACCOUNT_SLUG'"
 fi
 
 if [ -n "$KONTROLLERA" ]; then
@@ -201,7 +271,23 @@ if [ -z "$BUS_SEND" ] && [ -f "$_busdir/lib.sh" ]; then
   if source "$_busdir/lib.sh"; then BUS_LIB_LOADED=1; fi
 fi
 
-conf="$rdir/$NAMN.conf"
+# ── MINT THE OPAQUE ID ───────────────────────────────────────────────────────
+# s-<16 hex>, the exact shape the registry mints elsewhere (bin/steward
+# registry session add, lib/jobstate.sh's j- twin) — opaque, immutable, and
+# NEVER derived from account or slug: an id that encoded either would change
+# identity on an account move. The filename becomes this id, never NAMN.
+ID=""
+_mint_tries=0
+while [ "$_mint_tries" -lt 5 ]; do
+  _cand="s-$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  case "$_cand" in
+    s-????????????????) [ -e "$rdir/$_cand.conf" ] || { ID="$_cand"; break; } ;;
+  esac
+  _mint_tries=$((_mint_tries+1))
+done
+[ -n "$ID" ] || { echo "nav-enroll: could not mint a unique session id" >&2; exit 70; }
+
+conf="$rdir/$ID.conf"
 tmpc="$(mktemp)" || exit 70
 # THE LABEL COMES FROM THE REQUEST WHEN THE REQUEST CARRIES ONE.
 #
@@ -218,30 +304,42 @@ tmpc="$(mktemp)" || exit 70
 # The construction remains the fallback, so a requester that has not been
 # updated behaves exactly as before.
 RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
-# ID IS WRITTEN OUT, never left implied. The registry defaults ID to the file's
-# basename, so a conf without the line WORKS — but then the immutable key is
-# bound to a file name, and renaming the file moves the identity silently. The
-# purpose of ID is that it outlives both the display name and the file name.
-# Measured 2026-08-26: the first session this tool wrote after the identity
-# model landed failed the estate's registry suite with a missing ID. The tool
-# did not produce what the model requires, and nothing here noticed.
+# THE TARGET LINE IS A TYPED UNION, built before the heredoc so the heredoc
+# itself stays the same flat, unescaped interpolation every other field uses
+# (deliberately unescaped — see the injection note the callability gate below
+# relies on).
+if [ -n "$TARGET_PROJECT" ]; then
+  TARGET_LINE="TARGET_PROJECT=\"$TARGET_PROJECT\""
+else
+  TARGET_LINE="TARGET_ENTITY=\"$TARGET_ENTITY\""
+fi
+# ID IS THE MINTED OPAQUE ID, never NAMN. The registry used to default ID to
+# the file's basename, and the file's basename USED TO BE NAMN — a conf
+# without the line "worked" only because NAMN and ID were the same string.
+# Now the file's basename is the minted id and SLUG carries the human name,
+# so ID must be written explicitly and match the filename exactly — the
+# purpose of an opaque id is that it outlives both the display name and an
+# account move, and a mismatch here would defeat that on day one.
 cat > "$tmpc" <<CONFEOF
-# $NAMN — registered by nav-enroll $(date -u +%Y-%m-%dT%H:%M:%SZ), requested by $FROM.
+# $ID — registered by nav-enroll $(date -u +%Y-%m-%dT%H:%M:%SZ), requested by $FROM.
 # Trigger per the direction doc: a domain acquired a project.
+ID="$ID"
+ACCOUNT="$ACCOUNT_SLUG"
+SLUG="$NAMN"
+$TARGET_LINE
 HOST="$VARD"
 REPO_PATH="$REPO_S"
 RC_LABEL="$RC_ETIKETT"
 PERMISSION_MODE="bypassPermissions"
 OWNER="$PERSON"
 DOMAIN="$DOMAN"
-ID="$NAMN"
 CONFEOF
 mv "$tmpc" "$conf" || exit 70
 
 # THE GATE: the conf must SOURCE with every field set — otherwise everything is
 # withdrawn. A registry entry that does not load is a registry claiming
 # something that does not exist.
-if ! ( set -u; . "$conf"; : "$HOST" "$REPO_PATH" "$OWNER" "$DOMAIN" ) 2>/dev/null; then
+if ! ( set -u; . "$conf"; : "$ID" "$ACCOUNT" "$SLUG" "$HOST" "$REPO_PATH" "$OWNER" "$DOMAIN" ) 2>/dev/null; then
   rm -f "$conf"
   echo "nav-enroll: the conf could not be sourced — NOTHING registered, nothing left behind" >&2
   exit 70
@@ -274,8 +372,11 @@ if [ ! -f "$RELAY_ROOT/bus/bin/bus-relay-in" ]; then
   rm -f "$conf"
   fel "the relay is missing at $RELAY_ROOT/bus/bin/bus-relay-in — the key line would name a path that does not exist, and the new session's outbound channel would be dead without it being able to say so. Run the hub from the tree where the relay lives." 78
 fi
+# THE KEY BINDS THE ID, NEVER THE NAME. A name is a per-account SLUG and can
+# change; the id is the one thing that must never move underneath a key that
+# already exists on a real machine.
 printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
-  "$RELAY_ROOT" "$NAMN" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+  "$RELAY_ROOT" "$ID" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
 
 # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, Task 2
 # envelope v2): "DRIFT enroll: <headline>". bus_send now refuses every SEND
@@ -294,15 +395,19 @@ printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
 if [ "$VARD" = "$NAV_VARD" ]; then
   APPROVE_CMD="bash $here/session-approve.sh"
   STATUS_CMD="bash $here/estate-status.sh"
+  ACTIVATE_CMD="bash $here/session-new.sh --activate $ID"
 else
   APPROVE_CMD='bash ~/scripts/session-approve.sh'
   STATUS_CMD='bash ~/scripts/estate-status.sh'
+  ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID"
 fi
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1
 namn=$NAMN
+id=$ID
+form=new
 status=registered
-activate=systemctl --user enable --now agent-session@$NAMN.timer
+activate=$ACTIVATE_CMD
 gate=the approval runs FROM the new session: $APPROVE_CMD"
 PROOF="DRIFT enroll: $NAMN registered, run session-approve.sh
 ENROLL-PROOF v1
@@ -311,9 +416,16 @@ from-hub=yes — that this entry reached your inbox proves the hub knows the nam
 task=run: $APPROVE_CMD  and send the outcome to $NAV
 fleet-questions=answer from the estate's own data: $STATUS_CMD — never from account-wide discovery"
 
+# THE IMAGE-SYNC TRAP, LOUD. PROOF now addresses the minted id, which lives
+# only in THIS registry write — a deployed hub image running from an older
+# install has never heard of it. Left silent, the failure that follows reads
+# as "unknown recipient", which misdirects the operator toward the wrong
+# cause; said here, it names the real one before the send is even attempted.
+echo "nav-enroll: NOTE — the deployed hub image must be synced (run the estate's install) before ENROLL-PROOF can reach '$ID'; an unsynced image answers 'unknown recipient' instead of naming this." >&2
+
 if [ -n "$UTAN_SANDNING" ]; then
   printf '=== to %s ===\n%s\n=== to %s ===\n%s\n' \
-    "$FROM" "$CONFIRM" "$NAMN" "$PROOF"
+    "$FROM" "$CONFIRM" "$ID" "$PROOF"
 else
   # THE WARNING MUST SAY WHAT HAPPENED, not merely that something did not
   # arrive. rc 65/78 are THE BUS'S OWN GUARDS refusing (paused subject,
@@ -344,7 +456,7 @@ else
     return "$rc"
   }
   bus_skicka confirm "$FROM" "$CONFIRM" || true
-  bus_skicka proof   "$NAMN" "$PROOF"   || true
+  bus_skicka proof   "$ID"   "$PROOF"   || true
 fi
-echo "nav-enroll: '$NAMN' registered (requested by $FROM)"
+echo "nav-enroll: '$NAMN' registered as $ID (requested by $FROM)"
 exit 0
