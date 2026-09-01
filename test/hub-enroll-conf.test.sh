@@ -123,6 +123,120 @@ has "SLUG carries the constructed name" "$body" 'SLUG="acme-widget-someone"'
 has "ACCOUNT resolves (OWNER, HOST) to the accounts.d row" "$body" 'ACCOUNT="someone-farhost"'
 has "TARGET_ENTITY names the domain's own entity row" "$body" 'TARGET_ENTITY="acme"'
 
+# ── WHAT IS SENT IS NOT WHAT MAY BE WRITTEN ─────────────────────────────────
+# Two request fields land in a conf that is then SOURCED — by this tool's own
+# gate and by every later reader of the register. Unguarded, `repo=/x$(touch
+# PWNED)y` registered with rc 0 and ran its payload as the hub's owner on every
+# read. The sender is any registered session, so this is a remote execution
+# primitive handed to the population the enrolment path exists to grow.
+run_req() { # <file> [extra env assignments are the caller's business]
+  STEWARD_ESTATE_ROOT="$FX" \
+  STEWARD_REGISTRY_DIR="$FX/sessions.d" \
+  STEWARD_RELAY_ROOT="$FX" \
+  STEWARD_ESTATE_CHECKOUT="${CHECKOUT_OVERRIDE:-}" \
+  STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
+  STEWARD_BUS_SEND="$FX/bin/send" \
+  STEWARD_ENROLL_FROM=asker \
+  bash "$ENROLL" --send < "$1" 2>&1
+}
+# A FRESH KEY PER CASE — one key, one identity, so a reused key would refuse
+# for the wrong reason and the guard under test would never be reached.
+mk_req() { # <file> <keytag> <sed expression>
+  sed "s/FAKEKEYFORTESTONLYxxxxxxxxxxxxxxxxxxxxxxx/FAKEKEY$2xxxxxxxxxxxxxxxxxxxxxxx/; $3" "$req" > "$FX/mut.txt"
+}
+before_n="$(ls "$FX/sessions.d"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
+rm -f "$FX/PWNED"
+
+mk_req x A 's|^repo=.*|repo=/home/x$(touch '"$FX"'/PWNED)y|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+if [ "$rc2" -eq 65 ]; then ok "a command substitution in repo= is refused"
+else bad "a command substitution in repo= is refused" "rc=$rc2 out=$out2"; fi
+if [ ! -e "$FX/PWNED" ]; then ok "the repo= payload never ran"
+else bad "the repo= payload never ran" "PWNED exists"; fi
+
+mk_req x B 's|^pubkey=|rc_label=Widget$(touch '"$FX"'/PWNED)\
+pubkey=|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+if [ "$rc2" -eq 65 ]; then ok "a command substitution in rc_label= is refused"
+else bad "a command substitution in rc_label= is refused" "rc=$rc2 out=$out2"; fi
+if [ ! -e "$FX/PWNED" ]; then ok "the rc_label= payload never ran"
+else bad "the rc_label= payload never ran" "PWNED exists"; fi
+
+mk_req x C 's|^repo=.*|repo=not/absolute|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+if [ "$rc2" -eq 65 ]; then ok "a relative repo path is refused"
+else bad "a relative repo path is refused" "rc=$rc2 out=$out2"; fi
+
+after_n="$(ls "$FX/sessions.d"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$before_n" -eq "$after_n" ]; then ok "no refused request left a row behind"
+else bad "no refused request left a row behind" "$before_n -> $after_n"; fi
+
+# ── THE ROW MUST REACH THE ESTATE'S CHECKOUT ────────────────────────────────
+# The deploy reconciles the hub's runtime register against the checkout and
+# deletes the remainder, and hosts install FROM the checkout. A row written only
+# to the runtime register therefore disappeared at the next install and never
+# reached the host that was supposed to run it.
+mkdir -p "$FX/checkout/sessions.d"
+CHECKOUT_OVERRIDE="$FX/checkout"
+mk_req x D 's|^namn=.*|namn=acme-gadget-someone|; s|^projekt=.*|projekt=gadget|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+id2="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+if [ "$rc2" -eq 0 ] && [ -n "$id2" ] && [ -f "$FX/checkout/sessions.d/$id2.conf" ]; then
+  ok "the row is written to the estate checkout too"
+else bad "the row is written to the estate checkout too" "rc=$rc2 id=$id2 out=$out2"; fi
+if cmp -s "$FX/checkout/sessions.d/$id2.conf" "$FX/sessions.d/$id2.conf"; then
+  ok "the checkout row is byte-identical to the runtime row"
+else bad "the checkout row is byte-identical to the runtime row"; fi
+has "the operator is told to commit it" "$out2" "COMMIT AND PUSH IT"
+
+# NO CHECKOUT: still registered, but LOUD — the conf and its destination are
+# printed, because the alternative is a row that quietly disappears.
+CHECKOUT_OVERRIDE=""
+mk_req x E 's|^namn=.*|namn=acme-sprocket-someone|; s|^projekt=.*|projekt=sprocket|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+if [ "$rc2" -eq 0 ]; then ok "no checkout still registers"
+else bad "no checkout still registers" "rc=$rc2 out=$out2"; fi
+has "no checkout names the key to set" "$out2" "ESTATE_CHECKOUT"
+has "no checkout prints the conf itself" "$out2" 'SLUG="acme-sprocket-someone"'
+
+# ── THE ACTIVATION COMMAND CARRIES BOTH HALVES OF THE PAIRING ───────────────
+# With the id alone, the receiving host had to guess which local key the id
+# belonged to. The guess was ambiguous on any host that already had a session,
+# and silently WRONG when exactly one candidate survived — it linked another
+# session's key under the new id, so the newborn's mail went out stamped with
+# that other session's name. The slug is what the requester filed its key
+# under, so the hub, which knows both names here, prints both.
+# --no-send, because that is the mode that prints the messages themselves.
+mk_req x F 's|^namn=.*|namn=acme-cog-someone|; s|^projekt=.*|projekt=cog|'
+out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d" \
+         STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
+         STEWARD_ENROLL_FROM=asker \
+         bash "$ENROLL" --no-send < "$FX/mut.txt" 2>&1 )"
+id3="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+has "the activate command carries id and slug" "$out2" "--activate $id3 acme-cog-someone"
+has "CONFIRM still carries the id" "$out2" "id=$id3"
+
+# ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
+# Optional field, same contract as registry_liveness_cmd: absent is not broken,
+# invalid is a refusal, and a relative path is invalid because it would resolve
+# against whatever directory happened to be current.
+# shellcheck source=/dev/null
+( . "$here/lib/registry.sh"
+  v="$(STEWARD_ESTATE_ROOT="$FX" registry_estate_checkout)" || exit 9
+  [ -z "$v" ] || exit 8 ) \
+  && ok "an estate with no ESTATE_CHECKOUT prints nothing, rc 0" \
+  || bad "an estate with no ESTATE_CHECKOUT prints nothing, rc 0"
+printf 'ESTATE_CHECKOUT="relative/path"\n' >> "$FX/estate/steward.conf"
+( . "$here/lib/registry.sh"
+  STEWARD_ESTATE_ROOT="$FX" registry_estate_checkout >/dev/null 2>&1; [ "$?" -eq 78 ] ) \
+  && ok "a relative ESTATE_CHECKOUT refuses with rc 78" \
+  || bad "a relative ESTATE_CHECKOUT refuses with rc 78"
+( . "$here/lib/registry.sh"
+  v="$(STEWARD_ESTATE_ROOT="$FX" STEWARD_ESTATE_CHECKOUT=/tmp/override registry_estate_checkout)" \
+  && [ "$v" = "/tmp/override" ] ) \
+  && ok "the environment override wins over the estate file" \
+  || bad "the environment override wins over the estate file"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
