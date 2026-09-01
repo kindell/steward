@@ -30,7 +30,7 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 hasnt(){ case "$2" in *"$3"*) bad "$1" "unexpectedly present '$3' in: $2" ;; *) ok "$1" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/estate" "$FX/entities.d" "$FX/projects.d" "$FX/sessions.d" "$FX/mcp.d" "$FX/env/beta"
+mkdir -p "$FX/estate" "$FX/entities.d" "$FX/projects.d" "$FX/sessions.d" "$FX/mcp.d" "$FX/env/beta" "$FX/accounts.d"
 
 cat > "$FX/estate/steward.conf" <<'EOF'
 ESTATE_NAME="fixture"
@@ -40,6 +40,7 @@ OP_TOKEN_FILE_NAME="fixture-token"
 EOF
 
 ENT="$FX/entities.d"; PROJ="$FX/projects.d"; MCPD="$FX/mcp.d"; SESS="$FX/sessions.d"
+ACC="$FX/accounts.d"
 
 printf 'NAME="Acme"\nMEMBERS="a"\nMCP_ASSETS="chat-tool"\n'                 > "$ENT/acme.conf"
 printf 'NAME="Beta"\nMANAGED_BY="acme"\nMCP_ASSETS="mail-tool"\n'           > "$ENT/beta.conf"
@@ -48,7 +49,13 @@ printf 'NAME="Quiet"\nMEMBERS="a"\n'                                        > "$
 printf 'NAME="Lonely"\nMEMBERS="a"\nMCP_ASSETS="ghost-tool absent-tool"\n'  > "$ENT/lonely.conf"
 printf 'NAME="Starry"\nMEMBERS="a"\nMCP_ASSETS="star-tool"\n'               > "$ENT/starry.conf"
 
+# THE ACCOUNTS — personal capability, bound to the human and not to a node.
+printf 'PRINCIPAL="ann"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'              > "$ACC/ann-h1.conf"
+printf 'PRINCIPAL="bo"\nHOST="h1"\nMCP_ASSETS="video-tool"\n'             > "$ACC/bo-h1.conf"
+
 printf 'MCP_COMMAND="/opt/chat/server"\n'                                   > "$MCPD/chat-tool.conf"
+printf 'MCP_COMMAND="/opt/crm/server"\n'                                    > "$MCPD/crm-tool.conf"
+printf 'MCP_COMMAND="/opt/video/server"\n'                                  > "$MCPD/video-tool.conf"
 cat > "$MCPD/mail-tool.conf" <<'EOF'
 MCP_COMMAND="/opt/mail/server"
 MCP_ARGS="--port 7 --quiet"
@@ -68,6 +75,13 @@ sess s-lonely  'DOMAIN="lonely"
 RC_LABEL="L"'
 sess s-star    'DOMAIN="starry"
 RC_LABEL="L"'
+# SAME entity, DIFFERENT accounts — the pair the account axis exists for.
+sess s-ann     'ACCOUNT="ann-h1"
+TARGET_PROJECT="gamma"'
+sess s-bo      'ACCOUNT="bo-h1"
+TARGET_PROJECT="gamma"'
+sess s-noacct  'ACCOUNT="ghost-h1"
+TARGET_ENTITY="beta"'
 
 run() {
   STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config" \
@@ -242,6 +256,49 @@ echo "== 14. the verb is in the usage banner, and only the verb =="
 help="$(run --help 2>&1)"
 has   "14a the verb is listed"                        "$help" "steward mcp render <session-id>"
 hasnt "14b and the rc-contract prose is not listed as a verb" "$help" "rc 0 with servers"
+
+echo "== 15. the account's own personal grant is rendered, and it leads the document =="
+# THE KEY ORDER IS THE INHERITANCE, and the document is keyed from the
+# resolver's own order: account first, then the managing team, the owning
+# entity, the project. A reader of the JSON sees whose grant each server came
+# through without having to consult four files.
+out15="$(run mcp render s-ann 2>"$FX/e15")"; rc15=$?
+is "15a rc 0" "$rc15" "0"
+is "15b the personal asset leads, then the team's, then the client's" \
+   "$(printf '%s' "$out15" | jq -r '.mcpServers | keys_unsorted | join(",")')" \
+   "crm-tool,chat-tool,mail-tool"
+is "15c and it is rendered whole, command and all" \
+   "$(printf '%s' "$out15" | jq -r '.mcpServers["crm-tool"].command')" "/opt/crm/server"
+is "15d the org levels still render exactly as before the axis existed" \
+   "$(printf '%s' "$out15" | jq -c '.mcpServers["mail-tool"].args')" \
+   '["/etc/steward/env/beta/mail-tool.env","/opt/mail/server","--port","7","--quiet"]'
+
+echo "== 16. two sessions, one entity, two people — two different documents =="
+# A PERSONAL CREDENTIAL IS THE THING BEING HANDED OUT HERE. Both sessions sit
+# on the same project under the same client, so every org level grants them an
+# identical set; if the rendered documents were equal, one person would be
+# starting a server against the other's account.
+out16="$(run mcp render s-bo 2>/dev/null)"
+is    "16a bo's document leads with HIS asset" \
+      "$(printf '%s' "$out16" | jq -r '.mcpServers | keys_unsorted | join(",")')" \
+      "video-tool,chat-tool,mail-tool"
+hasnt "16b ann's personal server is nowhere in bo's document" "$out16" "crm-tool"
+hasnt "16c and bo's is nowhere in ann's"                      "$out15" "video-tool"
+is    "16d the shared org grant is identical in both — only the person differs" \
+      "$(printf '%s' "$out16" | jq -c '.mcpServers["mail-tool"]')" \
+      "$(printf '%s' "$out15" | jq -c '.mcpServers["mail-tool"]')"
+
+echo "== 17. an ACCOUNT naming a missing row refuses the render, it does not thin it =="
+# THE SAME CONTRACT SECTION 10 PINS FOR THE ORG LEVELS, on the axis that
+# carries the personal credentials. Rendering the org half with rc 0 would
+# tell a spawner "this is what somebody granted you" while the person's entire
+# personal set had silently vanished.
+out17="$(run mcp render s-noacct 2>"$FX/e17")"; rc17=$?
+err17="$(cat "$FX/e17")"
+is  "17a rc 65, not 0"                     "$rc17" "65"
+is  "17b and NOTHING on stdout"            "$out17" ""
+has "17c the account that failed is named" "$err17" "ghost-h1"
+has "17d and the session with it"          "$err17" "s-noacct"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

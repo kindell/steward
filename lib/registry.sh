@@ -168,7 +168,9 @@ registry_estate_name() {
 # TARGET_PROJECT — became readable in registry_load, and a session conf may
 # carry a target reference in place of an RC_LABEL line.
 # 5 (2026-09-01): the mcp register (mcp.d, one row per capability) and the
-# MCP_ASSETS field on an entities.d and a projects.d row.
+# MCP_ASSETS field on an entities.d, a projects.d and an accounts.d row — the
+# last of these being the ACCOUNT axis, a grant bound to a human rather than
+# to a node in the org.
 #
 # NO ESTATE BUMP CAME WITH 5, AND THAT IS THE DECISION, NOT AN OVERSIGHT.
 # The number above is a promise about what this CODE can read; the estate's own
@@ -579,9 +581,9 @@ registry_session_owning_entity() {
 # reason this is not simply "return the union it managed to build":
 #   rc 0  — resolved. The set on stdout is the WHOLE grant; empty means nobody
 #           granted anything, which is a configuration and an honest answer.
-#   rc 65 — at least one level would not LOAD. The set on stdout is PARTIAL and
-#           must never be read as the whole grant; every failure is named on
-#           stderr.
+#   rc 65 — at least one level would not LOAD — the ACCOUNT included. The set
+#           on stdout is PARTIAL and must never be read as the whole grant;
+#           every failure is named on stderr.
 #   rc 1  — the session's own row would not load. Nothing was resolved.
 #
 # WITHOUT THE MIDDLE ONE A FAULT READS AS A CONFIGURATION. The stderr sentence
@@ -592,10 +594,34 @@ registry_session_owning_entity() {
 # the exact nightmare this register exists to prevent, arriving through the one
 # layer the rc contract did not cover.
 #
-# THREE LEVELS, IN THIS ORDER: the managing team, the owning entity, the
-# target project's own row. Broadest grant first, narrowest last — a reader of
-# the list, and the JSON the render verb keys from it, both see the org from
-# the outside in.
+# FOUR LEVELS, IN THIS ORDER: the session's OWNING ACCOUNT, the managing
+# team, the owning entity, the target project's own row. The three org levels
+# run broadest grant first, narrowest last — a reader of the list, and the
+# JSON the render verb keys from it, both see the org from the outside in.
+#
+# THE ACCOUNT IS AN AXIS, NOT A FOURTH RUNG OF THE SAME LADDER, AND IT LEADS.
+# The org levels all answer "where does this work sit"; the account answers
+# "who is sitting here". A personal capability — a mail account, a calendar,
+# a note store — is bound to a HUMAN and cannot be expressed on an org node
+# at all: put it on the client and every colleague on that client inherits
+# it, which is not a wider grant, it is somebody else's credentials. Two
+# sessions on the SAME entity under DIFFERENT accounts must therefore differ,
+# and that difference is the whole reason this level exists.
+#
+# IT LEADS BECAUSE IT IS THE GRANT THAT BELONGS TO WHOEVER IS ACTUALLY AT THE
+# SESSION, and the org then widens around it. The order is fixed and
+# documented rather than incidental: dedup keeps FIRST-SEEN, so the order
+# decides which level a shared asset is attributed to, and the render verb
+# keys its JSON object straight off this list.
+#
+# THE ACCOUNT SLUG IS ASSERTED AS A NAME BEFORE IT IS SPLICED. registry_load
+# already refuses a malformed ACCOUNT on the way in, so this is a second gate
+# and not the only one — deliberately, because accounts.d sits next to
+# entities.d and the slug is concatenated into a filename. That is exactly
+# the shape a projects.d PARENT used to reach another register through the
+# entity join (measured 2026-09-01), and the lesson taken from it was that
+# the check belongs where the splice happens, not only where the value was
+# read.
 #
 # ONE MANAGED_BY HOP, AND ONLY ONE. The same deliberate limit lib/visibility.sh
 # draws at its rule 5 and lib/sessions.sh at its lineage: a customer of a
@@ -608,6 +634,13 @@ registry_session_owning_entity() {
 # by its client is ONE server, named at the level that granted it first; the
 # alternative is a duplicate key in the rendered document, where the last
 # writer silently wins.
+#
+# AN ACCOUNT THAT WILL NOT LOAD IS THE SAME FAULT AS A TEAM THAT WILL NOT, and
+# it is the fault this level is most likely to hit: an ACCOUNT naming a row
+# that is missing from accounts.d would otherwise contribute an empty string,
+# and the person's entire personal set would disappear into an rc 0 that reads
+# "nobody granted you anything". A machine reads the rc, and rc 0 tells a
+# spawner to start the session as if that were the whole grant.
 #
 # A LEVEL THAT FAILS TO LOAD CONTRIBUTES NOTHING, IS NAMED, AND MOVES THE RC.
 # The levels that DID load still grant — the partial set is on stdout, because
@@ -632,24 +665,70 @@ registry_session_mcp_assets() {
     return 1
   fi
   (
-    # ONE LOAD, TWO ANSWERS. `out` carries TARGET_PROJECT on line one and a
-    # constant on line two — the possibly-empty field FIRST, because command
-    # substitution strips every trailing newline and would otherwise collapse
-    # the pair into one field. The same idiom, and the same reasoning, as
-    # registry_display_for's entity-chain walk above.
+    # ONE LOAD, THREE ANSWERS. `out` carries TARGET_PROJECT on line one,
+    # ACCOUNT on line two and a constant on line three — the possibly-empty
+    # fields FIRST, because command substitution strips every trailing newline
+    # and would otherwise collapse them into one field. The same idiom, and
+    # the same reasoning, as registry_display_for's entity-chain walk above.
+    #
+    # THE ACCOUNT COMES OFF THE SAME READ AS THE TARGET, for the reason the
+    # entity's MANAGED_BY and MCP_ASSETS do below: both fields are on the row
+    # already in hand, and asking the register twice would buy a second read
+    # for an answer it has just given.
     local out rc
-    out="$( registry_load "$sid" >/dev/null 2>&1 && printf '%s\n%s\n' "${TARGET_PROJECT:-}" "ok" )"
+    out="$( registry_load "$sid" >/dev/null 2>&1 && printf '%s\n%s\n%s\n' "${TARGET_PROJECT:-}" "${ACCOUNT:-}" "ok" )"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "registry: mcp assets for '$sid' — the session's own row would not load; no assets resolved" >&2
       exit 1
     fi
-    local target_project="${out%%$'\n'*}"
+    local target_project="${out%%$'\n'*}" _after_project account
+    _after_project="${out#*$'\n'}"
+    account="${_after_project%%$'\n'*}"
 
     # A LEVEL FAILED is carried in a flag rather than returned from where it
-    # happened: three levels may fail independently, every one of them has to
-    # be named, and an early return would silence the two after the first.
+    # happened: all four levels may fail independently, every one of them has
+    # to be named, and an early return would silence the three after the
+    # first.
     _MCP_SEEN=""; _MCP_OUT=""; _MCP_LEVEL_FAILED=""
+
+    # LEVEL 0 — THE OWNING ACCOUNT, the person rather than the org node, and
+    # collected FIRST so a shared asset is attributed to the level that is
+    # closest to whoever is at the session.
+    #
+    # A ROW WITH NO ACCOUNT AT ALL IS AN ABSENCE, NOT A FAULT — every conf
+    # that predates the naming model omits the field, and it must read exactly
+    # as it did before this level existed: nothing collected, nothing said.
+    # That is the same distinction LEVEL 3 draws for a session aimed at an
+    # entity rather than a project.
+    if [ -n "$account" ]; then
+      # ASSERTED BEFORE THE SPLICE. registry_load's own grammar for ACCOUNT is
+      # strictly narrower than this one, so nothing reaching here through that
+      # loader can fail it — which is the argument for keeping the check, not
+      # against it: the slug is about to be concatenated into a filename in a
+      # directory that sits beside entities.d, and the last register that
+      # trusted an upstream check for exactly that reason let a row reach
+      # another register's file.
+      if ! registry_valid_name "$account"; then
+        echo "registry: mcp assets for '$sid' — the owning account resolves to '$(registry_printable "$account")', which is not a legal slug (allowed: a-z 0-9 -); refusing to hand it to anything that builds a path" >&2
+        _MCP_LEVEL_FAILED=1
+      else
+        local acct_out acct_rc
+        acct_out="$( registry_account_load "$account" >/dev/null \
+                     && printf '%s\n%s\n' "${ACCOUNT_MCP_ASSETS:-}" "ok" )"
+        acct_rc=$?
+        if [ "$acct_rc" -ne 0 ]; then
+          # THE LOADER'S OWN STDERR IS LET THROUGH here too, for the reason it
+          # is at every other level: it has already said WHICH fault this was
+          # — no such row, an unreadable one, a row missing PRINCIPAL — and
+          # this sentence adds the session whose grant it cost.
+          echo "registry: mcp assets for '$sid' — the owning account '$account' would not load; it grants nothing here" >&2
+          _MCP_LEVEL_FAILED=1
+        else
+          _registry_mcp_collect "${acct_out%%$'\n'*}"
+        fi
+      fi
+    fi
 
     local owning own_rc
     owning="$( registry_session_owning_entity "$sid" )"; own_rc=$?
@@ -1248,23 +1327,39 @@ registry_account_dir() {
 }
 
 # registry_account_load <slug>: sets ACCOUNT_PRINCIPAL, ACCOUNT_HOST,
-# ACCOUNT_USERNAME. rc 1 on any missing/invalid field, matching
-# registry_entity_load's own contract.
+# ACCOUNT_USERNAME, ACCOUNT_MCP_ASSETS. rc 1 on any missing/invalid field,
+# matching registry_entity_load's own contract.
+#
+# MCP_ASSETS IS A LEGAL FIELD HERE FOR A REASON THE ORG TREE CANNOT COVER.
+# entities.d and projects.d rows carry the same field, and every level they
+# describe is a place in the ORG — a team, a client, a piece of work. A
+# personal capability has no place there: a mail account, a calendar, a note
+# store belong to the HUMAN, and two people working on the same client must
+# not inherit each other's. An account is the one row in this estate that
+# names a (principal, host) rather than an org node, so it is the one row
+# that can carry a grant bound to a person. registry_session_mcp_assets
+# unions it in as its FIRST level.
+#
+# NOT VALIDATED, ONLY EXPOSED — the same choice registry_entity_load records:
+# resolving the slugs here would make every account load hit the mcp register,
+# and the grammar each slug must satisfy is enforced where it is used as a
+# path (registry_mcp_asset_load), not where it is read.
 #
 # RESET BEFORE SOURCING — the same leak-guard pattern every loader in this
 # file follows: a caller that gets rc 1 for a missing or invalid account
 # must not still see the last account that loaded successfully. The
-# uppercase locals (PRINCIPAL, HOST, USERNAME) are read via `local` BEFORE
-# the source too, so nothing the conf assigns ever reaches this function's
-# caller except through the ACCOUNT_* globals set at the very end.
+# uppercase locals (PRINCIPAL, HOST, USERNAME, MCP_ASSETS) are read via
+# `local` BEFORE the source too, so nothing the conf assigns ever reaches
+# this function's caller except through the ACCOUNT_* globals set at the
+# very end.
 registry_account_load() {
-  ACCOUNT_PRINCIPAL=""; ACCOUNT_HOST=""; ACCOUNT_USERNAME=""
+  ACCOUNT_PRINCIPAL=""; ACCOUNT_HOST=""; ACCOUNT_USERNAME=""; ACCOUNT_MCP_ASSETS=""
   local slug="${1:-}" d f
   [ -n "$slug" ] || return 1
   d="$(registry_account_dir)" || return 78
   f="$d/$slug.conf"
   [ -f "$f" ] || { echo "registry: no such account: $slug" >&2; return 1; }
-  local PRINCIPAL="" HOST="" USERNAME=""
+  local PRINCIPAL="" HOST="" USERNAME="" MCP_ASSETS=""
   # shellcheck source=/dev/null
   source "$f" || return 1
   # PRINCIPAL is the human this account belongs to — the OWNER/member form
@@ -1282,6 +1377,11 @@ registry_account_load() {
   # would be a field that is nearly always a copy of another.
   : "${USERNAME:=$PRINCIPAL}"
   ACCOUNT_PRINCIPAL="$PRINCIPAL"; ACCOUNT_HOST="$HOST"; ACCOUNT_USERNAME="$USERNAME"
+  # SET LAST, WITH THE REST — an absent field reads as "no assets declared"
+  # and can never come back as the previous account's grant. Fail closed:
+  # fewer tools than granted is a session that says a server is missing;
+  # more tools than granted is somebody else's credentials.
+  ACCOUNT_MCP_ASSETS="$MCP_ASSETS"
 }
 
 # registry_account_write <slug> <content> <validate_fn> — THIN WRAPPER over
