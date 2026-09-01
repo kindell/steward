@@ -128,9 +128,16 @@ liveness_rows() {
   # -m` is switched back off immediately after backgrounding — the rest of
   # this function must not run under job control, or later commands start
   # reporting job-status lines of their own.
-  local deadline="${STEWARD_LIVENESS_TIMEOUT:-10}"
+  # 10s held while the shim only read the local machine. A shim that collects
+  # from remote hosts answers honestly in ~12s for one host with many rows
+  # (measured 2026-09-01: per-row systemctl on the answerer, plus one ssh) —
+  # and the old deadline killed that honest answer into a seam-timeout for
+  # EVERY row, local ones included. The deadline guards against a HUNG shim,
+  # not a slow measurement; 30s clears today's fleet with margin, and shrinks
+  # again when the answerer learns to ask systemd once (backlogged upstream).
+  local deadline="${STEWARD_LIVENESS_TIMEOUT:-30}"
   if ! [[ "$deadline" =~ ^[0-9]+$ ]] || [ "$deadline" -le 0 ]; then
-    deadline=10
+    deadline=30
   fi
 
   local pid
