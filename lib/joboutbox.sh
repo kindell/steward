@@ -8,6 +8,13 @@
 # create-if-absent and every resend carries the SAME id. The guarantee is
 # at-least-once; the receiver dedupes on the id printed in the message. An
 # honest at-least-once, stated, beats a pretended exactly-once.
+#
+# joboutbox_drain PRINTS THE EVENT ID OF EVERY SEND IT ACTUALLY COMPLETED,
+# one per line, on stdout. Its rc is a summary (0 iff every pending event in
+# this job's outbox sent); the printed ids are the precise answer to "did
+# THIS event go out" — a caller with more than one pending file (a crash
+# between two terminal versions) must not read a nonzero rc as "nothing
+# sent" when its own event id is in fact on the list [I2].
 
 _joboutbox_dir() {
   local home; home="$(jobstate_home 2>/dev/null)" || home="${STEWARD_JOB_STATE_HOME:?}"
@@ -24,13 +31,17 @@ joboutbox_enqueue() {
 }
 
 joboutbox_drain() {
-  local id="$1" dir f eid send="${JOBOUTBOX_SEND:-bus-send}" rc=0
+  local id="$1" dir f eid rc=0
+  # Explicit path, not a bare name trusted to PATH — a headless job's shell
+  # may not have the operator's PATH at all.
+  local send="${JOBOUTBOX_SEND:-${STEWARD_BUS_SEND:-$HOME/bin/bus-send}}"
   dir="$(_joboutbox_dir "$id")"
   for f in "$dir"/*.pending; do
     [ -e "$f" ] || continue
     eid="$(basename "$f" .pending)"
     if "$send" "${JOBOUTBOX_TO:-hub}" "$(cat "$f")"; then
       mv "$f" "$dir/$eid.sent"
+      printf '%s\n' "$eid"
     else
       echo "joboutbox: send failed for $eid — kept pending for the next drain" >&2
       rc=1

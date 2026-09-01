@@ -31,6 +31,7 @@ mkjob() { # <id> — fresh origin+work with two pre-checkout commits to expose B
   base_sha="$(cat "$T/$id-base")"
   jobstate_create "$id" GOAL=g OWNER=alice DESIRED=run PROCESS=exited EXIT_CODE=0 \
     WORKDIR="$T/$id-work" RUNTIME=claude-code BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b \
+    MESSAGE_RECEIPT=not-sent \
     "$base_sha"
 }
 
@@ -46,6 +47,8 @@ jobstate_read "$id"
 [ "$JOB_DELIVERY_RECEIPT" = "verified" ] && ok "push-no-state: receipt verified" || bad "RECEIPT" "${JOB_DELIVERY_RECEIPT:-}"
 [ ! -e "$T/runnerlog" ] && ok "push-no-state: model NOT rerun" || bad "model rerun on delivered work"
 grep -q "event: job-$id-terminal" "$T/sendlog" && ok "push-no-state: notice sent" || bad "no notice"
+grep -qE "^DRIFT $id: job succeeded" "$T/sendlog" && ok "push-no-state: notice carries the bus envelope [C1]" || bad "envelope missing" "$(grep "$id" "$T/sendlog")"
+[ "$JOB_MESSAGE_RECEIPT" = "sent" ] && ok "push-no-state: MESSAGE_RECEIPT=sent after successful drain [I2]" || bad "MESSAGE_RECEIPT" "${JOB_MESSAGE_RECEIPT:-unset}"
 
 # WINDOW: local commit exists, push missing, process dead. Push the exact SHA.
 id=j-0000000000000102; mkjob "$id"
@@ -99,7 +102,7 @@ jobstate_read "$id"
 
 # WINDOW: absolute deadline passed. timed_out.
 id=j-0000000000000107; mkjob "$id"
-jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" DEADLINE_ABSOLUT=500
+jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" DEADLINE_ABSOLUTE=500
 jobreconcile "$id"
 jobstate_read "$id"
 [ "$JOB_OUTCOME" = "timed_out" ] && ok "deadline: timed_out" || bad "OUTCOME" "$JOB_OUTCOME"
@@ -123,16 +126,18 @@ jobstate_read "$id"
 [ "${JOB_OUTCOME:-}" = "succeeded" ] && ok "push-crash-window: succeeded" || bad "OUTCOME" "${JOB_OUTCOME:-}"
 [ ! -e "$T/runnerlog" ] && ok "push-crash-window: model NOT rerun" || bad "model rerun on delivered work"
 
-# FINDING 2 (Important): terminal decision fails CAS, no notice enqueued.
+# FINDING 2 + I3: a lost CAS write must not report rc 0 — the caller (e.g.
+# bin/steward's `job cancel`) has to be able to see the stand-down.
 id=j-0000000000000109; mkjob "$id"
 jobstate_read "$id"
 jobstate_transition "$id" "$JOB_VERSION" DESIRED=cancel
 # Pre-create write-lock directory to block the next CAS attempt
 mkdir "$STEWARD_JOB_STATE_HOME/$id/write-lock" 2>/dev/null || true
 rm -f "$T/sendlog"  # Clear sendlog
-jobreconcile "$id" && ok "cas-refused: rc 0" || bad "reconcile failed"
+jobreconcile "$id" 2>/dev/null; rc=$?
+[ "$rc" -ne 0 ] && ok "cas-refused: reconcile rc != 0, caller can see the loss [I3]" || bad "reconcile silently reported rc 0 on lost CAS"
 # Check that no outbox entry was created (no line in sendlog with this job)
-if [ -f "$T/sendlog" ] && grep -q "job $id" "$T/sendlog" 2>/dev/null; then
+if [ -f "$T/sendlog" ] && grep -q "$id" "$T/sendlog" 2>/dev/null; then
   bad "cas-refused: notice sent despite CAS failure"
 else
   ok "cas-refused: no notice on refused CAS"
@@ -143,14 +148,92 @@ jobstate_read "$id"
 # Remove lock, reconcile again, should now succeed and send notice
 rmdir "$STEWARD_JOB_STATE_HOME/$id/write-lock" 2>/dev/null || true
 rm -f "$T/sendlog"
-jobreconcile "$id"
+jobreconcile "$id" && ok "cas-refused: reconcile rc 0 once the lock clears" || bad "reconcile still refused after unlock"
 jobstate_read "$id"
 [ "$JOB_OUTCOME" = "cancelled" ] && ok "cas-refused: cancelled after CAS ok" || bad "OUTCOME" "${JOB_OUTCOME:-}"
-if [ -f "$T/sendlog" ] && grep -q "job $id" "$T/sendlog" 2>/dev/null; then
-  ok "cas-refused: notice sent on second attempt"
+if [ -f "$T/sendlog" ] && grep -qE "^DRIFT $id: job cancelled" "$T/sendlog" 2>/dev/null; then
+  ok "cas-refused: notice sent on second attempt, envelope intact [C1]"
 else
   bad "cas-refused: no notice on second attempt"
 fi
+[ "$JOB_MESSAGE_RECEIPT" = "sent" ] && ok "cas-refused: MESSAGE_RECEIPT=sent after the notice actually drained [I2]" || bad "MESSAGE_RECEIPT" "${JOB_MESSAGE_RECEIPT:-unset}"
+
+# I2 (failure path): a sender that fails must NOT advance MESSAGE_RECEIPT —
+# the row stays not-sent, so a later drain still retries.
+id=j-000000000000010a; mkjob "$id"
+jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" DESIRED=cancel
+export JOBOUTBOX_SEND=/bin/false
+jobreconcile "$id" 2>/dev/null
+export JOBOUTBOX_SEND="$T/sender"
+jobstate_read "$id"
+[ "$JOB_OUTCOME" = "cancelled" ] && ok "message-receipt: outcome lands even when the sender fails" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+[ "$JOB_MESSAGE_RECEIPT" = "not-sent" ] && ok "message-receipt: stays not-sent when the sender fails [I2]" || bad "MESSAGE_RECEIPT" "${JOB_MESSAGE_RECEIPT:-unset}"
+
+# I1: a row missing BASE_SHA reconciles to a loud, named refusal — never
+# kills the calling shell the way ${JOB_BASE_SHA:?} used to.
+id=j-000000000000010b; mkjob "$id"
+grep -v '^BASE_SHA=' "$T/jobs/$id/row" > "$T/jobs/$id/row.tmp" && mv "$T/jobs/$id/row.tmp" "$T/jobs/$id/row"
+out="$(jobreconcile "$id" 2>&1)"; rc=$?
+[ "$rc" -eq 65 ] && ok "no-base-sha: refuses with rc 65 [I1]" || bad "rc" "$rc"
+case "$out" in *"$id"*) ok "no-base-sha: refusal names the job" ;; *) bad "job id missing from refusal" "$out" ;; esac
+case "$out" in *BASE_SHA*) ok "no-base-sha: refusal names the missing field" ;; *) bad "BASE_SHA missing from refusal" "$out" ;; esac
+_i1_probe_survived=1
+
+# I7: workdir deleted (host lost the clone) — a terminal failure with a
+# reason, never a silent forever-pending row.
+id=j-000000000000010c; mkjob "$id"
+rm -rf "$T/$id-work"
+jobreconcile "$id"
+jobstate_read "$id"
+[ "$JOB_OUTCOME" = "failed" ] && ok "workdir-missing: failed, not silent [I7]" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+[ "${JOB_FAIL_REASON:-}" = "workdir-missing" ] && ok "workdir-missing: reason named" || bad "FAIL_REASON" "${JOB_FAIL_REASON:-}"
+
+# I7: delivery ref deleted from origin (branch cleanup) after being
+# registered — a DIFFERENT truth than "moved", so a different reason.
+id=j-000000000000010d; mkjob "$id"
+( cd "$T/$id-work" && echo done > f && git add f && git commit -qm work )
+del="$(jobgit_deliver "$id" "$T/$id-work" "")"; del="${del#DELIVERY_SHA=}"
+jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" DELIVERY_SHA="$del" DELIVERY_RECEIPT=verified OUTCOME=pending
+git -C "$T/$id-origin.git" update-ref -d "refs/heads/steward/jobs/$id/delivery"
+jobreconcile "$id"
+jobstate_read "$id"
+[ "$JOB_OUTCOME" = "failed" ] && ok "remote-ref-absent: failed" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+[ "${JOB_FAIL_REASON:-}" = "remote-ref-absent" ] && ok "remote-ref-absent: reason distinct from remote-moved [I7]" || bad "FAIL_REASON" "${JOB_FAIL_REASON:-}"
+
+# C3: a transient remote outage is retry-wait, never failed — and a later
+# reconcile with origin back delivers the finished work honestly instead of
+# throwing it away under a false "remote-moved".
+id=j-000000000000010e; mkjob "$id"
+( cd "$T/$id-work" && echo done > f && git add f && git commit -qm work )
+real_origin="$(git -C "$T/$id-work" remote get-url origin)"
+git -C "$T/$id-work" remote set-url origin "$T/does-not-exist-$id.git"
+jobreconcile "$id"
+jobstate_read "$id"
+[ "${JOB_PROCESS:-}" = "retry-wait" ] && ok "outage: PROCESS=retry-wait, never failed [C3]" || bad "PROCESS" "${JOB_PROCESS:-}"
+[ "${JOB_FAIL_REASON:-}" = "remote-unreachable" ] && ok "outage: reason names the outage" || bad "FAIL_REASON" "${JOB_FAIL_REASON:-}"
+[ -z "${JOB_OUTCOME:-}" ] && ok "outage: row stays non-terminal" || bad "outage flipped OUTCOME" "${JOB_OUTCOME:-}"
+git -C "$T/$id-work" remote set-url origin "$real_origin"
+jobreconcile "$id"
+jobstate_read "$id"
+[ "$JOB_OUTCOME" = "succeeded" ] && ok "outage: reconcile delivers once origin is back [C3]" || bad "OUTCOME after recovery" "${JOB_OUTCOME:-}"
+
+# C2: a lease renewed past its original TTL keeps looking alive — the
+# reconciler must never spawn a second runner into the same worktree/branch.
+id=j-000000000000010f; mkjob "$id"
+echo half-done > "$T/$id-work/f"
+jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" PROCESS=running
+jobstate_lease_acquire "$id" "job-run:99999" 300 >/dev/null
+t=1000
+while [ "$t" -lt 1400 ]; do
+  t=$((t+30)); export JOBSTATE_NOW=$t
+  jobstate_lease_renew "$id" "job-run:99999" >/dev/null
+done
+rm -f "$T/runnerlog"
+jobreconcile "$id"
+[ ! -e "$T/runnerlog" ] && ok "C2: lease renewals (past the original 300s TTL) prevent a second runner" || bad "second runner spawned despite live renewals"
+export JOBSTATE_NOW=1000
+
+[ "${_i1_probe_survived:-}" = "1" ] && ok "no-base-sha: calling shell survived to run these later assertions [I1]" || bad "script did not survive the BASE_SHA refusal"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
