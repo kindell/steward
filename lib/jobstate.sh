@@ -37,11 +37,11 @@ jobstate_create() {
   case "$id" in j-????????????????) ;; *) echo "jobstate: bad id '$id'" >&2; return 64 ;; esac
   local home; home="$(jobstate_home)" || return $?
   [ -e "$home/$id/row" ] && { echo "jobstate: $id already exists" >&2; return 65; }
-  local kv key val out=""
+  local kv key val out="VERSION=0"$'\n'
   for kv in "$@"; do
     key="${kv%%=*}"; val="${kv#*=}"
     case "$key" in
-      *[!A-Z0-9_]*|"") echo "jobstate: invalid field name '$key'" >&2; return 64 ;;
+      *[!A-Z0-9_]*|""|VERSION) echo "jobstate: invalid field name '$key'" >&2; return 64 ;;
     esac
     case "$val" in *$'\n'*) echo "jobstate: newline in value of $key" >&2; return 64 ;; esac
     out="${out}${key}=${val}"$'\n'
@@ -69,4 +69,79 @@ jobstate_read() {
     case "$key" in *[!A-Z0-9_]*) echo "jobstate: corrupt field name in $id" >&2; return 65 ;; esac
     printf -v "JOB_$key" '%s' "$val"
   done < "$home/$id/row"
+}
+
+_jobstate_now() { printf '%s\n' "${JOBSTATE_NOW:-$(date +%s)}"; }
+
+# jobstate_transition <id> <expected-version> <KEY=value>... — the ONLY write
+# path after create. Compare-and-swap on VERSION: the caller states the version
+# it read, and a row that has moved refuses with rc 75. The journal line is
+# written in the same breath as the row swap; a refused transition writes
+# nothing anywhere.
+jobstate_transition() {
+  local id="${1:-}" expect="${2:-}"; shift 2 || return 64
+  local home; home="$(jobstate_home)" || return $?
+  local lock="$home/$id/write-lock"
+  mkdir "$lock" 2>/dev/null || { echo "jobstate: concurrent write on $id" >&2; return 75; }
+  # The lock is released on EVERY exit path below.
+  local rc=0
+  _jobstate_transition_locked "$id" "$expect" "$@" || rc=$?
+  rmdir "$lock" 2>/dev/null
+  return "$rc"
+}
+
+_jobstate_transition_locked() {
+  local id="$1" expect="$2"; shift 2
+  jobstate_read "$id" || return $?
+  [ "${JOB_VERSION:-}" = "$expect" ] || { echo "jobstate: version is ${JOB_VERSION:-unset}, caller expected $expect" >&2; return 75; }
+  local kv key val
+  for kv in "$@"; do
+    key="${kv%%=*}"; val="${kv#*=}"
+    case "$key" in *[!A-Z0-9_]*|""|VERSION) echo "jobstate: invalid field '$key'" >&2; return 64 ;; esac
+    case "$val" in *$'\n'*) echo "jobstate: newline in value of $key" >&2; return 64 ;; esac
+    printf -v "JOB_$key" '%s' "$val"
+  done
+  local new=$((expect + 1))
+  local out="VERSION=$new"$'\n' v name
+  for v in $(compgen -v JOB_); do
+    name="${v#JOB_}"; [ "$name" = "VERSION" ] && continue
+    out="${out}${name}=${!v}"$'\n'
+  done
+  local home; home="$(jobstate_home)"
+  printf '%s' "$out" > "$home/$id/row.tmp.$$" && mv "$home/$id/row.tmp.$$" "$home/$id/row" || return 73
+  printf 'v%d %s %s\n' "$new" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$home/$id/journal"
+}
+
+# Leases bind a PROCESS to a job for a bounded time. A lease without a living
+# owner is by definition free [R 3.3]; expiry is the clock, liveness pinning
+# comes later in the runner. Format: "<owner> <expires-at-epoch>".
+jobstate_lease_acquire() {
+  local id="$1" owner="$2" ttl="$3" home f now holder until
+  home="$(jobstate_home)" || return $?; f="$home/$id/lease"; now="$(_jobstate_now)"
+  if [ -f "$f" ]; then
+    read -r holder until < "$f"
+    if [ "$now" -lt "$until" ] && [ "$holder" != "$owner" ]; then
+      echo "jobstate: lease held by $holder until $until" >&2; return 75
+    fi
+  fi
+  printf '%s %s\n' "$owner" "$((now + ttl))" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+}
+
+jobstate_lease_renew() {
+  local id="$1" owner="$2" home f holder until now
+  home="$(jobstate_home)" || return $?; f="$home/$id/lease"; now="$(_jobstate_now)"
+  [ -f "$f" ] || { echo "jobstate: no lease to renew" >&2; return 75; }
+  read -r holder until < "$f"
+  [ "$holder" = "$owner" ] && [ "$now" -lt "$until" ] || { echo "jobstate: lease not held by $owner" >&2; return 75; }
+  local ttl=$((until - now < 60 ? 60 : until - now))
+  printf '%s %s\n' "$owner" "$((now + ttl))" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+}
+
+jobstate_lease_holder() {
+  local id="$1" home f holder until
+  home="$(jobstate_home)" || return $?; f="$home/$id/lease"
+  [ -f "$f" ] || return 1
+  read -r holder until < "$f"
+  [ "$(_jobstate_now)" -lt "$until" ] || return 1
+  printf '%s\n' "$holder"
 }
