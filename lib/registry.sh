@@ -243,18 +243,18 @@ registry_entity_list() {
 }
 
 # registry_entity_load <id>: set ENTITY_ID, ENTITY_NAME, ENTITY_MEMBERS,
-# ENTITY_MANAGED_BY. rc 1 on an invalid row.
+# ENTITY_MANAGED_BY, ENTITY_MCP_ASSETS. rc 1 on an invalid row.
 registry_entity_load() {
   # Reset before sourcing so a prior load never leaks into this one — a caller
   # that gets rc 1 for a missing or invalid entity must not still see the last
   # entity that loaded successfully.
-  ENTITY_ID=""; ENTITY_NAME=""; ENTITY_MEMBERS=""; ENTITY_MANAGED_BY=""
+  ENTITY_ID=""; ENTITY_NAME=""; ENTITY_MEMBERS=""; ENTITY_MANAGED_BY=""; ENTITY_MCP_ASSETS=""
   local id="${1:-}" d f
   [ -n "$id" ] || return 1
   d="$(registry_entity_dir)" || return 78
   f="$d/$id.conf"
   [ -f "$f" ] || { echo "registry: no such entity: $id" >&2; return 1; }
-  local NAME="" MEMBERS="" MANAGED_BY=""
+  local NAME="" MEMBERS="" MANAGED_BY="" MCP_ASSETS=""
   # shellcheck source=/dev/null
   source "$f" || return 1
   if [ -z "$NAME" ]; then
@@ -294,6 +294,12 @@ registry_entity_load() {
   fi
   ENTITY_ID="$id"; ENTITY_NAME="$NAME"
   ENTITY_MEMBERS="$MEMBERS"; ENTITY_MANAGED_BY="$MANAGED_BY"
+  # MCP_ASSETS: which MCP capabilities this entity grants to the sessions under
+  # it. EXPOSED, NOT RESOLVED — the slugs index the mcp register, and whether
+  # each one has a definition is registry_mcp_asset_load's question, asked at
+  # the moment of use. Resolving here would make one unwritten asset row refuse
+  # the whole entity, and with it every session that hangs off it.
+  ENTITY_MCP_ASSETS="$MCP_ASSETS"
 }
 
 # ── PROJECTS: THE WORK, UNDER WHICHEVER PARENT IT BELONGS TO ───────────────
@@ -325,18 +331,18 @@ registry_project_list() {
   done
 }
 
-# registry_project_load <id>: set PROJECT_ID, PROJECT_NAME, PROJECT_PARENT.
-# rc 1 on an invalid row.
+# registry_project_load <id>: set PROJECT_ID, PROJECT_NAME, PROJECT_PARENT,
+# PROJECT_MCP_ASSETS. rc 1 on an invalid row.
 registry_project_load() {
   # Reset before the file lookup — not just before sourcing — so a caller
   # that gets rc 1 never still sees the previous project's data.
-  PROJECT_ID=""; PROJECT_NAME=""; PROJECT_PARENT=""
+  PROJECT_ID=""; PROJECT_NAME=""; PROJECT_PARENT=""; PROJECT_MCP_ASSETS=""
   local id="${1:-}" d f
   [ -n "$id" ] || return 1
   d="$(registry_project_dir)" || return 78
   f="$d/$id.conf"
   [ -f "$f" ] || { echo "registry: no such project: $id" >&2; return 1; }
-  local NAME="" PARENT=""
+  local NAME="" PARENT="" MCP_ASSETS=""
   # shellcheck source=/dev/null
   source "$f" || return 1
   [ -n "$NAME" ]   || { echo "registry: $id.conf missing NAME" >&2; return 1; }
@@ -349,6 +355,270 @@ registry_project_load() {
     return 1
   fi
   PROJECT_ID="$id"; PROJECT_NAME="$NAME"; PROJECT_PARENT="$PARENT"
+  # MCP_ASSETS — the same field an entity may carry, on the narrowest level of
+  # the org. Exposed and never resolved here, for the reason spelled out in
+  # registry_entity_load above.
+  PROJECT_MCP_ASSETS="$MCP_ASSETS"
+}
+
+# ── THE MCP REGISTER: A CAPABILITY IS A ROW, NOT A COPY ────────────────────
+#
+# An MCP server is something a session is GIVEN, and the estate already
+# records who a session belongs to: the team that manages the client, the
+# client itself, the project the work sits in. Before this register the
+# server's command line was repeated into every session that wanted it, and
+# a repeated command line is a command line that drifts — the estate had the
+# same server declared three ways, and nobody could say which was current.
+#
+# ONE ROW PER CAPABILITY, REFERENCED FROM THE LEVEL THAT OWNS IT. mcp.d holds
+# the definition; entities.d and projects.d rows carry MCP_ASSETS naming it.
+# A session's effective set is then DERIVED (registry_session_mcp_assets
+# below) rather than stored, which is the same choice the identity model made
+# for the display name and for the same reason: a stored copy of a derivable
+# fact is a second truth waiting to disagree with the first.
+#
+# THE ENV FILE IS A PATH, NEVER A VALUE. MCP_ENV_FILE names a file the
+# wrapper reads; the secrets inside it never reach a command line, a rendered
+# config, a process listing or a log. It is a TEMPLATE — it may contain
+# `<domain>`, substituted at render time — so ONE row serves every client
+# that has its own copy of the same credential.
+#
+# ESTATE-GLOBAL, next to entities.d, the same placement accounts.d has.
+registry_mcp_dir() {
+  if [ -n "${STEWARD_MCP_DIR:-}" ]; then printf '%s\n' "$STEWARD_MCP_DIR"; return 0; fi
+  printf '%s\n' "$(_registry_estate_root)/mcp.d"
+}
+
+# registry_mcp_list: one asset slug per line, or REFUSE with 78 — the same
+# distinction registry_entity_list draws, for the same reason: a register that
+# cannot be READ must never look like a register that is EMPTY.
+registry_mcp_list() {
+  local d; d="$(registry_mcp_dir)" || return 78
+  if [ ! -d "$d" ]; then
+    echo "registry: REFUSING — the mcp register is not readable: $d" >&2
+    return 78
+  fi
+  local f
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    basename "$f" .conf
+  done
+}
+
+# registry_mcp_asset_load <slug>: set MCP_ASSET_ID, MCP_COMMAND, MCP_ARGS,
+# MCP_ENV_FILE. rc 1 on a missing or invalid row.
+#
+# THE FIELD NAMES AND THE GLOBAL NAMES ARE THE SAME HERE, which every other
+# loader in this file avoids by shadowing the conf's names with locals. They
+# cannot be shadowed when they are identical, so the ATOMICITY that shadowing
+# buys is bought a different way: the sourced values are copied into locals,
+# the globals are cleared AGAIN, and only a row that passes every check gets
+# to set them. A refusal therefore leaves nothing behind — the property that
+# matters, since this loader is asked once per asset in a loop and a leak
+# would render one asset's command under the next asset's name.
+#
+# THE SLUG IS VALIDATED BEFORE IT IS USED AS A PATH, not after: it is
+# concatenated into a filename, so `../something` reaches outside the register
+# the moment the grammar is trusted. Same shape every other register here
+# uses (^[a-z0-9-]+$, registry_valid_name's own).
+registry_mcp_asset_load() {
+  MCP_ASSET_ID=""; MCP_COMMAND=""; MCP_ARGS=""; MCP_ENV_FILE=""
+  local slug="${1:-}" d f
+  [ -n "$slug" ] || return 1
+  if ! registry_valid_name "$slug"; then
+    echo "registry: invalid mcp asset name '$slug' (allowed: a-z 0-9 -)" >&2
+    return 1
+  fi
+  d="$(registry_mcp_dir)" || return 78
+  f="$d/$slug.conf"
+  [ -f "$f" ] || { echo "registry: no such mcp asset: $slug" >&2; return 1; }
+  # shellcheck source=/dev/null
+  source "$f" || return 1
+  local _cmd="${MCP_COMMAND:-}" _args="${MCP_ARGS:-}" _envf="${MCP_ENV_FILE:-}"
+  MCP_ASSET_ID=""; MCP_COMMAND=""; MCP_ARGS=""; MCP_ENV_FILE=""
+  if [ -z "$_cmd" ]; then
+    echo "registry: $slug.conf missing MCP_COMMAND (the program that speaks MCP)" >&2
+    return 1
+  fi
+  MCP_ASSET_ID="$slug"; MCP_COMMAND="$_cmd"; MCP_ARGS="$_args"; MCP_ENV_FILE="$_envf"
+}
+
+# _registry_words <string> — sets the array REGISTRY_WORDS to the string's
+# space-separated words.
+#
+# THE SPLIT IS WANTED; THE GLOB IS NOT. This is lib/visibility.sh's grant-list
+# lesson, moved into a function so the two fields that need it (MCP_ASSETS and
+# MCP_ARGS) share one implementation rather than two that drift. An unquoted
+# expansion is word splitting AND pathname expansion, so the same conf answers
+# differently from different working directories — measured there with
+# VISIBLE_TO="*", where an asterisk became a real group name and let a
+# non-member in. An MCP_ARGS="*" would do the same to a server's argv.
+#
+# THE FLAG IS RESTORED ONLY IF THE CALLER DID NOT ALREADY SET IT, and the
+# capture is ONE line under it — a loop that returned from inside itself would
+# skip the restore and leave globbing off in the caller's shell.
+_registry_words() {
+  local _had_f; case "$-" in *f*) _had_f=1 ;; *) _had_f="" ;; esac
+  set -f
+  # shellcheck disable=SC2206  # splitting is intended here; globbing is off
+  REGISTRY_WORDS=( ${1:-} )
+  [ -n "$_had_f" ] || set +f
+}
+
+# registry_session_owning_entity <session-id> — prints the entity slug that
+# OWNS the session's work, or rc 1 and nothing.
+#
+# THE JOIN IS lib/sessions.sh's, AND IT IS ONE JOIN. That file's entity-join
+# and lib/visibility.sh's rule 4 already answer this question in the same
+# order — the declared target first, the project's PARENT second, the legacy
+# DOMAIN last — because a migrated row's DOMAIN can name an entity that never
+# existed (measured 2026-08-31: a machine session hidden from the very team
+# that owned it). A fourth copy of that order would be a fourth chance to
+# drift, so this one is written to be called, and the resolver below calls it.
+#
+# SUBSHELLED WHOLE: registry_load and registry_project_load both write into
+# the shell they run in, and this function's caller is mid-render holding its
+# own row.
+registry_session_owning_entity() {
+  local sid="${1:-}"
+  [ -n "$sid" ] || return 1
+  (
+    registry_load "$sid" >/dev/null 2>&1 || exit 1
+    local owning="${DOMAIN:-}"
+    if [ -n "${TARGET_ENTITY:-}" ]; then
+      owning="$TARGET_ENTITY"
+    elif [ -n "${TARGET_PROJECT:-}" ]; then
+      local pp
+      pp="$( registry_project_load "$TARGET_PROJECT" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}" )"
+      [ -n "$pp" ] && owning="$pp"
+    fi
+    [ -n "$owning" ] || exit 1
+    printf '%s\n' "$owning"
+  )
+}
+
+# registry_session_mcp_assets <session-id> — the session's EFFECTIVE set, one
+# asset slug per line on stdout. rc 0 (including an empty set) · rc 1 when the
+# session itself could not be read.
+#
+# THREE LEVELS, IN THIS ORDER: the managing team, the owning entity, the
+# target project's own row. Broadest grant first, narrowest last — a reader of
+# the list, and the JSON the render verb keys from it, both see the org from
+# the outside in.
+#
+# ONE MANAGED_BY HOP, AND ONLY ONE. The same deliberate limit lib/visibility.sh
+# draws at its rule 5 and lib/sessions.sh at its lineage: a customer of a
+# customer is not the same work, and a rule that walked the whole chain would
+# hand out an ever-widening set of capabilities nobody declared. Capabilities
+# make that argument sharper than visibility did — the thing being inherited
+# here is the right to run a program with somebody's credentials.
+#
+# DEDUP PRESERVES FIRST-SEEN ORDER. The same asset granted by a team and again
+# by its client is ONE server, named at the level that granted it first; the
+# alternative is a duplicate key in the rendered document, where the last
+# writer silently wins.
+#
+# A LEVEL THAT FAILS TO LOAD CONTRIBUTES NOTHING AND IS NAMED. This is the
+# whole reason the function does not simply return the union it managed to
+# build: a client row with a typo would otherwise take its whole grant out of
+# every session under it, with rc 0 and an empty line where a capability used
+# to be. The failure is not fatal — the levels that DID load still grant — but
+# it is never silent, and the sentence carries both the level and the session.
+#
+# SUBSHELLED WHOLE, for the reason registry_session_owning_entity is: the
+# loads below write into the shell that runs them.
+registry_session_mcp_assets() {
+  local sid="${1:-}"
+  if [ -z "$sid" ]; then
+    echo "registry: registry_session_mcp_assets needs a session id" >&2
+    return 1
+  fi
+  (
+    # ONE LOAD, TWO ANSWERS. `out` carries TARGET_PROJECT on line one and a
+    # constant on line two — the possibly-empty field FIRST, because command
+    # substitution strips every trailing newline and would otherwise collapse
+    # the pair into one field. The same idiom, and the same reasoning, as
+    # registry_display_for's entity-chain walk above.
+    local out rc
+    out="$( registry_load "$sid" >/dev/null 2>&1 && printf '%s\n%s\n' "${TARGET_PROJECT:-}" "ok" )"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "registry: mcp assets for '$sid' — the session's own row would not load; no assets resolved" >&2
+      exit 1
+    fi
+    local target_project="${out%%$'\n'*}"
+
+    local owning; owning="$( registry_session_owning_entity "$sid" )" || owning=""
+
+    _MCP_SEEN=""; _MCP_OUT=""
+
+    # LEVEL 1 AND LEVEL 2 COME OFF ONE READ OF THE OWNING ENTITY. Its
+    # MANAGED_BY (the team) and its own MCP_ASSETS are both on that row;
+    # asking the register twice would cost a second read for an answer it
+    # already gave. Ordering again puts the possibly-empty fields first and a
+    # constant last.
+    if [ -n "$owning" ]; then
+      local ent_out ent_rc mgr ent_assets rest
+      ent_out="$( registry_entity_load "$owning" >/dev/null 2>&1 \
+                  && printf '%s\n%s\n%s\n' "${ENTITY_MANAGED_BY:-}" "${ENTITY_MCP_ASSETS:-}" "ok" )"
+      ent_rc=$?
+      if [ "$ent_rc" -ne 0 ]; then
+        echo "registry: mcp assets for '$sid' — the owning entity '$owning' would not load; it grants nothing here" >&2
+      else
+        mgr="${ent_out%%$'\n'*}"
+        rest="${ent_out#*$'\n'}"
+        ent_assets="${rest%%$'\n'*}"
+        # LEVEL 1 — the managing team, one hop.
+        if [ -n "$mgr" ]; then
+          local mgr_out mgr_rc
+          mgr_out="$( registry_entity_load "$mgr" >/dev/null 2>&1 \
+                      && printf '%s\n%s\n' "${ENTITY_MCP_ASSETS:-}" "ok" )"
+          mgr_rc=$?
+          if [ "$mgr_rc" -ne 0 ]; then
+            echo "registry: mcp assets for '$sid' — the managing team '$mgr' would not load; it grants nothing here" >&2
+          else
+            _registry_mcp_collect "${mgr_out%%$'\n'*}"
+          fi
+        fi
+        # LEVEL 2 — the owning entity itself.
+        _registry_mcp_collect "$ent_assets"
+      fi
+    fi
+
+    # LEVEL 3 — the project's OWN row, the narrowest grant. A session aimed at
+    # an entity has no third level at all; that is an absence, not a failure,
+    # and says nothing.
+    if [ -n "$target_project" ]; then
+      local proj_out proj_rc
+      proj_out="$( registry_project_load "$target_project" >/dev/null 2>&1 \
+                   && printf '%s\n%s\n' "${PROJECT_MCP_ASSETS:-}" "ok" )"
+      proj_rc=$?
+      if [ "$proj_rc" -ne 0 ]; then
+        echo "registry: mcp assets for '$sid' — the project '$target_project' would not load; it grants nothing here" >&2
+      else
+        _registry_mcp_collect "${proj_out%%$'\n'*}"
+      fi
+    fi
+
+    printf '%s' "$_MCP_OUT"
+  )
+}
+
+# _registry_mcp_collect <assets-string> — appends the string's words to the
+# accumulator (_MCP_OUT), skipping any slug already collected. Called only
+# from inside registry_session_mcp_assets' subshell, which owns both globals.
+#
+# THE MEMBERSHIP TEST IS SPACE-DELIMITED CONTAINMENT, the same idiom
+# lib/visibility.sh's MEMBERS check uses — the surrounding spaces are what
+# stop `chat` from matching inside `chat-tool`.
+_registry_mcp_collect() {
+  _registry_words "${1:-}"
+  local w
+  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    case " $_MCP_SEEN " in *" $w "*) continue ;; esac
+    _MCP_SEEN="$_MCP_SEEN $w"
+    _MCP_OUT="$_MCP_OUT$w"$'\n'
+  done
 }
 
 # ── DISPLAY DERIVATION — PRESENTATION, NEVER IDENTITY ───────────────────────
