@@ -27,6 +27,8 @@ jobstate_create "$id" GOAL="ship the widget" OWNER=alice DESIRED=run \
 [ -f "$T/jobs/$id/row" ] && ok "create: row file exists" || bad "no row file"
 jobstate_create "$id" GOAL=x 2>/dev/null && bad "create: duplicate id accepted" || ok "create: duplicate id refused"
 jobstate_create "$id2" 'bad key=x' 2>/dev/null && bad "create: invalid field name accepted" || ok "create: invalid field name refused"
+id4="$(jobstate_mint_id)"
+jobstate_create "$id4" '0ABC=x' 2>/dev/null && bad "create: leading digit refused" || ok "create: leading digit refused"
 
 # THE NO-SOURCE PROOF: a value carrying a command substitution is data.
 id3="$(jobstate_mint_id)"

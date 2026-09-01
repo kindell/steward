@@ -33,6 +33,15 @@ j_before="$(wc -l < "$T/jobs/$id/journal")"
 jobstate_transition "$id" 99 PROCESS=x 2>/dev/null
 [ "$(wc -l < "$T/jobs/$id/journal")" = "$j_before" ] && ok "refused transition leaves no journal line" || bad "journal wrote on refusal"
 
+# --- lock contention rc-75 path coverage -----------------------------------
+mkdir "$T/jobs/$id/write-lock"
+jobstate_transition "$id" 1 PROCESS=waiting 2>/dev/null
+[ $? -eq 75 ] && ok "transition: write-lock contention returns rc 75" || bad "write-lock contention not rc 75"
+jobstate_read "$id"
+[ "$JOB_PROCESS" = "running" ] && ok "transition: lock contention leaves row unchanged" || bad "lock contention modified row" "$JOB_PROCESS"
+rmdir "$T/jobs/$id/write-lock"
+jobstate_transition "$id" 1 PROCESS=waiting && ok "transition: succeeds after lock is released" || bad "transition failed after lock release"
+
 # --- leases ---------------------------------------------------------------
 export JOBSTATE_NOW=1000
 jobstate_lease_acquire "$id" runner-a 60 && ok "lease: acquire on free row" || bad "acquire failed"
@@ -44,6 +53,14 @@ jobstate_lease_renew "$id" runner-b 2>/dev/null
 export JOBSTATE_NOW=2000
 jobstate_lease_holder "$id" >/dev/null 2>&1 && bad "expired lease still held" || ok "lease: expiry frees it"
 jobstate_lease_acquire "$id" runner-b 60 && ok "lease: acquire after expiry" || bad "acquire after expiry failed"
+
+# --- lease-lock contention coverage ----------------------------------------
+mkdir "$T/jobs/$id/lease-lock"
+jobstate_lease_acquire "$id" runner-c 60 2>/dev/null
+[ $? -eq 75 ] && ok "lease: acquire with lock contention returns rc 75" || bad "lease-lock not rc 75"
+[ ! -f "$T/jobs/$id/lease" ] || { holder="$(jobstate_lease_holder "$id" 2>/dev/null)"; [ "$holder" = "runner-b" ] && ok "lease: lock contention leaves lease unchanged" || bad "lease contention modified lease"; }
+rmdir "$T/jobs/$id/lease-lock"
+jobstate_lease_acquire "$id" runner-b 60 && ok "lease: acquire succeeds after lock is released" || bad "acquire failed after lock release"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

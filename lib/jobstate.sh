@@ -41,7 +41,8 @@ jobstate_create() {
   for kv in "$@"; do
     key="${kv%%=*}"; val="${kv#*=}"
     case "$key" in
-      *[!A-Z0-9_]*|""|VERSION) echo "jobstate: invalid field name '$key'" >&2; return 64 ;;
+      [A-Z][A-Z0-9_]*) ;; # valid field name
+      *) echo "jobstate: invalid field name '$key'" >&2; return 64 ;;
     esac
     case "$val" in *$'\n'*) echo "jobstate: newline in value of $key" >&2; return 64 ;; esac
     out="${out}${key}=${val}"$'\n'
@@ -97,7 +98,10 @@ _jobstate_transition_locked() {
   local kv key val
   for kv in "$@"; do
     key="${kv%%=*}"; val="${kv#*=}"
-    case "$key" in *[!A-Z0-9_]*|""|VERSION) echo "jobstate: invalid field '$key'" >&2; return 64 ;; esac
+    case "$key" in
+      [A-Z][A-Z0-9_]*) ;; # valid field name
+      *) echo "jobstate: invalid field '$key'" >&2; return 64 ;;
+    esac
     case "$val" in *$'\n'*) echo "jobstate: newline in value of $key" >&2; return 64 ;; esac
     printf -v "JOB_$key" '%s' "$val"
   done
@@ -116,6 +120,18 @@ _jobstate_transition_locked() {
 # owner is by definition free [R 3.3]; expiry is the clock, liveness pinning
 # comes later in the runner. Format: "<owner> <expires-at-epoch>".
 jobstate_lease_acquire() {
+  local id="$1" owner="$2" ttl="$3" home lock
+  home="$(jobstate_home)" || return $?
+  lock="$home/$id/lease-lock"
+  mkdir "$lock" 2>/dev/null || { echo "jobstate: concurrent lease write on $id" >&2; return 75; }
+  # The lock is released on EVERY exit path below.
+  local rc=0
+  _jobstate_lease_acquire_locked "$id" "$owner" "$ttl" || rc=$?
+  rmdir "$lock" 2>/dev/null
+  return "$rc"
+}
+
+_jobstate_lease_acquire_locked() {
   local id="$1" owner="$2" ttl="$3" home f now holder until
   home="$(jobstate_home)" || return $?; f="$home/$id/lease"; now="$(_jobstate_now)"
   if [ -f "$f" ]; then
@@ -128,6 +144,18 @@ jobstate_lease_acquire() {
 }
 
 jobstate_lease_renew() {
+  local id="$1" owner="$2" home lock
+  home="$(jobstate_home)" || return $?
+  lock="$home/$id/lease-lock"
+  mkdir "$lock" 2>/dev/null || { echo "jobstate: concurrent lease write on $id" >&2; return 75; }
+  # The lock is released on EVERY exit path below.
+  local rc=0
+  _jobstate_lease_renew_locked "$id" "$owner" || rc=$?
+  rmdir "$lock" 2>/dev/null
+  return "$rc"
+}
+
+_jobstate_lease_renew_locked() {
   local id="$1" owner="$2" home f holder until now
   home="$(jobstate_home)" || return $?; f="$home/$id/lease"; now="$(_jobstate_now)"
   [ -f "$f" ] || { echo "jobstate: no lease to renew" >&2; return 75; }
