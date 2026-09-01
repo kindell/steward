@@ -26,7 +26,8 @@
 #   steward config set KEY /abs/value
 #   steward login [session]
 #   steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)
-#   steward jobs --json
+#   steward job show <id>
+#   steward jobs [--json]
 #   steward selfupdate
 #   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
@@ -3607,46 +3608,172 @@ cmd_job() {
       jobreconcile "$id"
       ;;
     reconcile) jobreconcile "${1:?steward job reconcile <id>}" ;;
-    *) echo "usage: steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)" >&2; return 64 ;;
+    show)
+      local sid="${1:-}"
+      [ -n "$sid" ] || { echo "usage: steward job show <id>" >&2; return 64; }
+      _job_show "$sid"
+      ;;
+    *)
+      echo "usage: steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)" >&2
+      echo "       steward job show <id>" >&2
+      return 64 ;;
   esac
 }
 
-# `steward jobs --json` — IDENTITY FIRST. Every row that exists under the
+# `steward job show <id>` — everything this machine knows about ONE job, in
+# the order an operator asks for it: what the row says, what happened, what
+# was announced, and whether the delivery it claims is still there.
+#
+# THE FIELDS COME FROM THE STRICT READER, NEVER FROM READING THE FILE. A row
+# under the state home is written by machinery and editable by hand, so this
+# verb shows exactly what jobstate_read parsed — a row it refuses to parse
+# gets that refusal (rc 65) rather than a half-shown row, and a name nobody
+# has gets rc 66 saying which id was not found. Printing the file directly
+# would show fields the rest of the product would never act on.
+#
+# THE DELIVERY BLOCK ASKS THE REMOTE, and says which of three things it
+# found: the tip still matches DELIVERY_SHA, the tip has MOVED (and to
+# where), or there is no ref to compare against at all. "Delivered" is a
+# claim in the row; only the remote can confirm it, and rounding a moved tip
+# down to "delivered" is exactly the lie the job engine exists to prevent.
+#
+# AN ABSENT WORKDIR IS A FACT, NOT AN ERROR. The checkout is where the
+# origin url lives, so without it there is nothing to ask git with — the
+# line says `workdir: gone` and the verb still succeeds. A job whose
+# checkout was cleaned up is an ordinary old job, and refusing to describe
+# it would make `show` useless on precisely the jobs nobody remembers.
+_job_show() {
+  local id="$1" home branch have v name f eid state any=""
+  home="$(jobstate_home)" || return $?
+  jobstate_read "$id" || return $?
+
+  printf 'job %s\n' "$id"
+  # Sorted so two runs of this verb on the same row print the same thing;
+  # compgen's own order is not a contract worth reading a diff against.
+  for v in $(compgen -v JOB_ | sort); do
+    name="${v#JOB_}"
+    printf '%s=%s\n' "$name" "${!v}"
+  done
+
+  # THE LAST TEN LINES, not the whole journal. The journal grows with every
+  # transition and the tail is what answers "what just happened"; an
+  # operator who wants the rest knows where the file is, and it is named
+  # here so they do.
+  printf 'journal:\n'
+  if [ -f "$home/$id/journal" ]; then
+    tail -n 10 "$home/$id/journal" | sed 's/^/  /'
+  else
+    printf '  (no journal at %s/%s/journal)\n' "$home" "$id"
+  fi
+
+  # BOTH STATES, IN ONE LIST. A pending event and a sent one are the same
+  # notice at different moments, and an outbox listing that showed only one
+  # of them would make a stuck send look like a job that never announced
+  # anything.
+  printf 'outbox:\n'
+  for f in "$home/$id/outbox"/*.pending "$home/$id/outbox"/*.sent; do
+    [ -e "$f" ] || continue
+    any=1
+    eid="$(basename "$f")"; state="${eid##*.}"; eid="${eid%.*}"
+    printf '  %s %s\n' "$eid" "$state"
+  done
+  [ -n "$any" ] || printf '  (none)\n'
+
+  printf 'delivery:\n'
+  branch="$(jobgit_branch "$id")" || return $?
+  printf '  branch: %s\n' "$branch"
+  printf '  DELIVERY_SHA=%s\n' "${JOB_DELIVERY_SHA:-(none yet)}"
+  if [ ! -d "${JOB_WORKDIR:-}" ]; then
+    printf '  workdir: gone\n'
+  elif [ -z "${JOB_DELIVERY_SHA:-}" ]; then
+    printf '  remote: nothing has been delivered yet, so there is nothing to verify\n'
+  else
+    have="$(git -C "$JOB_WORKDIR" ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)"
+    if [ -z "$have" ]; then
+      printf '  remote: no ref for %s — the branch is gone, or origin is unreachable\n' "$branch"
+    elif [ "$have" = "$JOB_DELIVERY_SHA" ]; then
+      printf '  remote: matches DELIVERY_SHA\n'
+    else
+      printf '  remote: does NOT match — the tip is now %s\n' "$have"
+    fi
+  fi
+}
+
+# `steward jobs [--json]` — IDENTITY FIRST. Every row that exists under the
 # state home is listed, whether or not it can be measured; a measurement
 # (the parsed fields) is then left-joined onto that identity, never the
 # other way around. A row whose `row` file cannot be parsed still appears,
 # with `reason:"unparsable row"` — it is never silently dropped and never
 # guessed at. `coverage` states listed/measured/unmeasurable so a caller can
 # tell a clean sweep from one that quietly lost rows.
+#
+# THE TABLE AND THE JSON READ THE SAME SWEEP. Both forms come out of the one
+# loop below, so a row that appears in one appears in the other — a table
+# built from its own second pass would be free to disagree with the machine
+# answer, and the first time it did nobody would know which to believe. The
+# table therefore carries the unparsable rows too, as `<id> [unparsable
+# row]`: the operator-facing form is the one where a silently dropped row
+# does the most damage, because there is no `coverage` count beside it to
+# notice the gap.
+#
+# THE GOAL IS THE ONLY TRUNCATED COLUMN, and it is truncated because it is a
+# sentence and the rest are tokens. It sits last so a long one runs off the
+# right of the terminal rather than pushing every other column out of line,
+# and the ellipsis says a cut happened — `steward job show <id>` prints it
+# whole.
 cmd_jobs() {
-  [ "${1:-}" = "--json" ] || { echo "usage: steward jobs --json" >&2; return 64; }
+  local want_json=""
+  case "${1:-}" in
+    --json) want_json=1; shift ;;
+  esac
+  [ $# -eq 0 ] || { echo "usage: steward jobs [--json]" >&2; return 64; }
   # shellcheck source=lib/jobstate.sh
   . "$HERE/lib/jobstate.sh"
-  local home d id rows="[]" listed=0 measured=0 unmeasurable=0 now hb age
+  local home d id rows="[]" listed=0 measured=0 unmeasurable=0 now hb age hbtext goal
   home="$(jobstate_home)" || return $?
   now="$(_jobstate_now)"
+  [ -n "$want_json" ] || printf '%-18s %-9s %-9s %-3s %-6s %s\n' ID PROCESS OUTCOME ATT HB-AGE GOAL
   for d in "$home"/j-*/; do
     [ -d "$d" ] || continue
     id="$(basename "$d")"; listed=$((listed+1))
     if jobstate_read "$id" 2>/dev/null; then
       measured=$((measured+1))
-      age=null
+      age=null; hbtext="-"
       hb="$home/$id/heartbeat"
-      [ -f "$hb" ] && age=$((now - $(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null)))
-      rows="$(jq -n --argjson rows "$rows" \
-        --arg id "$id" --arg goal "${JOB_GOAL:-}" --arg owner "${JOB_OWNER:-}" \
-        --arg desired "${JOB_DESIRED:-}" --arg process "${JOB_PROCESS:-}" \
-        --arg outcome "${JOB_OUTCOME:-pending}" --arg receipt "${JOB_DELIVERY_RECEIPT:-pending}" \
-        --arg sha "${JOB_DELIVERY_SHA:-}" --arg attempt "${JOB_ATTEMPT_ID:-0}" --argjson age "$age" \
-        '$rows + [{id:$id, goal:$goal, owner:$owner, desired:$desired, process:$process,
-                   outcome:$outcome, delivery:{receipt:$receipt, sha:(if $sha=="" then null else $sha end)},
-                   attempt:($attempt|tonumber), heartbeatAgeSec:$age, reason:null}]')"
+      [ -f "$hb" ] && { age=$((now - $(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null))); hbtext="$age"; }
+      if [ -n "$want_json" ]; then
+        rows="$(jq -n --argjson rows "$rows" \
+          --arg id "$id" --arg goal "${JOB_GOAL:-}" --arg owner "${JOB_OWNER:-}" \
+          --arg desired "${JOB_DESIRED:-}" --arg process "${JOB_PROCESS:-}" \
+          --arg outcome "${JOB_OUTCOME:-pending}" --arg receipt "${JOB_DELIVERY_RECEIPT:-pending}" \
+          --arg sha "${JOB_DELIVERY_SHA:-}" --arg attempt "${JOB_ATTEMPT_ID:-0}" --argjson age "$age" \
+          '$rows + [{id:$id, goal:$goal, owner:$owner, desired:$desired, process:$process,
+                     outcome:$outcome, delivery:{receipt:$receipt, sha:(if $sha=="" then null else $sha end)},
+                     attempt:($attempt|tonumber), heartbeatAgeSec:$age, reason:null}]')"
+      else
+        goal="${JOB_GOAL:-}"
+        [ "${#goal}" -gt 50 ] && goal="${goal:0:47}..."
+        printf '%-18s %-9s %-9s %-3s %-6s %s\n' \
+          "$id" "${JOB_PROCESS:-unknown}" "${JOB_OUTCOME:-pending}" \
+          "${JOB_ATTEMPT_ID:-0}" "$hbtext" "$goal"
+      fi
     else
       unmeasurable=$((unmeasurable+1))
-      rows="$(jq -n --argjson rows "$rows" --arg id "$id" \
-        '$rows + [{id:$id, reason:"unparsable row"}]')"
+      if [ -n "$want_json" ]; then
+        rows="$(jq -n --argjson rows "$rows" --arg id "$id" \
+          '$rows + [{id:$id, reason:"unparsable row"}]')"
+      else
+        printf '%-18s %s\n' "$id" '[unparsable row]'
+      fi
     fi
   done
+  if [ -z "$want_json" ]; then
+    # THE HEADER WITHOUT ROWS IS AMBIGUOUS on a blank screen — it looks the
+    # same as a verb that fell over before printing anything. One sentence
+    # settles it, and rc stays 0: an estate with no jobs is a healthy estate.
+    [ "$listed" -eq 0 ] && printf 'no jobs\n'
+    return 0
+  fi
   jq -n --argjson jobs "$rows" --argjson l "$listed" --argjson m "$measured" --argjson u "$unmeasurable" \
     '{ok:true, schema:1, measuredAt:(now|todate), jobs:$jobs,
       coverage:{listed:$l, measured:$m, unmeasurable:$u}}'
