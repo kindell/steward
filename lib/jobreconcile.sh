@@ -1,7 +1,7 @@
 #!/bin/bash
 # lib/jobreconcile.sh — the reconciler: search for a receipt BEFORE any retry.
 #
-# ARTIFACT, RECEIPT-STATE AND NOTICE ARE THREE SEPARATE CRASH POINTS [A2].
+# ARTIFACT, RECEIPT-STATE AND NOTICE ARE THREE SEPARATE CRASH SURFACES [A2].
 # The reconciler reads all three surfaces (row, worktree, remote) and finishes
 # the bookkeeping from evidence. The ORDER of the checks is the doctrine:
 # terminal first (a finished job is finished), then desired-state (cancel

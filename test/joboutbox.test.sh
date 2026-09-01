@@ -1,7 +1,7 @@
 #!/bin/bash
 # test/joboutbox.test.sh — the idempotent terminal notice.
 #
-# ARTIFACT, RECEIPT-STATE AND NOTICE ARE THREE CRASH POINTS [A2]. A crash
+# ARTIFACT, RECEIPT-STATE AND NOTICE ARE THREE CRASH SURFACES [A2]. A crash
 # after delivery but before the notice must not lose the notice, and a crash
 # after the notice but before the sent-marker must not DUPLICATE it silently:
 # the event id is deterministic (job + version), enqueue is create-if-absent,

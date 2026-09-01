@@ -1,7 +1,7 @@
 #!/bin/bash
 # test/jobreconcile.test.sh — the reconciler SEARCHES FOR A RECEIPT BEFORE IT
 # RETRIES [A2]. Every block below is one crash window from the spec: the
-# machinery died at a specific point, and the reconciler must finish the job's
+# machinery died at a specific stage, and the reconciler must finish the job's
 # bookkeeping from the evidence — never rerun a model whose work already
 # landed, never force, never guess.
 set -u
@@ -114,7 +114,7 @@ jobreconcile "$id"; jobstate_read "$id"
 id=j-0000000000000108; mkjob "$id"
 ( cd "$T/$id-work" && echo done > f && git add f && git commit -qm work )
 del="$(jobgit_deliver "$id" "$T/$id-work" "")"; del="${del#DELIVERY_SHA=}"
-# Do NOT set DELIVERY_SHA in the row — simulate the crash point
+# Do NOT set DELIVERY_SHA in the row — simulate the crash stage
 jobstate_read "$id"
 rm -f "$T/runnerlog"  # Clear any prior runner invocations
 jobreconcile "$id" && ok "push-crash-window: rc 0" || bad "reconcile failed"
