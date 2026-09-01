@@ -3,8 +3,8 @@
 # human's own account on a session host, from inside a REGISTERED tmux session:
 # the identity is DERIVED from the pane and never typed.
 #
-#   bash ~/scripts/session-new.sh <project> <repo-path>   create conf + key, send the request
-#   bash ~/scripts/session-new.sh --activate <name>       after ENROLL-CONFIRM: start supervision
+#   bash ~/scripts/session-new.sh <project> <repo-path>       create conf + key, send the request
+#   bash ~/scripts/session-new.sh --activate <id> <slug>      the command ENROLL-CONFIRM prints
 #
 # Always invoked with a full path — ~/scripts is not on PATH, and a tool shell
 # does not inherit the login shell's PATH.
@@ -25,6 +25,16 @@ set -uo pipefail
 SESS_D=""
 SSH_DIR="${STEWARD_SSH_DIR:-$HOME/.ssh}"
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
+# ── WHERE A PENDING ENROLMENT IS REMEMBERED ─────────────────────────────────
+# NOT IN sessions.d. The reservation used to be nothing but the local conf this
+# script wrote at request time, and that directory is RECONCILED BY THE DEPLOY:
+# the install builds a keep-list from the estate checkout and deletes every
+# runtime conf the checkout does not carry — which is exactly what a local
+# reservation is. So the ordinary "sync, then activate" order removed the one
+# file activation depended on, and the discovery that replaced it then picked
+# another session's key. A state directory the deploy never touches is the
+# right home for a fact this account owns about its own request.
+STATE_D="${STEWARD_ENROLL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/steward-enroll}"
 
 # THE SENDER MUST BE NAMEABLE — CHECKED HERE, BEFORE ANYTHING IS CREATED.
 #
@@ -39,7 +49,16 @@ BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
 # rejects the case where a name is CERTAINLY underivable, and bus-send remains
 # the authority on the rest. Duplicating the real derivation here would be two
 # copies to keep in step, which is how a guard drifts away from what it guards.
-if [ -z "${BUS_FROM:-}" ] && [ -z "${TMUX_PANE:-}" ]; then
+#
+# AND IT GUARDS THE REQUEST PATH ONLY. --activate sends nothing: it links a key
+# and enables a timer, entirely locally. Gating it on a nameable SENDER made the
+# command ENROLL-CONFIRM prints refuse with rc 78 in any terminal that is not a
+# registered tmux pane — which is where an operator reads their mail and pastes
+# it. The fixture that was supposed to catch that ran INSIDE tmux and inherited
+# TMUX_PANE from the runner, so it measured the runner's terminal rather than
+# the code (found 2026-09-01, while making the end-to-end fixture run the
+# printed command verbatim).
+if [ "${1:-}" != "--activate" ] && [ -z "${BUS_FROM:-}" ] && [ -z "${TMUX_PANE:-}" ]; then
   echo "$(basename "$0"): REFUSES — the sender cannot be named." >&2
   echo "  Not running in tmux and BUS_FROM is unset, so the request to the hub" >&2
   echo "  would be sent under another session's key and stamped with its name." >&2
@@ -89,75 +108,141 @@ SESS_D="${STEWARD_SESSIONS_D:-$(registry_dir)}"
 RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
 NAV="$(registry_hub_session)" || exit 78
 
+# _ar_myntat_id <candidate>: rc 0 iff s- followed by exactly 16 hex digits.
+# HEX, NOT "SIXTEEN OF ANYTHING" — the old test was the glob
+# s-????????????????, which matches sixteen arbitrary characters. Harmless
+# while no slug can take that shape, and free to assert properly.
+_ar_myntat_id() {
+  case "$1" in s-*) : ;; *) return 1 ;; esac
+  case "${1#s-}" in *[!0123456789abcdef]*|"") return 1 ;; esac
+  [ "${#1}" -eq 18 ]
+}
+
 if [ "${1:-}" = "--activate" ]; then
-  ARG="${2:?bash ~/scripts/session-new.sh --activate <name-or-id> [<name>]}"
-  # NEW-SHAPE VS OLD-SHAPE, TOLD APART BY THE ARGUMENT'S OWN SHAPE. ENROLL-
-  # CONFIRM's printed activate line is `--activate s-<hex>` — ONE argument,
-  # copy-pasteable — because that is the identity the new session's row is
-  # actually filed under (the minted id, never NAMN). session-new itself is
-  # what still knows the SLUG this id belongs to on THIS host: the request it
-  # sent earlier reserved a local conf under $SESS_D/$NAMN.conf (unless the
-  # request went hub-local, in which case that pairing was already resolved
-  # and the key already linked at request time — see the hub-local branch
-  # below). Reading that local conf back is the chosen shape (over a second
-  # CLI argument) because it keeps the printed command a single token; an
-  # explicit second argument is still accepted for disambiguation when more
-  # than one request is in flight at once.
-  case "$ARG" in
-    s-????????????????)
-      ID="$ARG"
-      if [ -f "$SSH_DIR/id_busrelay_$ID" ]; then
-        # Already linked — the hub-local request path (below) links the key
-        # itself in the same invocation that registered it, since there is
-        # no separate bus hop during which a later --activate could learn
-        # the pairing. Nothing left to discover here.
-        NAMN=""
-      elif [ -n "${3:-}" ]; then
-        NAMN="$3"
-        [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
-      else
-        # DISCOVERY: the local reservation this script itself wrote at
-        # request time — owned by this account, carrying no ID line yet (the
-        # hub's answer has not been synced into this host's copy of the
-        # register), with the key this script generated still sitting where
-        # it left it. Exactly one candidate is required; more than one is
-        # genuine ambiguity between requests in flight and is refused rather
-        # than guessed.
-        _kand=""; _n=0
-        for _c in "$SESS_D"/*.conf; do
-          [ -f "$_c" ] || continue
-          _cid="$(sed -n 's/^ID="\(.*\)"/\1/p' "$_c" | head -1)"
-          [ -z "$_cid" ] || continue
-          _cowner="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$_c" | head -1)"
-          [ "$_cowner" = "$(id -un)" ] || continue
-          _cn="$(basename "$_c" .conf)"
-          [ -f "$SSH_DIR/id_busrelay_$_cn" ] || continue
-          _kand="$_cn"; _n=$((_n+1))
+  ARG="${2:?bash ~/scripts/session-new.sh --activate <id> <slug>}"
+  # ── THE PAIRING IS CARRIED, NEVER DISCOVERED ──────────────────────────────
+  #
+  # THE TWO NAMES A NEWBORN SESSION HAS. The hub files the row under a minted
+  # opaque id and binds the relay key to that id. The host has the PRIVATE key
+  # filed under the SLUG, because the slug is all this script knew when it
+  # generated the key. Activation is the moment the two are joined.
+  #
+  # IT USED TO GUESS, AND THE GUESS WAS BOTH AMBIGUOUS AND SILENTLY WRONG.
+  # ENROLL-CONFIRM printed `--activate <id>` alone, so this branch scanned
+  # sessions.d for a conf with no ID line, owned by this account, with a
+  # matching key on disk. Every old-shape row on the host satisfies all three —
+  # including the requester's own, which always exists (this script refuses to
+  # run except from a registered session). So the printed command refused on
+  # any host that already had a session. And when exactly one candidate
+  # survived — the reservation pruned by a deploy, the hub's own row disqualified
+  # because it carries ID= — nothing related that candidate to the id: ANOTHER
+  # SESSION'S KEY was linked under the new id, rc 0, no warning. The newborn's
+  # outbound mail was then stamped with the other session's name. That is the
+  # fleet's identity-swap incident, rebuilt from new parts, and the ordinary
+  # recovery from the ambiguity refusal (sync, then activate) walked into it
+  # every time.
+  #
+  # SO THE PAIRING TRAVELS WITH THE CONFIRM. The hub knows both names when it
+  # answers and prints both: `--activate <id> <slug>`. Two tokens are as
+  # copy-pastable as one and unambiguous with any number of enrolments in
+  # flight. Nothing here reads another session's conf, ever.
+  if _ar_myntat_id "$ARG"; then
+    ID="$ARG"
+    NAMN="${3:-}"
+    if [ -n "$NAMN" ]; then
+      case "$NAMN" in
+        *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"")
+          fel "the slug '$NAMN' is outside the namespace [a-z0-9-]" 64 ;;
+      esac
+    elif [ -e "$SSH_DIR/id_busrelay_$ID" ]; then
+      # ALREADY LINKED, so there is nothing to pair. The hub-local request
+      # path (below) registers and links in a single invocation — there is no
+      # bus hop in between for a later --activate to bridge — so its printed
+      # command is runnable with or without the slug.
+      NAMN=""
+    else
+      # NO SLUG, NO KEY, NO GUESS. Listing what this account has in flight is
+      # help, not discovery: nothing is chosen from it.
+      _vantande=""
+      if [ -d "$STATE_D" ]; then
+        for _r in "$STATE_D"/enroll-*.pending; do
+          [ -f "$_r" ] || continue
+          _rn="$(basename "$_r" .pending)"; _rn="${_rn#enroll-}"
+          _vantande="$_vantande $_rn"
         done
-        [ "$_n" -eq 1 ] || fel "cannot find the pending request for '$ID' unambiguously ($_n candidates) — disambiguate: bash ${BASH_SOURCE[0]} --activate $ID <name>" 65
-        NAMN="$_kand"
       fi
-      if [ -n "$NAMN" ]; then
-        [ -f "$SSH_DIR/id_busrelay_$NAMN" ] || fel "no key '$SSH_DIR/id_busrelay_$NAMN' for '$NAMN' — send the request first"
-        # THE KEY LINKS TO THE ID, NEVER RENAMES. The original file stays
-        # addressable by the name it was generated under; the symlink is
-        # what the relay's forced command (bound to the id in
-        # authorized_keys, hub/enroll) and the launchd/systemd unit under
-        # the id both need to find.
-        ln -sf "id_busrelay_$NAMN" "$SSH_DIR/id_busrelay_$ID" || fel "could not link the key under the id" 70
-        ln -sf "id_busrelay_$NAMN.pub" "$SSH_DIR/id_busrelay_$ID.pub" || fel "could not link the public key under the id" 70
+      echo "session-new: REFUSING — '$ID' alone does not say which local key it belongs to." >&2
+      echo "  Run the command ENROLL-CONFIRM printed, which carries both halves:" >&2
+      echo "    bash ${BASH_SOURCE[0]} --activate $ID <slug>" >&2
+      echo "  The pairing is never guessed from the register: every old-shape row on this" >&2
+      echo "  host looks like a pending request, and picking one links the wrong key under" >&2
+      echo "  this id — the new session would then send mail as that other session." >&2
+      if [ -n "$_vantande" ]; then
+        echo "  requests in flight from this account:$_vantande" >&2
+      else
+        echo "  this account has no request in flight (see $STATE_D)." >&2
       fi
-      INSTANCE="$ID"
-      ;;
-    *)
-      # OLD-SHAPE, UNCHANGED: the name IS the identity, exactly as before the
-      # new-shape rows existed. Kept for every requester and every recipient
-      # that has not been touched by this migration.
-      NAMN="$ARG"
-      [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
-      INSTANCE="$NAMN"
-      ;;
-  esac
+      exit 65
+    fi
+    # THE REGISTRY ROW MUST BE HERE BEFORE SUPERVISION IS TOLD ABOUT IT.
+    # The old-shape branch has always checked its conf; this one checked only
+    # the reservation, so activation printed "timer active" for an instance
+    # the host could not see. The supervisor then refuses loudly every period
+    # ("a session without a registry entry must not be started") — a failing
+    # timer forever, announced at the wrong end. The hub writes the row into
+    # the estate checkout; it reaches this host through the install.
+    [ -f "$SESS_D/$ID.conf" ] || fel "no registry row '$ID.conf' in $SESS_D — the hub registered this session, but its row has not reached this host yet. Sync the estate (the install that copies the checkout's sessions.d) and re-run; supervision refuses to start a session it cannot find in the register, so activating now would only produce a timer that fails every period." 65
+    if [ -n "$NAMN" ]; then
+      # THE RESERVATION IS THIS ACCOUNT'S OWN NOTE ABOUT ITS OWN REQUEST — it
+      # confirms the slug was requested from here and names the key. Absent
+      # (an older request, a cleaned state dir) the key on disk is still the
+      # authority: the slug came from the CONFIRM, not from a scan.
+      _res="$STATE_D/enroll-$NAMN.pending"
+      _nyckel="$SSH_DIR/id_busrelay_$NAMN"
+      if [ -f "$_res" ]; then
+        _rk="$(sed -n 's/^KEY="\(.*\)"/\1/p' "$_res" | head -1)"
+        [ -n "$_rk" ] && _nyckel="$_rk"
+      fi
+      [ -f "$_nyckel" ] || fel "no key '$_nyckel' for '$NAMN' — this host never sent that request, or the key was removed. Nothing was linked." 65
+      # THE KEY LINKS TO THE ID, NEVER RENAMES. The original file stays
+      # addressable by the name it was generated under; the symlink is
+      # what the relay's forced command (bound to the id in
+      # authorized_keys, hub/enroll) and the launchd/systemd unit under
+      # the id both need to find.
+      ln -sf "$(basename "$_nyckel")" "$SSH_DIR/id_busrelay_$ID" || fel "could not link the key under the id" 70
+      ln -sf "$(basename "$_nyckel").pub" "$SSH_DIR/id_busrelay_$ID.pub" || fel "could not link the public key under the id" 70
+      rm -f "$_res"
+    fi
+    INSTANCE="$ID"
+  else
+    case "$ARG" in
+      s-*) [ -f "$SESS_D/$ARG.conf" ] || \
+             fel "'$ARG' looks like a minted id but is not one (the shape is s- followed by 16 hex digits)" 64 ;;
+    esac
+    # OLD-SHAPE: the name IS the identity, exactly as before the new-shape rows
+    # existed. Kept for every session that has not been through the migration.
+    NAMN="$ARG"
+    [ -f "$SESS_D/$NAMN.conf" ] || fel "no conf for '$NAMN' in $SESS_D — send the request first"
+    # AND THE ROW MUST ACTUALLY BE OLD-SHAPE. This branch never checked, so a
+    # new-shape row could be activated under its slug: a name-keyed timer
+    # beside the hub's id-keyed row, with the id-bound key never engaged.
+    _cid="$(sed -n 's/^ID="\(.*\)"/\1/p' "$SESS_D/$NAMN.conf" | head -1)"
+    [ -z "$_cid" ] || [ "$_cid" = "$NAMN" ] || \
+      fel "'$NAMN' is a new-shape row filed under the id '$_cid' — supervision keys off the id, so activate it that way: bash ${BASH_SOURCE[0]} --activate $_cid $NAMN" 65
+    # AND THE REGISTER MUST NOT ALREADY CARRY THIS NAME AS A SLUG. Between the
+    # request and the next install a host holds BOTH the local reservation
+    # (filed under the slug) and the hub's row (filed under the id). Activating
+    # the reservation by name then succeeds and supervises a name-keyed
+    # instance against a row the register does not have, permanently divergent,
+    # with the id-bound key never engaged. THIS IS A REFUSAL SCAN, NOT A
+    # SELECTION: it never picks a row to act on, so it cannot pick a wrong one.
+    for _c in "$SESS_D"/*.conf; do
+      [ -f "$_c" ] || continue
+      [ "$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$_c" | head -1)" = "$NAMN" ] || continue
+      fel "'$NAMN' is the SLUG of '$(basename "$_c" .conf)' in $SESS_D — the hub has already filed this session under its minted id, and supervision keys off that id. Activate it as the ENROLL-CONFIRM says: bash ${BASH_SOURCE[0]} --activate $(basename "$_c" .conf) $NAMN" 65
+    done
+    INSTANCE="$NAMN"
+  fi
   systemctl --user cat agent-session@.timer >/dev/null 2>&1 \
     || fel "supervision template agent-session@.timer missing — per-user supervision is a precondition" 65
   # THE ESTATE IS BOUND PER SESSION, NOT PER ACCOUNT. The template's environment
@@ -237,7 +322,7 @@ REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
 # naming the wrong cause, measured live 2026-08-21 when the flag's old
 # pre-rename spelling was used against the renamed script.
 case "$PROJEKT" in
-  -*) fel "unknown flag '$PROJEKT' — the only flag is --activate <name>" 64 ;;
+  -*) fel "unknown flag '$PROJEKT' — the flags are --activate <id> <slug>, --label <text> and --domain <d>" 64 ;;
 esac
 case "$PROJEKT" in
   *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") echo "session-new: project may contain only [a-z0-9-]" >&2; exit 64 ;;
@@ -289,7 +374,12 @@ fi
 NAMN="${DOMAN}-${PROJEKT}-${PERSON}"
 [ -d "$REPO/.git" ] || fel "'$REPO' is not a git working copy — clone the project first"
 [ -O "$REPO" ]      || fel "'$REPO' is not owned by $PERSON — a session works in its human's clones"
-[ ! -f "$SESS_D/$NAMN.conf" ] || fel "'$NAMN' already has a local conf — after a hub failure, delete it deliberately and re-run"
+# AND THE ADVICE HERE HAS A SECOND HALF NOW. "Delete it and re-run" is right
+# when the hub never registered anything. When the hub DID register and only
+# the CONFIRM was lost, re-running meets the hub's own refusal — which now
+# names the existing id and the activation command rather than blaming the
+# reused key. Say both, so the operator does not walk the wrong one first.
+[ ! -f "$SESS_D/$NAMN.conf" ] || fel "'$NAMN' already has a local conf — if the hub never answered, delete it deliberately and re-run. If the hub DID register and only the ENROLL-CONFIRM was lost, do not re-request: re-run the request and read the hub's refusal, which names the existing id and the '--activate <id> $NAMN' that finishes the birth."
 
 # One repo, one session. The name collision above does not catch TWO NAMES
 # pointing at the SAME working copy, which would give one repo two supervisors —
@@ -372,12 +462,16 @@ if [ "$SJALV" = "$NAV" ]; then
   if [ -n "$_id" ]; then
     ln -sf "id_busrelay_$NAMN" "$SSH_DIR/id_busrelay_$_id" || fel "could not link the key under the id" 70
     ln -sf "id_busrelay_$NAMN.pub" "$SSH_DIR/id_busrelay_$_id.pub" || fel "could not link the public key under the id" 70
-    echo "  next: bash ${BASH_SOURCE[0]} --activate $_id"
+    echo "  next: bash ${BASH_SOURCE[0]} --activate $_id $NAMN"
   else
-    # enroll answered form=new but this build's output shape changed under
-    # us, or an older enroll is on PATH — fall back to the pre-migration
-    # instruction rather than print a next step that cannot possibly work.
-    echo "  next: bash ${BASH_SOURCE[0]} --activate $NAMN"
+    # enroll answered form=new but this build's output shape changed under us,
+    # or an older enroll is on PATH. THE OLD FALLBACK PRINTED THE NAME-KEYED
+    # ACTIVATION, which does not fall back — it succeeds, and supervises the
+    # session under a name the register does not file it under, with the
+    # id-bound key never engaged. A next step that cannot be constructed is
+    # said plainly instead.
+    echo "  NOTE: enroll's success line carried no minted id, so the activation command cannot be constructed here." >&2
+    echo "  Read the id off the hub's ENROLL-CONFIRM and run: bash ${BASH_SOURCE[0]} --activate <id> $NAMN" >&2
   fi
   exit 0
 fi
@@ -416,5 +510,35 @@ if ! bygg_begaran | "$BUS_SEND" "$NAV"; then
   fel "the request did not reach the hub — conf withdrawn (the key remains), re-run" 70
 fi
 
+# ── THE RESERVATION: THIS ACCOUNT'S OWN NOTE ABOUT ITS OWN REQUEST ──────────
+# Written only after the send succeeded, for the same reason the conf is
+# withdrawn on failure: a note about a request nobody received is a half state
+# that looks whole. It lives in the account's state directory, NOT in
+# sessions.d, because the deploy reconciles sessions.d against the estate
+# checkout and deletes exactly this kind of host-local row — and it was that
+# deletion, followed by a disk scan for "something that looks pending", that
+# linked another session's key under a new id.
+#
+# Nothing chooses FROM this file. Activation is told the slug by the CONFIRM;
+# the reservation only confirms the slug was requested here and names the key.
+mkdir -p "$STATE_D" 2>/dev/null || true
+if [ -d "$STATE_D" ]; then
+  cat > "$STATE_D/enroll-$NAMN.pending" <<RESEOF
+# pending enrolment — written by session-new $(date -u +%Y-%m-%dT%H:%M:%SZ).
+# Removed by: bash ~/scripts/session-new.sh --activate <id> $NAMN
+SLUG="$NAMN"
+KEY="$NYCKEL"
+HOST="$VARD"
+RESEOF
+fi
+
 echo "session-new: request sent for '$NAMN'."
-echo "  next: wait for ENROLL-CONFIRM in your inbox, then run: bash ${BASH_SOURCE[0]} --activate $NAMN"
+# NEVER THE NAME-KEYED FORM. This line lands in the operator's terminal FIRST,
+# before the hub answers, and the name-keyed activation it used to print
+# SUCCEEDS — it supervises the session under a name-keyed instance against the
+# local reservation while the hub filed the row under a minted id and bound the
+# key to that id. Two contradictory instructions in one birth, and the wrong one
+# arrived first. The id does not exist yet here, so this line names the source
+# of the command instead of inventing one.
+echo "  next: wait for ENROLL-CONFIRM in your inbox. It prints the exact activation command,"
+echo "        which carries both halves of the pairing: --activate <id> $NAMN"

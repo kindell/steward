@@ -449,14 +449,31 @@ printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
 # home on a machine where it does not exist, so the tilde is left for THEIR
 # shell to expand. The old text hardcoded the deployed form for everyone, which
 # broke every checkout-run estate (measured on a live hub 2026-08-21).
+#
+# THE ACTIVATE COMMAND CARRIES BOTH HALVES OF THE PAIRING: <id> AND <slug>.
+# It used to print the id alone, which made the command copy-pastable and
+# UNRUNNABLE. The id is the hub's name for the session; the private key on the
+# host is filed under the SLUG, because the slug is all the requester knew when
+# it generated the key. With only the id on the command line, the host had to
+# GUESS which local reservation the id belonged to — and the guess was
+# ambiguous on any host that already had a session (the requester's own row is
+# always a candidate) and SILENTLY WRONG whenever exactly one candidate
+# survived: it linked another session's key under the new id, so the newborn's
+# outbound mail was stamped with the other session's name. That is the fleet's
+# own identity-swap incident, rebuilt from new parts.
+#
+# The pairing is therefore CARRIED, never discovered. The hub knows both names
+# at this moment and prints both; the host's --activate takes the slug as its
+# second token and links exactly that key. Two tokens are as copy-pastable as
+# one, and unambiguous with any number of enrolments in flight.
 if [ "$VARD" = "$NAV_VARD" ]; then
   APPROVE_CMD="bash $here/session-approve.sh"
   STATUS_CMD="bash $here/estate-status.sh"
-  ACTIVATE_CMD="bash $here/session-new.sh --activate $ID"
+  ACTIVATE_CMD="bash $here/session-new.sh --activate $ID $NAMN"
 else
   APPROVE_CMD='bash ~/scripts/session-approve.sh'
   STATUS_CMD='bash ~/scripts/estate-status.sh'
-  ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID"
+  ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
 fi
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1
