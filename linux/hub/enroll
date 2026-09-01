@@ -253,7 +253,21 @@ F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
   fel "host check: '$FROM' lives on '${F_HOST:-$NAV_VARD}', the request names '$VARD'"
 
 [ ! -f "$rdir/$NAMN.conf" ] || fel "name collision: '$NAMN' already exists in the registry"
+# A KNOWN KEY USUALLY MEANS A LOST CONFIRM, NOT AN IMPOSTOR — and the refusal
+# used to name the wrong cause. A send failure AFTER registration is a warning
+# by design (see the bottom of this file), so the registration stands while the
+# requester never learns its id. The requester then does what its own script
+# tells it: delete the local reservation and re-run. The key is reused
+# (idempotent after a failed send), and it met "the public key is already
+# registered — one key, one identity" — true, unhelpful, and silent about the
+# one fact that unblocks the operator: the id exists, and activating it is all
+# that is left. So the id is looked up from the very line that collided.
 if grep -qF "$PUBKEY" "$AUTH_KEYS" 2>/dev/null; then
+  _bid="$(grep -F "$PUBKEY" "$AUTH_KEYS" | sed -n 's/.*bus-relay-in \([^"]*\)".*/\1/p' | head -1)"
+  if [ -n "$_bid" ] && [ -f "$rdir/$_bid.conf" ]; then
+    _bslug="$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$rdir/$_bid.conf" | head -1)"
+    fel "this public key is already registered as '$_bid'${_bslug:+ (slug '$_bslug')} — one key, one identity. A LOST ENROLL-CONFIRM does not need a second registration: the row and the key line already exist. Activate the existing one: bash ~/scripts/session-new.sh --activate $_bid ${_bslug:-<slug>}"
+  fi
   fel "the public key is already registered — one key, one identity"
 fi
 
@@ -299,6 +313,30 @@ done
 if ! registry_account_slug_available "$ACCOUNT_SLUG" "$NAMN"; then
   fel "slug '$NAMN' is already taken in account '$ACCOUNT_SLUG'"
 fi
+
+# ── AND THE SLUG MUST BE UNIQUE ACROSS THE WHOLE REGISTER ────────────────────
+# THE STATE THE PER-ACCOUNT GATE PERMITTED AND BOTH RESOLVERS THEN REFUSED
+# FOREVER, measured 2026-09-01. NAMN is <domain>-<project>-<person> and carries
+# NO HOST, so the same human, same domain, same project on two machines derives
+# the SAME slug in two different accounts. The composite gate above is a
+# per-account gate and correctly allowed it — and then:
+#
+#   - this file's own requester resolver (further up) refuses a from= whose
+#     slug appears in two accounts, so NEITHER session can ever request again;
+#   - the bus's recipient resolver has the identical scan and the identical
+#     ">1 → refuse", so neither session is ADDRESSABLE either.
+#
+# Two sessions bricked by a registration the hub itself blessed. The gate and
+# the two resolvers have to agree on what is legal, and the cheap agreement is
+# the strict one: a slug is unique in the register, not merely in an account.
+# The refusal names the row and the account, so the reader can see the clash
+# rather than go looking for it.
+for _sf in "$rdir"/*.conf; do
+  [ -f "$_sf" ] || continue
+  [ "$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$_sf" | head -1)" = "$NAMN" ] || continue
+  _sacc="$(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$_sf" | head -1)"
+  fel "slug '$NAMN' is already registered as '$(basename "$_sf" .conf)' in account '${_sacc:-<none>}' — a slug that exists in two accounts makes BOTH sessions unable to request and unaddressable on the bus. The name carries no host; give the project or the person a distinguishing name, or move the existing row."
+done
 
 if [ -n "$KONTROLLERA" ]; then
   echo "nav-enroll: OK — '$NAMN' can be registered (requested by $FROM; check only, nothing written)"
