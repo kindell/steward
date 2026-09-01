@@ -62,6 +62,15 @@ is "rc 0" "$rc" "0"
 has "the remote command carries --sort slug" "$(cat "$SSHLOG")" "--sort slug"
 has "the table still renders" "$out" "fake-row"
 
+# THE ORG LINEAGE KEY REACHES THE ESTATE FORM TOO. A key that sorted the
+# fleet-wide list and was refused by the estate one would make `--sort` mean
+# two different things depending on which listing an operator happened to be
+# reading — the exact drift the shared key map and lib/sort.sh exist to stop.
+echo "== steward <estate> ls --sort lineage: the ORG key reaches the remote command =="
+outl="$(run myestate ls --sort lineage)"; rcl=$?
+is "rc 0" "$rcl" "0"
+has "the remote command carries --sort lineage" "$(cat "$SSHLOG")" "--sort lineage"
+
 echo "== steward ls <estate> --sort <key>: the other call order, same wiring =="
 out2="$(run ls myestate --sort host)"; rc2=$?
 is "rc 0" "$rc2" "0"
@@ -81,7 +90,7 @@ uerrtext="$(cat "$uerr")"; rm -f "$uerr"
 is "rc is 64" "$urc" "64"
 is "stdout is empty" "$uout" ""
 has "names the bad key" "$uerrtext" "bogus"
-has "lists the valid keys" "$uerrtext" "name, slug, display, owner, host"
+has "lists the valid keys" "$uerrtext" "name, slug, display, owner, host, lineage"
 is "ssh was never invoked" "$(cat "$SSHLOG")" ""
 
 echo "== steward <estate> ls --bogus: an unrelated unknown flag also refuses rc 64, before ssh =="

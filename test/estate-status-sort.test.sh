@@ -30,7 +30,7 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/sessions.d" "$T/estate" "$T/bin" "$T/home/.tmux"
+mkdir -p "$T/sessions.d" "$T/entities.d" "$T/estate" "$T/bin" "$T/home/.tmux"
 
 cat > "$T/estate/steward.conf" <<'EOF'
 LABEL_PREFIX="com.example.claude"
@@ -52,6 +52,27 @@ printf 'HOST="hmm"\nOWNER="mowner"\nDOMAIN="example"\nRC_LABEL="rlM"\n' \
 # name=zsess: OWNER last, HOST first, SLUG first, display last.
 printf 'HOST="haa"\nOWNER="zowner"\nDOMAIN="example"\nRC_LABEL="rlZ"\nSLUG="aaa-slug"\n' \
   > "$T/sessions.d/zsess.conf"
+
+# ── THE ORG TREE THE LINEAGE COLUMN READS ──────────────────────────────────
+#
+# Three levels: beta is a client of acme, and acme is itself a client of
+# team-one. A lineage that walked the whole chain would render three names for
+# beta; this column stops after ONE hop, the same limit lib/visibility.sh and
+# lib/sessions.sh both draw.
+printf 'NAME="Team One"\n'                    > "$T/entities.d/team-one.conf"
+printf 'NAME="Acme"\nMANAGED_BY="team-one"\n' > "$T/entities.d/acme.conf"
+printf 'NAME="Beta"\nMANAGED_BY="acme"\n'     > "$T/entities.d/beta.conf"
+# TARGET_ENTITY, APPENDED — never a rewritten RC_LABEL or DOMAIN. Both of those
+# drive assertions written above, and the whole value of this fixture is that
+# each key's order disagrees with the others'.
+printf 'TARGET_ENTITY="beta"\n'     >> "$T/sessions.d/asess.conf"
+printf 'TARGET_ENTITY="acme"\n'     >> "$T/sessions.d/msess.conf"
+printf 'TARGET_ENTITY="team-one"\n' >> "$T/sessions.d/zsess.conf"
+# THE DASH ROW, and the ONLY row `order` below deliberately does not match — so
+# every assertion written before this one still measures exactly what it did
+# before nsess existed. Its DOMAIN names no entity, so its ORG cell is "-".
+printf 'HOST="hmm"\nOWNER="nowner"\nDOMAIN="nosuch-entity"\nRC_LABEL="rlN"\n' \
+  > "$T/sessions.d/nsess.conf"
 
 cat > "$T/bin/tmux" <<'EOF'
 #!/bin/bash
@@ -93,6 +114,78 @@ is "display order" "$(order "$(run --sort display)")" "asess,msess,zsess,"
 echo "== estate-status --sort slug: alphabetical by SLUG, dash (no slug) last =="
 is "slug order, dash last" "$(order "$(run --sort slug)")" "zsess,asess,msess,"
 
+# ── THE ORG COLUMN ─────────────────────────────────────────────────────────
+#
+# THE SAME QUESTION, THE SAME ANSWER, IN BOTH LISTINGS. `steward sessions`
+# renders this lineage from lib/sessions.sh's row; this table derives it here,
+# from the same tree, with the same one-hop limit. A column that agreed in one
+# listing and not the other would be worse than no column.
+echo "== the estate table carries an ORG column =="
+org_out="$(run)"
+has "the header carries ORG" "$org_out" "ORG"
+row_m="$(printf '%s\n' "$org_out" | grep -E '(^| )msess ')"
+has "a client under a team reads Team→Client" "$row_m" "Team One→Acme"
+
+echo "== a session directly under a team reads just the team =="
+row_z="$(printf '%s\n' "$org_out" | grep -E '(^| )zsess ')"
+has "the team names itself" "$row_z" "Team One"
+case "$row_z" in
+  *"→"*) bad "and nothing is prepended to it" "row: '$row_z'" ;;
+  *)     ok  "and nothing is prepended to it" ;;
+esac
+
+echo "== the lineage stops after one MANAGED_BY hop =="
+row_a="$(printf '%s\n' "$org_out" | grep -E '(^| )asess ')"
+has "the managing entity and the entity" "$row_a" "Acme→Beta"
+case "$row_a" in
+  *"Team One"*) bad "and nothing above them" "row: '$row_a'" ;;
+  *)            ok  "and nothing above them" ;;
+esac
+
+echo "== an entity the registry does not describe reads a dash, never a guess =="
+row_n="$(printf '%s\n' "$org_out" | grep -E '(^| )nsess ')"
+has "the row is still listed" "$row_n" "nsess"
+case "$row_n" in
+  *nosuch-entity*) bad "and its ORG cell does not fall back to the raw slug" "row: '$row_n'" ;;
+  *)               ok  "and its ORG cell does not fall back to the raw slug" ;;
+esac
+
+# THE FOURTH SESSION IS ONLY EVER READ HERE, for the same reason as in
+# test/sessions-command.test.sh: `order` above must keep measuring three rows.
+ordern() {
+  printf '%s\n' "$1" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^(asess|msess|nsess|zsess)$/) { print $i; next } }' | tr '\n' ','
+}
+echo "== estate-status --sort lineage: alphabetical by the ORG lineage, dash last =="
+is "lineage order, dash last" "$(ordern "$(run --sort lineage)")" "asess,zsess,msess,nsess,"
+
+# A DISPLAY NAME IS NEVER VALIDATED FOR CHARSET BY THE REGISTRY — only for
+# presence — so the two bytes this column depends on have to be checked here,
+# before the join, and both answer with the dash rather than with a half-true
+# cell.
+echo "== a display name carrying the arrow cannot forge an ancestor =="
+printf 'NAME="Beta→Fake Parent"\nMANAGED_BY="acme"\n' > "$T/entities.d/beta.conf"
+forge_out="$(run)"
+row_f="$(printf '%s\n' "$forge_out" | grep -E '(^| )asess ')"
+has "the row is still listed" "$row_f" "asess"
+case "$row_f" in
+  *"Fake Parent"*) bad "and the forged ancestor never renders" "row: '$row_f'" ;;
+  *)               ok  "and the forged ancestor never renders" ;;
+esac
+
+# '|' IS THIS TABLE'S OWN FIELD SEPARATOR. A NAME carrying one would open a
+# column of its own and shift every cell to its right — the same class of
+# fault a tab in an entity name causes in the TSV layer.
+echo "== a display name carrying the table's own separator cannot add a column =="
+printf 'NAME="Beta|Ghost"\nMANAGED_BY="acme"\n' > "$T/entities.d/beta.conf"
+sep_out="$(run)"
+row_s="$(printf '%s\n' "$sep_out" | grep -E '(^| )asess ')"
+has "the row is still listed" "$row_s" "asess"
+case "$row_s" in
+  *Ghost*) bad "and the injected text never reaches a cell" "row: '$row_s'" ;;
+  *)       ok  "and the injected text never reaches a cell" ;;
+esac
+printf 'NAME="Beta"\nMANAGED_BY="acme"\n' > "$T/entities.d/beta.conf"
+
 echo "== estate-status --sort with an unknown key refuses, listing the valid ones =="
 uerr="$(mktemp)"
 uout="$(run --sort bogus 2>"$uerr")"; urc=$?
@@ -105,6 +198,7 @@ has "lists display" "$uerrtext" "display"
 has "lists owner"   "$uerrtext" "owner"
 has "lists host"    "$uerrtext" "host"
 has "lists name"    "$uerrtext" "name"
+has "lists lineage" "$uerrtext" "lineage"
 
 echo "== estate-status: an unrelated unknown flag still refuses rc 64 (unchanged) =="
 berr="$(mktemp)"

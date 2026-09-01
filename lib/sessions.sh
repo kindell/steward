@@ -51,9 +51,56 @@ _sessions_tsv_row() {
   jq -rn --args '$ARGS.positional | @tsv' -- "$@"
 }
 
+# _sessions_lineage <entity-display-name> <managed-by-id> — the ORG lineage for
+# one entity: `Manager→Entity` when a team manages it, or just `Entity` when
+# nothing does. rc 1 and NOTHING on stdout when a component cannot be trusted,
+# so the caller renders a dash rather than a guess.
+#
+# ONE HOP, AND ONLY ONE — the same deliberate limit lib/visibility.sh draws at
+# its rule 5, for the same reason: a client of a client is not the same work,
+# and an ancestry that walked the whole chain would widen on its own as the
+# tree deepens, in a column of fixed width. registry_entity_load DOES follow
+# MANAGED_BY further (with cycle detection); this does not, on purpose.
+#
+# THE COMPONENT GATE IS THE REGISTRY'S OWN, NOT A SECOND COPY OF IT. The arrow
+# is generated HERE and nowhere else, so a NAME allowed to carry one could
+# render an org chart the registry does not contain — the same hazard
+# registry_display_for was given _registry_display_component for (arrow,
+# control characters, and the Unicode bidirectional controls that visually
+# reorder a rendered string). A second implementation of that check would
+# drift from the first, and the drift would render as a fact. Its own stderr
+# sentence names registry_display_for, which is not what ran, so it is
+# silenced here and the CALLER says which session went to a dash instead.
+#
+# A MISSING GATE REFUSES. If the check is not loaded, an unvalidated name must
+# not simply pass — the dash is the honest answer, an ancestry nobody verified
+# is not.
+_sessions_lineage() {
+  local name="${1:-}" mgr="${2:-}" mgr_name
+  [ -n "$name" ] || return 1
+  command -v _registry_display_component >/dev/null 2>&1 || return 1
+  _registry_display_component "$name" 2>/dev/null || return 1
+  if [ -z "$mgr" ]; then printf '%s' "$name"; return 0; fi
+  # SUBSHELLED, like every other manager lookup in this product: the caller is
+  # mid-row and still holding the ENTITY_* globals of the session's OWN entity.
+  # A load in this shell would overwrite them and the row would report the
+  # manager's name as the session's entity.
+  mgr_name="$( registry_entity_load "$mgr" >/dev/null 2>&1 && printf '%s' "$ENTITY_NAME" )" || return 1
+  [ -n "$mgr_name" ] || return 1
+  _registry_display_component "$mgr_name" 2>/dev/null || return 1
+  printf '%s→%s' "$mgr_name" "$name"
+}
+
 # session_identity_rows — one TSV row per session on stdout:
-#   name<TAB>id<TAB>owner<TAB>domain<TAB>host<TAB>entity_name<TAB>entity_relation<TAB>assets
+#   name<TAB>id<TAB>owner<TAB>domain<TAB>host<TAB>entity_name<TAB>entity_relation
+#   <TAB>assets<TAB>slug<TAB>display<TAB>lineage
 # rc 0 ok (including zero sessions) · rc 1 the registry could not be read.
+#
+# ELEVEN FIELDS, AND THE COUNT IS THE CONTRACT. Every consumer reads this row
+# positionally; a field added anywhere but the END silently shifts what each of
+# them means, and a consumer that reads one variable short folds the last two
+# fields into one. slug and display were appended for that reason, lineage
+# after them, and test/sessions-identity.test.sh pins the width on purpose.
 #
 # ALSO SETS SESSIONS_UNREADABLE: one name per line for every session that is in
 # the registry but could not be loaded. The stderr sentence is for a human at a
@@ -208,7 +255,7 @@ session_identity_rows() {
       _pp="$( registry_project_load "$TARGET_PROJECT" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}" )"
       [ -n "$_pp" ] && _ent_key="$_pp"
     fi
-    local ent_name="-" ent_rel="-" ent_conf="$entity_dir/$_ent_key.conf"
+    local ent_name="-" ent_rel="-" lineage="-" ent_conf="$entity_dir/$_ent_key.conf"
     if [ -f "$ent_conf" ]; then
       local _ecause
       # Same reason as the load above: the ENTITY_* globals must land in this
@@ -226,6 +273,20 @@ session_identity_rows() {
         # "client" because the line happens to exist.
         if   [ -n "$ENTITY_MANAGED_BY" ]; then ent_rel="client"
         elif [ -n "$ENTITY_MEMBERS" ];    then ent_rel="team"
+        fi
+        # THE ORG LINEAGE, OFF THE LOAD THAT ALREADY HAPPENED. The entity's own
+        # NAME and MANAGED_BY are in this shell right now; asking the registry
+        # for them a third time would cost a third read of the same file and
+        # give the same answer. Only the MANAGER still needs looking up, and
+        # _sessions_lineage does that in a subshell so these globals survive.
+        #
+        # A NAME THAT CANNOT BE JOINED SAFELY IS A DASH, AND THE DASH IS SAID
+        # OUT LOUD. Silently rendering nothing would leave an operator reading
+        # a blank ORG column as "no org", which is a different fact from "this
+        # entity's display name could forge an ancestry and was refused".
+        if ! lineage="$( _sessions_lineage "$ENTITY_NAME" "$ENTITY_MANAGED_BY" )"; then
+          lineage="-"
+          echo "sessions: '$n' — the entity '$_ent_key' has a display name that cannot be joined into a lineage; the ORG column reads '-'" >&2
         fi
       else
         # AN ENTITY FILE THAT EXISTS AND WILL NOT LOAD IS NOT THE SAME FACT AS
@@ -246,7 +307,7 @@ session_identity_rows() {
     local slug="${SLUG:--}" display
     display="$( registry_session_display "$n" 2>/dev/null )" || display=""
     [ -n "$display" ] || display="-"
-    _sessions_tsv_row "$n" "$id" "$owner" "$domain" "$host" "$ent_name" "$ent_rel" "$assets" "$slug" "$display"
+    _sessions_tsv_row "$n" "$id" "$owner" "$domain" "$host" "$ent_name" "$ent_rel" "$assets" "$slug" "$display" "$lineage"
   done <<EOF
 $names
 EOF

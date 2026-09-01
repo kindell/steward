@@ -128,6 +128,46 @@ if [ "${1:-}" = "peek" ]; then
   exit 0
 fi
 
+# ── THE ORG LINEAGE COLUMN ─────────────────────────────────────────────────
+#
+# WHAT IT SAYS: the managing team, then the entity whose work the session is —
+# `Team→Client` — or just the team's own name when nothing manages it. ONE
+# MANAGED_BY hop and no more, the same deliberate limit lib/visibility.sh's
+# rule 5 and lib/sessions.sh's own lineage draw: a client of a client is not
+# the same work, and a column that walked the whole chain would widen on its
+# own as the tree deepens.
+#
+# THE SAME OWNING ENTITY THE REST OF THE PRODUCT RESOLVES: TARGET_ENTITY, else
+# TARGET_PROJECT's PARENT, else the legacy DOMAIN. A migrated row's DOMAIN can
+# name an entity that never existed, so the declared target has to win — and
+# the two listings an operator compares would otherwise disagree about the same
+# session.
+#
+# NON-EXECUTING, LIKE EVERY OTHER READ HERE: sed over NAME/PARENT/MANAGED_BY,
+# never `source`. These are other people's confs on a shared machine. That also
+# makes this a status column's best safe effort rather than a second authority
+# — lib/sessions.sh's lineage, reached through `steward sessions`, is the one
+# that goes through the registry's own loader and its full validation.
+#
+# AN ANOMALY IS A DASH, NEVER A GUESS. No entity file, an empty NAME, a
+# MANAGED_BY naming a row that is not there: all render "-". Falling back to
+# the raw slug would print a registry gap as an org chart.
+EROOT="$(_registry_estate_root 2>/dev/null)" || EROOT=""
+
+# _org_component_ok <name> — rc 1 if a NAME must not be joined into a lineage.
+#
+# THREE BYTES THIS COLUMN ITSELF GENERATES OR DEPENDS ON. The arrow is produced
+# by the join and by nothing else, so a NAME carrying one could forge an
+# ancestor the registry does not contain. '|' is THIS table's own field
+# separator, and a NAME carrying one would open a column of its own and shift
+# every cell after it. A control character would break the row across lines.
+_org_component_ok() {
+  case "$1" in
+    ""|*"→"*|*"|"*|*[[:cntrl:]]*) return 1 ;;
+  esac
+  return 0
+}
+
 # A conf without HOST lives on the hub — the registry's own convention.
 have_confs=""
 rows=""
@@ -223,6 +263,42 @@ for conf in "$RDIR"/*.conf; do
   else
     tm="?($host)"; ti="?($host)"
   fi
+  # THE OWNING ENTITY, THEN ONE HOP ABOVE IT — see the header block above.
+  org="-"
+  _oe="$(sed -n 's/^TARGET_ENTITY="\([a-z0-9-]*\)"$/\1/p' "$conf" | head -1)"
+  if [ -z "$_oe" ]; then
+    _op="$(sed -n 's/^TARGET_PROJECT="\([a-z0-9-]*\)"$/\1/p' "$conf" | head -1)"
+    if [ -n "$_op" ] && [ -n "$EROOT" ] && [ -f "$EROOT/projects.d/$_op.conf" ]; then
+      _oe="$(sed -n 's/^PARENT="\([a-z0-9-]*\)"$/\1/p' "$EROOT/projects.d/$_op.conf" | head -1)"
+    fi
+  fi
+  # THE LEGACY FALLBACK IS READ WITH A GREEDY sed AND IS THEREFORE NOT A
+  # FILENAME YET. DOMAIN carries whatever the conf put there — the targets
+  # above are matched against [a-z0-9-] by their own patterns, this one is not
+  # — so it is checked against the registry's own id charset BEFORE it is ever
+  # pasted into a path. A value carrying a slash or a dot-dot would otherwise
+  # read a conf outside the entity register.
+  if [ -z "$_oe" ]; then
+    _oe="$(sed -n 's/^DOMAIN="\(.*\)"/\1/p' "$conf" | head -1)"
+    case "$_oe" in ""|*[!a-z0-9-]*) _oe="" ;; esac
+  fi
+  if [ -n "$_oe" ] && [ -n "$EROOT" ] && [ -f "$EROOT/entities.d/$_oe.conf" ]; then
+    _en="$(sed -n 's/^NAME="\(.*\)"$/\1/p' "$EROOT/entities.d/$_oe.conf" | head -1)"
+    _emb="$(sed -n 's/^MANAGED_BY="\([a-z0-9-]*\)"$/\1/p' "$EROOT/entities.d/$_oe.conf" | head -1)"
+    if _org_component_ok "$_en"; then
+      if [ -z "$_emb" ]; then
+        org="$_en"
+      elif [ -f "$EROOT/entities.d/$_emb.conf" ]; then
+        _mn="$(sed -n 's/^NAME="\(.*\)"$/\1/p' "$EROOT/entities.d/$_emb.conf" | head -1)"
+        _org_component_ok "$_mn" && org="$_mn→$_en"
+      fi
+      # A MANAGED_BY NAMING A ROW THAT IS NOT THERE LEAVES THE DASH. It reads
+      # as structure and carries none, and the entity register's own loader
+      # refuses such a row outright — so reporting the entity alone here would
+      # be a friendlier answer than the registry's, which is another way of
+      # saying a less true one.
+    fi
+  fi
   # OWNERSHIP AS ITS OWN COLUMN, NOT AS SOMETHING THE READER MUST WORK OUT.
   #
   # The list used to print each session's OWNER and let whoever read it compare
@@ -239,7 +315,7 @@ for conf in "$RDIR"/*.conf; do
   # APPENDED, NOT INSERTED. The reachability pass below rewrites fields by
   # index ($3 name, $4 owner, $5 host, $6 tmux, $7 timer); a column added in the
   # middle would silently shift what those assignments touch.
-  rows="$rows$sortkey|$mine|$name|$slug|${owner:-?}|$host|$tm|$ti|${rc}|$runtime|$model
+  rows="$rows$sortkey|$mine|$name|$slug|${owner:-?}|$host|$tm|$ti|${rc}|$runtime|$model|$org
 "
 done
 
@@ -252,12 +328,12 @@ fi
 
 # _status_sort_field <key> -> 1-indexed field number into the pipe-delimited
 # `rows` built above ($sortkey|$mine|$name|$slug|$owner|$host|$tm|$ti|$rc|
-# $runtime|$model), or rc 1 if unknown. THE SAME KEY SET `steward sessions
-# --sort` uses (name, slug, display, owner, host) — display maps to $rc, this
-# table's human-readable RC_LABEL/derived column, the analogue of that
-# command's resolved display name. One place, so validation, the usage text
-# and the refusal message can never name a different set of keys than this
-# actually understands.
+# $runtime|$model|$org), or rc 1 if unknown. THE SAME KEY SET `steward sessions
+# --sort` uses (name, slug, display, owner, host, lineage) — display maps to
+# $rc, this table's human-readable RC_LABEL/derived column, the analogue of
+# that command's resolved display name, and lineage to the ORG column. One
+# place, so validation, the usage text and the refusal message can never name a
+# different set of keys than this actually understands.
 _status_sort_field() {
   case "$1" in
     name)    echo 3 ;;
@@ -265,9 +341,14 @@ _status_sort_field() {
     owner)   echo 5 ;;
     host)    echo 6 ;;
     display) echo 9 ;;
+    lineage) echo 12 ;;
     *)       return 1 ;;
   esac
 }
+
+# THE VALID KEYS, SAID ONCE — the usage line and the refusal below both read
+# this, so a key added to the map above can never be missing from one of them.
+_STATUS_SORT_KEYS="name, slug, display, owner, host, lineage"
 
 # --mine: yours only. For the reader who knows what they are after and does not
 # want to read past the neighbour's rows. Without the flag everything is shown,
@@ -295,12 +376,12 @@ while [ "$_st_i" -lt "$_st_n" ]; do
   case "$_a" in
     --mine|-m)   only_mine=1 ;;
     --remote|-r) want_remote=1 ;;
-    --help|-h)   echo "usage: estate-status.sh [--mine] [--remote] [--sort name|slug|display|owner|host]" >&2; exit 0 ;;
+    --help|-h)   echo "usage: estate-status.sh [--mine] [--remote] [--sort <key>] — keys: $_STATUS_SORT_KEYS" >&2; exit 0 ;;
     --sort)
       _st_i=$((_st_i + 1))
       sort_key="${_st_argv[$_st_i]:-}"
       sort_field="$(_status_sort_field "$sort_key")" || {
-        echo "estate-status: unknown --sort key '$sort_key' — valid keys: name, slug, display, owner, host" >&2
+        echo "estate-status: unknown --sort key '$sort_key' — valid keys: $_STATUS_SORT_KEYS" >&2
         exit 64
       }
       ;;
@@ -392,7 +473,7 @@ if [ -n "$only_mine" ]; then
 fi
 
 printf '%s\n' "$_body" | cut -d'|' -f2- | {
-  printf ' |SESSION|SLUG|OWNER|HOST|TMUX|TIMER|RC_LABEL|RUNTIME|MODEL\n'
+  printf ' |SESSION|SLUG|OWNER|HOST|TMUX|TIMER|RC_LABEL|RUNTIME|MODEL|ORG\n'
   cat
 } | column -t -s '|'
 

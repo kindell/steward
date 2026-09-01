@@ -66,24 +66,34 @@ is "host"            "$(field "$out" full 5)" "h1"
 is "entity name"     "$(field "$out" full 6)" "Acme"
 is "entity relation" "$(field "$out" full 7)" "client"
 is "assets"          "$(field "$out" full 8)" "widget other:thing"
+# THE ORG LINEAGE: THE MANAGING TEAM, THEN THE ENTITY. `full` sits under acme,
+# and acme is managed by team-one — so the column reads the chain root-first,
+# joined with the arrow this product already uses for a derived display.
+is "lineage"         "$(field "$out" full 11)" "Team One→Acme"
 
 echo "== the other relation is read as itself =="
 is "a team entity says team" "$(field "$out" bare 7)" "team"
 is "and names itself"        "$(field "$out" bare 6)" "Team One"
+# A SESSION DIRECTLY UNDER A TEAM HAS A ONE-NAME LINEAGE. Nothing manages
+# team-one, so there is no chain to render — and an invented "-→Team One"
+# would read as a managing team that does not exist.
+is "and its lineage is just itself" "$(field "$out" bare 11)" "Team One"
 
 # AN EMPTY FIELD IS A DASH, NOT AN EMPTY COLUMN. A row whose columns shift
 # because one was blank is a row every consumer parses wrong, and the consumer
 # here is a cockpit that would render the shift as data.
 echo "== nothing declared is a dash, never a blank column =="
 is "no assets is a dash" "$(field "$out" bare 8)" "-"
-is "the row still has ten fields" \
-   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="bare"{print NF}')" "10"
+is "the row still has eleven fields" \
+   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="bare"{print NF}')" "11"
 # ...AND SO DOES A ROW WHOSE LAST FIELD CARRIES A REAL VALUE. Counting the
-# columns only on the row whose eighth field is the literal dash (the row is ten fields wide since slug and display were added additively) verifies the
-# dash substitution, not the row shape: a value that itself contained a tab
-# would still split into extra columns and this assertion would never see it.
-is "a row whose last field is a real value has ten fields too" \
-   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="full"{print NF}')" "10"
+# columns only on the row whose eighth field is the literal dash (the row is
+# eleven fields wide: slug and display were added additively, and lineage after
+# them) verifies the dash substitution, not the row shape: a value that itself
+# contained a tab would still split into extra columns and this assertion would
+# never see it.
+is "a row whose last field is a real value has eleven fields too" \
+   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="full"{print NF}')" "11"
 
 # AN UNKNOWN ENTITY IS NOT AN ERROR. A session may name a domain no entity file
 # describes yet; that is a gap in the registry, not a failure of this read.
@@ -96,6 +106,10 @@ out2="$(STEWARD_VIEWER=carol session_identity_rows)"
 is "the orphan is listed"        "$(field "$out2" orphan 1)" "orphan"
 is "its entity name is a dash"   "$(field "$out2" orphan 6)" "-"
 is "its relation is a dash"      "$(field "$out2" orphan 7)" "-"
+# AN UNRESOLVABLE ENTITY HAS NO LINEAGE TO REPORT, and the dash says exactly
+# that. Falling back to the raw DOMAIN slug here would render a registry gap as
+# an org chart — a guess wearing the clothes of a measurement.
+is "and its lineage is a dash"   "$(field "$out2" orphan 11)" "-"
 
 # AN UNREADABLE REGISTRY MUST REFUSE. Empty output from a missing directory is
 # indistinguishable from an estate with no sessions.
@@ -163,6 +177,65 @@ printf 'HOST="h1"\nOWNER="carol"\nDOMAIN="odd"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"
 out4="$(STEWARD_VIEWER=carol session_identity_rows)"
 is "empty MANAGED_BY reads as team, not client" "$(field "$out4" oddsession 7)" "team"
 
+# ── THE ORG LINEAGE COLUMN: ONE HOP, AND NEVER A GUESS ─────────────────────
+#
+# A DEDICATED FIXTURE ESTATE. The lineage claims below need an entity tree
+# three levels deep and a project, and the checks on a hostile display NAME
+# have to REWRITE an entity conf — doing either inside the suite's shared $FX
+# would change what every earlier assertion in this file measured.
+ORG="$FX/org"; mkdir -p "$ORG/sessions.d" "$ORG/entities.d" "$ORG/projects.d" "$ORG/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$ORG/estate/steward.conf"
+printf 'NAME="Team One"\nMEMBERS="alice"\n'   > "$ORG/entities.d/team-one.conf"
+printf 'NAME="Acme"\nMANAGED_BY="team-one"\n' > "$ORG/entities.d/acme.conf"
+# THREE LEVELS: beta is a client of acme, which is itself a client of team-one.
+# The lineage of a session under beta must stop after ONE hop.
+printf 'NAME="Beta"\nMANAGED_BY="acme"\n'     > "$ORG/entities.d/beta.conf"
+printf 'NAME="H1 Rollout"\nPARENT="acme"\n'   > "$ORG/projects.d/h1.conf"
+org() { STEWARD_REGISTRY_DIR="$ORG/sessions.d" STEWARD_ESTATE_ROOT="$ORG" \
+        STEWARD_VIEWER=alice session_identity_rows 2>/dev/null; }
+
+# ONE HOP, THE SAME DELIBERATE LIMIT THE VISIBILITY RULE DRAWS. A client of a
+# client is not the same work: a column that walked the whole chain would grow
+# an ever-widening ancestry nobody declared, and it would grow WIDER over time
+# as the tree deepens, in a fixed-width table.
+echo "== the lineage stops after one MANAGED_BY hop =="
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="beta"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="deep"\n' \
+  > "$ORG/sessions.d/deep.conf"
+org_out="$(org)"
+is "the managing team and the entity, and nothing above them" \
+   "$(field "$org_out" deep 11)" "Acme→Beta"
+
+# THE TARGET IS THE ANSWER, DOMAIN ONLY THE LEGACY FALLBACK — the same
+# precedence the entity join beside it already uses. A migrated row's DOMAIN can
+# name an entity that never existed, and a lineage derived from it would
+# contradict the entity columns on its own row.
+echo "== the lineage follows TARGET_ENTITY, not a stale DOMAIN =="
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="gone"\nTARGET_ENTITY="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="aimed"\n' \
+  > "$ORG/sessions.d/aimed.conf"
+org_out="$(org)"
+is "the declared target decides"  "$(field "$org_out" aimed 11)" "Team One→Acme"
+is "and the entity column agrees" "$(field "$org_out" aimed 6)"  "Acme"
+
+echo "== a session aimed at a project reaches the entity through PARENT =="
+printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="h1"\nTARGET_PROJECT="h1"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="onproj"\n' \
+  > "$ORG/sessions.d/onproj.conf"
+org_out="$(org)"
+is "the project's PARENT entity is the one rendered" \
+   "$(field "$org_out" onproj 11)" "Team One→Acme"
+
+# A DISPLAY NAME CARRYING THE SEPARATOR COULD FORGE AN ANCESTOR. The arrow is
+# generated by this join and by nothing else; a NAME allowed to carry one would
+# let a single entity conf render an org chart the registry does not contain.
+# The honest answer is the dash — the same one an unresolvable entity gets.
+echo "== a display name carrying the arrow cannot forge an ancestor =="
+printf 'NAME="Beta→Fake Parent"\nMANAGED_BY="acme"\n' > "$ORG/entities.d/beta.conf"
+org_out="$(org)"
+is "the row is still there"        "$(field "$org_out" deep 1)"  "deep"
+is "and its lineage is a dash"     "$(field "$org_out" deep 11)" "-"
+is "the sessions above are unaffected" "$(field "$org_out" aimed 11)" "Team One→Acme"
+printf 'NAME="Beta"\nMANAGED_BY="acme"\n' > "$ORG/entities.d/beta.conf"
+
 # ── FIELD CONTENT IS A HAZARD, NOT JUST FIELD PRESENCE ─────────────────────
 #
 # A TSV row is only a row while no VALUE contains the separator. ASSETS is the
@@ -186,8 +259,8 @@ printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
 hos_out="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
 is "one conf in the registry is one row out" \
    "$(printf '%s\n' "$hos_out" | grep -c .)" "1"
-is "the row still has exactly ten fields" \
-   "$(printf '%s\n' "$hos_out" | awk -F'\t' 'NR==1{print NF}')" "10"
+is "the row still has exactly eleven fields" \
+   "$(printf '%s\n' "$hos_out" | awk -F'\t' 'NR==1{print NF}')" "11"
 # THE PROPERTY IS "NO NEW COLUMN", NOT "NO TAB ANYWHERE AFTER IT". The older
 # glob asked whether a real tab followed the ghost text anywhere on the line —
 # true for any row that simply has more fields after the injected one, which is
@@ -212,8 +285,8 @@ is "and its owner is not overwritten by the injection" \
 echo "== a tab in the entity display name cannot shift the relation column =="
 printf 'NAME="Ac\tme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
 hos2="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
-is "the row still has exactly ten fields" \
-   "$(printf '%s\n' "$hos2" | awk -F'\t' 'NR==1{print NF}')" "10"
+is "the row still has exactly eleven fields" \
+   "$(printf '%s\n' "$hos2" | awk -F'\t' 'NR==1{print NF}')" "11"
 rel="$(field "$hos2" alpha 7)"
 case "$rel" in
   team|client|-) ok "the relation stays inside its closed set" ;;
@@ -308,8 +381,8 @@ printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x
 argv_tab_out="$(STEWARD_REGISTRY_DIR="$ARGV/sessions.d" STEWARD_ESTATE_ROOT="$ARGV" session_identity_rows 2>/dev/null)"
 is "--tab: row count matches the registry (one session, one row)" \
    "$(printf '%s\n' "$argv_tab_out" | grep -c .)" "1"
-is "--tab: the row still has all ten fields" \
-   "$(printf '%s\n' "$argv_tab_out" | awk -F'\t' 'NR==1{print NF}')" "10"
+is "--tab: the row still has all eleven fields" \
+   "$(printf '%s\n' "$argv_tab_out" | awk -F'\t' 'NR==1{print NF}')" "11"
 is "--tab: the session's own name is present" \
    "$(field "$argv_tab_out" argvtab 1)" "argvtab"
 
@@ -319,8 +392,8 @@ printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x
 argv_h_out="$(STEWARD_REGISTRY_DIR="$ARGV/sessions.d" STEWARD_ESTATE_ROOT="$ARGV" session_identity_rows 2>/dev/null)"
 is "-h: row count matches the registry (one session, one row)" \
    "$(printf '%s\n' "$argv_h_out" | grep -c .)" "1"
-is "-h: the row still has all ten fields" \
-   "$(printf '%s\n' "$argv_h_out" | awk -F'\t' 'NR==1{print NF}')" "10"
+is "-h: the row still has all eleven fields" \
+   "$(printf '%s\n' "$argv_h_out" | awk -F'\t' 'NR==1{print NF}')" "11"
 is "-h: the session's own name is present" \
    "$(field "$argv_h_out" argvh 1)" "argvh"
 case "$argv_h_out" in

@@ -67,6 +67,11 @@ is "two sessions"     "$(printf '%s' "$j" | jq -r '.sessions | length')" "2"
 is "identity joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.owner')" "a"
 is "entity joined"    "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.entity.name')" "Acme"
 is "relation joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.entity.relation')" "client"
+# THE ORG LINEAGE IS ITS OWN TOP-LEVEL FIELD, ADDITIVE beside `entity` rather
+# than nested inside it: it is DERIVED from the tree above the entity, not a
+# property of the entity row, and a consumer that wants the managing team must
+# not have to walk the registry a second time to get it.
+is "lineage joined"   "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.lineage')" "Team One→Acme"
 is "liveness joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "up"
 is "model joined"     "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.model')" "opus"
 
@@ -146,12 +151,57 @@ printf 'HOST="h1"\nOWNER="a"\nDOMAIN="nosuch"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\
   > "$FX/sessions.d/orphan.conf"
 j3="$(run --json)"
 is "entity is null" "$(printf '%s' "$j3" | jq -r '.sessions[]|select(.name=="orphan")|.entity')" "null"
+# AND SO IS ITS LINEAGE — null, never the "-" the TSV layer uses. A consumer
+# reading json has a type for absence and should not have to know this
+# product's placeholder byte, exactly as `slug` and `display` already do.
+is "lineage is null too" \
+   "$(printf '%s' "$j3" | jq -r '.sessions[]|select(.name=="orphan")|.lineage')" "null"
 
 echo "== the human form =="
 t="$(run)"
 has "the table names a session" "$t" "alpha"
 has "and shows its liveness"    "$t" "up"
 has "and marks the unmeasured"  "$t" "unknown"
+# THE ORG COLUMN, IN THE TABLE AND NOT ONLY IN THE DOCUMENT. The operator
+# reading a shared fleet at a terminal is the one who needs to know WHOSE work
+# a row is; sending them to --json for it makes the human form the lesser
+# answer.
+has "the header carries ORG"    "$t" "ORG"
+has "and the row carries the lineage" "$t" "Team One→Acme"
+# AN UNRESOLVABLE ENTITY IS A DASH HERE TOO, and a dash is a column, not a gap:
+# a blank cell in a column-aligned table reads as a rendering fault rather than
+# as "the registry does not describe this one".
+#
+# MATCHED BY POSITION, NOT BY "a dash appears somewhere on the line" — the
+# MODEL column of an unmeasured session is a dash too, so a substring test
+# would pass whether or not ORG was ever rendered. The ORG cell is the one
+# directly after OWNER. A regex rather than an awk field number because a
+# lineage legitimately contains spaces ("Team One→Acme"), which whitespace
+# field-splitting would read as two columns.
+orphan_row="$(printf '%s\n' "$t" | grep -E '^orphan +')"
+if printf '%s\n' "$orphan_row" | grep -Eq '^orphan +a +- +'; then
+  ok  "an unresolvable entity renders a dash in ORG"
+else
+  bad "an unresolvable entity renders a dash in ORG" "row: '$orphan_row'"
+fi
+
+# THE COLUMN IS PADDED IN COLUMNS, NOT IN BYTES. The arrow is U+2192 — three
+# bytes drawn as one column — and bash's printf counts a `%-22s` field width in
+# BYTES, so a plain format string pads a two-name lineage two columns short and
+# shifts everything to its right on that row alone.
+#
+# MEASURED IN BYTES ON PURPOSE, so this assertion says the same thing in every
+# locale. Up to the TMUX column both lines occupy the same COLUMNS; the row
+# carrying one arrow must therefore be longer by exactly the arrow's two extra
+# BYTES. Byte-padding would make the two prefixes equal in bytes instead, which
+# is the defect.
+bytes() { printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '; }
+hdr_line="$(printf '%s\n' "$t" | grep -E '^SESSION ')"
+alpha_line="$(printf '%s\n' "$t" | grep -E '^alpha ')"
+hdr_pre="${hdr_line%%TMUX*}"
+alpha_pre="${alpha_line%%up*}"
+is "the ORG cell is padded by columns, not by bytes" \
+   "$(( $(bytes "$alpha_pre") - $(bytes "$hdr_pre") ))" "2"
 
 # A SESSION THAT EXISTS BUT WON'T LOAD, ALONGSIDE ONES THAT DO. rc stays 0 (a
 # partial failure is not a systemic one) and lib/sessions.sh puts a diagnostic
@@ -345,7 +395,25 @@ printf 'HOST="haa"\nOWNER="zowner"\nDOMAIN="acme"\nRC_LABEL="rlZ"\nREPO_PATH="/t
 # to a MEMBER of the entity that owns it. The three OWNER values above are
 # deliberately none of them "a" (they exist to drive --sort owner), so "a"
 # must reach every row through team membership instead.
-printf 'NAME="Acme"\nMEMBERS="a"\n' > "$FX4/entities.d/acme.conf"
+#
+# THREE ENTITIES, ONE PER SESSION, whose display NAMEs disagree with every
+# other key's order — the same reason the three confs above disagree on OWNER,
+# HOST and SLUG. A fixture where every session shared one entity could not tell
+# "--sort lineage reordered the rows" from "the rows never moved".
+printf 'NAME="Acme"\nMEMBERS="a"\n'        > "$FX4/entities.d/acme.conf"
+printf 'NAME="Midway"\nMEMBERS="a"\n'      > "$FX4/entities.d/h1.conf"
+printf 'NAME="Zeta Works"\nMEMBERS="a"\n'  > "$FX4/entities.d/beta.conf"
+# asess -> "Zeta Works" (last), msess -> "Acme" (first), zsess -> "Midway".
+# TARGET_ENTITY rather than a rewritten DOMAIN, so these rows also state their
+# owning entity the way a migrated row does.
+printf 'TARGET_ENTITY="beta"\n' >> "$FX4/sessions.d/asess.conf"
+printf 'TARGET_ENTITY="acme"\n' >> "$FX4/sessions.d/msess.conf"
+printf 'TARGET_ENTITY="h1"\n'   >> "$FX4/sessions.d/zsess.conf"
+# THE DASH ROW. Its entity does not resolve, so its ORG column is "-" and the
+# shared reorder must put it LAST, behind every row that carries a real value.
+# OWNER="a" is what makes it visible at all — there is no entity to grant it.
+printf 'HOST="hmm"\nOWNER="a"\nDOMAIN="nosuch-entity"\nRC_LABEL="rlN"\nREPO_PATH="/tmp/x"\nID="nsess"\n' \
+  > "$FX4/sessions.d/nsess.conf"
 
 run4() { STEWARD_REGISTRY_DIR="$FX4/sessions.d" STEWARD_ESTATE_ROOT="$FX4" STEWARD_VIEWER="a" \
          env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions "$@" 2>&1; }
@@ -371,6 +439,14 @@ is "display order" "$(order4 "$(run4 --sort display)")" "asess,msess,zsess,"
 echo "== --sort slug: alphabetical by SLUG, dash (no slug) rows last =="
 is "slug order, dash last" "$(order4 "$(run4 --sort slug)")" "zsess,asess,msess,"
 
+# THE FOURTH SESSION IS ONLY EVER READ HERE. `order4` above deliberately does
+# not match it, so every assertion written before this one measures exactly
+# what it measured before nsess existed.
+order4n() { printf '%s\n' "$1" | awk '{print $1}' | grep -E '^(asess|msess|nsess|zsess)$' | tr '\n' ',' ; }
+
+echo "== --sort lineage: alphabetical by the ORG lineage, dash rows last =="
+is "lineage order, dash last" "$(order4n "$(run4 --sort lineage)")" "msess,zsess,asess,nsess,"
+
 echo "== --sort with an unknown key refuses, listing the valid ones =="
 uerr="$(mktemp)"
 uout="$(STEWARD_REGISTRY_DIR="$FX4/sessions.d" STEWARD_ESTATE_ROOT="$FX4" STEWARD_VIEWER="a" \
@@ -384,6 +460,7 @@ has "lists display"  "$uerrtext" "display"
 has "lists owner"    "$uerrtext" "owner"
 has "lists host"     "$uerrtext" "host"
 has "lists name"     "$uerrtext" "name"
+has "lists lineage"  "$uerrtext" "lineage"
 
 echo "== --sort with an unknown key, --json form =="
 ujerr="$(mktemp)"

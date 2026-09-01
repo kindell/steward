@@ -13,14 +13,14 @@
 # time, and failures are reported per estate rather than aborting the sweep.
 #
 #   steward add <estate> <ssh-target> [estate-root] [product-dir]
-#   steward ls [<estate>] [--sort name|slug|display|owner|host]
-#   steward <estate> ls [--sort name|slug|display|owner|host]
+#   steward ls [<estate>] [--sort name|slug|display|owner|host|lineage]
+#   steward <estate> ls [--sort name|slug|display|owner|host|lineage]
 #   steward <estate> attach <session>
 #   steward <estate> peek <session>
 #   steward init <estate> <ssh-target>
 #   steward scaffold <dir> org=<> team=<> owner=<> session=<> [assets=<>] [--json]
 #   steward assets <session> [--json]
-#   steward sessions [--json] [--sort name|slug|display|owner|host]
+#   steward sessions [--json] [--sort name|slug|display|owner|host|lineage]
 #   steward doctor
 #   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
 #   steward config set KEY /abs/value
@@ -758,7 +758,7 @@ cmd_peek() {
   "$SSH_BIN" "$SSH" "$(_status_cmd peek "$sess")"
 }
 
-# cmd_ls [<estate>] [--sort name|slug|display|owner|host] — the personal
+# cmd_ls [<estate>] [--sort name|slug|display|owner|host|lineage] — the personal
 # estate list (or one estate of it, over ssh). --sort reaches the SAME table
 # `steward <estate> ls` renders, whichever way that estate is named: as
 # `steward ls <estate>` here, or as `steward <estate> ls` through the
@@ -795,7 +795,7 @@ cmd_ls() {
         _ls_i=$((_ls_i + 1))
         sort_key="${_ls_argv[$_ls_i]:-}"
         _sessions_sort_field "$sort_key" >/dev/null \
-          || fel "unknown --sort key '$sort_key' — valid keys: name, slug, display, owner, host" 64
+          || fel "unknown --sort key '$sort_key' — valid keys: $_SESSIONS_SORT_KEYS" 64
         ;;
       -*) fel "unknown option '$a' for ls" 64 ;;
       *)
@@ -2319,7 +2319,7 @@ EOF
   return 0
 }
 
-# cmd_sessions [--json] [--sort name|slug|display|owner|host] — every
+# cmd_sessions [--json] [--sort name|slug|display|owner|host|lineage] — every
 # session's identity joined with its liveness. --sort reorders both the
 # --json and human tables; with no flag the order is the registry's own
 # (alphabetical by name/id, today's longstanding behaviour, unchanged).
@@ -2347,7 +2347,7 @@ EOF
 # set of keys than this actually understands. Field numbers match the
 # contract at the top of session_identity_rows above lib/sessions.sh's
 # session_identity_rows: name id owner domain host entity_name entity_relation
-# assets slug display.
+# assets slug display lineage.
 _sessions_sort_field() {
   case "$1" in
     name)    echo 1 ;;
@@ -2355,8 +2355,54 @@ _sessions_sort_field() {
     host)    echo 5 ;;
     slug)    echo 9 ;;
     display) echo 10 ;;
+    lineage) echo 11 ;;
     *)       return 1 ;;
   esac
+}
+
+# THE VALID KEYS, SAID ONCE. Three refusals name this set — cmd_sessions' plain
+# form, its --json form, and cmd_ls before it ever reaches ssh — and three
+# hand-kept copies is how a key gets added to the map above while one message
+# keeps omitting it. The usage banner at the top of this file names them a
+# fourth time and cannot read this variable (usage() seds the source text), so
+# that one line still has to be edited by hand alongside the map.
+_SESSIONS_SORT_KEYS="name, slug, display, owner, host, lineage"
+
+# _sessions_pad <width> <value> — <value> followed by enough spaces to fill
+# <width> columns, or unpadded when it is already at least that wide.
+#
+# WHY NOT `printf %-22s`. bash's printf counts the field width in BYTES. The
+# ORG column is the first cell in this table that is not guaranteed ASCII: the
+# lineage separator is U+2192, three bytes for one column, and an entity's
+# display NAME may carry any UTF-8 the registry accepted. Measured here on a
+# two-name lineage: `%-22s` padded to 22 BYTES, which is 20 columns, and every
+# cell to its right on that row sat two spaces left of its header. `${#v}`
+# counts CHARACTERS in a UTF-8 locale, which is what a terminal draws.
+#
+# IT IS ALIGNMENT, NEVER TRUNCATION. A value wider than the column pushes the
+# rest of its row right, exactly as a long session name already does under
+# `%-24s`. Cutting an org name to fit would render a DIFFERENT organisation's
+# name and call it this one's.
+#
+# THE COUNT IS TAKEN UNDER `LC_ALL=C`, IN A SUBSHELL, AND THAT IS THE WHOLE
+# TRICK. `${#v}` counts characters in a UTF-8 locale and BYTES in the C locale
+# — so a helper that simply read `${#v}` would align on the operator's terminal
+# and not in the test suite, or the reverse, which is the worst of both. Forcing
+# C gives byte semantics EVERYWHERE; the continuation bytes of a UTF-8 sequence
+# (0x80-0xBF) are then deleted, and what is left is exactly one byte per
+# character. The assignment is inside `$( )` so it never reaches the caller's
+# own locale.
+#
+# CHARACTERS, NOT DISPLAY CELLS. A full-width character draws two columns and
+# is counted here as one. No shell table in this product solves that (neither
+# does `column -t`), and an entity NAME made of them would run this column
+# wide — which is the same, visible, harmless overrun a long name already
+# causes, not a wrong value.
+_sessions_pad() {
+  local w="$1" v="$2" n _fill=""
+  n="$( LC_ALL=C; _s="${v//[$'\200'-$'\277']/}"; printf '%s' "${#_s}" )"
+  [ "$n" -lt "$w" ] && _fill="$(printf '%*s' "$((w - n))" '')"
+  printf '%s%s' "$v" "$_fill"
 }
 
 cmd_sessions() {
@@ -2385,7 +2431,7 @@ cmd_sessions() {
           :
         else
           local _sort_msg
-          _sort_msg="steward: unknown --sort key '$sort_key' — valid keys: name, slug, display, owner, host"
+          _sort_msg="steward: unknown --sort key '$sort_key' — valid keys: $_SESSIONS_SORT_KEYS"
           if [ -n "$want_json" ]; then jq -cn --arg r "$_sort_msg" '{ok:false,reason:$r}'
           else printf '%s\n' "$_sort_msg" >&2; fi
           return 64
@@ -2583,6 +2629,13 @@ cmd_sessions() {
          {name:.[0], id:.[1], owner:.[2], domain:.[3], host:.[4],
           slug: (if .[8] == "-" then null else .[8] end),
           display: (if .[9] == "-" then null else .[9] end),
+          # THE MANAGING-TEAM CHAIN, ADDITIVE AND TOP-LEVEL. It is DERIVED from
+          # the tree ABOVE the entity, not a property of the entity row, so it
+          # does not live inside `entity` — and a session whose entity is null
+          # can still be the only thing a consumer has to group by. null, never
+          # "-": json has a type for absence, and a consumer should not have to
+          # know this product"s placeholder byte.
+          lineage: (if .[10] == "-" then null else .[10] end),
           entity: (if .[5] == "-" then null else {name:.[5], relation:.[6]} end),
           assets: (if .[7] == "-" then [] else (.[7] | split(" ")) end),
           liveness: ($L[.[0]] // {daemon:"unknown",tmux:"unknown",agent:"unknown",
@@ -2590,15 +2643,22 @@ cmd_sessions() {
                                   reason:"not-in-answer"})} ]}' \
       <<<"$ident"
   else
-    printf '%-24s %-10s %-8s %-12s %-14s %s\n' SESSION OWNER TMUX AGENT MODEL ASSETS
-    # id, dm, ho, en, er are read but intentionally unused — they exist only
-    # to keep the read positionally aligned with the 8-field TSV; dropping
-    # them from the read would silently shift every field after the gap.
-    printf '%s\n' "$ident" | while IFS=$'\t' read -r n id ow dm ho en er as sl di; do
+    # ORG SITS BESIDE OWNER, NOT AT THE FAR RIGHT. The two answer the same
+    # question one level apart — who this row belongs to — and ASSETS is the
+    # only unpadded column, so anything placed after it would not line up.
+    printf '%-24s %-10s %s %-8s %-12s %-14s %s\n' \
+      SESSION OWNER "$(_sessions_pad 22 ORG)" TMUX AGENT MODEL ASSETS
+    # id, dm, ho, en, er, sl, di are read but intentionally unused — they exist
+    # only to keep the read positionally aligned with the 11-field TSV. THE
+    # VARIABLE COUNT IS THE LOAD-BEARING PART: `read` folds every field past
+    # the last variable into that variable, so a read one name short would put
+    # "display<TAB>lineage" in `di` and print nothing in the ORG column while
+    # looking entirely healthy.
+    printf '%s\n' "$ident" | while IFS=$'\t' read -r n id ow dm ho en er as sl di li; do
       [ -n "$n" ] || continue
       local lrow; lrow="$(liveness_for "$n" "$live")"
-      printf '%-24s %-10s %-8s %-12s %-14s %s\n' \
-        "$n" "$ow" "$(printf '%s' "$lrow" | cut -f3)" \
+      printf '%-24s %-10s %s %-8s %-12s %-14s %s\n' \
+        "$n" "$ow" "$(_sessions_pad 22 "$li")" "$(printf '%s' "$lrow" | cut -f3)" \
         "$(printf '%s' "$lrow" | cut -f4)" "$(printf '%s' "$lrow" | cut -f6)" \
         "$([ "$as" = "-" ] && printf '(declares none)' || printf '%s' "$as")"
     done
