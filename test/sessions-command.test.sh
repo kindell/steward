@@ -319,6 +319,80 @@ is "refusal rc is 78 in the plain form too" "$p6rc" "78"
 is "plain refusal's stdout is empty"        "$p6out" ""
 has "plain refusal names the estate field on stderr" "$p6errtext" "LIVENESS_CMD"
 
+# ── --sort ────────────────────────────────────────────────────────────────
+#
+# A DEDICATED FIXTURE, not a mutation of $FX above. The three session names
+# are picked so their FILENAME order (registry_list's own order, alphabetical
+# by name) disagrees with SLUG order, OWNER order, HOST order and RC_LABEL
+# (display) order — a suite that reused $FX, whose two live sessions already
+# happen to sort the same way under every key, could not tell "the flag
+# reordered the rows" from "the rows were already in that order".
+FX4="$(mktemp -d)"
+trap 'rm -rf "$FX" "$FX2" "$FX3" "$FX4"' EXIT
+mkdir -p "$FX4/sessions.d" "$FX4/entities.d" "$FX4/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX4/estate/steward.conf"
+# name=asess: OWNER first alphabetically, HOST last, SLUG last, display first.
+printf 'HOST="hzz"\nOWNER="aowner"\nDOMAIN="acme"\nRC_LABEL="rlA"\nREPO_PATH="/tmp/x"\nID="asess"\nSLUG="zzz-slug"\n' \
+  > "$FX4/sessions.d/asess.conf"
+# name=msess: OWNER middle, HOST middle, NO SLUG (the dash case), display middle.
+printf 'HOST="hmm"\nOWNER="mowner"\nDOMAIN="acme"\nRC_LABEL="rlM"\nREPO_PATH="/tmp/x"\nID="msess"\n' \
+  > "$FX4/sessions.d/msess.conf"
+# name=zsess: OWNER last, HOST first, SLUG first, display last.
+printf 'HOST="haa"\nOWNER="zowner"\nDOMAIN="acme"\nRC_LABEL="rlZ"\nREPO_PATH="/tmp/x"\nID="zsess"\nSLUG="aaa-slug"\n' \
+  > "$FX4/sessions.d/zsess.conf"
+# MEMBERS, NOT A MATCHING OWNER — visibility grants a session to its OWNER or
+# to a MEMBER of the entity that owns it. The three OWNER values above are
+# deliberately none of them "a" (they exist to drive --sort owner), so "a"
+# must reach every row through team membership instead.
+printf 'NAME="Acme"\nMEMBERS="a"\n' > "$FX4/entities.d/acme.conf"
+
+run4() { STEWARD_REGISTRY_DIR="$FX4/sessions.d" STEWARD_ESTATE_ROOT="$FX4" STEWARD_VIEWER="a" \
+         env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions "$@" 2>&1; }
+# THE ORDER OF THE THREE SESSION NAMES, READ OFF THE TABLE'S OWN FIRST
+# COLUMN — not a substring search, which cannot tell order from mere presence.
+order4() { printf '%s\n' "$1" | awk '{print $1}' | grep -E '^(asess|msess|zsess)$' | tr '\n' ',' ; }
+
+echo "== --sort: with no flag, the order is unchanged (filename/id) =="
+is "default order is filename order" "$(order4 "$(run4)")" "asess,msess,zsess,"
+
+echo "== --sort name: same as today's order, named explicitly =="
+is "name order" "$(order4 "$(run4 --sort name)")" "asess,msess,zsess,"
+
+echo "== --sort owner: alphabetical by OWNER =="
+is "owner order" "$(order4 "$(run4 --sort owner)")" "asess,msess,zsess,"
+
+echo "== --sort host: alphabetical by HOST, disagrees with filename order =="
+is "host order" "$(order4 "$(run4 --sort host)")" "zsess,msess,asess,"
+
+echo "== --sort display: alphabetical by the resolved display (RC_LABEL here) =="
+is "display order" "$(order4 "$(run4 --sort display)")" "asess,msess,zsess,"
+
+echo "== --sort slug: alphabetical by SLUG, dash (no slug) rows last =="
+is "slug order, dash last" "$(order4 "$(run4 --sort slug)")" "zsess,asess,msess,"
+
+echo "== --sort with an unknown key refuses, listing the valid ones =="
+uerr="$(mktemp)"
+uout="$(STEWARD_REGISTRY_DIR="$FX4/sessions.d" STEWARD_ESTATE_ROOT="$FX4" STEWARD_VIEWER="a" \
+        env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --sort bogus 2>"$uerr")"; urc=$?
+uerrtext="$(cat "$uerr")"; rm -f "$uerr"
+is "rc is 64" "$urc" "64"
+is "stdout is empty" "$uout" ""
+has "names the bad key" "$uerrtext" "bogus"
+has "lists slug"    "$uerrtext" "slug"
+has "lists display"  "$uerrtext" "display"
+has "lists owner"    "$uerrtext" "owner"
+has "lists host"     "$uerrtext" "host"
+has "lists name"     "$uerrtext" "name"
+
+echo "== --sort with an unknown key, --json form =="
+ujerr="$(mktemp)"
+ujout="$(STEWARD_REGISTRY_DIR="$FX4/sessions.d" STEWARD_ESTATE_ROOT="$FX4" STEWARD_VIEWER="a" \
+         env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --sort bogus --json 2>"$ujerr")"; ujrc=$?
+is "rc is 64 in json form too" "$ujrc" "64"
+is "ok is false"    "$(printf '%s' "$ujout" | jq -r '.ok')" "false"
+has "reason names the bad key" "$(printf '%s' "$ujout" | jq -r '.reason')" "bogus"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

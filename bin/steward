@@ -19,7 +19,7 @@
 #   steward init <estate> <ssh-target>
 #   steward scaffold <dir> org=<> team=<> owner=<> session=<> [assets=<>] [--json]
 #   steward assets <session> [--json]
-#   steward sessions [--json]
+#   steward sessions [--json] [--sort name|slug|display|owner|host]
 #   steward doctor
 #   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
 #   steward config set KEY /abs/value
@@ -2258,7 +2258,10 @@ EOF
   return 0
 }
 
-# cmd_sessions [--json] — every session's identity joined with its liveness.
+# cmd_sessions [--json] [--sort name|slug|display|owner|host] — every
+# session's identity joined with its liveness. --sort reorders both the
+# --json and human tables; with no flag the order is the registry's own
+# (alphabetical by name/id, today's longstanding behaviour, unchanged).
 #
 # TWO LAYERS, JOINED HERE AND NOWHERE ELSE. Identity is a free local read;
 # liveness shells out and can fail. They are measured separately so a failure in
@@ -2269,20 +2272,82 @@ EOF
 # remote round trip each and is `steward assets`' job. A view asks for that
 # separately and asynchronously; folding it in would make this command take half
 # a minute for a fleet of twenty.
+#
+# _sessions_sort_rows <field> — the identity TSV on stdin, stably reordered by
+# the given 1-indexed field, on stdout. LC_ALL=C: sort order must not depend on
+# the operator's locale, or the same fixture would order two ways on two
+# machines, and -s (stable) so two rows sharing a sort key keep the order the
+# registry gave them rather than swapping on a whim.
+#
+# A ROW WHOSE FIELD IS EXACTLY "-" SORTS LAST, regardless of which field. "-"
+# is lib/sessions.sh's own placeholder for "this session has no such value"
+# (SLUG most commonly, for an old-shape row with no handle) — and ASCII '-'
+# collates BEFORE every letter and digit in the C locale, so a plain sort
+# would put every session with NO value first, ahead of every session that
+# actually has the one being sorted on. That reads backwards to an operator:
+# the rows carrying real data belong first, the placeholders trail behind.
+_sessions_sort_rows() {
+  local field="$1"
+  awk -F'\t' -v f="$field" '
+    NF == 0 { next }
+    { rank = ($f == "-") ? 1 : 0; print rank "\t" $f "\t" $0 }
+  ' | LC_ALL=C sort -t $'\t' -s -k1,1 -k2,2 | cut -f3-
+}
+
+# cmd_sessions' own --sort key -> TSV field number. One place, so the flag's
+# validation, its usage text and its JSON refusal can never name a different
+# set of keys than this actually understands. Field numbers match the
+# contract at the top of session_identity_rows above lib/sessions.sh's
+# session_identity_rows: name id owner domain host entity_name entity_relation
+# assets slug display.
+_sessions_sort_field() {
+  case "$1" in
+    name)    echo 1 ;;
+    owner)   echo 3 ;;
+    host)    echo 5 ;;
+    slug)    echo 9 ;;
+    display) echo 10 ;;
+    *)       return 1 ;;
+  esac
+}
+
 cmd_sessions() {
-  local want_json="" a
+  local want_json="" sort_key="" sort_field="" a
   # DETECT --json BEFORE VALIDATING ANYTHING ELSE. A refusal must come back in
   # the format the caller asked for; discovering the flag only after rejecting
   # an earlier argument would answer a json request with a bare sentence, and a
   # consumer reads that as a broken tool rather than a bad argument.
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
-  for a in "$@"; do
+
+  # --sort TAKES A VALUE, so the validating pass walks an index rather than a
+  # `for a in "$@"` loop — that shape sees --sort's OWN key token arrive as
+  # the next iteration's argument and refuses it as "unknown argument
+  # slug". Bash 3.2 (this file also runs as macOS's stock /bin/bash), so a
+  # plain indexed array rather than anything newer.
+  local -a _sess_argv=( "$@" )
+  local _sess_i=0 _sess_n=${#_sess_argv[@]}
+  while [ "$_sess_i" -lt "$_sess_n" ]; do
+    a="${_sess_argv[$_sess_i]}"
     case "$a" in
       --json) ;;
+      --sort)
+        _sess_i=$((_sess_i + 1))
+        sort_key="${_sess_argv[$_sess_i]:-}"
+        if sort_field="$(_sessions_sort_field "$sort_key")"; then
+          :
+        else
+          local _sort_msg
+          _sort_msg="steward: unknown --sort key '$sort_key' — valid keys: name, slug, display, owner, host"
+          if [ -n "$want_json" ]; then jq -cn --arg r "$_sort_msg" '{ok:false,reason:$r}'
+          else printf '%s\n' "$_sort_msg" >&2; fi
+          return 64
+        fi
+        ;;
       *) if [ -n "$want_json" ]; then jq -cn --arg r "steward: unknown argument '$a'" '{ok:false,reason:$r}'
          else printf 'steward: unknown argument %s\n' "$a" >&2; fi
          return 64 ;;
     esac
+    _sess_i=$((_sess_i + 1))
   done
 
   # shellcheck source=lib/sessions.sh
@@ -2393,6 +2458,15 @@ cmd_sessions() {
   # dropped. Dropping it here would re-create, one layer up, exactly the
   # silence the skip-and-report fix in lib/sessions.sh removed.
   [ -n "$diag" ] && printf '%s\n' "$diag" >&2
+
+  # --sort REORDERS THE TSV ITSELF, BEFORE EITHER RENDERER TOUCHES IT. Both the
+  # --json and the human forms below read $ident; sorting once here — instead
+  # of in each renderer, or by re-ordering rendered text after the fact — is
+  # the only way the two forms can never disagree about order, and the only
+  # way the sort never has to parse a column back out of a printf'd table.
+  if [ -n "$sort_field" ]; then
+    ident="$(printf '%s\n' "$ident" | _sessions_sort_rows "$sort_field")"
+  fi
 
   # SAME REASON, SAME SHAPE: liveness_rows must not run in a subshell either, or
   # LIVENESS_SEAM_REASON never comes back and every `unknown` below loses its
