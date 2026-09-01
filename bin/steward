@@ -27,6 +27,7 @@
 #   steward login [session]
 #   steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)
 #   steward jobs --json
+#   steward selfupdate
 #   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
 #   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
@@ -3591,6 +3592,193 @@ cmd_jobs() {
       coverage:{listed:$l, measured:$m, unmeasurable:$u}}'
 }
 
+# ---------------------------------------------------------------------------
+# `steward selfupdate` — bring the two checkouts this operator actually runs
+# from up to date, then rebuild the cockpit if this machine has ever built
+# one. Every line it prints is a receipt: `<name>: <from-sha> -> <to-sha>`,
+# or `<name>: already current`, one per repo, so a run that changed nothing
+# is distinguishable at a glance from a run that changed everything.
+#
+# TWO REPOS, AND THEY ARE NOT THE SAME REPO. The PRODUCT is this checkout,
+# found the same way every other path here finds it — from where bin/steward
+# itself lives, symlinks resolved (see $HERE at the top of this file), never
+# from the caller's working directory. The ESTATE is whatever the operator
+# config or the environment named as STEWARD_ESTATE_ROOT, and it is a
+# different repository with a different history and a different owner.
+# Naming them separately in every line matters: "already current" against a
+# product that was three commits behind, printed because the reader assumed
+# the line was about the other repo, is the kind of receipt that gets trusted
+# once and never again.
+#
+# A MISSING ESTATE ROOT IS NOT AN ERROR. Most operators run the product long
+# before they build an estate, and a laptop with no estate at all is a
+# perfectly ordinary machine to update. So an unset root, a root naming a
+# directory that does not exist, and a root naming something git does not
+# recognise all land in the same place: the product is updated on its own and
+# the run SAYS which of the three it was. Silence would leave the operator
+# believing an estate had been updated when nothing had gone near it.
+#
+# BOTH TREES ARE CHECKED FOR UNCOMMITTED WORK BEFORE EITHER IS PULLED. The
+# alternative — pull the product, then discover the estate is dirty — leaves
+# the machine half-updated on the way out of a refusal, which is the state
+# hardest to reason about afterwards. Refusing before anything moved means a
+# refusal always leaves the machine exactly as it was found.
+#
+# AND IT NEVER PUTS THE OPERATOR'S WORK ASIDE FOR THEM. Automatically moving
+# uncommitted changes out of the way to make a pull succeed turns "your
+# update refused" into "your update succeeded and your work is somewhere you
+# did not put it" — recoverable only by whoever knows it happened. The
+# refusal names the checkout and the changed files and stops there.
+#
+# UNTRACKED FILES ARE NOT UNCOMMITTED WORK, for this purpose. A working
+# checkout is full of them — cockpit/target/ alone is thousands — and git's
+# own fast-forward refuses on its own terms if an incoming file would land on
+# an untracked one. Counting them as dirt would make this verb refuse on
+# every machine that had ever built the cockpit, which is every machine that
+# needs step three below.
+#
+# FAST-FORWARD ONLY, ALWAYS. A merge or a rebase decides what someone else's
+# history means, and that decision belongs to whoever wrote the commits, in
+# their own checkout, awake. A pull that cannot fast-forward is therefore a
+# refusal telling the operator to reconcile it by hand, never a smarter pull.
+#
+# THE COCKPIT IS REBUILT ONLY IF IT WAS ALREADY BUILT. The presence of
+# cockpit/target/release/cockpit is the whole test: it means this machine
+# runs the TUI and now has a binary older than the source it just pulled. A
+# machine that has never built one gets told there was nothing to rebuild
+# rather than having a Rust toolchain run on it uninvited. When there IS a
+# binary and no cargo to rebuild it with, the rebuild SKIPs loudly — a stale
+# cockpit that nobody was told about is a bug report about a fix that was
+# already pulled.
+cmd_selfupdate() {
+  if [ $# -ne 0 ]; then
+    echo "usage: steward selfupdate" >&2
+    return 64
+  fi
+
+  local product="$HERE" estate="${STEWARD_ESTATE_ROOT:-}" estate_note=""
+
+  if ! _selfupdate_checkout "$product"; then
+    echo "steward selfupdate: the product root is not a git checkout: $product" >&2
+    echo "  This verb updates a checkout by pulling it, so an install that was copied" >&2
+    echo "  rather than cloned has nothing for it to pull. Run it from a product" >&2
+    echo "  checkout (or aim a symlink on PATH at one) and it will update that." >&2
+    return 65
+  fi
+
+  if [ -z "$estate" ]; then
+    estate_note="estate: no estate root is configured — updating the product on its own"
+  elif [ ! -d "$estate" ]; then
+    estate_note="estate: no directory at $estate — updating the product on its own"
+  elif ! _selfupdate_checkout "$estate"; then
+    estate_note="estate: $estate is not a git checkout — updating the product on its own"
+  fi
+  [ -n "$estate_note" ] && estate=""
+
+  if _selfupdate_dirty "$product"; then
+    _selfupdate_refuse_dirty product "$product"
+    return 65
+  fi
+  if [ -n "$estate" ] && _selfupdate_dirty "$estate"; then
+    _selfupdate_refuse_dirty estate "$estate"
+    return 65
+  fi
+
+  _selfupdate_pull product "$product" || return $?
+  if [ -n "$estate" ]; then
+    _selfupdate_pull estate "$estate" || return $?
+  else
+    printf '%s\n' "$estate_note"
+  fi
+
+  _selfupdate_cockpit "$product"
+}
+
+# git's own answer, not a guess from the presence of a .git directory: a
+# checkout whose .git is a FILE (a worktree, a submodule) is still a checkout,
+# and a bare repository is not one this verb can pull into.
+_selfupdate_checkout() { # <dir>
+  [ -n "$1" ] || return 1
+  [ -d "$1" ] || return 1
+  [ "$(git -C "$1" rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ]
+}
+
+_selfupdate_dirty() { # <dir> — tracked changes only, staged or not
+  [ -n "$(git -C "$1" status --porcelain --untracked-files=no 2>/dev/null)" ]
+}
+
+_selfupdate_refuse_dirty() { # <name> <dir>
+  echo "steward selfupdate: the $1 checkout has uncommitted changes: $2" >&2
+  echo "  Nothing was pulled, in either checkout. Commit the work or set it aside" >&2
+  echo "  yourself: an update that quietly moved your own changes out of the way to" >&2
+  echo "  make room would be the one thing here nobody else could undo for you." >&2
+  git -C "$2" status --short --untracked-files=no >&2
+}
+
+# ONE RECEIPT LINE PER CALL, from two rev-parses around the pull rather than
+# from parsing what git printed — git's pull output is prose that varies with
+# version and locale, while the two shas are the measurement itself.
+_selfupdate_pull() { # <name> <dir>
+  local name="$1" dir="$2" from to out rc
+  from="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+  out="$(git -C "$dir" pull --ff-only 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    case "$out" in
+      *fast-forward*|*fast-forwarded*|*iverg*)
+        echo "steward selfupdate: the $name checkout cannot fast-forward onto its origin: $dir" >&2
+        echo "  It carries commits origin does not, or the two have gone their own ways." >&2
+        echo "  Reconcile it by hand, in that checkout, by whoever wrote those commits — a" >&2
+        echo "  rebase or a merge is a judgement about someone's history, and this verb" >&2
+        echo "  only ever fast-forwards. Then run selfupdate again." >&2
+        ;;
+      *)
+        echo "steward selfupdate: the pull failed in the $name checkout: $dir" >&2
+        echo "  The git output above says why. Reconcile it there and run selfupdate again." >&2
+        ;;
+    esac
+    return 65
+  fi
+  to="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+  if [ "$from" = "$to" ]; then
+    printf '%s: already current\n' "$name"
+  else
+    printf '%s: %s -> %s\n' "$name" "$from" "$to"
+  fi
+  return 0
+}
+
+# THE SAME CARGO RESOLUTION THE BARE INVOCATION USES, deliberately: an
+# explicit $STEWARD_CARGO_BIN, then ~/.cargo/bin/cargo (rustup's home, which
+# is not on PATH for a login shell on either platform), then cargo on PATH.
+# Two orders for the same question would eventually build with one toolchain
+# and refuse with the other.
+_selfupdate_cockpit() { # <product-root>
+  local root="$1" bin="$1/cockpit/target/release/cockpit" cargo
+  if [ ! -x "$bin" ]; then
+    printf 'cockpit: not built in this checkout — nothing to rebuild\n'
+    return 0
+  fi
+  cargo="${STEWARD_CARGO_BIN:-$HOME/.cargo/bin/cargo}"
+  command -v "$cargo" >/dev/null 2>&1 || cargo="$(command -v cargo 2>/dev/null || true)"
+  if [ -z "$cargo" ]; then
+    printf 'cockpit: SKIP — no cargo was found to rebuild it with\n'
+    echo "steward selfupdate: THE COCKPIT BINARY AT $bin IS NOW OLDER THAN THE SOURCE" >&2
+    echo "  that was just pulled, and no cargo was found to rebuild it with (looked for" >&2
+    echo "  \$STEWARD_CARGO_BIN, ~/.cargo/bin/cargo, and cargo on PATH). The next cockpit" >&2
+    echo "  this machine starts is the old one. Install Rust, or set STEWARD_CARGO_BIN," >&2
+    echo "  and run selfupdate again." >&2
+    return 0
+  fi
+  if ! "$cargo" build --release --manifest-path "$root/cockpit/Cargo.toml"; then
+    echo "steward selfupdate: the cockpit failed to rebuild — see the cargo output above." >&2
+    echo "  The pulls above stand and their receipts are true; only the binary is stale." >&2
+    return 70
+  fi
+  printf 'cockpit: rebuilt (%s)\n' "$cargo"
+  return 0
+}
+
 # CALLED FIRST IN THE DISPATCHER, BEFORE ANY SUBCOMMAND — every path below
 # (add, ls, sessions, the bare cockpit invocation, an <estate> verb) must
 # see the same, already-resolved environment, and a broken config must
@@ -3650,6 +3838,7 @@ case "${1:-}" in
   login)    shift; cmd_login "$@"; exit $? ;;
   job)      shift; cmd_job "$@"; exit $? ;;
   jobs)     shift; cmd_jobs "$@"; exit $? ;;
+  selfupdate) shift; cmd_selfupdate "$@"; exit $? ;;
   # NAMESPACED, NOT TOP-LEVEL. `steward team` or `steward client` at the top
   # would collide with the estate-client fallback in the `*)` branch below
   # (`steward <estate> attach|peek|ls`) the moment an operator's own estate
