@@ -72,5 +72,53 @@ out="$(bash "$here/../job-run.sh" "$id3" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && ok "opencode refused until resume is measured" || bad "opencode accepted unmeasured"
 case "$out" in *resume*) ok "refusal states the reason" ;; *) bad "reason missing" "$out" ;; esac
 
+# Heartbeat self-termination: wrapper killed, heartbeat must stop.
+id4="j-00000000000000f2"
+jobstate_create "$id4" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+echo 0 > "$T/rtrc"
+cat > "$T/rt-sleep" <<'EOFSL'
+#!/bin/bash
+printf '%s\n' "$*" >> "${RTLOG:?}"
+sleep 10
+printf '{"session_id":"thread-xyz","result":"done"}\n'
+exit 0
+EOFSL
+chmod +x "$T/rt-sleep"
+export JOBRUN_RUNTIME_CMD="$T/rt-sleep"
+bash "$here/../job-run.sh" "$id4" &
+wpid=$!
+sleep 2
+kill -9 "$wpid" 2>/dev/null
+wait "$wpid" 2>/dev/null || true
+mtime1="$(stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
+sleep 2
+mtime2="$(stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
+[ "$mtime1" = "$mtime2" ] && ok "heartbeat stopped after wrapper SIGKILL" || bad "heartbeat kept advancing after SIGKILL" "mtime1=$mtime1 mtime2=$mtime2"
+
+# THREAD_PARSE_FAILED: rc 0 with invalid JSON → THREAD_PARSE_FAILED=1.
+id5="j-00000000000000f3"
+jobstate_create "$id5" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+cat > "$T/rt-badparse" <<'EOFBAD'
+#!/bin/bash
+printf '%s\n' "$*" >> "${RTLOG:?}"
+printf 'not valid json\n'
+exit 0
+EOFBAD
+chmod +x "$T/rt-badparse"
+export JOBRUN_RUNTIME_CMD="$T/rt-badparse"
+bash "$here/../job-run.sh" "$id5" >/dev/null 2>&1
+jobstate_read "$id5"
+[ "${JOB_THREAD_PARSE_FAILED:-}" = "1" ] && ok "THREAD_PARSE_FAILED=1 on bad JSON + rc 0" || bad "THREAD_PARSE_FAILED not set" "${JOB_THREAD_PARSE_FAILED:-empty}"
+[ -z "${JOB_RUNTIME_THREAD:-}" ] && ok "RUNTIME_THREAD empty on parse failure" || bad "RUNTIME_THREAD not empty" "${JOB_RUNTIME_THREAD:-}"
+
+# Second attempt refuses if THREAD_PARSE_FAILED=1 and RUNTIME_THREAD empty.
+# Reset runtime to the good stub for future tests
+export JOBRUN_RUNTIME_CMD="$T/rt"
+out="$(bash "$here/../job-run.sh" "$id5" 2>&1)"; rc=$?
+[ "$rc" -eq 65 ] && ok "attempt 2 refuses after parse failure" || bad "attempt 2 rc" "$rc"
+case "$out" in *THREAD_PARSE_FAILED*) ok "refusal mentions parse failure" ;; *) bad "reason missing" "$out" ;; esac
+
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
