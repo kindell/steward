@@ -199,5 +199,43 @@ is    "4c a dead session is REFUSED"    "$rc4b" "78"
 has   "4d and the render's own reason is carried into the refusal" "$out4b" "jq"
 hasnt "4e with no tmux write"           "$(cat "$TMUX_LOG")" "new-session"
 
+echo "== 5. a library that is PRESENT but out of date is a missing library =="
+# The state a future edit to these libraries creates during a rollout: the file
+# is there and sources cleanly, but predates the function the supervisor calls.
+# Checking presence let that through -- mcp_claude_cmd_fragment was then a
+# command-not-found, CLAUDE_CMD became the EMPTY STRING, and the CLAUDE_BIN
+# guard did not catch it either ("$HOME/.local/bin/" is a directory, and -x on
+# a directory is true). The spawn ran "$HOME/.local/bin/; exec bash": a shell
+# error and then a bare bash pane wearing a live session's name, which is the
+# zombie-pane failure this file has a whole repair path for.
+cp "$here/lib/mcprender.sh" "$LIBS/mcprender.sh"
+cat > "$LIBS/mcpspawn.sh" <<'EOF'
+# A stale deployed library: sources cleanly, predates mcp_claude_cmd_fragment.
+mcp_spawn_prepare() { return 3; }
+EOF
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run; rc5=$?
+out5="$(cat "$T/out")"
+is    "5a rc 78"                                     "$rc5" "78"
+has   "5b the refusal itself names the missing function" \
+      "$out5" "does not define mcp_claude_cmd_fragment"
+hasnt "5c and nothing was spawned"                   "$(cat "$TMUX_LOG")" "new-session"
+
+echo "== 6. an EMPTY claude command is refused in its own right =="
+# The belt to section 5's braces. A library that defines every function the
+# check asks for and still yields an empty command line must not reach tmux:
+# the CLAUDE_BIN guard reads the FIRST WORD of the command, and the first word
+# of an empty string is empty, so its -x test passes on a directory.
+cat > "$LIBS/mcpspawn.sh" <<'EOF'
+mcp_spawn_prepare()       { return 3; }
+mcp_claude_cmd_fragment() { printf ''; }
+EOF
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run; rc6=$?
+out6="$(cat "$T/out")"
+is    "6a rc 78"                                "$rc6" "78"
+has   "6b the refusal says the command is empty" "$out6" "empty"
+hasnt "6c and no bare shell was started"        "$(cat "$TMUX_LOG")" "new-session"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

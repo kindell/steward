@@ -100,6 +100,25 @@ for _c in mcprender.sh mcpspawn.sh; do
     _mcp_lib_missing="$_MCP_LIB_DIR/$_c"
   fi
 done
+# PRESENCE IS NOT CONTENTS, and the difference is a rollout state. A deployed
+# lib that is there and sources cleanly but PREDATES the function this file
+# calls -- exactly what a future edit to these libraries produces halfway
+# through a deploy -- passed a file check and then made
+# mcp_claude_cmd_fragment a command-not-found, which makes CLAUDE_CMD the EMPTY
+# STRING. The CLAUDE_BIN guard does not catch that either: the first word of an
+# empty string is empty, so the guard tests -x on "$HOME/.local/bin/", a
+# DIRECTORY, and passes. The spawn then ran "$HOME/.local/bin/; exec bash" -- a
+# shell error and a bare bash pane wearing a live session's name, i.e. the
+# zombie pane this file has a whole repair path for.
+#
+# So the library is measured by what it DEFINES. The three names are the entire
+# contract this file has with lib/mcprender.sh and lib/mcpspawn.sh.
+if [ -z "$_mcp_lib_missing" ]; then
+  for _c in mcp_spawn_prepare mcp_claude_cmd_fragment mcp_render_document; do
+    declare -F "$_c" >/dev/null 2>&1 || \
+      _mcp_lib_missing="$_MCP_LIB_DIR -- what is deployed there does not define $_c"
+  done
+fi
 _STATE_NAME=""; _PAUSED_NAME=""
 if [ -n "$_reg_ok" ]; then
   _STATE_NAME="$(registry_state_dir_name 2>/dev/null || true)"
@@ -1266,6 +1285,18 @@ fi
 # BINARY, i.e. the first word. The first version of the guard ran -x on the
 # whole string and stopped every session that had a thread to resume; the test
 # suite fell from 14/0 to 8/6 and showed it immediately.
+# AN EMPTY COMMAND IS REFUSED IN ITS OWN RIGHT, before the binary guard below
+# can be fooled by it. ${CLAUDE_CMD%% *} of an empty string is empty, so
+# CLAUDE_BIN becomes "$HOME/.local/bin/" and -x on a DIRECTORY is true: the
+# guard would wave through a spawn of "$HOME/.local/bin/; exec bash". The
+# declare -F check above is what should make this unreachable; this is the
+# assertion that it stays unreachable.
+if [ -z "$CLAUDE_CMD" ]; then
+  echo "session-supervisor: $NAME — REFUSING to spawn: the claude command line came out empty." >&2
+  echo "session-supervisor: $NAME — a spawn on an empty command starts a bare shell wearing this session's" >&2
+  echo "session-supervisor: $NAME — name, which is the zombie pane this supervisor exists to repair." >&2
+  exit 78
+fi
 CLAUDE_BIN="$HOME/.local/bin/${CLAUDE_CMD%% *}"
 if [ ! -x "$CLAUDE_BIN" ]; then
   echo "session-supervisor: $NAME not started — $CLAUDE_BIN is missing (the owner has not installed/logged in to Claude Code yet)" >&2
