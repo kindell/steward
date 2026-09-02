@@ -3646,6 +3646,7 @@ cmd_job() {
       base_out="$(jobgit_checkout "$id" "$SUBMIT_REPO" "$workroot")" || return $?
       jobstate_create "$id" \
         GOAL="$SUBMIT_GOAL" OWNER="${SUBMIT_OWNER:-$(id -un)}" \
+        LOGIN="${SUBMIT_LOGIN:-}" \
         DESIRED=run PROCESS=queued OUTCOME=pending \
         DELIVERY_RECEIPT=pending MESSAGE_RECEIPT=not-sent \
         CHECK_CMD="$SUBMIT_CHECK_CMD" CHECK_EXPECT="$SUBMIT_CHECK_EXPECT" \

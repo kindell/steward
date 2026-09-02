@@ -24,6 +24,22 @@ grep -q "$id" "$T/spawnlog" && ok "start: runner spawned detached" || bad "no sp
 . "$here/../lib/jobstate.sh"; STEWARD_JOB_STATE_HOME="$T/jobs" jobstate_read "$id"
 [ "$JOB_BASE_SHA" = "$(git -C "$T/src" rev-parse HEAD)" ] && ok "start: BASE_SHA is source HEAD" || bad "BASE_SHA" "${JOB_BASE_SHA:-}"
 
+# LOGIN: the field the schema gate can grow to (task 7B) — present on every
+# row, even when SUBMIT_LOGIN is unset (jobstate_create writes KEY= for an
+# empty value; JOB_LOGIN unset vs empty is only distinguishable by grepping
+# the row, since jobstate_read clears JOB_* before parsing). A separate job
+# state home keeps this out of the row-count assertions below.
+grep -q '^LOGIN=' "$T/jobs/$id/row" && ok "start: LOGIN is a present field even when SUBMIT_LOGIN is unset" \
+  || bad "start: no LOGIN= line" "$(cat "$T/jobs/$id/row")"
+
+login_id="$(SUBMIT_GOAL=g SUBMIT_CHECK_CMD=true SUBMIT_CHECK_EXPECT=0 \
+  SUBMIT_BRIEF_OBJECTIVE=o SUBMIT_BRIEF_DELIVERY=d SUBMIT_BRIEF_TOOLS=t SUBMIT_BRIEF_BOUNDS=b \
+  SUBMIT_REPO="$T/src" SUBMIT_LOGIN=acme-team JOBSTART_SPAWN="$T/spawn" STEWARD_JOB_STATE_HOME="$T/login-jobs" \
+  bash "$STEWARD_BIN" job start)"
+STEWARD_JOB_STATE_HOME="$T/login-jobs" jobstate_read "$login_id"
+[ "${JOB_LOGIN:-}" = "acme-team" ] && ok "start: SUBMIT_LOGIN is written to the row as LOGIN" \
+  || bad "start: LOGIN" "${JOB_LOGIN:-unset}"
+
 # start: an incomplete submission propagates the schema refusal, mints NOTHING.
 SUBMIT_GOAL= bash "$STEWARD_BIN" job start 2>/dev/null && bad "incomplete start accepted" || ok "incomplete start refused"
 [ "$(ls "$T/jobs" | wc -l | tr -d ' ')" = "1" ] && ok "refusal minted no row" || bad "row minted on refusal"

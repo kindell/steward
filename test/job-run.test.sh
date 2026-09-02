@@ -442,5 +442,248 @@ out="$(JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id16" 2>&
 case "$out" in *WORKDIR*) ok "no workdir: the refusal names the missing field" ;; *) bad "refusal text" "$out" ;; esac
 [ ! -s "$T/rtlog" ] && ok "no workdir: the runtime was never executed" || bad "the probe ran anyway" "$(cat "$T/rtlog")"
 
+
+# ── THE LOGIN: WHICH MODEL ACCOUNT PAYS, AND THE THREAD STORE THAT FOLLOWS IT
+# job-run.sh runs out of a nightly-pulled checkout with no deploy gate, so the
+# whole rule below has to hold two ways at once: a row that declares LOGIN
+# must never run on the ambient account, and a row that does not must run
+# EXACTLY as it does today even when the registry library is missing
+# entirely. This section is hermetic: its own fixture estate (a logins.d row)
+# and its own fixture HOME, so nothing here can read or write this machine's
+# real accounts.
+#
+# The stub notes its own ENVIRONMENT, not just its argv -- that is the only
+# form that measures what the child actually SAW, which is exactly what the
+# scrub exists to check.
+cat > "$T/rt-env" <<'STUB'
+#!/bin/bash
+{ printf 'cfg=%s\n' "${CLAUDE_CONFIG_DIR-UNSET}"
+  printf 'key=%s\n' "${ANTHROPIC_API_KEY-UNSET}"
+  printf 'tok=%s\n' "${ANTHROPIC_AUTH_TOKEN-UNSET}"
+  printf 'argv=%s\n' "$*"; } >> "$RTLOG"
+printf '{"session_id":"%s"}\n' "${RT_SID:-11111111-2222-3333-4444-555555555555}"
+STUB
+chmod +x "$T/rt-env"
+
+LG_EST="$T/lg-estate"
+mkdir -p "$LG_EST/logins.d" "$LG_EST/estate"
+cat > "$LG_EST/logins.d/acme-team.conf" <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-team"
+PROVIDER="claude-max"
+CONFIG_DIR="~/.claude-logins/acme"
+LEGAL_OWNER="alice"
+EOF
+chmod 600 "$LG_EST/logins.d/acme-team.conf"
+
+LG_HOME="$T/lg-home"; mkdir -p "$LG_HOME"
+cat > "$T/lg-home-cmd" <<EOF
+#!/bin/bash
+printf '%s\n' "$LG_HOME"
+EOF
+chmod +x "$T/lg-home-cmd"
+LG_RESOLVED="$LG_HOME/.claude-logins/acme"
+
+# write_lg_estate [schema-version] -- no argument writes an estate file with
+# no SCHEMA_VERSION line at all (the ordinary, un-versioned estate every case
+# but section 7 below runs against).
+write_lg_estate() {
+  {
+    printf 'ESTATE_NAME="fixture"\n'
+    printf 'LABEL_PREFIX="com.fixture.claude"\n'
+    [ -n "${1:-}" ] && printf 'SCHEMA_VERSION="%s"\n' "$1"
+  } > "$LG_EST/estate/steward.conf"
+}
+
+# lg_run <job-id> [VAR=val ...] -> rc; combined stdout+stderr in $T/lgout.
+# HOME is always the fixture: nothing in this section may touch this
+# machine's real $HOME/.claude or $HOME/.claude-logins. JOBRUN_THREAD_STORE is
+# always unset here so a declared LOGIN's own derivation is what runs unless a
+# case overrides it -- the same seam job-run.sh itself grants a test.
+lg_run() {
+  local jid="$1"; shift
+  env -u JOBRUN_THREAD_STORE HOME="$LG_HOME" STEWARD_ESTATE_ROOT="$LG_EST" \
+    STEWARD_HOME_LOOKUP_CMD="$T/lg-home-cmd" "$@" \
+    bash "$here/../job-run.sh" "$jid" > "$T/lgout" 2>&1
+}
+
+echo "== LOGIN 1: a declared LOGIN, library present -- config dir resolved, auth keys scrubbed =="
+id_lg1="j-00000000000000a0"
+jobstate_create "$id_lg1" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=acme-team
+: > "$T/lg1log"
+lg_run "$id_lg1" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg1log" \
+  ANTHROPIC_API_KEY=leaked-key ANTHROPIC_AUTH_TOKEN=leaked-token
+rc=$?
+[ "$rc" -eq 0 ] && ok "LOGIN 1: rc 0" || bad "LOGIN 1: rc" "$rc: $(cat "$T/lgout")"
+grep -q "cfg=$LG_RESOLVED" "$T/lg1log" && ok "LOGIN 1: the runtime saw the resolved config dir" \
+  || bad "LOGIN 1: cfg" "$(cat "$T/lg1log")"
+grep -q '^key=UNSET$' "$T/lg1log" && ok "LOGIN 1: the leaked API key was scrubbed" \
+  || bad "LOGIN 1: key not scrubbed" "$(cat "$T/lg1log")"
+grep -q '^tok=UNSET$' "$T/lg1log" && ok "LOGIN 1: the leaked auth token was scrubbed" \
+  || bad "LOGIN 1: tok not scrubbed" "$(cat "$T/lg1log")"
+
+echo "== LOGIN 2: JOBRUN_THREAD_STORE follows the login -- not the store a decoy thread sits in =="
+id_lg2="j-00000000000000a1"
+lg2_thread="aaaaaaaa-2222-3333-4444-555555555555"
+jobstate_create "$id_lg2" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=acme-team RUNTIME_THREAD="$lg2_thread"
+mkdir -p "$LG_HOME/.claude/projects" "$LG_RESOLVED/projects"
+: > "$LG_HOME/.claude/projects/decoy-thread.jsonl"          # legacy store: wrong file
+: > "$LG_RESOLVED/projects/$lg2_thread.jsonl"                # the login's own store: the real one
+: > "$T/lg2log"
+lg_run "$id_lg2" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg2log"
+rc=$?
+[ "$rc" -eq 0 ] && ok "LOGIN 2: rc 0" || bad "LOGIN 2: rc" "$rc: $(cat "$T/lgout")"
+grep -q -- "--resume $lg2_thread" "$T/lg2log" \
+  && ok "LOGIN 2: the runtime saw --resume from the login's own store, not the legacy one" \
+  || bad "LOGIN 2: no exact resume" "$(cat "$T/lg2log")"
+jobstate_read "$id_lg2"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "LOGIN 2: RESUME_KIND=exact-thread" \
+  || bad "LOGIN 2: RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+echo "== LOGIN 3: no LOGIN on the row -- byte-identical to today, the control group =="
+id_lg3="j-00000000000000a2"
+lg3_thread="cccccccc-2222-3333-4444-555555555555"
+jobstate_create "$id_lg3" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  RUNTIME_THREAD="$lg3_thread"
+# The hardcoded default this whole task exists to fix: with no LOGIN and no
+# JOBRUN_THREAD_STORE override, _jobrun_thread_exists must ask
+# $HOME/.claude/projects -- HOME is the fixture (lg_run), so that is
+# $LG_HOME/.claude/projects. A decoy in the login's own store proves the
+# default store is what answered, not just any store that happens to exist.
+mkdir -p "$LG_HOME/.claude/projects" "$LG_RESOLVED/projects"
+: > "$LG_HOME/.claude/projects/$lg3_thread.jsonl"           # the default store: the real one
+: > "$LG_RESOLVED/projects/decoy-thread.jsonl"               # the login's store: wrong for this row
+: > "$T/lg3log"
+lg_run "$id_lg3" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg3log" \
+  CLAUDE_CONFIG_DIR="$T/ambient-cfg" ANTHROPIC_API_KEY=ambient-key ANTHROPIC_AUTH_TOKEN=ambient-token
+rc=$?
+[ "$rc" -eq 0 ] && ok "LOGIN 3: rc 0" || bad "LOGIN 3: rc" "$rc: $(cat "$T/lgout")"
+grep -q "cfg=$T/ambient-cfg" "$T/lg3log" && ok "LOGIN 3: the ambient config dir is untouched" \
+  || bad "LOGIN 3: cfg changed" "$(cat "$T/lg3log")"
+grep -q 'key=ambient-key' "$T/lg3log" && ok "LOGIN 3: the ambient API key is untouched" \
+  || bad "LOGIN 3: key scrubbed anyway" "$(cat "$T/lg3log")"
+grep -q 'tok=ambient-token' "$T/lg3log" && ok "LOGIN 3: the ambient auth token is untouched" \
+  || bad "LOGIN 3: tok scrubbed anyway" "$(cat "$T/lg3log")"
+grep -q 'login=none' "$T/lgout" && ok "LOGIN 3: the row says login=none" \
+  || bad "LOGIN 3: no login=none line" "$(cat "$T/lgout")"
+grep -q -- "--resume $lg3_thread" "$T/lg3log" \
+  && ok "LOGIN 3: the runtime saw --resume from the default \$HOME/.claude/projects store" \
+  || bad "LOGIN 3: no exact resume" "$(cat "$T/lg3log")"
+jobstate_read "$id_lg3"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "LOGIN 3: RESUME_KIND=exact-thread" \
+  || bad "LOGIN 3: RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+echo "== LOGIN 4: LOGIN declared, the registry library is ABSENT -- refuses, never runs =="
+id_lg4="j-00000000000000a3"
+jobstate_create "$id_lg4" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=acme-team
+lg4_badlib="$T/no-such-dir/registry.sh"
+: > "$T/lg4log"
+lg_run "$id_lg4" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg4log" STEWARD_REGISTRY_LIB="$lg4_badlib"
+rc=$?
+[ "$rc" -eq 78 ] && ok "LOGIN 4: rc 78" || bad "LOGIN 4: rc" "$rc: $(cat "$T/lgout")"
+[ ! -s "$T/lg4log" ] && ok "LOGIN 4: the runtime was never invoked" \
+  || bad "LOGIN 4: runtime ran anyway" "$(cat "$T/lg4log")"
+grep -qF "$lg4_badlib" "$T/lgout" && ok "LOGIN 4: the refusal names the missing path" \
+  || bad "LOGIN 4: refusal text" "$(cat "$T/lgout")"
+
+echo "== LOGIN 4b: the library is PRESENT but OLD -- declare -F, not [ -f ] =="
+id_lg4b="j-00000000000000a4"
+jobstate_create "$id_lg4b" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=acme-team
+lg4b_stalelib="$T/stale-registry.sh"
+# Defines the schema gate (so LOGIN 4b's refusal is not just the schema gate's
+# rc 127-as-refusal accident) but NOT registry_login_apply -- only the
+# declare -F guard can refuse this fixture, which is the half this case exists
+# to measure.
+printf 'registry_schema_check() { return 0; }\n' > "$lg4b_stalelib"
+: > "$T/lg4blog"
+lg_run "$id_lg4b" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg4blog" STEWARD_REGISTRY_LIB="$lg4b_stalelib"
+rc=$?
+[ "$rc" -eq 78 ] && ok "LOGIN 4b: rc 78" || bad "LOGIN 4b: rc" "$rc: $(cat "$T/lgout")"
+[ ! -s "$T/lg4blog" ] && ok "LOGIN 4b: the runtime was never invoked" \
+  || bad "LOGIN 4b: runtime ran anyway" "$(cat "$T/lg4blog")"
+grep -q "does not define registry_login_apply" "$T/lgout" \
+  && ok "LOGIN 4b: the refusal names the missing function" \
+  || bad "LOGIN 4b: refusal text" "$(cat "$T/lgout")"
+
+echo "== LOGIN 5: no LOGIN, the registry library ABSENT -- runs exactly as today (layer 2) =="
+id_lg5="j-00000000000000a5"
+jobstate_create "$id_lg5" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+lg5_badlib="$T/no-such-dir-2/registry.sh"
+: > "$T/lg5log"
+lg_run "$id_lg5" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg5log" STEWARD_REGISTRY_LIB="$lg5_badlib"
+rc=$?
+[ "$rc" -eq 0 ] && ok "LOGIN 5: rc 0 -- a nightly pull with an old library never stops a job" \
+  || bad "LOGIN 5: rc" "$rc: $(cat "$T/lgout")"
+[ -s "$T/lg5log" ] && ok "LOGIN 5: the runtime ran" || bad "LOGIN 5: runtime never ran" "$(cat "$T/lg5log")"
+case "$(cat "$T/lgout")" in
+  *"registry library"*) bad "LOGIN 5: STEWARD_REGISTRY_LIB was opened despite no LOGIN" "$(cat "$T/lgout")" ;;
+  *) ok "LOGIN 5: STEWARD_REGISTRY_LIB was never opened" ;;
+esac
+
+echo "== LOGIN 6: a LOGIN that does not resolve -- refuses, never runs =="
+id_lg6="j-00000000000000a6"
+jobstate_create "$id_lg6" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=does-not-exist
+: > "$T/lg6log"
+lg_run "$id_lg6" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg6log"
+rc=$?
+[ "$rc" -eq 78 ] && ok "LOGIN 6: rc 78" || bad "LOGIN 6: rc" "$rc: $(cat "$T/lgout")"
+[ ! -s "$T/lg6log" ] && ok "LOGIN 6: the runtime was never invoked" \
+  || bad "LOGIN 6: runtime ran anyway" "$(cat "$T/lg6log")"
+grep -q "does-not-exist" "$T/lgout" && ok "LOGIN 6: the refusal names the slug" \
+  || bad "LOGIN 6: refusal text" "$(cat "$T/lgout")"
+
+echo "== LOGIN 7: THE SCHEMA GATE -- a declared LOGIN only, both directions =="
+echo "== LOGIN 7a. schema over this checkout's max: rc 78, zero spawn =="
+write_lg_estate 6
+id_lg7a="j-00000000000000a7"
+jobstate_create "$id_lg7a" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=acme-team
+: > "$T/lg7alog"
+lg_run "$id_lg7a" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg7alog"
+rc=$?
+[ "$rc" -eq 78 ] && ok "LOGIN 7a: rc 78" || bad "LOGIN 7a: rc" "$rc: $(cat "$T/lgout")"
+[ ! -s "$T/lg7alog" ] && ok "LOGIN 7a: the runtime was never invoked" \
+  || bad "LOGIN 7a: runtime ran anyway" "$(cat "$T/lg7alog")"
+grep -q "this checkout reads up to" "$T/lgout" && ok "LOGIN 7a: the schema refusal is relayed" \
+  || bad "LOGIN 7a: refusal text" "$(cat "$T/lgout")"
+
+echo "== LOGIN 7b. schema at this checkout's max: runs =="
+write_lg_estate 5
+id_lg7b="j-00000000000000a8"
+jobstate_create "$id_lg7b" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  LOGIN=acme-team
+: > "$T/lg7blog"
+lg_run "$id_lg7b" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg7blog"
+rc=$?
+[ "$rc" -eq 0 ] && ok "LOGIN 7b: rc 0 -- this checkout reads schema 5" \
+  || bad "LOGIN 7b: rc" "$rc: $(cat "$T/lgout")"
+[ -s "$T/lg7blog" ] && ok "LOGIN 7b: the runtime ran" || bad "LOGIN 7b: runtime never ran" "$(cat "$T/lg7blog")"
+
+echo "== LOGIN 7c. no-LOGIN control: an estate over this checkout's max still runs a LOGIN-less row =="
+id_lg7c="j-00000000000000a9"
+jobstate_create "$id_lg7c" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+write_lg_estate 6
+: > "$T/lg7clog"
+lg_run "$id_lg7c" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg7clog"
+rc=$?
+[ "$rc" -eq 0 ] && ok "LOGIN 7c: rc 0 -- the schema gate never fires on the transition path" \
+  || bad "LOGIN 7c: rc" "$rc: $(cat "$T/lgout")"
+[ -s "$T/lg7clog" ] && ok "LOGIN 7c: the runtime ran" || bad "LOGIN 7c: runtime never ran" "$(cat "$T/lg7clog")"
+
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

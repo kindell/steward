@@ -29,6 +29,52 @@ set -u
 here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 . "$here/lib/jobstate.sh"
 
+# ── THE LOGIN: WHICH MODEL ACCOUNT PAYS FOR THIS JOB'S CALLS ───────────────
+#
+# THIS FILE RUNS OUT OF THE CHECKOUT, and the checkout is git-pulled nightly
+# with no gate. So this block has ONE hard requirement above all others: with
+# LOGIN absent AND the registry library absent, it must behave exactly as it did
+# before — same store, same command, same exit. A refusal here would take every
+# job on the machine down the morning after a pull, and nobody would have run a
+# deploy.
+#
+# THE LOOKUP IS THE TWINS' LOOKUP, and it is NOT "whatever jobstate.sh loaded".
+# jobstate.sh sources lib/registry.sh only inside jobstate_home, and only when
+# STEWARD_JOB_STATE_HOME is unset — the suite sets it, so in the suite nothing
+# has loaded the registry at all. So the library is resolved HERE, the same way
+# the supervisors resolve it: STEWARD_REGISTRY_LIB overrides completely (that is
+# the suite's seam for "library gone"), then this checkout's own lib/, then the
+# deployed image. Missing file -> rc 78 with the path named, never a silent
+# empty answer.
+_jobrun_reg_lib() {
+  local c
+  [ -n "${STEWARD_REGISTRY_LIB:-}" ] && { printf '%s' "$STEWARD_REGISTRY_LIB"; return 0; }
+  for c in "$here/lib/registry.sh" "$HOME/scripts/lib/registry.sh"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  echo "job-run: registry library found neither in this checkout nor in the deployed image" >&2
+  return 78
+}
+
+# PRESENCE IS NOT CONTENT: a deployed library that predates registry_login_apply
+# sources cleanly and then makes the call a command-not-found, whose rc 127 an
+# `if !` reads as a refusal. So the functions are measured with declare -F,
+# exactly as session-supervisor.sh measures the spawn libraries. Loads the
+# library lazily — this is only ever called under a declared LOGIN, so a row
+# without one never touches the registry (the layer 2 requirement above).
+_jobrun_login_ready() {
+  local lib
+  if ! declare -F registry_login_apply >/dev/null 2>&1; then
+    lib="$(_jobrun_reg_lib)" || return 1
+    [ -f "$lib" ] || { echo "job-run: registry library missing: $lib" >&2; return 1; }
+    # shellcheck source=/dev/null
+    . "$lib" || { echo "job-run: could not load $lib" >&2; return 1; }
+  fi
+  declare -F registry_login_apply >/dev/null 2>&1 || return 1
+  declare -F registry_login_config_dir >/dev/null 2>&1 || return 1
+  return 0
+}
+
 # Factored finalization: check final transition, retry on contention, preserve lease on failure.
 _jobrun_finalize() {
   local jid="$1" exit_code="$2" thread_id="$3" parse_failed="$4" mismatch="${5:-}"
@@ -121,6 +167,66 @@ _jobrun_mint_thread() {
 
 id="${1:?usage: job-run.sh <job-id>}"
 jobstate_read "$id" || exit $?
+
+# THE ORDER OF THE TWO QUESTIONS IS THE WHOLE DESIGN:
+#
+#   no LOGIN                  -> today's behaviour, whatever the library says.
+#   LOGIN + library present   -> the rule applies, or the job refuses.
+#   LOGIN + library ABSENT    -> REFUSE. A row that names an account this
+#                                checkout cannot resolve must not run on the
+#                                ambient one: the row is a statement about who
+#                                pays, and running anyway makes it a lie.
+#
+# The asymmetry between lines 1 and 3 is deliberate and is the same one the
+# execution rule itself carries: absence of a LOGIN is the transition, absence
+# of the library under a DECLARED login is a broken machine.
+if [ -n "${JOB_LOGIN:-}" ]; then
+  if ! _jobrun_login_ready; then
+    echo "job-run: $id REFUSES — the row declares LOGIN=\"$JOB_LOGIN\" but this checkout's" >&2
+    echo "  registry library does not define registry_login_apply. Running anyway would bill" >&2
+    echo "  whichever account this process inherited, and the row says otherwise." >&2
+    echo "  Pull the product (the two checkouts are version-coupled)." >&2
+    exit 78
+  fi
+  # THE SCHEMA GATE, for a declared login only. registry_load is never called
+  # on this path, so the estate's version is checked here by hand; a row without
+  # a LOGIN never reaches this line (the checkout-pull requirement above).
+  registry_schema_check || {
+    echo "job-run: $id REFUSES — this checkout does not read the estate's schema (see above)." >&2
+    exit 78
+  }
+  if ! registry_login_apply "$JOB_LOGIN" "${JOB_OWNER:-$(id -un)}"; then
+    echo "job-run: $id REFUSES — LOGIN=\"$JOB_LOGIN\" does not resolve (see above)." >&2
+    exit 78
+  fi
+  # THE THREAD STORE FOLLOWS THE LOGIN, and this is the half that fails
+  # SILENTLY if it is forgotten. _jobrun_thread_exists below asks the store
+  # whether the row's named thread is a session yet. Ask the WRONG store and the
+  # answer is "no" for a thread that exists — and the branch under it then starts
+  # the same name with --session-id and records RESUME_KIND=fresh-after-crash.
+  # The attempt redoes finished work, and the field says it was expected.
+  #
+  # DERIVED, NOT ASSUMED: the runtime writes transcripts under
+  # <config dir>/projects, the same relation the supervisors' HIST uses.
+  # An override already in the environment WINS — that is the suite's seam, and
+  # a test aiming at its own store must not be overruled by a row.
+  if [ -z "${JOBRUN_THREAD_STORE:-}" ]; then
+    _jl_dir="$(registry_login_config_dir "$JOB_LOGIN" "${JOB_OWNER:-$(id -un)}")" || {
+      echo "job-run: $id REFUSES — LOGIN=\"$JOB_LOGIN\" resolves no directory." >&2
+      exit 78
+    }
+    JOBRUN_THREAD_STORE="$_jl_dir/projects"
+    export JOBRUN_THREAD_STORE
+  fi
+  echo "job-run: $id login=$JOB_LOGIN store=${JOBRUN_THREAD_STORE}" >&2
+else
+  # NO LOGIN: TODAY'S BEHAVIOUR, DOWN TO THE STORE. Not even the scrub is done
+  # here — job-runner.sh owns that decision for the jobs it runs, and this
+  # wrapper is reached from `steward job start`, whose environment is the
+  # submitting session's. Changing that quietly is a second decision hiding
+  # inside this one.
+  echo "job-run: $id login=none — running on the ambient account (transition)" >&2
+fi
 
 max="${JOBRUN_MAX_ATTEMPTS:-3}"
 attempt=$(( ${JOB_ATTEMPT_ID:-0} + 1 ))
