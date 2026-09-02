@@ -163,9 +163,19 @@ out7="$(prep s-envfile "$DOC" 2>/dev/null)"; rc7=$?
 doc7="$(cat "$DOC" 2>/dev/null)"
 is    "7a rc 0"                        "$rc7" "0"
 is    "7b the command is the wrapper"  \
-      "$(jq -r '.mcpServers["mail-tool"].command' "$DOC" 2>/dev/null)" "~/bin/mcp-env"
+      "$(jq -r '.mcpServers["mail-tool"].command' "$DOC" 2>/dev/null)" "$HOME/bin/mcp-env"
 has   "7c and the env file's PATH is an argument" "$doc7" "/mail-tool.env"
 hasnt "7d nothing that looks like a value reached the file" "$doc7" "MAIL_TOKEN"
+# A TILDE IS A PATH THAT NEVER RESOLVES HERE. `steward mcp render` writes the
+# document on the machine that HOLDS the register and a human reads it, so the
+# literal ~/bin/mcp-env is right there. This library renders on the machine that
+# RUNS the session, at spawn time, and hands the result to claude -- and an MCP
+# client spawns a server's `command` DIRECTLY, with no shell to expand anything.
+# A tilde is then a directory named "~", the server dies with ENOENT, and under
+# --strict-mcp-config that is a granted asset that silently never starts.
+hasnt "7e no tilde survives into the document the supervisor hands to claude" \
+      "$doc7" "~"
+has   "7f and the wrapper is named absolutely"    "$doc7" "$HOME/bin/mcp-env"
 
 echo "== 8. the splice: the label is the LAST argument =="
 # The pid-finding pattern in the supervisor anchors on the label. A flag

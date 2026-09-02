@@ -88,7 +88,30 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     echo "mcp spawn: session '$sid' -- no temp file could be made to hold the render's diagnostics; REFUSING to prepare a spawn" >&2
     return 69
   }
-  local body rrc
+  # THE WRAPPER IS RESOLVED TO AN ABSOLUTE PATH FOR *THIS* RENDER, and only
+  # here. lib/mcprender.sh names the wrapper `~/bin/mcp-env` by default because
+  # `steward mcp render` runs on the machine that HOLDS the register and prints
+  # for a human -- the tilde is the honest thing to write when the reader's home
+  # is not the writer's. This caller is the opposite case: it renders ON the
+  # session host, at spawn time, and hands the document straight to claude --
+  # and an MCP client spawns a server's `command` DIRECTLY, with no shell to
+  # expand anything. A literal tilde there is a directory named "~", the server
+  # dies with ENOENT, and under --strict-mcp-config that is a granted asset that
+  # silently never starts.
+  #
+  # A `local` RATHER THAN AN EXPORT: bash's dynamic scoping makes it visible to
+  # mcp_render_document for the length of the call and to nothing afterwards, so
+  # no other renderer in the process inherits this host's home. An override
+  # already in the environment wins -- an operator who installed the wrapper
+  # elsewhere has said so.
+  #
+  # AN EMPTY $HOME LEAVES THE DEFAULT ALONE. "/bin/mcp-env" is a confident,
+  # wrong path; the literal is at least visibly a template.
+  local _wrapper="${STEWARD_MCP_WRAPPER:-}"
+  if [ -z "$_wrapper" ] && [ -n "${HOME:-}" ]; then
+    _wrapper="$HOME/bin/mcp-env"
+  fi
+  local body rrc STEWARD_MCP_WRAPPER="$_wrapper"
   body="$(mcp_render_document "$sid" 2>"$errf")"; rrc=$?
 
   # rc 69 travels unchanged: the render could not build a document SAFELY, and

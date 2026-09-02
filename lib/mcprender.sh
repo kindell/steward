@@ -62,13 +62,24 @@ mcp_render_document() {
     return 69
   }
 
-  # THE WRAPPER'S PATH IS A LITERAL, TILDE AND ALL. It is written into the
-  # document as the string `~/bin/mcp-env` rather than resolved here, because
-  # the document is rendered on the machine that HOLDS the register and read
-  # on the machine that RUNS the session — and those are not always the same
-  # home directory. Expanding it here would bake one operator's path into
+  # THE WRAPPER'S PATH IS A LITERAL BY DEFAULT, TILDE AND ALL. It is written
+  # into the document as the string `~/bin/mcp-env` rather than resolved here,
+  # because the document is rendered on the machine that HOLDS the register and
+  # read on the machine that RUNS the session — and those are not always the
+  # same home directory. Expanding it here would bake one operator's path into
   # every other operator's config.
-  local wrapper="~/bin/mcp-env"
+  #
+  # STEWARD_MCP_WRAPPER OVERRIDES IT, AND THE SUPERVISOR SETS IT. A caller that
+  # renders ON the host at spawn time and hands the result straight to claude is
+  # in the opposite situation: an MCP client spawns a server's `command`
+  # DIRECTLY, with no shell between them, so a literal tilde is a directory
+  # named "~" and the server dies with ENOENT — under --strict-mcp-config, a
+  # granted asset that silently never starts. lib/mcpspawn.sh sets this to
+  # $HOME/bin/mcp-env for its own render. The DEFAULT is unchanged so that
+  # `steward mcp render` and test/mcp-render.test.sh stay byte for byte what
+  # they were.
+  local wrapper="${STEWARD_MCP_WRAPPER:-}"
+  [ -n "$wrapper" ] || wrapper='~/bin/mcp-env'
 
   # THE RESOLVER'S RC IS READ, NOT JUST ITS OUTPUT. Its middle code says "at
   # least one level of the org would not load, so what follows is PARTIAL" —
