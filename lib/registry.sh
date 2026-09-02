@@ -2960,3 +2960,245 @@ registry_login_load() {
   LOGIN_LEGAL_OWNER="$v_LEGAL_OWNER"
   return 0
 }
+
+# registry_login_config_dir <slug> <owner-unix-username> — the login's
+# ABSOLUTE credential directory. rc 0 · 1 (the row itself is refused) ·
+# 78 (grammar, the owner's home, or the directory's own state refuses).
+#
+# CONFIG_DIR IS GRAMMAR, NOT A PATH. v1 permits exactly two forms:
+#
+#   ~/.claude-logins/<slug>   the ordinary case; <slug> is the ACCOUNT's slug
+#   ~/.claude                 the transition exception, and ONLY for the one
+#                             login the estate names in LEGACY_LOGIN
+#
+# WHY A GRAMMAR AND NOT VALIDATION. A free path field would let a row aim a
+# subscription's credentials at any directory the owner can write, and the row
+# would look correct doing it. Two forms is a shape a reader can hold in mind,
+# and everything outside it is a refusal with a named cause.
+#
+# THE EXPANSION IS A STRING JOIN onto _registry_owner_home's answer. Never
+# eval, never the caller's HOME, never a platform literal — see that function
+# for the three measurements behind each of those.
+registry_login_config_dir() {
+  local slug="${1:-}" owner="${2:-}" raw home legacy base
+  registry_login_load "$slug" || return $?
+  raw="$LOGIN_CONFIG_DIR_RAW"
+  if [ -z "$owner" ]; then
+    echo "registry: login '$slug': REFUSING — no owner account given to resolve the home against" >&2
+    return 78
+  fi
+  case "$raw" in
+    '~/.claude')
+      # THE EXCEPTION IS GRANTED BY THE ESTATE, TO ONE ROW. A second row on the
+      # unnamed default is two accounts sharing one credential directory, which
+      # is the failure this register exists to prevent, arriving through its own
+      # migration path.
+      legacy="$(registry_legacy_login)" || return 78
+      if [ -z "$legacy" ] || [ "$legacy" != "$slug" ]; then
+        echo "registry: login '$slug': REFUSING '~/.claude' — the runtime's unnamed default is" >&2
+        echo "registry: reserved for the one login the estate names in LEGACY_LOGIN (currently: ${legacy:-none})." >&2
+        echo "registry: a directory without a name is exactly the kind of incorrect name this register replaces." >&2
+        return 78
+      fi
+      base=".claude"
+      ;;
+    '~/.claude-logins/'*)
+      base="${raw#\~/}"                     # .claude-logins/<something>
+      local leaf="${base#.claude-logins/}"
+      # ONE COMPONENT, AND IT IS A SLUG. The checks are separate on purpose:
+      # a nested path, an empty leaf and a non-slug leaf are three different
+      # mistakes and each gets its own sentence.
+      case "$leaf" in
+        ''|*/*)
+          echo "registry: login '$slug': REFUSING CONFIG_DIR '$raw' — exactly one directory name under .claude-logins/" >&2
+          return 78 ;;
+      esac
+      if ! [[ "$leaf" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        echo "registry: login '$slug': REFUSING CONFIG_DIR '$raw' — '$leaf' is not a slug (a-z 0-9 and hyphen)" >&2
+        return 78
+      fi
+      ;;
+    *)
+      echo "registry: login '$slug': REFUSING CONFIG_DIR '$raw'." >&2
+      echo "registry: two forms are permitted: '~/.claude-logins/<slug>', or '~/.claude' for the estate's LEGACY_LOGIN." >&2
+      return 78 ;;
+  esac
+  # `.` and `..` cannot reach this line through the grammar above — the slug
+  # form excludes both. The check stands anyway: it is one line, and the day a
+  # third form is added it is the line that keeps the addition from reaching
+  # outside the directory it names.
+  case "$base" in
+    *'..'*|*'/./'*|*'/.') echo "registry: login '$slug': REFUSING CONFIG_DIR '$raw' — path traversal" >&2; return 78 ;;
+  esac
+  home="$(_registry_owner_home "$owner")" || return 78
+  local resolved="$home/$base"
+
+  # THE PARENT IS ASKED ABOUT BEFORE THE TARGET, and the first version of this
+  # resolver asked only about the target. A tight directory under a parent
+  # anybody can write to is not tight: the target can be renamed away and
+  # replaced, and every check on the replacement then passes. The gate names
+  # parent AND target for that reason.
+  #
+  # SKIPPED WHEN THE PARENT IS THE HOME ITSELF (the legacy `~/.claude` form):
+  # the home's own mode is the account's business and is not this register's to
+  # refuse — refusing it would take the whole fleet down over a home somebody
+  # set to 755, which is the ordinary state on both platforms.
+  local parent; parent="$(dirname "$resolved")"
+  if [ "$parent" != "$home" ]; then
+    if [ -L "$parent" ]; then
+      echo "registry: login '$slug': REFUSING — the PARENT $parent is a symlink." >&2
+      echo "registry: a tight directory under a swappable parent is not tight." >&2
+      return 78
+    fi
+    if [ -e "$parent" ]; then
+      if [ ! -d "$parent" ]; then
+        echo "registry: login '$slug': REFUSING — the PARENT $parent is not a directory" >&2
+        return 78
+      fi
+      if [ ! -O "$parent" ]; then
+        echo "registry: login '$slug': REFUSING — the PARENT $parent is not owned by the current user" >&2
+        return 78
+      fi
+      local pmode; pmode="$(_registry_mode_of "$parent")" || {
+        echo "registry: login '$slug': REFUSING — cannot read the mode of the PARENT $parent" >&2; return 78; }
+      if _registry_group_or_other_writable "$pmode"; then
+        echo "registry: login '$slug': REFUSING — the PARENT $parent is group- or other-writable (mode $pmode)" >&2
+        return 78
+      fi
+    fi
+  fi
+
+  # THE DIRECTORY'S OWN STATE, but only WHEN IT EXISTS. A directory that does
+  # not exist yet is the normal state before a cutover, and refusing it would
+  # make the gate something one turns off in order to migrate.
+  #
+  # THIS IS REGISTER INTEGRITY, NOT AN OS BOUNDARY: the same unix account can
+  # read its own directories, so nothing here stops somebody already inside. It
+  # stops a chmod, a careless copy or a hand-built home from making a
+  # credential directory readable to another account SILENTLY.
+  if [ -L "$resolved" ]; then
+    echo "registry: login '$slug': REFUSING — $resolved is a symlink." >&2
+    echo "registry: history and credentials are COPIED at an account change, never symlinked." >&2
+    return 78
+  fi
+  if [ -e "$resolved" ]; then
+    if [ ! -d "$resolved" ]; then
+      echo "registry: login '$slug': REFUSING — $resolved exists and is not a directory" >&2
+      return 78
+    fi
+    if [ ! -O "$resolved" ]; then
+      echo "registry: login '$slug': REFUSING — $resolved is not owned by the current user" >&2
+      return 78
+    fi
+    local dmode; dmode="$(_registry_mode_of "$resolved")" || {
+      echo "registry: login '$slug': REFUSING — cannot read the mode of $resolved" >&2; return 78; }
+    if _registry_group_or_other_writable "$dmode"; then
+      echo "registry: login '$slug': REFUSING — $resolved is group- or other-writable (mode $dmode)" >&2
+      return 78
+    fi
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# registry_login_check — sweep the WHOLE register. rc 0 if every row parses,
+# every CONFIG_DIR is grammatical, and no two rows claim the same directory FOR
+# THE SAME PRINCIPAL; rc 78 with one sentence per fault otherwise.
+#
+# IT NEVER RESOLVES A HOME, and the first version of this function did — it
+# expanded every row against $LOGIN_PRINCIPAL, which is WRONG TWICE:
+#
+#   * PRINCIPAL is the HUMAN; a home belongs to a UNIX ACCOUNT, and the account
+#     register carries USERNAME precisely because the two may differ. A check
+#     that resolved a principal's name as a unix account would refuse the whole
+#     register — not one row — the day they diverge.
+#   * A register check must give the SAME answer everywhere. Resolving homes
+#     makes its verdict depend on which machine it runs on and which accounts
+#     that machine happens to have, so the repo-side gate and a host would
+#     disagree about whether the register is sound.
+#
+# THE COLLISION IS THEREFORE A PAIR: (PRINCIPAL, normalised relative CONFIG_DIR).
+# Two rows for the same human naming the same relative directory ARE one
+# directory in that human's home, on every machine, without asking any machine.
+# Two rows for DIFFERENT humans naming the same relative directory are two
+# directories in two homes and are NOT a collision — the earlier version would
+# have called them one, and that refusal is exactly what would have blocked a
+# second human's own login row.
+#
+# WHO RESOLVES A HOME, THEN:
+#   * runtime, both supervisors -> the account the process runs as
+#   * the static session gate   -> the session's ACCOUNT.USERNAME
+#   * this function             -> nobody. It compares declarations.
+#
+# AN UNPARSABLE ROW IS A REGISTER FAULT, never a skipped row. "Sound apart from
+# the files I could not read" is not an answer anybody can act on.
+#
+# NEVER CALLED IN A SPAWN PATH. It reads every row; supervision resolves ONE
+# login and needs nothing else.
+registry_login_check() {
+  local dir; dir="$(registry_login_dir)"
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING — the login register does not exist: $dir" >&2
+    return 78
+  fi
+  local faults=0 slug seen="" pair rel leaf legacy legacy_seen=""
+  local slugs; slugs="$(registry_login_list)" || return 78
+  legacy="$(registry_legacy_login)" || return 78
+  for slug in $slugs; do
+    if ! registry_login_load "$slug" >/dev/null 2>&1; then
+      registry_login_load "$slug" 2>&1 >/dev/null | sed 's/^/  /' >&2
+      faults=$((faults+1)); continue
+    fi
+    # THE GRAMMAR, WITHOUT THE RESOLUTION. registry_login_config_dir does both;
+    # here only the form is asked about, so the answer cannot depend on the
+    # machine. The normalised value is the raw field minus the leading `~/` —
+    # the grammar guarantees there is nothing else to normalise (one slug
+    # component, no `.`/`..`, no repeated slashes). That is what a grammar buys.
+    case "$LOGIN_CONFIG_DIR_RAW" in
+      '~/.claude')
+        if [ -z "$legacy" ] || [ "$legacy" != "$slug" ]; then
+          echo "registry: '$slug' claims the runtime's unnamed default, which the estate" >&2
+          echo "registry: reserves for LEGACY_LOGIN (currently: ${legacy:-none})." >&2
+          faults=$((faults+1)); continue
+        fi
+        if [ -n "$legacy_seen" ]; then
+          echo "registry: more than one row claims the unnamed default — it is one directory." >&2
+          faults=$((faults+1)); continue
+        fi
+        legacy_seen=1
+        rel=".claude" ;;
+      '~/.claude-logins/'*)
+        rel="${LOGIN_CONFIG_DIR_RAW#\~/}"
+        leaf="${rel#.claude-logins/}"
+        case "$leaf" in ''|*/*)
+          echo "registry: '$slug' CONFIG_DIR '$LOGIN_CONFIG_DIR_RAW' — exactly one directory name under .claude-logins/" >&2
+          faults=$((faults+1)); continue ;;
+        esac
+        if ! [[ "$leaf" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+          echo "registry: '$slug' CONFIG_DIR '$LOGIN_CONFIG_DIR_RAW' — '$leaf' is not a slug" >&2
+          faults=$((faults+1)); continue
+        fi ;;
+      *)
+        echo "registry: '$slug' CONFIG_DIR '$LOGIN_CONFIG_DIR_RAW' is outside the grammar." >&2
+        faults=$((faults+1)); continue ;;
+    esac
+    # THE PAIR, joined on a TAB: neither a principal nor a normalised relative
+    # path can contain one (both are shape-validated), so the joined string
+    # cannot be forged by a single value that merely looks like two.
+    pair="$LOGIN_PRINCIPAL	$rel"
+    case "$seen" in
+      *"|$pair|"*)
+        echo "registry: REFUSING — two login rows claim the SAME directory for the same" >&2
+        echo "registry: principal: '$LOGIN_PRINCIPAL' + '$LOGIN_CONFIG_DIR_RAW' ('$slug' collides with" >&2
+        echo "registry: an earlier row). Two accounts on one credential directory is the" >&2
+        echo "registry: outcome this register exists to prevent; each row reads as correct" >&2
+        echo "registry: on its own." >&2
+        faults=$((faults+1)) ;;
+      *) seen="$seen|$pair|" ;;
+    esac
+  done
+  if [ "$faults" -ne 0 ]; then
+    echo "registry: the login register has $faults fault(s) — refusing." >&2
+    return 78
+  fi
+  return 0
+}

@@ -196,7 +196,8 @@ ln -s "$FX/does-not-exist.conf" "$FX/bad.d/dangling.conf"
 out="$( STEWARD_LOGINS_DIR="$FX/bad.d" registry_login_list )"
 case "$out" in *dangling*) ok "a dangling row is listed" ;;
   *) bad "a dangling row is listed" "the lister skipped it: $out" ;; esac
-# The register check's refusal on this row is asserted once registry_login_check exists.
+( STEWARD_LOGINS_DIR="$FX/bad.d" registry_login_check >/dev/null 2>&1 )
+is "and the register check therefore refuses" "$?" "78"
 rm -f "$FX/bad.d/dangling.conf"
 
 echo "== 7. the owner's home is resolved, never guessed =="
@@ -239,6 +240,197 @@ err="$( registry_legacy_login 2>&1 >/dev/null )"
 has "the refusal names the estate file" "$err" "could not be read"
 estate 'LABEL_PREFIX="com.example.claude"'
 unset STEWARD_ESTATE_ROOT
+
+echo "== 9. CONFIG_DIR is grammar, resolved against the OWNER's home =="
+export STEWARD_HOME_LOOKUP_CMD="$FX/homelookup"
+mkdir -p "$FX/estate/estate"; export STEWARD_ESTATE_ROOT="$FX/estate"
+printf 'LABEL_PREFIX="com.example.claude"\nLEGACY_LOGIN="acme-old"\n' \
+  > "$FX/estate/estate/steward.conf"
+
+# ITS OWN LEAF, AND THAT MATTERS. `good` (test 1) already claims
+# ~/.claude-logins/acme; a second sound row on the same directory is exactly the
+# collision registry_login_check refuses, and test 11's control group ("a
+# register of only sound rows passes rc 0") would then be impossible to satisfy.
+# Two rows sharing a leaf here would have made that assertion permanently red
+# and looked like a bug in the check.
+row named <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-team"
+PROVIDER="claude-team"
+CONFIG_DIR="~/.claude-logins/acme-team"
+LEGAL_OWNER="Acme"
+EOF
+is "the named form resolves against the owner's home" \
+   "$( registry_login_config_dir named alice )" "/srv/homes/alice/.claude-logins/acme-team"
+
+is "the CALLER's HOME is never used" \
+   "$( HOME=/wrong registry_login_config_dir named alice )" "/srv/homes/alice/.claude-logins/acme-team"
+
+# THE ESTATE-NAMED LEGACY ROW IS SOUND, so it lives in the sound directory.
+row acme-old <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-legacy"
+PROVIDER="claude-max"
+CONFIG_DIR="~/.claude"
+LEGAL_OWNER="Acme"
+EOF
+is "the estate-named legacy row may use the unnamed default" \
+   "$( registry_login_config_dir acme-old alice )" "/srv/homes/alice/.claude"
+
+# A SECOND ROW ON THE UNNAMED DEFAULT IS A REFUSAL, so it lives in bad.d.
+badrow other-old <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-other"
+PROVIDER="claude-max"
+CONFIG_DIR="~/.claude"
+LEGAL_OWNER="Acme"
+EOF
+( STEWARD_LOGINS_DIR="$FX/bad.d" registry_login_config_dir other-old alice >/dev/null 2>&1 )
+is "a row NOT named by the estate may not" "$?" "78"
+err="$( STEWARD_LOGINS_DIR="$FX/bad.d" registry_login_config_dir other-old alice 2>&1 >/dev/null )"
+has "the refusal names the estate key" "$err" "LEGACY_LOGIN"
+
+badgrammar() { # <name> <CONFIG_DIR value> <description> — always in bad.d
+  badrow "$1" <<EOF
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-team"
+PROVIDER="claude-team"
+CONFIG_DIR="$2"
+LEGAL_OWNER="Acme"
+EOF
+  ( STEWARD_LOGINS_DIR="$FX/bad.d" registry_login_config_dir "$1" alice >/dev/null 2>&1 )
+  is "$3" "$?" "78"
+}
+badgrammar absolute  "/srv/homes/alice/.claude-logins/acme" "an absolute path refuses"
+badgrammar dotdot    "~/.claude-logins/../.ssh"             "a .. component refuses"
+badgrammar dot       "~/.claude-logins/."                   "a . component refuses"
+badgrammar emptyleaf "~/.claude-logins/"                    "an empty last component refuses"
+badgrammar deep      "~/.claude-logins/a/b"                 "a nested path refuses"
+badgrammar wrongroot "~/.config/claude"                     "another root refuses"
+badgrammar upper     "~/.claude-logins/Acme"                "a non-slug directory name refuses"
+badgrammar space     "~/.claude-logins/ac me"               "a space refuses"
+badgrammar tildeonly "~"                                    "the bare home refuses"
+
+echo "== 10. the directory's own state refuses when it EXISTS =="
+mkdir -p "$FX/realhome/.claude-logins/acme-team"
+cat > "$FX/homelookup2" <<STUB
+#!/bin/bash
+[ "\$1" = "alice" ] && printf '%s\n' "$FX/realhome"
+STUB
+chmod +x "$FX/homelookup2"
+real() { STEWARD_HOME_LOOKUP_CMD="$FX/homelookup2" registry_login_config_dir named alice; }
+
+is "an existing, tight directory resolves" "$( real )" "$FX/realhome/.claude-logins/acme-team"
+chmod 777 "$FX/realhome/.claude-logins/acme-team"
+( real >/dev/null 2>&1 ); is "a world-writable existing directory refuses" "$?" "78"
+chmod 700 "$FX/realhome/.claude-logins/acme-team"
+rm -rf "$FX/realhome/.claude-logins/acme-team"
+ln -s /tmp "$FX/realhome/.claude-logins/acme-team"
+( real >/dev/null 2>&1 ); is "a symlinked target refuses" "$?" "78"
+rm -f "$FX/realhome/.claude-logins/acme-team"
+( real >/dev/null 2>&1 ); is "a directory that does not exist YET is allowed" "$?" "0"
+
+echo "== 10b. the PARENT is asked about too (grind 2 names parent AND target) =="
+# A tight target under a world-writable parent is not tight: anybody can rename
+# the target away and put their own directory there. Grind 2 says "symlinked
+# parent/target" and the first version of this resolver only checked the target.
+chmod 777 "$FX/realhome/.claude-logins"
+( real >/dev/null 2>&1 ); is "a world-writable parent refuses" "$?" "78"
+chmod 700 "$FX/realhome/.claude-logins"
+rm -rf "$FX/realhome/.claude-logins"
+ln -s /tmp "$FX/realhome/.claude-logins"
+( real >/dev/null 2>&1 ); is "a symlinked parent refuses" "$?" "78"
+err="$( real 2>&1 >/dev/null )"
+has "the parent refusal says PARENT" "$err" "parent"
+rm -f "$FX/realhome/.claude-logins"
+( real >/dev/null 2>&1 ); is "a parent that does not exist YET is allowed" "$?" "0"
+
+echo "== 10c. PRINCIPAL is the human, USERNAME is the unix account =="
+# THE FIXTURE THAT WOULD HAVE CAUGHT THE FIRST registry_login_check.
+# PRINCIPAL=alice, the unix account is a-user, and the resolved directory must
+# land under that account's home. The same pair is proven again through the
+# projection (uppgift 15) and through a launch branch (uppgift 6) — one
+# measurement per layer, because each layer resolves a home for itself.
+#
+# THE HOME ROOT IS /srv/homes/, NEVER /home/. This suite is on PRODUCT FILES
+# from task 1 onward, and the leak guard's class 5 counts every
+# `/home/<name>` on that surface with an assertion of `-eq 0`. The pair under
+# test is PRINCIPAL != USERNAME, which any root proves equally well — and the
+# stub in test 7 above already uses /srv/homes/alice, so this keeps one root
+# for the whole suite.
+cat > "$FX/homelookup3" <<'STUB'
+#!/bin/bash
+case "$1" in
+  a-user) printf '/srv/homes/a-user\n' ;;
+  alice)  exit 1 ;;   # the HUMAN is not a unix account — resolving it MUST fail
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX/homelookup3"
+is "the resolver takes a UNIX ACCOUNT and lands in its home" \
+   "$( STEWARD_HOME_LOOKUP_CMD="$FX/homelookup3" registry_login_config_dir named a-user )" \
+   "/srv/homes/a-user/.claude-logins/acme-team"
+( STEWARD_HOME_LOOKUP_CMD="$FX/homelookup3" registry_login_config_dir named alice >/dev/null 2>&1 )
+is "resolving the PRINCIPAL as a unix account refuses (it is not one)" "$?" "78"
+
+echo "== 11. the register-wide check catches what a row cannot see =="
+# TWO ROWS ON ONE DIRECTORY, in a one-shot register of their own — never in the
+# sound directory, so the control group below stays meaningful.
+mkdir -p "$FX/collide.d"
+for n in dup-a dup-b; do
+  printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-team"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/same"\nLEGAL_OWNER="Acme"\n' \
+    > "$FX/collide.d/$n.conf"
+  chmod 600 "$FX/collide.d/$n.conf"
+done
+( STEWARD_LOGINS_DIR="$FX/collide.d" registry_login_check >/dev/null 2>&1 )
+is "two rows on the SAME dir for the SAME principal refuse" "$?" "78"
+err="$( STEWARD_LOGINS_DIR="$FX/collide.d" registry_login_check 2>&1 >/dev/null )"
+has "the refusal names the shared directory" "$err" ".claude-logins/same"
+has "the refusal names the second row" "$err" "dup-b"
+
+# THE CONTROL GROUP THAT PROVES IT IS A PAIR AND NOT A PATH. Two DIFFERENT
+# humans naming the same relative directory are two directories in two homes.
+# A check that compared paths alone would refuse this — and that refusal is
+# exactly what would have blocked a second human's own login row.
+mkdir -p "$FX/twoprincipals.d"
+printf 'PRINCIPAL="alice"\nACCOUNT="acct-a"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/shared"\nLEGAL_OWNER="Acme"\n' \
+  > "$FX/twoprincipals.d/a.conf"
+printf 'PRINCIPAL="bob"\nACCOUNT="acct-b"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/shared"\nLEGAL_OWNER="Acme"\n' \
+  > "$FX/twoprincipals.d/b.conf"
+chmod 600 "$FX/twoprincipals.d"/*.conf
+( STEWARD_LOGINS_DIR="$FX/twoprincipals.d" registry_login_check >/dev/null 2>&1 )
+is "two DIFFERENT principals on the same relative dir is NOT a collision" "$?" "0"
+
+# AND THE CHECK NEVER RESOLVES A HOME — proven by making resolution IMPOSSIBLE.
+# Neither `alice` nor `bob` is a unix account on the machine running this suite,
+# and the lookup seam is aimed at a stub that refuses everything. A check that
+# resolved homes would refuse here; one that compares declarations cannot tell
+# the difference.
+printf '#!/bin/bash\nexit 1\n' > "$FX/homelookup-never"; chmod +x "$FX/homelookup-never"
+( STEWARD_LOGINS_DIR="$FX/twoprincipals.d" \
+  STEWARD_HOME_LOOKUP_CMD="$FX/homelookup-never" registry_login_check >/dev/null 2>&1 )
+is "the check passes even when NO home can be resolved" "$?" "0"
+
+# TWO ROWS ON THE UNNAMED DEFAULT, same shape, its own register.
+mkdir -p "$FX/twolegacy.d"
+cp "$FX/logins.d/acme-old.conf" "$FX/twolegacy.d/acme-old.conf"
+cp "$FX/bad.d/other-old.conf"   "$FX/twolegacy.d/other-old.conf"
+chmod 600 "$FX/twolegacy.d"/*.conf
+( STEWARD_LOGINS_DIR="$FX/twolegacy.d" registry_login_check >/dev/null 2>&1 )
+is "two rows claiming the unnamed default refuse" "$?" "78"
+
+# AN UNPARSABLE ROW IS A REGISTER FAULT, never a skipped row.
+mkdir -p "$FX/onebad.d"
+cp "$FX/logins.d/named.conf" "$FX/onebad.d/named.conf"
+cp "$FX/bad.d/dupkey.conf"   "$FX/onebad.d/dupkey.conf"
+chmod 600 "$FX/onebad.d"/*.conf
+( STEWARD_LOGINS_DIR="$FX/onebad.d" registry_login_check >/dev/null 2>&1 )
+is "one unparsable row fails the whole register" "$?" "78"
+
+# THE CONTROL GROUP, and it is the whole reason the fixtures are split. Without
+# it every assertion above is satisfied by a check that refuses EVERYTHING.
+( registry_login_check >/dev/null 2>&1 )
+is "a register of only sound rows passes rc 0" "$?" "0"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
