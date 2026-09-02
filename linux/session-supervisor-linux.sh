@@ -155,19 +155,6 @@ if [ -z "$_reg_ok" ]; then
   echo "session-supervisor: $NAME — REFUSING: the registry library is missing or could not be read ($REG_LIB)." >&2
   exit 78
 fi
-# A DEPLOYED SUPERVISOR WITHOUT ITS SPAWN LIBRARY MUST NOT SPAWN LEGACY. The
-# tempting fallback -- carry on with the command line this file used before the
-# libraries existed -- is the exact failure lib/mcpspawn.sh was written to
-# prevent, one level up: a session started with whatever its checkout's own
-# .mcp.json declares, while the registry's grant was never consulted, and
-# nothing anywhere says so. A failed timer is loud; that is not.
-if [ -n "$_mcp_lib_missing" ]; then
-  echo "session-supervisor: $NAME — REFUSING: the spawn library is missing or could not be read ($_mcp_lib_missing)." >&2
-  echo "session-supervisor: $NAME — without it the session's granted MCP set cannot be honored, and starting" >&2
-  echo "session-supervisor: $NAME — on the legacy path would silently hand it whatever the checkout declares." >&2
-  echo "session-supervisor: $NAME — deploy the product's lib/ to $_MCP_LIB_DIR." >&2
-  exit 78
-fi
 if [ -z "$_STATE_NAME" ] || [ -z "$_PAUSED_NAME" ]; then
   echo "session-supervisor: $NAME — REFUSING: the estate lacks STATE_DIR_NAME or PAUSED_DIR_NAME." >&2
   echo "session-supervisor: $NAME — without them the supervisor's state would be guessed, and a paused" >&2
@@ -658,21 +645,31 @@ NAME_ARG=""
 # THE STDERR IS KEPT because it is the only place the omitted or unrenderable
 # assets are named, and an alarm that cannot name them sends a human to read
 # four files. The temp file is read in spawn_session and removed on the way out.
+#
+# THE REFUSALS ARE REMEMBERED HERE AND TAKEN ON THE SPAWN PATH. Both of them --
+# a missing spawn library, and a document that could not be built -- used to
+# `exit 78` right here, which is ABOVE the alive branch. On a half-deployed host
+# (the manifest lists this file BEFORE the two lib rows, so an interrupted
+# deploy-apply lands exactly there) that refused the whole ROUND: every
+# session's timer exited 78 four times an hour and took with it the
+# last-sid/launch-mark bookkeeping, the rename cycle, the zombie-pane repair and
+# the unacked-mail and malformed-mail escalations -- none of which need a spawn
+# library at all. The libraries are required to START a session, so the refusal
+# belongs where a session is started, and MCP_REFUSAL carries it there.
 MCP_ARG=""
+MCP_RC=3
+MCP_REFUSAL=""
 MCP_ERR="$(mktemp 2>/dev/null || printf '%s' "$STATE_DIR/$NAME.mcp-err")"
 # EVERY EXIT PATH FREES IT. This file leaves through a dozen `exit 0`s -- the
 # alive branch alone has several -- and a temp file per supervision round is
 # four an hour per session, forever.
 trap 'rm -f "$MCP_ERR"' EXIT
-MCP_ARG="$(mcp_spawn_prepare "$NAME" "$STATE_DIR/$NAME.mcp.json" 2>"$MCP_ERR")"
-MCP_RC=$?
-if [ "$MCP_RC" -eq 69 ]; then
-  echo "session-supervisor: $NAME — REFUSING: the session's MCP set could not be prepared." >&2
-  sed 's/^/  /' "$MCP_ERR" >&2
-  echo "session-supervisor: $NAME — starting on the legacy path would hand the session whatever the" >&2
-  echo "session-supervisor: $NAME — checkout declares, while the registry's own grant went unread." >&2
-  rm -f "$MCP_ERR"
-  exit 78
+if [ -n "$_mcp_lib_missing" ]; then
+  MCP_REFUSAL="lib"
+else
+  MCP_ARG="$(mcp_spawn_prepare "$NAME" "$STATE_DIR/$NAME.mcp.json" 2>"$MCP_ERR")"
+  MCP_RC=$?
+  [ "$MCP_RC" -eq 69 ] && MCP_REFUSAL="prepare"
 fi
 
 # PLACED BEFORE --remote-control ON PURPOSE. The label has to stay the command's
@@ -681,7 +678,13 @@ fi
 # failing loudly. mcp_claude_cmd_fragment is where that order is written down,
 # and test/mcpspawn.test.sh section 8 is where it is measured -- this file has
 # no suite of its own, so the assembly lives where a suite can reach it.
-CLAUDE_CMD="$(mcp_claude_cmd_fragment "$CONT" "$MCP_ARG" "$NAME_ARG" "$RC_LABEL")"
+# A REMEMBERED REFUSAL HAS NO COMMAND LINE. mcp_claude_cmd_fragment lives in the
+# library that may be the very thing missing, so it is not called at all; the
+# empty string that results is refused on the spawn path below, never spawned.
+CLAUDE_CMD=""
+if [ -z "$MCP_REFUSAL" ]; then
+  CLAUDE_CMD="$(mcp_claude_cmd_fragment "$CONT" "$MCP_ARG" "$NAME_ARG" "$RC_LABEL")"
+fi
 
 # TMUX DOES NOT INHERIT THIS ENVIRONMENT. Measured 2026-08-14, and it is a
 # trap that made the whole credential isolation ineffective for two days
@@ -1216,6 +1219,36 @@ AUTO-ALERT: $MF_COUNT unreadable messages in my malformed/ ($NAME on $(hostname 
     rm -f "$MF_MARK"
   fi
   exit 0
+fi
+
+# ── FROM HERE ON, EVERY PATH ENDS IN A SPAWN ───────────────────────────────
+# The alive branch above has exited. What remains is the boot start, the zombie
+# repair (which kills a pane only because a respawn follows it) and the start
+# path itself -- so this is where "we are about to spawn" begins, and it is the
+# last point before the first tmux WRITE. A refusal taken here refuses the
+# spawn and nothing else; a refusal taken after the kill would have turned a
+# repair into a demolition.
+#
+# A DEPLOYED SUPERVISOR WITHOUT ITS SPAWN LIBRARY MUST NOT SPAWN LEGACY. The
+# tempting fallback -- carry on with the command line this file used before the
+# libraries existed -- is the exact failure lib/mcpspawn.sh was written to
+# prevent, one level up: a session started with whatever its checkout's own
+# .mcp.json declares, while the registry's grant was never consulted, and
+# nothing anywhere says so. A failed timer is loud; that is not.
+if [ "$MCP_REFUSAL" = "lib" ]; then
+  echo "session-supervisor: $NAME — REFUSING to spawn: the spawn library is missing, unreadable or out of date ($_mcp_lib_missing)." >&2
+  echo "session-supervisor: $NAME — without it the session's granted MCP set cannot be honored, and starting" >&2
+  echo "session-supervisor: $NAME — on the legacy path would silently hand it whatever the checkout declares." >&2
+  echo "session-supervisor: $NAME — deploy the product's lib/ to $_MCP_LIB_DIR. Supervision of a LIVE session" >&2
+  echo "session-supervisor: $NAME — continues meanwhile; only the start is refused." >&2
+  exit 78
+fi
+if [ "$MCP_REFUSAL" = "prepare" ]; then
+  echo "session-supervisor: $NAME — REFUSING to spawn: the session's MCP set could not be prepared." >&2
+  sed 's/^/  /' "$MCP_ERR" >&2
+  echo "session-supervisor: $NAME — starting on the legacy path would hand the session whatever the" >&2
+  echo "session-supervisor: $NAME — checkout declares, while the registry's own grant went unread." >&2
+  exit 78
 fi
 
 # DOES CLAUDE EXIST AT ALL? A session whose binary is missing starts an empty
