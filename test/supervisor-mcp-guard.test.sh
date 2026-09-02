@@ -460,5 +460,85 @@ is  "9b the launch line is byte-identical to the no-LOGIN control" "$log9b" "$lo
 sed -i.bak '/^SCHEMA_VERSION=/d' "$ROOT/estate/steward.conf"
 rm -f "$ROOT/estate/steward.conf.bak"
 
+echo "== 10. LOGIN: the resume path and the trust file follow the login, not \$HOME/.claude =="
+# Task 7's own two Linux edits -- HIST (~:364) and CLAUDE_JSON (~:1011) -- had
+# no coverage anywhere in this repo. Reverting either line in isolation left
+# this whole suite (sections 0-9) green, because no case here ever planted a
+# thread or a trust file on BOTH sides of the CFG_ROOT split. These cases do.
+CFG="$HOMEDIR/.claude-logins/acme"
+MUNGE="$(printf '%s' "$HOMEDIR/Projects/repo" | sed 's|[^a-zA-Z0-9]|-|g')"
+reset_projects() { rm -rf "$HOMEDIR/.claude-logins" "$HOMEDIR/.claude"; }
+
+echo "== 10a. a thread filed under the login's OWN directory is the one resumed =="
+reset_projects
+write_login_conf acme-team
+mkdir -p "$CFG/projects/$MUNGE"
+printf '{"type":"last-prompt","timestamp":"2026-08-31T10:00:00Z"}\n' \
+  > "$CFG/projects/$MUNGE/aaaaaaaa-1111-2222-3333-444444444444.jsonl"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10a=$?
+log10a="$(cat "$TMUX_LOG")"
+is  "10a rc 0"                                          "$rc10a" "0"
+has "10a the launch line resumes the login's own thread" \
+    "$log10a" "--resume aaaaaaaa-1111-2222-3333-444444444444"
+
+echo "== 10b. the SAME thread sitting under legacy ~/.claude is invisible -- the login's own store is empty, so the start is FRESH, not the legacy thread =="
+reset_projects
+write_login_conf acme-team
+mkdir -p "$HOMEDIR/.claude/projects/$MUNGE"
+printf '{"type":"last-prompt","timestamp":"2026-08-31T10:00:00Z"}\n' \
+  > "$HOMEDIR/.claude/projects/$MUNGE/bbbbbbbb-1111-2222-3333-444444444444.jsonl"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10b=$?
+log10b="$(cat "$TMUX_LOG")"
+is    "10b rc 0"                                        "$rc10b" "0"
+hasnt "10b the launch line does not carry --resume at all -- this is the case the task exists for" \
+      "$log10b" "--resume"
+
+echo "== 10c. no-LOGIN control: the legacy directory is still read exactly as before =="
+reset_projects
+write_login_conf
+mkdir -p "$HOMEDIR/.claude/projects/$MUNGE"
+printf '{"type":"last-prompt","timestamp":"2026-08-31T10:00:00Z"}\n' \
+  > "$HOMEDIR/.claude/projects/$MUNGE/cccccccc-1111-2222-3333-444444444444.jsonl"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10c=$?
+log10c="$(cat "$TMUX_LOG")"
+is  "10c rc 0"                                                     "$rc10c" "0"
+has "10c without LOGIN the launch line resumes ~/.claude's thread, unchanged" \
+    "$log10c" "--resume cccccccc-1111-2222-3333-444444444444"
+
+echo "== 10d. the trust file follows the login too, and leaves \$HOME/.claude.json alone =="
+# ensure_workspace_trusted only WRITES an existing file ([ -f "$CLAUDE_JSON" ]
+# || return 0) -- so the fixture pre-creates the file it expects the function
+# to update, on each side, and leaves the other side absent.
+reset_projects
+write_login_conf acme-team
+mkdir -p "$CFG"
+printf '{"projects":{}}\n' > "$CFG/.claude.json"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10d=$?
+is "10d rc 0" "$rc10d" "0"
+trust10d="$(jq -r --arg p "$HOMEDIR/Projects/repo" '.projects[$p].hasTrustDialogAccepted // false' "$CFG/.claude.json" 2>/dev/null)"
+is "10d the login's own trust file was written"     "$trust10d" "true"
+[ -e "$HOMEDIR/.claude.json" ] && bad "10d and \$HOME/.claude.json was left alone" "it exists" \
+                               || ok "10d and \$HOME/.claude.json was left alone"
+
+echo "== 10d-ctrl. no-LOGIN control: the legacy trust file is still the one written =="
+reset_projects
+write_login_conf
+printf '{"projects":{}}\n' > "$HOMEDIR/.claude.json"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10dctrl=$?
+is "10d-ctrl rc 0" "$rc10dctrl" "0"
+trust10dctrl="$(jq -r --arg p "$HOMEDIR/Projects/repo" '.projects[$p].hasTrustDialogAccepted // false' "$HOMEDIR/.claude.json" 2>/dev/null)"
+is "10d-ctrl without LOGIN the legacy trust file is still the one written, unchanged" \
+   "$trust10dctrl" "true"
+
+# Restore the shared conf to its LOGIN-less base shape, and drop the login
+# directories this section created, for cleanliness.
+write_login_conf
+reset_projects
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
