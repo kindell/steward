@@ -270,6 +270,15 @@ CONF="$(registry_dir)/$NAME.conf"
 # path; a green outcome from here must mean something.
 # rc 78 (EX_CONFIG) makes the systemd unit show as failed instead of the error
 # hiding inside a live but broken session.
+# LOGIN IS RESET BEFORE THE SOURCE, unlike every other field this file reads
+# from the conf. Review finding 2 (task 6, round 1): this file sources the
+# conf straight into its own shell, with no reset comparable to the macOS
+# twin's registry_load (whose reset line clears LOGIN="" before it sources
+# anything). Without this line an exported ambient LOGIN in the supervisor's
+# own environment is read exactly as if the conf had declared it -- a session
+# silently launched against another login's credential directory, with no
+# line in the conf a reader could have caught.
+LOGIN=""
 if [ -f "$CONF" ]; then
   # shellcheck source=/dev/null
   . "$CONF"
@@ -726,6 +735,14 @@ fi
 # works identically here and inside the macOS branches' exec strings.
 #
 # EMPTY LOGIN -> EMPTY PREFIX: the command line is byte-identical to today's.
+#
+# THE REFUSAL FIRES AT LOAD TIME, EVERY ROUND -- not only on a spawn. A LOGIN
+# that stops resolving (a row removed from logins.d, a home lookup that
+# fails) exits 78 here on every subsequent round too, so it stops supervision
+# of an already-live and healthy session, not just a new spawn. Loud (rc 78,
+# a named slug) beats quiet: a session that silently kept running unsupervised
+# because its login rotted underneath it is worse than one that gets no
+# restarts until someone fixes the row.
 LOGIN_PREFIX=""
 if [ -n "${LOGIN:-}" ]; then
   if ! LOGIN_PREFIX="$(registry_login_exec_prefix "$LOGIN" "$(id -un)")"; then

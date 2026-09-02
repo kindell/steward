@@ -321,5 +321,99 @@ printf '0\n' > "$HOMEDIR/bus-rc"
 run
 is "7o so the next spawn tries again" "$(alarms)" "2"
 
+echo "== 8. LOGIN: the Linux twin's exec-prefix splice, in the fixture that actually runs it =="
+# Review finding 1 (task 6, round 1): no suite in either repo ever set LOGIN
+# for the Linux twin, so its splice (spawn_session's launch line) could be
+# deleted outright and nothing here would turn red. This is that suite's own
+# fixture and tmux shim -- not a new file -- because this is the only product
+# suite that actually executes linux/session-supervisor-linux.sh end to end.
+mkdir -p "$ROOT/logins.d"
+printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-team"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude-logins/acme"\nLEGAL_OWNER="alice"\n' \
+  > "$ROOT/logins.d/acme-team.conf"
+chmod 600 "$ROOT/logins.d/acme-team.conf"
+# THE OWNER ARGUMENT ON THIS TWIN IS $(id -un), NOT the conf's OWNER (this
+# file's own comment: the Linux twin already runs AS the owner, so the home
+# it may resolve must be the one it is actually running in). The stub
+# therefore answers for whoever the test process is, not for a fixed name.
+cat > "$BIN/login-home" <<EOF
+#!/bin/bash
+printf '%s\n' "$HOMEDIR"
+EOF
+chmod 755 "$BIN/login-home"
+# REAL MCP LIBRARIES, freshly copied: section 7 above left FAKE
+# mcpprepare/mcpspawn functions in \$LIBS, and this section's assertions
+# must not depend on that leftover fixture state.
+cp "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
+
+write_login_conf() { # [login-slug]
+  {
+    printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s"\nID="%s"\nRC_LABEL="L"\n' \
+      "$HOMEDIR/Projects/repo" "$NAME"
+    [ -n "${1:-}" ] && printf 'LOGIN="%s"\n' "$1"
+  } > "$ROOT/sessions.d/$NAME.conf"
+}
+
+run_login() { # <extra env...> -> rc; stdout+stderr in $T/out, tmux calls in $TMUX_LOG
+  rm -f "$STATE/$NAME".*
+  : > "$TMUX_LOG"
+  HOME="$HOMEDIR" \
+  STEWARD_ESTATE_ROOT="$ROOT" \
+  STEWARD_CONFIG_FILE="$T/no-such-config" \
+  STEWARD_REGISTRY_LIB="$LIBS/registry.sh" \
+  STEWARD_TMUX_SOCKET="$T/fixture.sock" \
+  STEWARD_HOME_LOOKUP_CMD="$BIN/login-home" \
+  PATH="$BIN:$PATH" \
+    env "$@" bash "$SUP" "$NAME" >"$T/out" 2>&1
+}
+
+write_login_conf
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc8_nologin=$?
+log_nologin="$(cat "$TMUX_LOG")"
+is  "8a a dead session with no LOGIN still spawns, rc 0"    "$rc8_nologin" "0"
+has "8b and tmux was asked to create it"                    "$log_nologin" "new-session"
+
+write_login_conf acme-team
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc8_login=$?
+log_login="$(cat "$TMUX_LOG")"
+is  "8c a resolvable LOGIN still spawns, rc 0"               "$rc8_login" "0"
+has "8d the exec prefix sits immediately before the claude binary, directory resolved" \
+    "$log_login" \
+    "/usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=$HOMEDIR/.claude-logins/acme $HOMEDIR/.local/bin/claude"
+
+write_login_conf
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc8_nologin2=$?
+log_nologin2="$(cat "$TMUX_LOG")"
+is "8e without LOGIN the command line is byte-identical to the no-LOGIN form" \
+   "$log_nologin2" "$log_nologin"
+
+echo "== 8f. a set but unresolvable LOGIN refuses BEFORE any tmux write =="
+write_login_conf does-not-exist
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc8_ghost=$?
+log_ghost="$(cat "$TMUX_LOG")"
+out8_ghost="$(cat "$T/out")"
+is    "8f rc 78 -- LOGIN does not resolve"    "$rc8_ghost" "78"
+hasnt "8g and no tmux write happened"          "$log_ghost" "new-session"
+has   "8h the refusal names the slug"          "$out8_ghost" "does-not-exist"
+
+echo "== 8i. an AMBIENT exported LOGIN cannot become the session's login (finding 2) =="
+# The macOS twin reads LOGIN through registry_load, whose reset line clears
+# LOGIN="" before sourcing the conf. This twin sources the conf straight into
+# its own shell -- a LOGIN exported into the supervisor's own environment
+# must not leak into a session whose conf is silent about it.
+write_login_conf
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login LOGIN=acme-team; rc8_ambient=$?
+log_ambient="$(cat "$TMUX_LOG")"
+is    "8i an ambient LOGIN with a LOGIN-less conf still spawns, rc 0" "$rc8_ambient" "0"
+hasnt "8j and the command line carries no exec prefix" "$log_ambient" "/usr/bin/env -u ANTHROPIC_API_KEY"
+is    "8k the command line is byte-identical to the no-LOGIN form"    "$log_ambient" "$log_nologin"
+
+# Restore the shared conf to its LOGIN-less base shape for cleanliness.
+write_login_conf
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
