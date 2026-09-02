@@ -289,6 +289,42 @@ else
   echo "session-supervisor: $NAME — register the session first (bash ~/scripts/session-new.sh)." >&2
   exit 78
 fi
+
+# THE LIBRARY VALIDATES WHAT THE RAW SOURCE ABOVE ONLY READS.
+#
+# MEASURED 2026-08-31: this file called registry_load zero times, so every gate
+# that lives in that loader — the schema gate, the LOGIN requirement, the field
+# validation — was inert on this platform. The estate's most populated host was
+# the one host where none of them applied.
+#
+# ADDITIVE, NOT A REPLACEMENT. The raw source and the sed-based RC_LABEL read
+# stay exactly as they are: they distinguish an EMPTY RC_LABEL line from a
+# MISSING one, which is the difference between a deliberate RC-free session and
+# a forgotten label, and `source` destroys it. registry_load is asked for its
+# VERDICT, not for its values.
+#
+# SUBSHELLED, so the loader's own globals never overwrite what the raw source
+# just put in this shell — this file reads REPO/DOMAIN/LOGIN from the conf
+# itself, and registry_load sets the same names.
+if ! ( registry_load "$NAME" >/dev/null 2>&1 ); then
+  echo "session-supervisor: $NAME — REFUSING: the registry library will not load this row." >&2
+  # Captured into a variable rather than piped straight to sed: $NAME is not
+  # shape-validated anywhere in this file, and interpolating it into a sed
+  # replacement would let a conf name containing & \ or / corrupt or break the
+  # relayed text. A plain read loop has no such hazard.
+  _reg_relay="$( registry_load "$NAME" 2>&1 >/dev/null )"
+  if [ -n "$_reg_relay" ]; then
+    printf '%s\n' "$_reg_relay" | while IFS= read -r _reg_relay_line; do
+      printf 'session-supervisor: %s — %s\n' "$NAME" "$_reg_relay_line" >&2
+    done
+  else
+    echo "session-supervisor: $NAME — the library gave no reason; run \`registry_load $NAME\` by hand to see it." >&2
+  fi
+  echo "session-supervisor: $NAME — nothing is started. A row the library refuses is a row" >&2
+  echo "session-supervisor: $NAME — whose meaning this supervisor cannot be sure of." >&2
+  exit 78
+fi
+
 if [ -z "${DOMAIN:-}" ]; then
   echo "session-supervisor: $NAME — REFUSING: DOMAIN is missing from the conf ($CONF)." >&2
   echo "session-supervisor: $NAME — without DOMAIN the credential directory falls back to" >&2

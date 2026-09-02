@@ -415,5 +415,50 @@ is    "8k the command line is byte-identical to the no-LOGIN form"    "$log_ambi
 # Restore the shared conf to its LOGIN-less base shape for cleanliness.
 write_login_conf
 
+echo "== 9. THE STOPPTEST: schema over this checkout's max refuses, rc 78, ZERO spawn =="
+# Task 6B: this twin now asks registry_load for its VERDICT on every row (a
+# subshell call, additive to the raw source above it), so the schema gate that
+# lives in that loader -- inert on this platform until now -- finally bites
+# here. Measured before this task: registry_load zero calls, registry_schema_check
+# zero calls. Both directions are measured, because a gate proven only in the
+# direction that stops is indistinguishable from a gate that stops everything.
+stopptest() { # <description> <rc> <spawn-evidence file> <forbidden string>
+  local d="$1" rc="$2" f="$3" pat="$4"
+  [ "$rc" -eq 78 ] && ok "$d: rc 78" || bad "$d: rc 78" "got rc=$rc"
+  if [ -s "$f" ] && grep -q "$pat" "$f"; then
+    bad "$d: ZERO spawn" "it started anyway: $(cat "$f")"
+  else ok "$d: ZERO spawn"; fi
+}
+
+write_login_conf   # the LOGIN-less row from section 8's own helper
+
+echo "== 9a. SCHEMA_VERSION over REGISTRY_SCHEMA_MAX: rc 78, no tmux write =="
+printf 'SCHEMA_VERSION="6"\n' >> "$ROOT/estate/steward.conf"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc9a=$?
+out9a="$(cat "$T/out")"
+stopptest "9a Linux supervisor, schema 6" "$rc9a" "$TMUX_LOG" "new-session"
+has "9a the refusal names the library, not a guess" "$out9a" "registry library will not load this row"
+# The whole reason for the second registry_load call is to relay the
+# LIBRARY's own reason, not just the supervisor's generic sentence above --
+# without this assertion, deleting the relay line leaves the suite green.
+has "9a the library's own reason is relayed" "$out9a" "this checkout reads up to"
+
+echo "== 9b. SCHEMA_VERSION at REGISTRY_SCHEMA_MAX: starts, byte-identical to the no-LOGIN control =="
+sed -i.bak '/^SCHEMA_VERSION=/d' "$ROOT/estate/steward.conf"
+printf 'SCHEMA_VERSION="5"\n' >> "$ROOT/estate/steward.conf"
+rm -f "$ROOT/estate/steward.conf.bak"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc9b=$?
+log9b="$(cat "$TMUX_LOG")"
+is  "9b rc 0 -- this checkout reads schema 5"                       "$rc9b" "0"
+has "9b the session was spawned"                                    "$log9b" "new-session"
+is  "9b the launch line is byte-identical to the no-LOGIN control" "$log9b" "$log_nologin"
+
+# Restore: no SCHEMA_VERSION line, matching the estate fixture every section
+# above and below this one relies on.
+sed -i.bak '/^SCHEMA_VERSION=/d' "$ROOT/estate/steward.conf"
+rm -f "$ROOT/estate/steward.conf.bak"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
