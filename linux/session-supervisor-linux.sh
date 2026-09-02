@@ -1255,7 +1255,7 @@ fi
 # The alive branch above has exited. What remains is the boot start, the zombie
 # repair (which kills a pane only because a respawn follows it) and the start
 # path itself -- so this is where "we are about to spawn" begins, and it is the
-# last point before the first tmux WRITE. A refusal taken here refuses the
+# last stop before the first tmux WRITE. A refusal taken here refuses the
 # spawn and nothing else; a refusal taken after the kill would have turned a
 # repair into a demolition.
 #
