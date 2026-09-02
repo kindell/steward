@@ -80,6 +80,26 @@ if [ -f "$REG_LIB" ]; then
   # shellcheck source=/dev/null
   . "$REG_LIB" 2>/dev/null && _reg_ok=1
 fi
+# THE SPAWN LIBRARIES SIT NEXT TO THE REGISTRY LIBRARY, and are found the same
+# way: whatever directory REG_LIB actually resolved to, deployed or in a
+# checkout. Deriving them separately would let a host load its registry from
+# ~/scripts/lib and its spawn policy from a checkout that happens to be lying
+# around, which is two different opinions about the same session.
+#
+# LOADED HERE, REFUSED LATER, exactly like the registry above: a paused session
+# must reach its guard without being asked anything about HOW it would have
+# been started (#112). A missing library is remembered by name and answered
+# below.
+_MCP_LIB_DIR="$(dirname "$REG_LIB")"
+_mcp_lib_missing=""
+for _c in mcprender.sh mcpspawn.sh; do
+  if [ -f "$_MCP_LIB_DIR/$_c" ]; then
+    # shellcheck source=/dev/null
+    . "$_MCP_LIB_DIR/$_c" 2>/dev/null || _mcp_lib_missing="$_MCP_LIB_DIR/$_c"
+  else
+    _mcp_lib_missing="$_MCP_LIB_DIR/$_c"
+  fi
+done
 _STATE_NAME=""; _PAUSED_NAME=""
 if [ -n "$_reg_ok" ]; then
   _STATE_NAME="$(registry_state_dir_name 2>/dev/null || true)"
@@ -133,6 +153,19 @@ fi
 # directory; what must NOT happen there was the refusal.
 if [ -z "$_reg_ok" ]; then
   echo "session-supervisor: $NAME — REFUSING: the registry library is missing or could not be read ($REG_LIB)." >&2
+  exit 78
+fi
+# A DEPLOYED SUPERVISOR WITHOUT ITS SPAWN LIBRARY MUST NOT SPAWN LEGACY. The
+# tempting fallback -- carry on with the command line this file used before the
+# libraries existed -- is the exact failure lib/mcpspawn.sh was written to
+# prevent, one level up: a session started with whatever its checkout's own
+# .mcp.json declares, while the registry's grant was never consulted, and
+# nothing anywhere says so. A failed timer is loud; that is not.
+if [ -n "$_mcp_lib_missing" ]; then
+  echo "session-supervisor: $NAME — REFUSING: the spawn library is missing or could not be read ($_mcp_lib_missing)." >&2
+  echo "session-supervisor: $NAME — without it the session's granted MCP set cannot be honored, and starting" >&2
+  echo "session-supervisor: $NAME — on the legacy path would silently hand it whatever the checkout declares." >&2
+  echo "session-supervisor: $NAME — deploy the product's lib/ to $_MCP_LIB_DIR." >&2
   exit 78
 fi
 if [ -z "$_STATE_NAME" ] || [ -z "$_PAUSED_NAME" ]; then
@@ -597,14 +630,58 @@ SESSION_NAME="$(sed -n 's/^SESSION_NAME="\(.*\)"/\1/p' "$CONF" 2>/dev/null | hea
 [ -n "$SESSION_NAME" ] || SESSION_NAME="$RC_LABEL"
 NAME_ARG=""
 [ -n "$SESSION_NAME" ] && NAME_ARG=" --name \"$SESSION_NAME\""
+# ── THE SESSION'S GRANTED MCP SET, PREPARED ONCE ───────────────────────────
+# The registry knows which MCP servers this session inherited (its account, its
+# managing team, the owning entity, the project). Until now nothing on a host
+# read that: every session started on the LEGACY path -- claude's own discovery
+# of the repo's .mcp.json -- so the grant existed only in the register.
+#
+# ONE CALL, ONE FILE, ONE BRANCH. lib/mcpspawn.sh holds every rule about what
+# each outcome means; this file only reads the exit code, because a supervisor
+# that re-derived the policy would be a second opinion that can disagree with
+# the first. The whole coupling is the six lines below plus one alarm inside
+# spawn_session.
+#
+#   rc 0  a document was written; splice it, strict
+#   rc 1  a document was written and part of the grant was OMITTED; splice it,
+#         and ALARM after the spawn naming what is missing
+#   rc 2  the render REFUSED; an EMPTY document was written and it is spliced
+#         strict anyway -- fail-closed, and ALARM. Never the legacy path: the
+#         registry spoke and could not be honored, and answering that with
+#         whatever the checkout declares gives the session MORE tools than
+#         anybody granted, silently
+#   rc 3  nothing was granted; MCP_ARG is empty and the command line below is
+#         byte for byte the one this fleet already runs
+#   rc 69 the document could not be built; REFUSE, same as any other estate
+#         value this file will not guess at
+#
+# THE STDERR IS KEPT because it is the only place the omitted or unrenderable
+# assets are named, and an alarm that cannot name them sends a human to read
+# four files. The temp file is read in spawn_session and removed on the way out.
+MCP_ARG=""
+MCP_ERR="$(mktemp 2>/dev/null || printf '%s' "$STATE_DIR/$NAME.mcp-err")"
+# EVERY EXIT PATH FREES IT. This file leaves through a dozen `exit 0`s -- the
+# alive branch alone has several -- and a temp file per supervision round is
+# four an hour per session, forever.
+trap 'rm -f "$MCP_ERR"' EXIT
+MCP_ARG="$(mcp_spawn_prepare "$NAME" "$STATE_DIR/$NAME.mcp.json" 2>"$MCP_ERR")"
+MCP_RC=$?
+if [ "$MCP_RC" -eq 69 ]; then
+  echo "session-supervisor: $NAME — REFUSING: the session's MCP set could not be prepared." >&2
+  sed 's/^/  /' "$MCP_ERR" >&2
+  echo "session-supervisor: $NAME — starting on the legacy path would hand the session whatever the" >&2
+  echo "session-supervisor: $NAME — checkout declares, while the registry's own grant went unread." >&2
+  rm -f "$MCP_ERR"
+  exit 78
+fi
+
 # PLACED BEFORE --remote-control ON PURPOSE. The label has to stay the command's
 # LAST argument: the pid-finding pattern further down anchors on it, so a --name
-# appended after it would break aliveness measurement without failing loudly.
-if [ -n "$RC_LABEL" ]; then
-  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions$NAME_ARG --remote-control \"$RC_LABEL\""
-else
-  CLAUDE_CMD="claude $CONT --permission-mode bypassPermissions$NAME_ARG"
-fi
+# or an --mcp-config appended after it would break aliveness measurement without
+# failing loudly. mcp_claude_cmd_fragment is where that order is written down,
+# and test/mcpspawn.test.sh section 8 is where it is measured -- this file has
+# no suite of its own, so the assembly lives where a suite can reach it.
+CLAUDE_CMD="$(mcp_claude_cmd_fragment "$CONT" "$MCP_ARG" "$NAME_ARG" "$RC_LABEL")"
 
 # TMUX DOES NOT INHERIT THIS ENVIRONMENT. Measured 2026-08-14, and it is a
 # trap that made the whole credential isolation ineffective for two days
@@ -1186,6 +1263,30 @@ spawn_session() {
   fi
   tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
     "$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+  # THE ALARM IS ON THE SPAWN PATH, AND ONLY THERE. A degraded or refused set
+  # is a property of the session that was just STARTED, so it is signalled once
+  # per start. Putting it on the every-round path instead would send the same
+  # sentence to the hub four times an hour for as long as the asset stays
+  # missing -- and an alarm nobody can act on faster than it arrives is an
+  # alarm everybody learns to skip, which is how the unacked-mail escalation
+  # above was nearly lost.
+  #
+  # AFTER the launch: the session starts either way. rc 1 means it starts with
+  # part of its tools, rc 2 means it starts with none and knows it. Neither is
+  # a reason to withhold the start; both are a reason to tell a human.
+  if [ "${MCP_RC:-3}" -eq 1 ] || [ "${MCP_RC:-3}" -eq 2 ]; then
+    # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, envelope
+    # v2) -- bus_send refuses every SEND without it. Same form as the two
+    # signals above; the subject slug is the thread key on the hub.
+    _mcp_why="the granted set was refused and the session started with NO MCP servers (strict, empty)"
+    [ "$MCP_RC" -eq 1 ] && _mcp_why="part of the granted set was omitted and the session started without it"
+    MCP_MSG="DRIFT mcp-set: $NAME spawned degraded
+AUTO-ALERT: $_mcp_why ($NAME on $(hostname -s)). What the render said:
+$(sed 's/^/  /' "$MCP_ERR" 2>/dev/null)"
+    if bus_signalera "the MCP set" "$MCP_MSG"; then
+      echo "session-supervisor: $NAME signaled a degraded MCP set (rc $MCP_RC) to the hub" >&2
+    fi
+  fi
 }
 
 # No tmux at all (e.g. after boot): creating anew is risk-free — there is no
