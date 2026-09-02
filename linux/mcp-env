@@ -1,0 +1,71 @@
+#!/bin/bash
+# linux/mcp-env <env-file> <command> [args...] -- read KEY=value lines from
+# <env-file> into the environment, then exec the command.
+#
+# THE OTHER HALF OF "PATHS ON COMMAND LINES, VALUES ONLY IN FILES". A rendered
+# mcp-config (lib/mcprender.sh) never carries a credential: when an asset
+# declares MCP_ENV_FILE, the server's command becomes this wrapper and the
+# file's PATH becomes its first argument. That is what makes a document safe to
+# read in a log, a bug report or somebody's terminal at 2am. This program is
+# where the path turns back into an environment -- on the session host, inside
+# the process that needs it, and nowhere else.
+#
+# IT DOES NOT SOURCE THE FILE, and that is the single most important line in
+# it. `set -a; . "$envfile"` is the obvious implementation, three characters
+# shorter, and it makes the credential file EXECUTABLE: a command substitution
+# written into it by a mangled deploy, a stray editor artefact, or anyone who
+# can write the file runs with everything the session has. A credential store
+# must not also be a code path. So the file is parsed -- one line, one split on
+# the FIRST equals sign, no expansion of what comes back.
+#
+# IT DOES NOT PRINT THE FILE. Every refusal below names a PATH or a LINE
+# NUMBER, never a line and never a key. A parser that quoted the offending text
+# to be helpful would put the credential into the journal, which is the one
+# place this whole pattern exists to keep it out of.
+set -eu
+
+[ "$#" -ge 2 ] || {
+  echo "mcp-env: usage: mcp-env <env-file> <command> [args...]" >&2
+  exit 64
+}
+envfile="$1"; shift
+
+# REFUSE LOUDLY, DO NOT CARRY ON. A missing env file means the server would
+# start with no credential and fail somewhere inside a protocol handshake,
+# which reads as "the tool is broken" rather than "the file is not there".
+[ -r "$envfile" ] || {
+  echo "mcp-env: REFUSING: the env file is missing or unreadable ($envfile)" >&2
+  exit 66
+}
+
+lineno=0
+while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno + 1))
+  # Blank lines (including whitespace-only ones) and comments are skipped.
+  case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+  case "$line" in '#'*) continue ;; esac
+  # THE GRAMMAR IS THE WHOLE VALIDATION: ^[A-Za-z_][A-Za-z0-9_]*=. Anything
+  # else -- an `export` prefix, a shell keyword, a continuation line from a
+  # value somebody wrapped -- is refused rather than guessed at. Guessing here
+  # means setting a variable nobody wrote, or silently NOT setting one that
+  # somebody did.
+  key=""
+  case "$line" in
+    [A-Za-z_]*=*)
+      key="${line%%=*}"
+      case "$key" in *[!A-Za-z0-9_]*) key="" ;; esac
+      ;;
+  esac
+  [ -n "$key" ] || {
+    echo "mcp-env: REFUSING: $envfile line $lineno is not KEY=value" >&2
+    echo "mcp-env: the line itself is NOT printed -- this file holds credentials. Open it and look at line $lineno." >&2
+    exit 65
+  }
+  export "$key=${line#*=}"
+done < "$envfile"
+
+# EXEC, NOT CALL. The server's own exit code has to reach whoever started it;
+# a wrapper that ran the command and then exited on its own account would
+# replace a real failure with its own idea of success, and would leave an extra
+# process between the session and the server for the lifetime of the session.
+exec "$@"

@@ -125,7 +125,15 @@ dupes="$(grep -v '^#' "$M" | awk 'NF>=4 {print $2}' | sort | uniq -d)"
 # linux/deploy-manifest and must therefore be required EVEN WHEN NO ESTATE IS
 # PRESENT - which is the whole point of the suite running standalone. The
 # estate's row is required only when the estate manifest was read.
+# THE SPAWN LIBRARIES AND THE WRAPPER JOIN THE LIST for a reason the other
+# entries share: losing one of them is not a missing feature, it is a session
+# that starts with the wrong tools and says nothing. Without
+# scripts/lib/mcpspawn.sh the supervisor refuses to spawn at all (by design,
+# rc 78) -- so a manifest that quietly dropped the row would take a whole host
+# down on the next deploy. Without bin/mcp-env every rendered document that
+# names a credential file points at a program that is not there.
 REQUIRED_TARGETS="bin/bus-send scripts/session-supervisor-linux.sh scripts/runtime/opencode-session.sh scripts/lib/registry.sh .config/systemd/user/agent-session@.timer"
+REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/lib/mcprender.sh scripts/lib/mcpspawn.sh bin/mcp-env"
 [ -n "$ESTATE_MANIFEST" ] && REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/docs/tysta-fel.md"
 for required in $REQUIRED_TARGETS; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"

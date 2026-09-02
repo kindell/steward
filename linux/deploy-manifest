@@ -35,10 +35,23 @@ linux/estate-status.sh             scripts/estate-status.sh             755  scr
 linux/liveness-host.sh             scripts/liveness-host.sh             755  scripts
 job-runner.sh                      scripts/job-runner.sh                755  scripts
 lib/registry.sh                    scripts/lib/registry.sh              755  lib
+# THE SPAWN LIBRARIES TRAVEL WITH THE SUPERVISOR, and both of them or neither.
+# The supervisor refuses to start a session when either is absent (rc 78) --
+# a deployed supervisor that could not read its spawn policy would otherwise
+# fall back to the legacy command line and hand every session whatever its
+# checkout happens to declare, which is the one outcome the policy exists to
+# prevent. Same directory as registry.sh, because that is where the supervisor
+# looks: it sources these from the directory it found registry.sh in.
+lib/mcprender.sh                   scripts/lib/mcprender.sh             755  lib
+lib/mcpspawn.sh                    scripts/lib/mcpspawn.sh              755  lib
 # bus clients + browser (executable locations — the loneliness sweep's core targets)
 linux/bus-send                     bin/bus-send                         755  bin
 linux/bus-read                     bin/bus-read                         755  bin
 linux/browser-stack.sh             bin/browser-stack.sh                 755  bin
+# THE WRAPPER A RENDERED mcp-config NAMES. The document writes the literal
+# string ~/bin/mcp-env as an asset's command whenever that asset declares an
+# MCP_ENV_FILE, so this row is what makes the path in the document real.
+linux/mcp-env                      bin/mcp-env                          755  bin
 # systemd templates (daemon-reload only; never enable/restart)
 linux/agent-session@.service      .config/systemd/user/agent-session@.service  644  systemd
 linux/agent-session@.timer        .config/systemd/user/agent-session@.timer    644  systemd
