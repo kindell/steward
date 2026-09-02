@@ -49,6 +49,7 @@ git init -q --bare "$T/e2e-origin.git"; git clone -q "$T/e2e-origin.git" "$T/e2e
 ( cd "$T/e2e-src" && echo one > f && git add f && git commit -qm one && git push -q origin HEAD )
 cat > "$T/e2e-runtime" <<'EOFRT'
 #!/bin/bash
+case " $* " in *" --help "*) exit 0 ;; esac
 echo delivered >> f
 git add f
 git commit -qm "job work" >/dev/null

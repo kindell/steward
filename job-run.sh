@@ -7,6 +7,16 @@
 # [A3]. Retry semantics live here though: attempt N>1 resumes the EXACT
 # runtime thread recorded by attempt 1. A fresh thread would redo finished
 # work; the branch is the checkpoint, the thread is the memory.
+#
+# THE THREAD IS MINTED BEFORE THE RUN, NOT PARSED AFTER IT. A thread id first
+# written when the wrapper exits only ever exists for an attempt that ended
+# cleanly — the one case that does not need a resume. So when the runtime
+# accepts a caller-chosen id, this wrapper mints one and records it in the
+# SAME transition that sets PROCESS=running, before the runtime is called: a
+# kill mid-attempt then still leaves the row able to resume the exact thread.
+# A runtime that does NOT take a pre-minted id is not faked — the parse-at-
+# exit path stays, and RESUME_KIND says so on the row, so nothing downstream
+# can claim an exact resume that was never possible.
 set -u
 here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 . "$here/lib/jobstate.sh"
@@ -44,6 +54,34 @@ _jobrun_finalize() {
   done
 }
 
+# A caller-chosen id is only honest if the runtime says it takes one, so the
+# runtime is MEASURED, never assumed: its own --help is the evidence. Two
+# rules keep the measurement from becoming a side effect of its own. It runs
+# BEFORE the lease is taken, so a runtime that answers slowly holds nothing;
+# and it runs INSIDE the job's own clone, the one directory this wrapper ever
+# lets the runtime touch — measuring it in whatever directory the caller
+# happened to be standing in is how a probe writes somewhere it was never
+# invited. A runtime that cannot be measured is treated as taking no id.
+_jobrun_takes_session_id() {
+  local cmd="$1" dir="$2"
+  ( cd "$dir" 2>/dev/null || exit 1; "$cmd" --help 2>/dev/null ) | grep -q -- '--session-id'
+}
+
+# Version-4 shape, lowercase — the runtime documents --session-id <uuid> and
+# refuses anything that is not a valid one.
+_jobrun_mint_thread() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr 'A-Z' 'a-z'
+    return 0
+  fi
+  if [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid
+    return 0
+  fi
+  local h; h="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  printf '%s-%s-4%s-a%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
+}
+
 id="${1:?usage: job-run.sh <job-id>}"
 jobstate_read "$id" || exit $?
 
@@ -71,6 +109,20 @@ if [ "$runtime" = "opencode" ]; then
   exit 65
 fi
 
+cmd="${JOBRUN_RUNTIME_CMD:-claude}"
+
+# Mint the thread now if there is none yet and the runtime accepts one. The
+# row learns the id in the same breath as PROCESS=running below, so there is
+# no window in which the attempt is running and the thread is unrecorded.
+minted=""
+resume_kind="thread-at-exit"
+if [ -n "${JOB_RUNTIME_THREAD:-}" ]; then
+  resume_kind="exact-thread"
+elif _jobrun_takes_session_id "$cmd" "${JOB_WORKDIR:-.}"; then
+  minted="$(_jobrun_mint_thread)"
+  resume_kind="exact-thread"
+fi
+
 home="$(jobstate_home)"
 wrapper=$$
 owner="job-run:$wrapper"
@@ -90,7 +142,10 @@ jobstate_lease_acquire "$id" "$owner" "${JOBRUN_LEASE_TTL:-300}" || {
   echo "job-run: another runner holds the lease on $id" >&2; exit 75; }
 
 jobstate_read "$id"
-jobstate_transition "$id" "$JOB_VERSION" PROCESS=running ATTEMPT_ID="$attempt" || exit $?
+mint=()
+[ -n "$minted" ] && mint=(RUNTIME_THREAD="$minted")
+jobstate_transition "$id" "$JOB_VERSION" PROCESS=running ATTEMPT_ID="$attempt" \
+  RESUME_KIND="$resume_kind" ${mint+"${mint[@]}"} || exit $?
 
 # The heartbeat tick RENEWS THE ACTUAL LEASE, not just a touched file [C2] —
 # jobstate_lease_renew is the only thing that keeps _jobreconcile_alive
@@ -104,7 +159,6 @@ jobstate_transition "$id" "$JOB_VERSION" PROCESS=running ATTEMPT_ID="$attempt" |
 hb=$!
 trap 'kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null; _jobrun_release_lease' EXIT
 
-cmd="${JOBRUN_RUNTIME_CMD:-claude}"
 prompt="GOAL: ${JOB_GOAL}
 OBJECTIVE: ${JOB_BRIEF_OBJECTIVE:-}
 DELIVERY: ${JOB_BRIEF_DELIVERY:-}
@@ -120,12 +174,18 @@ BOUNDS: ${JOB_BRIEF_BOUNDS:-}"
 perm=()
 [ -n "${JOB_PERMISSION_MODE:-}" ] && perm=(--permission-mode "$JOB_PERMISSION_MODE")
 
-out="" ; rc=0
-if [ "$attempt" -eq 1 ] || [ -z "${JOB_RUNTIME_THREAD:-}" ]; then
-  out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
-else
-  out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p --resume "$JOB_RUNTIME_THREAD" ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
+# A freshly minted id NAMES the thread this run creates (--session-id); an id
+# already on the row is a thread that exists and must be resumed (--resume);
+# neither means the runtime picks its own and we read it back at exit.
+thread_flag=()
+if [ -n "$minted" ]; then
+  thread_flag=(--session-id "$minted")
+elif [ "$attempt" -gt 1 ] && [ -n "${JOB_RUNTIME_THREAD:-}" ]; then
+  thread_flag=(--resume "$JOB_RUNTIME_THREAD")
 fi
+
+out="" ; rc=0
+out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p ${thread_flag+"${thread_flag[@]}"} ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
 
 thread="${JOB_RUNTIME_THREAD:-}"
 thread_parse_failed="0"

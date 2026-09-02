@@ -79,6 +79,7 @@ jobstate_create "$id4" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T
 echo 0 > "$T/rtrc"
 cat > "$T/rt-sleep" <<'EOFSL'
 #!/bin/bash
+case " $* " in *" --help "*) exit 0 ;; esac
 printf '%s\n' "$*" >> "${RTLOG:?}"
 sleep 10
 printf '{"session_id":"thread-xyz","result":"done"}\n'
@@ -104,6 +105,7 @@ jobstate_create "$id7" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T
   BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
 cat > "$T/rt-slow" <<'EOFSLOW'
 #!/bin/bash
+case " $* " in *" --help "*) exit 0 ;; esac
 sleep 4
 printf '{"session_id":"thread-slow","result":"done"}\n'
 exit 0
@@ -229,6 +231,74 @@ bash "$here/../job-run.sh" "$id8" >/dev/null 2>&1
 grep -q -- "--permission-mode bypassPermissions" "$T/rtlog" \
   && ok "attempt 2: the resumed run keeps the row's permission mode" \
   || bad "resume dropped the permission mode" "$(cat "$T/rtlog")"
+
+# ── THE THREAD IS MINTED BEFORE THE RUN, NOT PARSED AFTER IT ───────────────
+# A thread id first written when the wrapper exits is only ever there for an
+# attempt that ended cleanly — the one case that does not need it. A killed
+# attempt left the row with no thread, and attempt 2 then started FRESH on the
+# same branch, redoing finished work. So when the runtime accepts a
+# caller-chosen id, the wrapper mints one and records it in the SAME
+# transition that sets PROCESS=running. The stub reads the row while the run
+# is still in flight and exits 3 if the thread is not there yet — that exit
+# code lands in EXIT_CODE, so the row itself is the evidence.
+cat > "$T/rt-session" <<'EOFSESS'
+#!/bin/bash
+case " $* " in
+  *" --help "*) printf -- '  --session-id <uuid>   Use a specific session ID for the\n'; exit 0 ;;
+esac
+printf '%s\n' "$*" >> "${RTLOG:?}"
+row="${STEWARD_JOB_STATE_HOME:?}/${RTJOB:?}/row"
+grep -q '^RUNTIME_THREAD=.' "$row" || {
+  echo "stub: no RUNTIME_THREAD on the row while the run is in flight" >&2; exit 3; }
+printf '{"session_id":"parsed-at-exit","result":"done"}\n'
+exit 0
+EOFSESS
+chmod +x "$T/rt-session"
+
+id10="j-00000000000000f8"
+jobstate_create "$id10" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+: > "$T/rtlog"
+RTJOB="$id10" JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id10" >/dev/null 2>&1
+jobstate_read "$id10"
+uuid="${JOB_RUNTIME_THREAD:-}"
+[ "${JOB_EXIT_CODE:-}" = "0" ] \
+  && ok "minted thread: the row carried RUNTIME_THREAD while the run was still in flight" \
+  || bad "the run saw a row with no thread id" "EXIT_CODE=${JOB_EXIT_CODE:-unset}"
+case "$uuid" in
+  ????????-????-????-????-????????????) ok "minted thread: RUNTIME_THREAD is a uuid the runtime will accept" ;;
+  *) bad "RUNTIME_THREAD is not a uuid" "${uuid:-unset}" ;;
+esac
+grep -q -- "--session-id $uuid" "$T/rtlog" \
+  && ok "attempt 1: the runtime saw --session-id with exactly the recorded id" \
+  || bad "the minted id never reached the runtime" "$(cat "$T/rtlog")"
+[ "$uuid" != "parsed-at-exit" ] && ok "minted thread: the minted id stands, not the runtime's final JSON" || bad "the wrapper overwrote the minted id at exit"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "minted thread: the row names the resume it can give" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+grep -q -- "--resume" "$T/rtlog" && bad "attempt 1 resumed a thread that did not exist yet" || ok "attempt 1: no --resume"
+
+# Attempt 2 resumes EXACTLY the id minted before attempt 1 ran.
+: > "$T/rtlog"
+RTJOB="$id10" JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id10" >/dev/null 2>&1
+jobstate_read "$id10"
+[ "${JOB_ATTEMPT_ID:-}" = "2" ] && ok "minted thread: ATTEMPT_ID=2" || bad "ATTEMPT_ID" "${JOB_ATTEMPT_ID:-}"
+grep -q -- "--resume $uuid" "$T/rtlog" \
+  && ok "attempt 2: resumes the exact id minted before attempt 1" \
+  || bad "no exact resume" "$(cat "$T/rtlog")"
+[ "${JOB_RUNTIME_THREAD:-}" = "$uuid" ] && ok "attempt 2: the thread id is unchanged" || bad "thread id moved" "${JOB_RUNTIME_THREAD:-}"
+
+# A runtime that does NOT take a caller-chosen id is not faked: the wrapper
+# keeps the parse-at-exit path, invents no flag, and the row says so.
+id11="j-00000000000000f9"
+jobstate_create "$id11" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+: > "$T/rtlog"; echo 0 > "$T/rtrc"
+JOBRUN_RUNTIME_CMD="$T/rt" bash "$here/../job-run.sh" "$id11" >/dev/null 2>&1
+jobstate_read "$id11"
+grep -q -- "--session-id" "$T/rtlog" \
+  && bad "the wrapper passed a flag this runtime does not take" "$(cat "$T/rtlog")" \
+  || ok "no pre-minted id: the runtime saw no --session-id at all"
+[ "${JOB_RUNTIME_THREAD:-}" = "thread-abc" ] && ok "no pre-minted id: the runtime's own id is still recorded at exit" || bad "RUNTIME_THREAD" "${JOB_RUNTIME_THREAD:-unset}"
+[ "${JOB_RESUME_KIND:-}" = "thread-at-exit" ] && ok "no pre-minted id: the row says the thread only arrives at exit" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
