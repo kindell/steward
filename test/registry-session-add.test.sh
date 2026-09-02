@@ -47,7 +47,7 @@ absent(){ if [ ! -e "$2" ]; then ok "$1"; else bad "$1" "unexpectedly exists: $2
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/accounts.d" "$FX/hosts.d" "$FX/sessions.d" \
-         "$FX/entities.d" "$FX/projects.d"
+         "$FX/entities.d" "$FX/projects.d" "$FX/logins.d"
 SESS="$FX/sessions.d"
 
 # The full required-key set — the verb's readback goes through registry_load,
@@ -84,6 +84,20 @@ EOF
 # and proving that needs a second one.
 printf 'PRINCIPAL="a"\nHOST="h1"\n' > "$FX/accounts.d/a-h1.conf"
 printf 'PRINCIPAL="b"\nHOST="h1"\n' > "$FX/accounts.d/b-h1.conf"
+
+# THE --login GATE'S OWN FIXTURES — a THIRD principal pair, named per the
+# brief's own convention (alice/bob), kept separate from the a-h1/b-h1
+# accounts above so the gate's cases read on their own.
+printf 'PRINCIPAL="alice"\nHOST="h1"\n' > "$FX/accounts.d/acme-mac.conf"
+printf 'PRINCIPAL="bob"\nHOST="h1"\n'   > "$FX/accounts.d/other-mac.conf"
+cat > "$FX/logins.d/alice-team.conf" <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-team"
+PROVIDER="claude-team"
+CONFIG_DIR="~/.claude-logins/acme"
+LEGAL_OWNER="Acme Corp"
+EOF
+chmod 600 "$FX/logins.d/alice-team.conf"
 
 # One team, one project under it — the display derivation's inputs.
 printf 'NAME="Alpha"\nMEMBERS="a"\n'  > "$FX/entities.d/alpha.conf"
@@ -122,6 +136,15 @@ load_session() {
 
 row_count() { ls "$SESS" 2>/dev/null | grep -c '\.conf$'; }
 mode_of()   { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+
+# sess_hash — names AND content of every sessions.d row, one portable digest.
+# Used to prove a refusal touched NOTHING: not just "no new file", but not one
+# existing byte either.
+sess_hash() {
+  ( cd "$SESS" && find . -type f | sort | while IFS= read -r f; do
+      printf '%s\n' "$f"; cat "$f"
+    done | cksum )
+}
 
 echo "== 1. happy path: project target, minted id, derived display, owner bridge =="
 out="$(run add --account a-h1 --project site --slug web --repo /tmp/fixture-repo --json)"; rc=$?
@@ -287,7 +310,7 @@ _rc=0
 ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config"
   . "$here/lib/registry.sh"
   eval "$(sed -n '/^_registry_validate_session_stage()/,/^}/p' "$STEWARD")"
-  export _REGW_EXPECT_ID="s-bbbbbbbbbbbbbbbb" _REGW_EXPECT_ACCOUNT="a-h1" _REGW_EXPECT_SLUG="locked"          _REGW_EXPECT_TARGET_ENTITY="" _REGW_EXPECT_TARGET_PROJECT="tgt" _REGW_EXPECT_HOST="h1"          _REGW_EXPECT_REPO_PATH="/tmp/fixture-repo" _REGW_EXPECT_OWNER="a" _REGW_EXPECT_PERMISSION_MODE="bypassPermissions"
+  export _REGW_EXPECT_ID="s-bbbbbbbbbbbbbbbb" _REGW_EXPECT_ACCOUNT="a-h1" _REGW_EXPECT_SLUG="locked"          _REGW_EXPECT_TARGET_ENTITY="" _REGW_EXPECT_TARGET_PROJECT="tgt" _REGW_EXPECT_HOST="h1"          _REGW_EXPECT_REPO_PATH="/tmp/fixture-repo" _REGW_EXPECT_OWNER="a" _REGW_EXPECT_PERMISSION_MODE="bypassPermissions" _REGW_EXPECT_LOGIN=""
   registry_session_write "s-bbbbbbbbbbbbbbbb" "$_DUP" _registry_validate_session_stage ) >/dev/null 2>&1 || _rc=$?
 is "6: a duplicate (account,slug) is refused INSIDE the locked write path" "$( [ "$_rc" -ne 0 ] && echo refused || echo passed )" "refused"
 if [ -e "$SESS/s-bbbbbbbbbbbbbbbb.conf" ]; then bad "6: the duplicate row must NOT be published"; else ok "6: no duplicate row published"; fi
@@ -301,6 +324,42 @@ wait
 _won="$(grep -l 'SLUG="raced"' "$SESS"/*.conf 2>/dev/null | wc -l | tr -d ' ')"
 is "6b: at most one winner under a 40-way race (got $_won)" "$( [ "${_won:-0}" -le 1 ] && echo ok || echo TOOMANY )" "ok"
 grep -l 'SLUG="raced"' "$SESS"/*.conf 2>/dev/null | xargs rm -f 2>/dev/null || true
+
+echo "== 7. --login: GATE 1 in the WRITER — the login's PRINCIPAL must be the account's =="
+# Fixture register: accounts.d/acme-mac (PRINCIPAL="alice"),
+# accounts.d/other-mac (PRINCIPAL="bob"), logins.d/alice-team (PRINCIPAL="alice").
+
+# 7a. THE RIGHT PAIR IS WRITTEN.
+out="$(run add --account acme-mac --login alice-team --project site --slug loginok --repo /tmp/fixture-repo --json)"; rc=$?
+is "7a: rc 0 — login's principal matches the account's" "$rc" "0"
+IDL="$(printf '%s' "$out" | jq -r '.id')"
+is "7a: the row on disk carries LOGIN=\"alice-team\"" "$(grep -c '^LOGIN="alice-team"$' "$SESS/$IDL.conf")" "1"
+is "7a: --json carries the login field when it was given" "$(printf '%s' "$out" | jq -r '.login')" "alice-team"
+
+# 7b. THE WRONG PAIR IS REFUSED rc 65 — THE GATE.
+before="$(sess_hash)"
+out="$(run add --account other-mac --login alice-team --project site --slug loginbad --repo /tmp/fixture-repo --json)"; rc=$?
+is "7b: rc 65 — account other-mac (bob) may not carry alice-team's login" "$rc" "65"
+# 7c. NO FILE WAS WRITTEN — sessions.d is byte for byte unchanged.
+is "7c: sessions.d is byte-identical after the refusal" "$(sess_hash)" "$before"
+# 7d. THE REFUSAL NAMES BOTH SIDES.
+reason="$(printf '%s' "$out" | jq -r '.reason')"
+has "7d: the refusal names the login's principal (alice)" "$reason" "alice"
+has "7d: the refusal names the account's principal (bob)" "$reason" "bob"
+
+# 7e. AN UNKNOWN LOGIN REFUSES rc 78, nothing written.
+before="$(sess_hash)"
+out="$(run add --account acme-mac --login no-such-login --project site --slug loginghost --repo /tmp/fixture-repo --json)"; rc=$?
+is "7e: rc 78 — the login does not resolve" "$rc" "78"
+is "7e: sessions.d unchanged" "$(sess_hash)" "$before"
+
+# 7f. WITHOUT --login, NO LOGIN LINE IS WRITTEN — the transition, byte preserved.
+out="$(run add --account acme-mac --project site --slug nologinhere --repo /tmp/fixture-repo --json)"; rc=$?
+is "7f: rc 0" "$rc" "0"
+IDN="$(printf '%s' "$out" | jq -r '.id')"
+is "7f: no LOGIN= line on disk" "$(grep -c '^LOGIN=' "$SESS/$IDN.conf")" "0"
+# 7g. --json LACKS the field when it was not given.
+is "7g: --json has no login key when --login was not given" "$(printf '%s' "$out" | jq -r 'has("login")')" "false"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

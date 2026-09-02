@@ -1116,11 +1116,11 @@ _registry_validate_login_stage() {
 # the verb meant to write must never publish.
 _registry_validate_session_stage() {
   local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
-        HOST="" REPO_PATH="" OWNER="" PERMISSION_MODE=""
+        HOST="" REPO_PATH="" OWNER="" PERMISSION_MODE="" LOGIN=""
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: staged session file did not source: $file" >&2; return 70; }
   local k v
-  for k in ID ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT HOST REPO_PATH OWNER PERMISSION_MODE; do
+  for k in ID ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT HOST REPO_PATH OWNER PERMISSION_MODE LOGIN; do
     eval "v=\"\$_REGW_EXPECT_$k\""
     if [ "${!k}" != "$v" ]; then
       echo "registry: staged session file's $k does not match what was written: $file" >&2
@@ -1940,7 +1940,7 @@ cmd_registry_project_add() {
 # assigning this function's own lowercase locals (slug, repo, account, id…)
 # would clobber them via bash's dynamic scoping the moment it sourced.
 cmd_registry_session_add() {
-  local want_json="" account="" project="" entity="" slug="" repo="" host="" a
+  local want_json="" account="" project="" entity="" slug="" repo="" host="" login="" a
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
 
   while [ $# -gt 0 ]; do
@@ -1964,6 +1964,9 @@ cmd_registry_session_add() {
       --host)
         [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --host needs a value" 64; return 64; }
         host="$2"; shift 2 ;;
+      --login)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry session add: --login needs a value" 64; return 64; }
+        login="$2"; shift 2 ;;
       -*)
         _reg_fail "$want_json" "steward registry session add: unknown flag '$1'" 64; return 64 ;;
       *)
@@ -1997,6 +2000,46 @@ cmd_registry_session_add() {
   if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry session add: account '$account' carries an invalid principal" 70
     return 70
+  fi
+
+  # 1b. THE LOGIN — GATE 1: the login's PRINCIPAL must be the SAME HUMAN as the
+  # account's. This is the gate that makes "one human on another's credentials"
+  # impossible to WRITE, rather than merely visible afterwards.
+  #
+  # COMPARED AGAINST ACCOUNT_PRINCIPAL, NEVER AGAINST OWNER-AS-TYPED. The row's
+  # OWNER is DERIVED from the account two lines above; comparing against a raw
+  # unix name would let a row whose account resolves to somebody else pass as
+  # long as the strings happened to match. accounts.d carries USERNAME
+  # separately precisely because a human and a unix account may differ.
+  #
+  # OPTIONAL UNTIL THE SCHEMA SAYS OTHERWISE. Below the estate's LOGIN schema an
+  # absent --login writes no LOGIN line, which is the transition, byte for byte.
+  # At the schema the ROW's own reader refuses it — the requirement lives in one
+  # place (registry_load), and this verb enforces CORRECTNESS, not presence.
+  # Two gates for two questions: "is it stated?" is the schema's, "is it a lie?"
+  # is this one.
+  #
+  # SUBSHELLED, SNAPSHOTTED. registry_login_load does not source — but it does
+  # set LOGIN_* globals in the caller, and this function's own `principal` and
+  # `login` are lowercase locals that a later load must not be able to touch.
+  local login_principal=""
+  if [ -n "$login" ]; then
+    if ! [[ "$login" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      _reg_fail "$want_json" "steward registry session add: invalid --login '$login' (allowed: a-z0-9-, must start a-z0-9)" 64
+      return 64
+    fi
+    login_principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
+    if [ -z "$login_principal" ]; then
+      _reg_fail "$want_json" "steward registry session add: --login '$login' does not resolve to a known login" 78
+      return 78
+    fi
+    if [ "$login_principal" != "$principal" ]; then
+      # rc 65 — a REFUSED ACTION, not a malformed call. Both values are valid;
+      # the PAIR is what is forbidden. And the message names both sides: a
+      # refusal that says only "mismatch" sends the reader to the wrong register.
+      _reg_fail "$want_json" "steward registry session add: REFUSING — login '$login' belongs to principal '$login_principal', but account '$account' belongs to '$principal'. A session may only carry a login of its own human: the login names the directory holding that human's credentials." 65
+      return 65
+    fi
   fi
 
   # 2. THE TARGET — a TYPED UNION: exactly one of --project/--entity. Both is
@@ -2127,6 +2170,15 @@ cmd_registry_session_add() {
   [ "$rc" -eq 0 ] && { kv_host="$(_registry_emit_kv HOST "$host" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_owner="$(_registry_emit_kv OWNER "$principal" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_pm="$(_registry_emit_kv PERMISSION_MODE "bypassPermissions" 2>"$kv_err")"; rc=$?; }
+  # EMPTY SLUG => NO LINE. `_registry_emit_kv LOGIN ""` would write LOGIN="",
+  # and an EMPTY row is not the same as a MISSING one: registry_load reads
+  # both as empty today, but the schema gate should be able to tell "nobody
+  # said anything" from "somebody wrote an empty value" the day that question
+  # is asked.
+  local kv_login=""
+  if [ "$rc" -eq 0 ] && [ -n "$login" ]; then
+    kv_login="$(_registry_emit_kv LOGIN "$login" 2>"$kv_err")"; rc=$?
+  fi
   rm -f "$kv_err"
   if [ "$rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry session add: could not serialize the row" 70
@@ -2145,16 +2197,20 @@ cmd_registry_session_add() {
   _REGW_EXPECT_REPO_PATH="$repo"
   _REGW_EXPECT_OWNER="$principal"
   _REGW_EXPECT_PERMISSION_MODE="bypassPermissions"
+  _REGW_EXPECT_LOGIN="$login"
   local rw_err; rw_err="$(mktemp)" || {
     _reg_fail "$want_json" "steward registry session add: cannot create a temporary file" 70
     return 70
   }
   # HEADER + TRAILING NEWLINE — see the matching comment in
   # cmd_registry_team_add. No RC_LABEL line — deliberate (the display derives).
-  # DOMAIN IS written, derived to the target slug — see the emit above.
+  # DOMAIN IS written, derived to the target slug — see the emit above. LOGIN
+  # is LAST and only present when kv_login is non-empty — see the emit above;
+  # its ORDER does not matter to the reader but keeps the diff readable, and
+  # matches where task 11 writes the field by hand.
   local content
-  content="$(printf '# %s — session, written by steward registry session add.\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
-    "$id" "$kv_id" "$kv_account" "$kv_slug" "$kv_target" "$kv_domain" "$kv_host" "$kv_repo" "$kv_owner" "$kv_pm")"$'\n'
+  content="$(printf '# %s — session, written by steward registry session add.\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$id" "$kv_id" "$kv_account" "$kv_slug" "$kv_target" "$kv_domain" "$kv_host" "$kv_repo" "$kv_owner" "$kv_pm" "$kv_login")"$'\n'
   registry_session_write "$id" "$content" _registry_validate_session_stage 2>"$rw_err"
   rc=$?
   local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
@@ -2165,10 +2221,21 @@ cmd_registry_session_add() {
 
   local file="$dir/$id.conf"
   if [ -n "$want_json" ]; then
-    jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
-      --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
-      --arg owner "$principal" --arg repo "$repo" --arg file "$file" \
-      '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file}'
+    # login IS PRESENT IN THE REPORT ONLY WHEN IT WAS GIVEN — same "no line
+    # without --login" symmetry the row itself carries. A present-but-empty
+    # key would say "this session declared an empty login", which is not
+    # what an absent --login means.
+    if [ -n "$login" ]; then
+      jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
+        --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
+        --arg owner "$principal" --arg repo "$repo" --arg file "$file" --arg login "$login" \
+        '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file,login:$login}'
+    else
+      jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
+        --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
+        --arg owner "$principal" --arg repo "$repo" --arg file "$file" \
+        '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file}'
+    fi
   else
     printf 'steward: wrote %s.conf into the session register (slug %s in account %s, on %s %s, host %s)\n' \
       "$id" "$slug" "$account" "$tkind" "$tslug" "$host"
@@ -2483,6 +2550,11 @@ cmd_registry_migrate_session() {
   _REGW_EXPECT_REPO_PATH="$old_repo"
   _REGW_EXPECT_OWNER="$principal"
   _REGW_EXPECT_PERMISSION_MODE="$carried_pm"
+  # LOGIN IS NOT CARRIED BY THIS VERB (a later scope's question) — but the
+  # SHARED validator now compares it on every session row, so this verb must
+  # still declare what it expects: no LOGIN line, unchanged from before LOGIN
+  # existed at all.
+  _REGW_EXPECT_LOGIN=""
   # A LITERAL newline joins the header to the body — a command substitution
   # would strip it and glue the first field onto the comment line, hiding it
   # from every reader that sources the row.
