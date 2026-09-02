@@ -260,7 +260,13 @@ printf '%s\n' "$*" >> "${RTLOG:?}"
 row="${STEWARD_JOB_STATE_HOME:?}/${RTJOB:?}/row"
 grep -q '^RUNTIME_THREAD=.' "$row" || {
   echo "stub: no RUNTIME_THREAD on the row while the run is in flight" >&2; exit 3; }
-printf '{"session_id":"parsed-at-exit","result":"done"}\n'
+# Like the real runtime: the id it was handed is the id it reports back.
+sid=""; prev=""
+for a in "$@"; do
+  case "$prev" in --session-id|--resume) sid="$a"; break ;; esac
+  prev="$a"
+done
+printf '{"session_id":"%s","result":"done"}\n' "$sid"
 exit 0
 EOFSESS
 chmod +x "$T/rt-session"
@@ -282,7 +288,7 @@ esac
 grep -q -- "--session-id $uuid" "$T/rtlog" \
   && ok "attempt 1: the runtime saw --session-id with exactly the recorded id" \
   || bad "the minted id never reached the runtime" "$(cat "$T/rtlog")"
-[ "$uuid" != "parsed-at-exit" ] && ok "minted thread: the minted id stands, not the runtime's final JSON" || bad "the wrapper overwrote the minted id at exit"
+[ -z "${JOB_THREAD_MISMATCH:-}" ] && ok "minted thread: the runtime used the id it was given, so nothing is flagged" || bad "THREAD_MISMATCH on an agreeing run" "${JOB_THREAD_MISMATCH:-}"
 [ "${JOB_RESUME_KIND:-}" = "first" ] && ok "minted thread: the row names the start this attempt got" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
 grep -q -- "--resume" "$T/rtlog" && bad "attempt 1 resumed a thread that did not exist yet" || ok "attempt 1: no --resume"
 
@@ -354,6 +360,37 @@ grep -q -- "--resume" "$T/rtlog" \
   || ok "thread not in the store: no --resume at all"
 [ "${JOB_RESUME_KIND:-}" = "fresh-after-crash" ] && ok "thread not in the store: the row says fresh-after-crash" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
 [ "${JOB_RUNTIME_THREAD:-}" = "33333333-4444-4555-a666-777777777777" ] && ok "thread not in the store: the row keeps the name it gave" || bad "RUNTIME_THREAD" "${JOB_RUNTIME_THREAD:-unset}"
+
+# ── THE RUNTIME'S OWN ID BEATS THE ONE THE ROW GUESSED ────────────────────
+# A runtime may accept --session-id and still run under an id of its own. The
+# final JSON says which one it used, and that answer is free — it is already
+# in hand at exit. If the row kept its guess, the next attempt would resume a
+# session holding none of the work. So the row learns the runtime's id, says
+# they disagreed, and names both on stderr.
+cat > "$T/rt-liar" <<'EOFLIAR'
+#!/bin/bash
+case " $* " in
+  *" --help "*) printf -- '  --session-id <uuid>   Use a specific session ID for the\n'; exit 0 ;;
+esac
+printf '%s\n' "$*" >> "${RTLOG:?}"
+printf '{"session_id":"99999999-8888-4777-a666-555555555555","result":"done"}\n'
+exit 0
+EOFLIAR
+chmod +x "$T/rt-liar"
+
+id14="j-00000000000000fc"
+jobstate_create "$id14" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+: > "$T/rtlog"
+JOBRUN_RUNTIME_CMD="$T/rt-liar" bash "$here/../job-run.sh" "$id14" >/dev/null 2>"$T/liar-err"
+minted_id="$(grep -o -- '--session-id [0-9a-f-]*' "$T/rtlog" | head -1 | awk '{print $2}')"
+jobstate_read "$id14"
+[ "${JOB_RUNTIME_THREAD:-}" = "99999999-8888-4777-a666-555555555555" ] \
+  && ok "id mismatch: the row learns the id the runtime actually used" \
+  || bad "RUNTIME_THREAD" "${JOB_RUNTIME_THREAD:-unset}"
+[ "${JOB_THREAD_MISMATCH:-}" = "1" ] && ok "id mismatch: the row says the two ids disagreed" || bad "THREAD_MISMATCH" "${JOB_THREAD_MISMATCH:-unset}"
+grep -q "99999999-8888-4777-a666-555555555555" "$T/liar-err" && ok "id mismatch: stderr names the id the runtime used" || bad "stderr missing the runtime's id" "$(cat "$T/liar-err")"
+grep -q "$minted_id" "$T/liar-err" && ok "id mismatch: stderr names the id the row held" || bad "stderr missing the row's id" "$(cat "$T/liar-err")"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

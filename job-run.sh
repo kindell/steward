@@ -31,13 +31,15 @@ here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 
 # Factored finalization: check final transition, retry on contention, preserve lease on failure.
 _jobrun_finalize() {
-  local jid="$1" exit_code="$2" thread_id="$3" parse_failed="$4"
+  local jid="$1" exit_code="$2" thread_id="$3" parse_failed="$4" mismatch="${5:-}"
   local rc retry_count=0
+  local mism=()
+  [ -n "$mismatch" ] && mism=(THREAD_MISMATCH=1)
 
   while [ "$retry_count" -lt 2 ]; do
     jobstate_transition "$jid" "$JOB_VERSION" \
       PROCESS=exited EXIT_CODE="$exit_code" RUNTIME_THREAD="${thread_id:-}" \
-      THREAD_PARSE_FAILED="$parse_failed"
+      THREAD_PARSE_FAILED="$parse_failed" ${mism+"${mism[@]}"}
     rc=$?
 
     if [ "$rc" -eq 0 ]; then
@@ -215,23 +217,35 @@ perm=()
 out="" ; rc=0
 out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p ${thread_flag+"${thread_flag[@]}"} ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
 
+# THE RUNTIME'S OWN ID SETTLES IT. The final JSON says which session the run
+# actually used, and that answer is already in hand — free to read, free to
+# compare. A runtime that accepted --session-id and then ran under an id of
+# its own would otherwise leave the row pointing at a session holding none of
+# the work, and the next attempt would resume that. So when the two disagree
+# the row learns the runtime's id, records THREAD_MISMATCH, and says both out
+# loud; when they agree, nothing changes.
 thread="${JOB_RUNTIME_THREAD:-}"
 thread_parse_failed="0"
+thread_mismatch=""
+actual=""
+if command -v jq >/dev/null 2>&1; then
+  actual="$(printf '%s' "$out" | jq -r '.session_id // empty' 2>/dev/null)"
+fi
 if [ -n "$thread" ]; then
-  : # thread already recorded, use it
-elif command -v jq >/dev/null 2>&1; then
-  thread="$(printf '%s' "$out" | jq -r '.session_id // empty' 2>/dev/null)"
-  if [ -z "$thread" ] && [ "$rc" -eq 0 ]; then
-    thread_parse_failed="1"
+  if [ -n "$actual" ] && [ "$actual" != "$thread" ]; then
+    echo "job-run: $id ran under thread $actual, but the row named $thread" >&2
+    echo "  The row learns the runtime's id; a resume of $thread would find none of the work." >&2
+    thread="$actual"
+    thread_mismatch="1"
   fi
-else
-  if [ "$rc" -eq 0 ]; then
-    thread_parse_failed="1"
-  fi
+elif [ -n "$actual" ]; then
+  thread="$actual"
+elif [ "$rc" -eq 0 ]; then
+  thread_parse_failed="1"
 fi
 
 jobstate_read "$id"
-_jobrun_finalize "$id" "$rc" "$thread" "$thread_parse_failed"
+_jobrun_finalize "$id" "$rc" "$thread" "$thread_parse_failed" "$thread_mismatch"
 # _jobrun_finalize only returns on SUCCESS — its own second-failure path
 # exits 70 directly, preserving the lease. From here the attempt's bookkeeping
 # landed, so release this attempt's lease/heartbeat BEFORE driving the
