@@ -66,11 +66,18 @@ it adds nothing — the runner never supplies a default of its own, on the first
 attempt or on a resume. `RUNTIME=opencode` is refused (exit 65): headless thread
 resume is not a measured capability there.
 
-**Exact-thread retry.** Attempt 1 records the runtime's `session_id` as
-`RUNTIME_THREAD`; attempt 2+ resumes *that exact thread* (`--resume`) — the
-branch is the checkpoint, the thread is the memory. If attempt 1 could not parse
-a thread id (`THREAD_PARSE_FAILED=1`, empty `RUNTIME_THREAD`, e.g. no `jq`), the
-next attempt refuses to start silently fresh (exit 65).
+**Exact-thread retry.** The thread id is minted *before* the run whenever the
+runtime accepts a caller-chosen one — the wrapper measures that from the
+runtime's own `--help` (inside the job's clone, before the lease is taken).
+`claude` does: the run starts with `--session-id <uuid>` and the row carries
+`RUNTIME_THREAD=<uuid> RESUME_KIND=exact-thread` from the same transition that
+sets `PROCESS=running`, so an attempt killed mid-work still resumes *that exact
+thread* (`--resume`) on attempt 2+. The branch is the checkpoint, the thread is
+the memory. A runtime that takes no pre-minted id is not faked: the id is parsed
+from the final JSON at exit as before and the row says `RESUME_KIND=thread-at-exit`
+— only a clean exit records a thread there. If that parse fails
+(`THREAD_PARSE_FAILED=1`, empty `RUNTIME_THREAD`, e.g. no `jq`), the next attempt
+refuses to start silently fresh (exit 65).
 
 **The wrapper decides nothing terminal.** It records `PROCESS=exited`,
 `EXIT_CODE`, `RUNTIME_THREAD`, `THREAD_PARSE_FAILED` through a compare-and-swap
@@ -85,6 +92,22 @@ is terminal → `DESIRED=cancel` beats everything → `DEADLINE_ABSOLUTE` passed
 lease shows no live process, the push/retry path. **Receipt before retry:
 delivered work is never redone.** A missing workdir fails as `workdir-missing`
 rather than staying silent.
+
+**Crashed is not finished.** In that last branch a dead lease is read together
+with `PROCESS`. `PROCESS=exited` means the attempt finished, so a commit past
+`BASE_SHA` that the remote lacks is a delivery and gets pushed as the exact sha.
+`PROCESS=running` means the wrapper never got to write its bookkeeping — the
+attempt was killed mid-work — so **nothing is pushed and nothing is called
+succeeded**: the commits stay on the branch as the checkpoint and the job falls
+through to the runner, which resumes it. `SLOTS_EXHAUSTED` is checked above this,
+so the resume cannot loop. The push-then-crash window is checked *first* and is
+unaffected: if the remote tip already equals the local sha, the work was
+delivered however the process died, and it is registered as the receipt. The
+crashed path also writes `RESUME_KIND` — `exact-thread` when the row carries a
+thread id, `fresh-after-crash` when it does not — so what "exact-thread retry"
+guarantees is legible per row: with a pre-minted id, every attempt after a crash
+continues the same thread; without one, a crash costs the thread and the log
+says so rather than claiming a resume that did not happen.
 
 ## Delivery
 
