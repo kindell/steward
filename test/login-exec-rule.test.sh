@@ -65,6 +65,22 @@ is "the prefix is exactly the rule, in the rule's order" "$out" \
 $out /usr/bin/true 2>/dev/null
 is "the prefix actually executes" "$?" "0"
 
+echo "== 2b. the caller's IFS never decides whether keys are scrubbed =="
+# Finding 1: `for k in $_REGISTRY_LOGIN_SCRUB` splits on IFS. A caller with a
+# non-default IFS around either form must not silently collapse the scrub
+# list into one word.
+out="$( IFS=:; registry_login_exec_prefix named alice )"
+has "under IFS=: the prefix still carries both -u flags" "$out" \
+   "-u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR"
+
+( IFS=:
+  export CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong"
+  export ANTHROPIC_API_KEY="sk-should-never-survive"
+  export ANTHROPIC_AUTH_TOKEN="tok-should-never-survive"
+  registry_login_apply named alice
+  printf '%s|%s' "${ANTHROPIC_API_KEY-UNSET}" "${ANTHROPIC_AUTH_TOKEN-UNSET}" ) > "$FX/ifs-applied"
+is "under IFS=: apply still unsets both keys" "$(cat "$FX/ifs-applied")" "UNSET|UNSET"
+
 echo "== 3. the ambient values never survive the rule =="
 # Run a real command THROUGH the prefix and read what it saw. This is the
 # measurement that matters: the string above is only a claim about it.
@@ -101,13 +117,25 @@ chmod +x "$FX/homelookup-odd"
 ( STEWARD_HOME_LOOKUP_CMD="$FX/homelookup-odd" registry_login_exec_prefix named alice >/dev/null 2>&1 )
 is "a home with a space refuses" "$?" "78"
 
+echo "== 7b. apply refuses the same space-in-home input as the prefix =="
+# Finding 3: the shell-metacharacter guard used to live in the prefix form
+# only, so the two forms accepted different inputs. There is now one shared
+# resolver, so apply must refuse the same fixture the prefix refuses above.
+( export CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong"
+  export STEWARD_HOME_LOOKUP_CMD="$FX/homelookup-odd"
+  registry_login_apply named alice
+  printf '%s|%s' "$?" "$CLAUDE_CONFIG_DIR" ) > "$FX/applied-odd"
+is "apply refuses a home with a space, rc 78, directory untouched" "$(cat "$FX/applied-odd")" \
+   "78|$FX/home/.claude-logins/wrong"
+
 echo "== 8. registry_login_apply — the same rule, as real environment =="
 ( export CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong"
   export ANTHROPIC_API_KEY="sk-should-never-survive"
+  export ANTHROPIC_AUTH_TOKEN="tok-should-never-survive"
   registry_login_apply named alice
-  printf '%s|%s|%s' "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-UNSET}" "$?" ) > "$FX/applied"
-is "apply sets the resolved dir and unsets the key" "$(cat "$FX/applied")" \
-   "$FX/home/.claude-logins/acme|UNSET|0"
+  printf '%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-UNSET}" "${ANTHROPIC_AUTH_TOKEN-UNSET}" "$?" ) > "$FX/applied"
+is "apply sets the resolved dir and unsets both keys" "$(cat "$FX/applied")" \
+   "$FX/home/.claude-logins/acme|UNSET|UNSET|0"
 
 echo "== 8b. apply with an EMPTY slug scrubs but leaves the directory =="
 ( export CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong"
@@ -116,6 +144,20 @@ echo "== 8b. apply with an EMPTY slug scrubs but leaves the directory =="
   printf '%s|%s' "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-UNSET}" ) > "$FX/applied2"
 is "empty slug: key gone, directory kept" "$(cat "$FX/applied2")" \
    "$FX/home/.claude-logins/wrong|UNSET"
+
+echo "== 9. apply resolves FIRST: on rc 78 the environment is untouched =="
+# Finding 4: apply used to unset CLAUDE_CONFIG_DIR before validating the
+# slug, so a caller that drops the rc ran against the runtime's unnamed
+# default (the LEGACY login's own directory). Resolve now happens before any
+# mutation, so a refusal must leave CLAUDE_CONFIG_DIR and both keys exactly
+# as the caller had them.
+( export CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong"
+  export ANTHROPIC_API_KEY="sk-should-never-survive"
+  export ANTHROPIC_AUTH_TOKEN="tok-should-never-survive"
+  registry_login_apply nosuch alice
+  printf '%s|%s|%s|%s' "$?" "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-UNSET}" "${ANTHROPIC_AUTH_TOKEN-UNSET}" ) > "$FX/applied-fail"
+is "apply on an unknown slug leaves the ambient environment untouched" "$(cat "$FX/applied-fail")" \
+   "78|$FX/home/.claude-logins/wrong|sk-should-never-survive|tok-should-never-survive"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
