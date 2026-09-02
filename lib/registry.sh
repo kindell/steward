@@ -2655,3 +2655,227 @@ registry_host_load() {
     fi
   done
 }
+
+# ── LOGINS: WHO PAYS FOR THE MODEL CALLS ───────────────────────────────────
+#
+# A LOGIN is to the model account what a host row is to the machine: the one
+# place that answers "who pays, and who answers for it". One row per human x
+# account, NEVER per session — sessions on the same account share a login the
+# way they share one credential directory today.
+#
+# THIS REGISTER IS NEVER SOURCED, and it is the first one in this file that
+# isn't. The reason is what the rows CARRY: a path to a directory holding a
+# subscription's live credentials. `source` on such a row means any line in it
+# can move those credentials, and a row is exactly the kind of file a hand
+# edits under time pressure. The operator config took the same decision for the
+# same reason; this is that reader, for this register.
+_REGISTRY_LOGIN_REQUIRED="PRINCIPAL ACCOUNT PROVIDER CONFIG_DIR LEGAL_OWNER"
+
+# THE PROVIDER VOCABULARY IS CLOSED, and a word in it is not a promise that a
+# mechanism exists. Two of the four are measured; the other two are RESERVED
+# NAMES whose isolation recipe has not been written. The export rule refuses on
+# them rather than doing nothing quietly — a login that silently fails to scope
+# is a login that bills the wrong account and looks fine.
+_REGISTRY_LOGIN_PROVIDERS="claude-max claude-team opencode-chatgpt codex-openai"
+
+# _registry_mode_of <path> — octal mode, BSD or GNU stat, empty on failure.
+# Same two-shot idiom as _registry_stat_id above, and for the same reason: this
+# library is sourced on both platforms and neither stat flag exists on both.
+#
+# KNOWINGLY DUPLICATED: bin/steward carries the same reader for the operator
+# config, defined before it sources this file. Collapsing them is a separate
+# change; doing it here would move a guard the config reader depends on.
+_registry_mode_of() {
+  local p="$1" m
+  m="$(stat -f '%Lp' "$p" 2>/dev/null)" && [ -n "$m" ] && { printf '%s' "$m"; return 0; }
+  m="$(stat -c '%a' "$p" 2>/dev/null)" && [ -n "$m" ] && { printf '%s' "$m"; return 0; }
+  return 1
+}
+
+_registry_group_or_other_writable() { # <octal mode>
+  local mode="$1"
+  case "$mode" in ''|*[!0-7]*) return 0 ;; esac   # unreadable mode: treat as unsafe
+  while [ "${#mode}" -lt 3 ]; do mode="0$mode"; done
+  local grp="${mode: -2:1}" oth="${mode: -1}"
+  [ $(( 8#$grp & 2 )) -ne 0 ] && return 0
+  [ $(( 8#$oth & 2 )) -ne 0 ] && return 0
+  return 1
+}
+
+registry_login_dir() {
+  if [ -n "${STEWARD_LOGINS_DIR:-}" ]; then
+    printf '%s\n' "$STEWARD_LOGINS_DIR"
+  else
+    printf '%s\n' "$(_registry_estate_root)/logins.d"
+  fi
+}
+
+# Same distinction as registry_host_list: an absent register REFUSES. A login
+# register that reads as empty is a fleet where nothing declares who pays, and
+# the fallback for that is "the ambient account" — the one outcome this whole
+# register exists to make impossible.
+registry_login_list() {
+  local dir; dir="$(registry_login_dir)"
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING to list logins — the login register does not exist: $dir" >&2
+    return 78
+  fi
+  local f
+  for f in "$dir"/*.conf; do
+    # -e OR -L. `-e` FOLLOWS the link, so a DANGLING symlink named <slug>.conf
+    # is invisible to it — and then the register-wide check never sees the row
+    # at all, while registry_login_load would have refused it as a symlink. A
+    # row the lister skips and the loader refuses is a row that exists for
+    # everything except the guard built to notice it.
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    basename "$f" .conf
+  done | sort
+}
+
+# registry_login_load <slug> — parse ONE login row. rc 0 · 1 (no such row, or a
+# row whose content is refused) · 78 (the register or the file's own state
+# refuses: symlink, wrong owner, loose mode).
+#
+# RESET FIRST, same leak-guard posture as every other loader in this file: a
+# caller that gets a refusal must never still see the last row that parsed.
+registry_login_load() {
+  LOGIN_SLUG=""; LOGIN_PRINCIPAL=""; LOGIN_ACCOUNT=""; LOGIN_PROVIDER=""
+  LOGIN_CONFIG_DIR_RAW=""; LOGIN_LEGAL_OWNER=""
+  local slug="${1:-}" dir f
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: invalid login slug '$slug' (allowed: a-z 0-9 and hyphen)" >&2
+    return 1
+  fi
+  dir="$(registry_login_dir)" || return 78
+  # THE REGISTER DIRECTORY'S OWN STATE COMES BEFORE THE ROW'S. A row at mode 600
+  # inside a directory anybody can write to is not protected by its mode: anybody
+  # can rename it away and put their own file there under the same name, and the
+  # mode check on the new file passes. Measured as a class in this estate's own
+  # key-permission tool: the boundary is the whole chain, not the leaf.
+  if [ -L "$dir" ]; then
+    echo "registry: the login register is a symlink, refusing: $dir" >&2
+    return 78
+  fi
+  if [ -d "$dir" ]; then
+    local dmode; dmode="$(_registry_mode_of "$dir")" || {
+      echo "registry: cannot read the mode of the login register: $dir" >&2; return 78; }
+    if _registry_group_or_other_writable "$dmode"; then
+      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir" >&2
+      return 78
+    fi
+  fi
+  f="$dir/$slug.conf"
+  # THE SYMLINK IS ASKED ABOUT FIRST, ahead of `-f` — `-L` does not follow the
+  # link, so this also catches a DANGLING one, which would otherwise read as
+  # "no such login". A link's target can be swapped out from under an
+  # owner/mode check that ran a moment earlier.
+  if [ -L "$f" ]; then
+    echo "registry: login '$slug' is a symlink, refusing: $f" >&2
+    return 78
+  fi
+  if [ ! -f "$f" ]; then
+    echo "registry: no such login: $slug" >&2
+    return 1
+  fi
+  if [ ! -O "$f" ]; then
+    echo "registry: login '$slug' is not owned by the current user, refusing: $f" >&2
+    return 78
+  fi
+  local mode; mode="$(_registry_mode_of "$f")" || {
+    echo "registry: cannot read the mode of login '$slug': $f" >&2; return 78; }
+  if _registry_group_or_other_writable "$mode"; then
+    echo "registry: login '$slug' is group- or other-writable (mode $mode), refusing: $f" >&2
+    return 78
+  fi
+
+  local lineno=0 line key value seen="" k
+  local v_PRINCIPAL="" v_ACCOUNT="" v_PROVIDER="" v_CONFIG_DIR="" v_LEGAL_OWNER=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno+1))
+    # A CR byte is a control character wherever it stands, including at the end
+    # of a line — a row edited on another platform must refuse rather than
+    # carry an invisible byte into a directory path.
+    case "$line" in
+      *[[:cntrl:]]*)
+        echo "registry: $f:$lineno: control character in the line, refusing" >&2
+        return 1 ;;
+    esac
+    case "$line" in ''|'#'*) continue ;; esac
+    # EXACTLY KEY="VALUE" AND NOTHING ELSE ON THE LINE. The anchored match is
+    # what makes `PRINCIPAL="alice" ; rm -rf /` a refusal rather than a
+    # command: there is no branch here that reads part of a line and ignores
+    # the rest.
+    if ! [[ "$line" =~ ^([A-Z_]+)=\"([^\"]*)\"$ ]]; then
+      echo "registry: $f:$lineno: each setting must be written exactly KEY=\"VALUE\" on its own line" >&2
+      return 1
+    fi
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    case " $_REGISTRY_LOGIN_REQUIRED " in
+      *" $key "*) ;;
+      *) echo "registry: $f:$lineno: unknown key '$key' (allowed: $_REGISTRY_LOGIN_REQUIRED)" >&2
+         return 1 ;;
+    esac
+    case " $seen " in
+      *" $key "*) echo "registry: $f:$lineno: duplicate key '$key'" >&2; return 1 ;;
+    esac
+    seen="$seen $key"
+    # NO SUBSTITUTION SURVIVES THE READER. The value never reaches a shell in
+    # this function, but it DOES reach a path join and an exec string further
+    # on — and a row is the wrong place to learn which of its readers is the
+    # careless one. Refuse the shape at the source.
+    case "$value" in
+      *'$'*|*'`'*|*'\'*)
+        echo "registry: $f:$lineno: '$key' contains a substitution or escape character, refusing" >&2
+        return 1 ;;
+    esac
+    eval "v_$key=\$value"
+  done < "$f"
+
+  for k in $_REGISTRY_LOGIN_REQUIRED; do
+    case " $seen " in
+      *" $k "*) ;;
+      *) echo "registry: $f: missing required key '$k'" >&2; return 1 ;;
+    esac
+  done
+
+  # PRINCIPAL is the HUMAN — the same form as an entity's MEMBERS entries and a
+  # session's OWNER, because the identity gate compares them directly.
+  if ! [[ "$v_PRINCIPAL" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    echo "registry: $f: invalid PRINCIPAL '$v_PRINCIPAL' (a-z, then a-z 0-9 and hyphen)" >&2
+    return 1
+  fi
+  # ACCOUNT is the account's REAL name and is deliberately free-ish text: it is
+  # an address today and may be something else on another provider. It must not
+  # be empty, and it must not carry whitespace — a name with a space in it is
+  # almost always two fields that got glued.
+  case "$v_ACCOUNT" in
+    ''|*[[:space:]]*)
+      echo "registry: $f: ACCOUNT must be the account's real name, non-empty and without whitespace" >&2
+      return 1 ;;
+  esac
+  case " $_REGISTRY_LOGIN_PROVIDERS " in
+    *" $v_PROVIDER "*) ;;
+    *) echo "registry: $f: invalid PROVIDER '$v_PROVIDER' (one of: $_REGISTRY_LOGIN_PROVIDERS)" >&2
+       return 1 ;;
+  esac
+  # LEGAL_OWNER is free text (a company name) and MUST NOT be empty — the same
+  # requirement, for the same reason, as a host row's own LEGAL_OWNER: an
+  # account with no named payer is precisely the state this register exists to
+  # make impossible.
+  v_LEGAL_OWNER="$(printf '%s' "$v_LEGAL_OWNER" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [ -z "$v_LEGAL_OWNER" ]; then
+    echo "registry: $f: missing LEGAL_OWNER (who pays for these model calls, and who answers for them?)" >&2
+    return 1
+  fi
+  # CONFIG_DIR's GRAMMAR is checked by registry_login_config_dir, which also
+  # resolves it. It is deliberately NOT validated here: the transition
+  # exception depends on the estate, and a reader that half-validates would
+  # report the wrong cause.
+  LOGIN_SLUG="$slug"
+  LOGIN_PRINCIPAL="$v_PRINCIPAL"
+  LOGIN_ACCOUNT="$v_ACCOUNT"
+  LOGIN_PROVIDER="$v_PROVIDER"
+  LOGIN_CONFIG_DIR_RAW="$v_CONFIG_DIR"
+  LOGIN_LEGAL_OWNER="$v_LEGAL_OWNER"
+  return 0
+}
