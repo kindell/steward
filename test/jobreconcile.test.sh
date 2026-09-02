@@ -283,6 +283,36 @@ jobstate_read "$id"
 [ "${JOB_OUTCOME:-}" = "succeeded" ] && ok "finished: succeeded" || bad "OUTCOME" "${JOB_OUTCOME:-}"
 [ ! -e "$T/runnerlog" ] && ok "finished: model NOT rerun" || bad "model rerun on finished work"
 
+# EXITED NONZERO IS NOT FINISHED EITHER. This attempt reached its own
+# bookkeeping and recorded a FAILURE. Whatever it committed is as much a
+# checkpoint as a crash's — pushing it would report a failed attempt as a
+# success — so branch 5 must leave the remote alone and hand the job back to
+# the runner, which resumes the thread.
+id=j-0000000000000114; mkjob "$id"
+jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" EXIT_CODE=1
+( cd "$T/$id-work" && echo half > f && git add f && git commit -qm "half the work" )
+want="$(git -C "$T/$id-work" rev-parse HEAD)"
+rm -f "$T/runnerlog"
+jobreconcile "$id" && ok "exited-nonzero: rc 0" || bad "reconcile failed"
+jobstate_read "$id"
+[ -z "$(remote_tip "$id")" ] && ok "exited-nonzero: nothing was pushed — the remote ref is still absent" || bad "failed attempt delivered" "$(remote_tip "$id")"
+[ -z "${JOB_DELIVERY_SHA:-}" ] && ok "exited-nonzero: DELIVERY_SHA stays empty" || bad "DELIVERY_SHA" "${JOB_DELIVERY_SHA:-}"
+[ -z "${JOB_OUTCOME:-}" ] && ok "exited-nonzero: row stays non-terminal" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+grep -q "$id" "$T/runnerlog" 2>/dev/null && ok "exited-nonzero: runner re-invoked" || bad "no resume for a failed attempt"
+[ "$(git -C "$T/$id-work" rev-parse HEAD)" = "$want" ] && ok "exited-nonzero: the commits stay on the branch as the checkpoint" || bad "checkpoint lost"
+
+# NO EXIT_CODE AT ALL is the same story: the row does not say the attempt
+# succeeded, so its commits are not a delivery.
+id=j-0000000000000115; mkjob "$id"
+grep -v '^EXIT_CODE=' "$T/jobs/$id/row" > "$T/$id-row" && mv "$T/$id-row" "$T/jobs/$id/row"
+( cd "$T/$id-work" && echo half > f && git add f && git commit -qm "half the work" )
+rm -f "$T/runnerlog"
+jobreconcile "$id" && ok "no-exit-code: rc 0" || bad "reconcile failed"
+jobstate_read "$id"
+[ -z "$(remote_tip "$id")" ] && ok "no-exit-code: nothing was pushed" || bad "attempt without an exit code delivered" "$(remote_tip "$id")"
+[ -z "${JOB_OUTCOME:-}" ] && ok "no-exit-code: row stays non-terminal" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+grep -q "$id" "$T/runnerlog" 2>/dev/null && ok "no-exit-code: runner re-invoked" || bad "no resume without an exit code"
+
 # PUSH-THEN-CRASH stays a receipt even though PROCESS=running: the remote
 # already holds the work, so it was delivered however the process died.
 id=j-0000000000000113; mkcrashed "$id"
