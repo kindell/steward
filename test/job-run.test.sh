@@ -15,6 +15,13 @@ here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 export STEWARD_JOB_STATE_HOME="$T/jobs"
 export JOBRUN_HEARTBEAT_SEC=1 JOBRUN_LEASE_TTL=60 JOBRUN_MAX_ATTEMPTS=2
+# The runtime's transcript store, measured: a thread lives at
+# <store>/<munged-cwd>/<uuid>.jsonl. Every fixture below points the wrapper at
+# a store of its own, so what these tests measure is the fixture and never
+# whatever sessions this machine happens to hold.
+export JOBRUN_THREAD_STORE="$T/store"
+mkdir -p "$T/store/-a-munged-workdir"
+mkthread() { : > "$T/store/-a-munged-workdir/$1.jsonl"; }
 
 # Stub runtime: records argv, emits a claude-shaped JSON answer, exits per fixture.
 cat > "$T/rt" <<'EOF'
@@ -42,12 +49,15 @@ grep -q -- "-p" "$T/rtlog" && ok "attempt 1: headless flag" || bad "no -p"
 grep -q -- "--resume" "$T/rtlog" && bad "attempt 1 resumed a thread that does not exist" || ok "attempt 1: no --resume"
 [ -f "$T/jobs/$id/heartbeat" ] && ok "heartbeat file touched" || bad "no heartbeat"
 
-# Attempt 2 must resume EXACTLY thread-abc.
+# Attempt 2 must resume EXACTLY thread-abc — the thread attempt 1 created is
+# in the store, so it is there to be resumed.
+mkthread thread-abc
 echo 1 > "$T/rtrc"
 bash "$here/../job-run.sh" "$id" ; rc=$?
 jobstate_read "$id"
 [ "$JOB_ATTEMPT_ID" = "2" ] && ok "attempt 2: ATTEMPT_ID=2" || bad "ATTEMPT_ID" "$JOB_ATTEMPT_ID"
 grep -q -- "--resume thread-abc" "$T/rtlog" && ok "attempt 2: resumes the exact thread" || bad "no exact resume" "$(tail -1 "$T/rtlog")"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "attempt 2: the row names the start this attempt got" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
 [ "$JOB_EXIT_CODE" = "1" ] && ok "attempt 2: nonzero exit recorded" || bad "EXIT_CODE" "$JOB_EXIT_CODE"
 
 # Attempt 3 is beyond MAX_ATTEMPTS=2: refused, SLOTS_EXHAUSTED set, runtime NOT called.
@@ -273,10 +283,12 @@ grep -q -- "--session-id $uuid" "$T/rtlog" \
   && ok "attempt 1: the runtime saw --session-id with exactly the recorded id" \
   || bad "the minted id never reached the runtime" "$(cat "$T/rtlog")"
 [ "$uuid" != "parsed-at-exit" ] && ok "minted thread: the minted id stands, not the runtime's final JSON" || bad "the wrapper overwrote the minted id at exit"
-[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "minted thread: the row names the resume it can give" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+[ "${JOB_RESUME_KIND:-}" = "first" ] && ok "minted thread: the row names the start this attempt got" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
 grep -q -- "--resume" "$T/rtlog" && bad "attempt 1 resumed a thread that did not exist yet" || ok "attempt 1: no --resume"
 
-# Attempt 2 resumes EXACTLY the id minted before attempt 1 ran.
+# Attempt 2 resumes EXACTLY the id minted before attempt 1 ran — the run
+# created that thread, so the store holds it.
+mkthread "$uuid"
 : > "$T/rtlog"
 RTJOB="$id10" JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id10" >/dev/null 2>&1
 jobstate_read "$id10"
@@ -285,6 +297,7 @@ grep -q -- "--resume $uuid" "$T/rtlog" \
   && ok "attempt 2: resumes the exact id minted before attempt 1" \
   || bad "no exact resume" "$(cat "$T/rtlog")"
 [ "${JOB_RUNTIME_THREAD:-}" = "$uuid" ] && ok "attempt 2: the thread id is unchanged" || bad "thread id moved" "${JOB_RUNTIME_THREAD:-}"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "attempt 2: the row names the start this attempt got" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
 
 # A runtime that does NOT take a caller-chosen id is not faked: the wrapper
 # keeps the parse-at-exit path, invents no flag, and the row says so.
@@ -299,6 +312,48 @@ grep -q -- "--session-id" "$T/rtlog" \
   || ok "no pre-minted id: the runtime saw no --session-id at all"
 [ "${JOB_RUNTIME_THREAD:-}" = "thread-abc" ] && ok "no pre-minted id: the runtime's own id is still recorded at exit" || bad "RUNTIME_THREAD" "${JOB_RUNTIME_THREAD:-unset}"
 [ "${JOB_RESUME_KIND:-}" = "thread-at-exit" ] && ok "no pre-minted id: the row says the thread only arrives at exit" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+# ── A THREAD ID IS A NAME; ONLY THE STORE SAYS WHETHER IT EXISTS ───────────
+# The row names the thread before the run, so a kill in the first moments
+# leaves a row pointing at a session the runtime never created. `--resume` on
+# that id fails outright — measured against the real runtime: "No conversation
+# found with session ID". So the wrapper asks the store, not the row: the
+# thread is there → resume it exactly; it is not → start it now under the SAME
+# name with --session-id, and say on the row which of the two happened. The
+# condition is "the row has a thread", never the attempt counter.
+seed_thread=22222222-3333-4444-a555-666666666666
+
+# (a) the thread exists in the store → an exact resume.
+id12="j-00000000000000fa"
+jobstate_create "$id12" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  RUNTIME_THREAD="$seed_thread"
+mkthread "$seed_thread"
+: > "$T/rtlog"
+RTJOB="$id12" JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id12" >/dev/null 2>&1
+jobstate_read "$id12"
+grep -q -- "--resume $seed_thread" "$T/rtlog" \
+  && ok "thread in the store: the runtime saw --resume with exactly that id" \
+  || bad "no exact resume for a thread that exists" "$(cat "$T/rtlog")"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "thread in the store: the row says exact-thread" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+# (b) the same row, and the store does not hold that thread: the name stands,
+# but the session has to be CREATED now — a resume here would only fail.
+id13="j-00000000000000fb"
+jobstate_create "$id13" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
+  RUNTIME_THREAD=33333333-4444-4555-a666-777777777777
+: > "$T/rtlog"
+RTJOB="$id13" JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id13" >/dev/null 2>&1
+jobstate_read "$id13"
+grep -q -- "--session-id 33333333-4444-4555-a666-777777777777" "$T/rtlog" \
+  && ok "thread not in the store: the run starts that same id instead of resuming it" \
+  || bad "no --session-id for a thread that does not exist" "$(cat "$T/rtlog")"
+grep -q -- "--resume" "$T/rtlog" \
+  && bad "resumed a thread the store does not hold" "$(cat "$T/rtlog")" \
+  || ok "thread not in the store: no --resume at all"
+[ "${JOB_RESUME_KIND:-}" = "fresh-after-crash" ] && ok "thread not in the store: the row says fresh-after-crash" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+[ "${JOB_RUNTIME_THREAD:-}" = "33333333-4444-4555-a666-777777777777" ] && ok "thread not in the store: the row keeps the name it gave" || bad "RUNTIME_THREAD" "${JOB_RUNTIME_THREAD:-unset}"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

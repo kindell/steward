@@ -4,19 +4,27 @@
 # THE WRAPPER DECIDES NOTHING TERMINAL. It records what happened (PROCESS,
 # EXIT_CODE, ATTEMPT_ID, RUNTIME_THREAD) and leaves outcome, delivery and
 # notices to the reconciler — exit 0 proves neither outcome nor delivery
-# [A3]. Retry semantics live here though: attempt N>1 resumes the EXACT
-# runtime thread recorded by attempt 1. A fresh thread would redo finished
-# work; the branch is the checkpoint, the thread is the memory.
+# [A3]. Retry semantics live here though: a later attempt resumes the EXACT
+# runtime thread of an earlier one whenever that thread is still there to
+# resume. A fresh thread would redo finished work; the branch is the
+# checkpoint, the thread is the memory.
 #
 # THE THREAD IS MINTED BEFORE THE RUN, NOT PARSED AFTER IT. A thread id first
 # written when the wrapper exits only ever exists for an attempt that ended
 # cleanly — the one case that does not need a resume. So when the runtime
 # accepts a caller-chosen id, this wrapper mints one and records it in the
-# SAME transition that sets PROCESS=running, before the runtime is called: a
-# kill mid-attempt then still leaves the row able to resume the exact thread.
-# A runtime that does NOT take a pre-minted id is not faked — the parse-at-
-# exit path stays, and RESUME_KIND says so on the row, so nothing downstream
-# can claim an exact resume that was never possible.
+# SAME transition that sets PROCESS=running, before the runtime is called.
+#
+# BUT THE ROW NAMES A THREAD; IT DOES NOT PROVE ONE. An attempt killed in its
+# first moments leaves a name the runtime never made into a session, and
+# `--resume` on that id fails outright. So the wrapper asks the runtime's own
+# store whether the thread exists before it resumes, and starts the same name
+# with --session-id when it does not. RESUME_KIND records the kind of start
+# THIS attempt got — first, exact-thread, fresh-after-crash, or
+# thread-at-exit for a runtime that takes no caller-chosen id at all (that
+# path is not faked; the id is parsed from the final JSON as before). The
+# wrapper is the field's only writer, so nothing downstream can claim an
+# exact resume that never happened.
 set -u
 here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 . "$here/lib/jobstate.sh"
@@ -67,6 +75,23 @@ _jobrun_takes_session_id() {
   ( cd "$dir" 2>/dev/null || exit 1; "$cmd" --help 2>/dev/null ) | grep -q -- '--session-id'
 }
 
+# DOES THE THREAD THE ROW NAMES ACTUALLY EXIST? The id on the row is a NAME
+# this wrapper chose before the run; it becomes a session only once the runtime
+# has written a transcript for it. Measured against the shipped runtime, the
+# transcript lands at
+#   $HOME/.claude/projects/<munged-cwd>/<uuid>.jsonl
+# and `--resume <uuid>` for an id that has none fails outright ("No conversation
+# found with session ID"). Matching the file ANYWHERE under the store is
+# deliberate: the munged directory is derived from the cwd, and a job that moved
+# clones would otherwise look like a job that lost its thread.
+# JOBRUN_THREAD_STORE exists so the suite can point this at a store of its own.
+_jobrun_thread_exists() {
+  local uuid="$1" store="${JOBRUN_THREAD_STORE:-$HOME/.claude/projects}"
+  [ -n "$uuid" ] || return 1
+  [ -d "$store" ] || return 1
+  [ -n "$(find "$store" -type f -name "$uuid.jsonl" 2>/dev/null | head -n 1)" ]
+}
+
 # Version-4 shape, lowercase — the runtime documents --session-id <uuid> and
 # refuses anything that is not a valid one.
 _jobrun_mint_thread() {
@@ -111,16 +136,29 @@ fi
 
 cmd="${JOBRUN_RUNTIME_CMD:-claude}"
 
-# Mint the thread now if there is none yet and the runtime accepts one. The
-# row learns the id in the same breath as PROCESS=running below, so there is
-# no window in which the attempt is running and the thread is unrecorded.
+# HOW THIS ATTEMPT STARTS IS DECIDED HERE, ONCE. The row NAMES a thread; the
+# store says whether that name is a session yet. Three starts follow, and
+# RESUME_KIND records which one this attempt got — the wrapper is the only
+# writer of that field, in the same transition as PROCESS=running:
+#   the row names a thread that exists  -> --resume <id>     exact-thread
+#   the row names one that does not     -> --session-id <id> fresh-after-crash
+#   no thread, runtime takes an id      -> mint it           first
+#   no thread, runtime takes none       -> no flag at all    thread-at-exit
+# The second line is the killed-in-the-first-moments case: the name stands, the
+# session is created now, and nothing claims a resume that could not happen.
+# Which of these it is has nothing to do with the attempt counter.
 minted=""
+thread_flag=()
 resume_kind="thread-at-exit"
 if [ -n "${JOB_RUNTIME_THREAD:-}" ]; then
-  resume_kind="exact-thread"
+  if _jobrun_thread_exists "$JOB_RUNTIME_THREAD"; then
+    thread_flag=(--resume "$JOB_RUNTIME_THREAD"); resume_kind="exact-thread"
+  else
+    thread_flag=(--session-id "$JOB_RUNTIME_THREAD"); resume_kind="fresh-after-crash"
+  fi
 elif _jobrun_takes_session_id "$cmd" "${JOB_WORKDIR:-.}"; then
   minted="$(_jobrun_mint_thread)"
-  resume_kind="exact-thread"
+  thread_flag=(--session-id "$minted"); resume_kind="first"
 fi
 
 home="$(jobstate_home)"
@@ -173,16 +211,6 @@ BOUNDS: ${JOB_BRIEF_BOUNDS:-}"
 # deciding an outcome [A3].
 perm=()
 [ -n "${JOB_PERMISSION_MODE:-}" ] && perm=(--permission-mode "$JOB_PERMISSION_MODE")
-
-# A freshly minted id NAMES the thread this run creates (--session-id); an id
-# already on the row is a thread that exists and must be resumed (--resume);
-# neither means the runtime picks its own and we read it back at exit.
-thread_flag=()
-if [ -n "$minted" ]; then
-  thread_flag=(--session-id "$minted")
-elif [ "$attempt" -gt 1 ] && [ -n "${JOB_RUNTIME_THREAD:-}" ]; then
-  thread_flag=(--resume "$JOB_RUNTIME_THREAD")
-fi
 
 out="" ; rc=0
 out="$(cd "${JOB_WORKDIR:?}" && "$cmd" -p ${thread_flag+"${thread_flag[@]}"} ${perm+"${perm[@]}"} --output-format json "$prompt")" || rc=$?
