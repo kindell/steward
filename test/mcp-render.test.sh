@@ -300,5 +300,19 @@ is  "17b and NOTHING on stdout"            "$out17" ""
 has "17c the account that failed is named" "$err17" "ghost-h1"
 has "17d and the session with it"          "$err17" "s-noacct"
 
+echo "== 18. the library's header states what this suite is to the extraction =="
+# lib/mcprender.sh was lifted out of bin/steward's cmd_mcp_render verbatim, and
+# the paragraph that says so lost its own ending in the move: "...is unchanged
+# and is the" ran straight into the next paragraph's "Prints a ...". The claim
+# this suite exists to back -- that the move changed no behaviour -- was left
+# as half a sentence, which is a claim no reader can check.
+HDR="$(awk '/^[^#]/{exit} {print}' "$here/lib/mcprender.sh")"
+hasnt "18a the extraction sentence does not run into the next paragraph" \
+      "$HDR" "and is the
+# Prints"
+has   "18b it names this suite as the measurement of the move" \
+      "$HDR" "test/mcp-render.test.sh"
+has   "18c and finishes the thought"  "$HDR" "measurement"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

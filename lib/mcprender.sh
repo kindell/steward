@@ -14,8 +14,12 @@
 #
 # THIS IS AN EXTRACTION, NOT A REWRITE. The body below was bin/steward's
 # cmd_mcp_render verbatim; test/mcp-render.test.sh is unchanged and is the
+# measurement that says the move changed nothing -- it drives `steward mcp
+# render`, the verb, which is now this library's thin caller, so the same
+# assertions that held before the extraction hold after it.
+#
 # Prints a claude-compatible mcp-config document for ONE session's effective
-# MCP set — the union lib/registry.sh's registry_session_mcp_assets derives
+# MCP set -- the union lib/registry.sh's registry_session_mcp_assets derives
 # from the managing team, the owning entity and the target project.
 #
 # THE PATTERN IS: PATHS ON COMMAND LINES, VALUES ONLY IN FILES. When an asset
