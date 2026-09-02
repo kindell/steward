@@ -1822,7 +1822,7 @@ registry_load() {
   # Reset before sourcing so a prior load never leaks into this one.
   REPO_PATH=""; RC_LABEL=""; ENV_REFRESH=""; PERMISSION_MODE=""; OP_RUN=""; ENV_FILE=""; RC_FRI=""
   ID=""; KIND=""; LIFECYCLE=""; ASSETS=""
-  ACCOUNT=""; SLUG=""; TARGET_ENTITY=""; TARGET_PROJECT=""
+  ACCOUNT=""; SLUG=""; TARGET_ENTITY=""; TARGET_PROJECT=""; LOGIN=""
   VISIBILITY=""; VISIBLE_TO=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
@@ -1886,8 +1886,22 @@ registry_load() {
   # The shape refused here is refused for the same reason OWNER's is: these
   # values index other registers, so a path escape or a control byte would
   # reach outside the register the moment a consumer built a path from one.
+  # LOGIN — which model account pays for this session's calls (logins.d slug).
+  #
+  # READ LENIENTLY, SHAPE ONLY, exactly as ACCOUNT/SLUG/TARGET_* above and for
+  # the same reason: every conf that predates the register omits it, and
+  # omission must read exactly as before. It is never RESOLVED here — a login
+  # that does not exist is a gap for the reader and the WRITER's gate. The shape
+  # is refused because the value indexes another register, so a path escape
+  # would reach outside it the moment a consumer built a path from one.
+  #
+  # ABSENCE IS DELIBERATELY TEMPORARY. It is the transition, carried by the
+  # SCHEMA gate rather than by this field's silence — a lenient read that
+  # becomes permanent makes deliberate-legacy, a typo, a dropped field, an
+  # unknown login and an old reader INDISTINGUISHABLE, and all of them bill the
+  # same wrong account quietly.
   local _idf
-  for _idf in ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT; do
+  for _idf in ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT LOGIN; do
     if [ -n "${!_idf}" ] && ! [[ "${!_idf}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
       echo "registry: $project.conf invalid $_idf (allowed: a-z 0-9 and hyphen, starting with a letter or digit)" >&2
       return 1

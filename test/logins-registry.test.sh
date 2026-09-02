@@ -441,5 +441,37 @@ ln -s "$FX/empty-target.d" "$FX/empty-link.d"
 ( STEWARD_LOGINS_DIR="$FX/empty-link.d" registry_login_check >/dev/null 2>&1 )
 is "an empty register reached through a symlink refuses" "$?" "78"
 
+echo "== 13. registry_load reads LOGIN leniently, shape only =="
+# A FRESH ESTATE, NOT THE ONE LEFT BY == 9 ==. Section 9 exports
+# STEWARD_ESTATE_ROOT and never unsets it, and its estate/steward.conf carries
+# no HUB_HOST — registry_load's unconditional hub-host check would then fail
+# with rc 78 for every session here, before ever reaching the LOGIN
+# validation this section exists to measure. A masked rc 78 is not a passed
+# test, so this section stands on its own estate.
+mkdir -p "$FX/estateL/sessions.d" "$FX/estateL/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX/estateL/estate/steward.conf"
+export STEWARD_ESTATE_ROOT="$FX/estateL"
+export STEWARD_REGISTRY_DIR="$FX/estateL/sessions.d"
+sess() { printf '%s\n' "$@" > "$FX/estateL/sessions.d/$1.conf"; }
+
+sess nologin 'OWNER="alice"' 'DOMAIN="acme"' 'RC_LABEL="L"' 'REPO_PATH="/tmp/x"'
+out="$( registry_load nologin >/dev/null 2>&1; printf '[%s]' "$LOGIN" )"
+is "an absent LOGIN reads as empty, load succeeds" "$out" "[]"
+
+sess withlogin 'OWNER="alice"' 'DOMAIN="acme"' 'RC_LABEL="L"' 'REPO_PATH="/tmp/x"' 'LOGIN="acme-team"'
+out="$( registry_load withlogin >/dev/null 2>&1; printf '%s' "$LOGIN" )"
+is "a set LOGIN lands" "$out" "acme-team"
+
+sess badlogin 'OWNER="alice"' 'DOMAIN="acme"' 'RC_LABEL="L"' 'REPO_PATH="/tmp/x"' 'LOGIN="Not A Slug"'
+( registry_load badlogin >/dev/null 2>&1 ); is "a malformed LOGIN refuses rc 1" "$?" "1"
+
+# NEVER RESOLVED HERE. The reader validates SHAPE; a login that does not exist
+# in the register is a gap for the reader and the WRITER's problem — exactly the
+# posture ACCOUNT/SLUG/TARGET_* already take in this loader.
+sess ghostlogin 'OWNER="alice"' 'DOMAIN="acme"' 'RC_LABEL="L"' 'REPO_PATH="/tmp/x"' 'LOGIN="does-not-exist"'
+( registry_load ghostlogin >/dev/null 2>&1 ); is "an unresolvable LOGIN still LOADS (reader is lenient)" "$?" "0"
+unset STEWARD_REGISTRY_DIR STEWARD_ESTATE_ROOT
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

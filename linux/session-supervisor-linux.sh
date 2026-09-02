@@ -716,6 +716,25 @@ if [ -z "$MCP_REFUSAL" ]; then
   CLAUDE_CMD="$(mcp_claude_cmd_fragment "$CONT" "$MCP_ARG" "$NAME_ARG" "$RC_LABEL")"
 fi
 
+# THE LOGIN — WHICH MODEL ACCOUNT PAYS (logins.d). ONE rule, shared with the
+# macOS twin, built once here and prepended to the command below.
+#
+# NOT A `new-session -e` ARGUMENT, and the reason is in this file's own
+# environment comment: `-e` can SET a variable but cannot UNSET one, and half
+# the rule is unsetting the two auth overrides that WIN over subscription auth.
+# The prefix carries the whole rule as arguments no shell reinterprets, so it
+# works identically here and inside the macOS branches' exec strings.
+#
+# EMPTY LOGIN -> EMPTY PREFIX: the command line is byte-identical to today's.
+LOGIN_PREFIX=""
+if [ -n "${LOGIN:-}" ]; then
+  if ! LOGIN_PREFIX="$(registry_login_exec_prefix "$LOGIN" "$(id -un)")"; then
+    echo "session-supervisor: $NAME — REFUSING to start: LOGIN=\"$LOGIN\" does not resolve (see above)." >&2
+    exit 78
+  fi
+  [ -n "$LOGIN_PREFIX" ] && LOGIN_PREFIX="$LOGIN_PREFIX "
+fi
+
 # TMUX DOES NOT INHERIT THIS ENVIRONMENT. Measured 2026-08-14, and it is a
 # trap that made the whole credential isolation ineffective for two days
 # without anything speaking up:
@@ -1337,7 +1356,7 @@ spawn_session() {
     printf '%s %s\n' 0 "$RC_LABEL" > "$RENAME_PENDING"
   fi
   tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
-    "$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+    "${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash"
   # THE ALARM IS ON THE SPAWN PATH, AND ONLY THERE. A degraded or refused set
   # is a property of the session that was just STARTED, so it is signalled once
   # per start. Putting it on the every-round path instead would send the same
