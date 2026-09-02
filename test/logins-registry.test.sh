@@ -199,5 +199,27 @@ case "$out" in *dangling*) ok "a dangling row is listed" ;;
 # The register check's refusal on this row is asserted once registry_login_check exists.
 rm -f "$FX/bad.d/dangling.conf"
 
+echo "== 7. the owner's home is resolved, never guessed =="
+cat > "$FX/homelookup" <<'STUB'
+#!/bin/bash
+case "$1" in
+  alice) printf '/srv/homes/alice\n' ;;
+  relative) printf 'srv/homes/relative\n' ;;
+  dotted) printf '/srv/homes/../etc\n' ;;
+  empty) : ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX/homelookup"
+export STEWARD_HOME_LOOKUP_CMD="$FX/homelookup"
+
+is "a known account resolves" "$( _registry_owner_home alice )" "/srv/homes/alice"
+( _registry_owner_home nosuch >/dev/null 2>&1 ); is "an unknown account is rc 78" "$?" "78"
+( _registry_owner_home empty >/dev/null 2>&1 ); is "an empty answer is rc 78" "$?" "78"
+( _registry_owner_home relative >/dev/null 2>&1 ); is "a relative home is rc 78" "$?" "78"
+( _registry_owner_home dotted >/dev/null 2>&1 ); is "a home carrying .. is rc 78" "$?" "78"
+err="$( _registry_owner_home nosuch 2>&1 >/dev/null )"
+has "the refusal names the account" "$err" "nosuch"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

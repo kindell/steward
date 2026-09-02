@@ -2702,6 +2702,55 @@ _registry_group_or_other_writable() { # <octal mode>
   return 1
 }
 
+# _registry_owner_home <unix-username> — the account's home directory, from the
+# SYSTEM's own account database. rc 78 if nothing answers.
+#
+# NEVER $HOME, NEVER A /Users LITERAL, NEVER eval. Three reasons, all measured
+# in this estate:
+#   * the installer runs as root, where $HOME is a system directory;
+#   * this library runs on two platforms whose home roots differ, and rows in
+#     this very register name accounts on both;
+#   * `eval echo ~$user` is the idiomatic one-liner and it hands the account
+#     name to a shell.
+#
+# TWO SOURCES, IN ORDER, because neither exists on both platforms: `getent
+# passwd` (absent on macOS -- measured) and `dscl` (absent on Linux).
+# STEWARD_HOME_LOOKUP_CMD overrides both and exists for the suites: a test that
+# needed a real second account on the machine would not be a test that runs.
+#
+# THE ANSWER IS VALIDATED, not trusted. An absolute path with no `..`
+# component, or refuse: the value becomes the prefix of a directory this
+# library later writes credentials into.
+_registry_owner_home() {
+  local u="${1:-}" h=""
+  if ! [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+    echo "registry: REFUSING — invalid account name '$u' for a home lookup" >&2
+    return 78
+  fi
+  if [ -n "${STEWARD_HOME_LOOKUP_CMD:-}" ]; then
+    h="$("$STEWARD_HOME_LOOKUP_CMD" "$u" 2>/dev/null)"
+  else
+    h="$(getent passwd "$u" 2>/dev/null | cut -d: -f6)"
+    if [ -z "$h" ]; then
+      h="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')"
+    fi
+  fi
+  h="${h%%$'\n'*}"
+  if [ -z "$h" ]; then
+    echo "registry: REFUSING — the system's account database has no home for '$u'" >&2
+    echo "registry: a login's directory is joined onto this path; it is never guessed." >&2
+    return 78
+  fi
+  case "$h" in
+    /*) ;;
+    *) echo "registry: REFUSING — the home for '$u' is not an absolute path: $h" >&2; return 78 ;;
+  esac
+  case "$h" in
+    *..*) echo "registry: REFUSING — the home for '$u' contains '..': $h" >&2; return 78 ;;
+  esac
+  printf '%s\n' "$h"
+}
+
 registry_login_dir() {
   if [ -n "${STEWARD_LOGINS_DIR:-}" ]; then
     printf '%s\n' "$STEWARD_LOGINS_DIR"
