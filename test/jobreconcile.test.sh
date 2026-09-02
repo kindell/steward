@@ -233,6 +233,68 @@ jobreconcile "$id"
 [ ! -e "$T/runnerlog" ] && ok "C2: lease renewals (past the original 300s TTL) prevent a second runner" || bad "second runner spawned despite live renewals"
 export JOBSTATE_NOW=1000
 
+# ── A CRASHED ATTEMPT IS NOT A DELIVERY ───────────────────────────────────
+# The wrapper was killed mid-attempt: the row still says PROCESS=running, it
+# never got an EXIT_CODE, and the trap released the lease on the way out. The
+# commits on the branch are a CHECKPOINT, not a finished piece of work, so
+# branch 5 must not push them and call the job succeeded — it must hand the
+# job back to the runner, which resumes the thread.
+mkcrashed() { # <id> — a killed attempt: PROCESS=running, no EXIT_CODE, no lease
+  local id="$1"
+  mkjob "$id"
+  jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" PROCESS=running
+  grep -v '^EXIT_CODE=' "$T/jobs/$id/row" > "$T/$id-row" && mv "$T/$id-row" "$T/jobs/$id/row"
+}
+remote_tip() { git -C "$T/$1-work" ls-remote origin "refs/heads/steward/jobs/$1/delivery" 2>/dev/null | cut -f1; }
+
+id=j-0000000000000110; mkcrashed "$id"
+( cd "$T/$id-work" && echo half > f && git add f && git commit -qm "step one" && \
+  echo more >> f && git commit -qam "step two" )
+want="$(git -C "$T/$id-work" rev-parse HEAD)"
+rm -f "$T/runnerlog"
+jobreconcile "$id" && ok "crashed: rc 0" || bad "reconcile failed"
+jobstate_read "$id"
+[ -z "$(remote_tip "$id")" ] && ok "crashed: nothing was pushed — the remote ref is still absent" || bad "half-finished attempt delivered" "$(remote_tip "$id")"
+[ -z "${JOB_DELIVERY_SHA:-}" ] && ok "crashed: DELIVERY_SHA stays empty" || bad "DELIVERY_SHA" "${JOB_DELIVERY_SHA:-}"
+[ -z "${JOB_OUTCOME:-}" ] && ok "crashed: row stays non-terminal" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+grep -q "$id" "$T/runnerlog" 2>/dev/null && ok "crashed: runner re-invoked" || bad "no resume for a crashed attempt"
+[ "$(git -C "$T/$id-work" rev-parse HEAD)" = "$want" ] && ok "crashed: the commits stay on the branch as the checkpoint" || bad "checkpoint lost"
+[ "${JOB_RESUME_KIND:-}" = "fresh-after-crash" ] && ok "crashed: the row names the resume it is about to get" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+# The same shape with a thread recorded: the resume IS exact, and the row says so.
+id=j-0000000000000111; mkcrashed "$id"
+jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" RUNTIME_THREAD=11111111-2222-4333-a444-555555555555
+echo half > "$T/$id-work/f"
+rm -f "$T/runnerlog"
+jobreconcile "$id"
+jobstate_read "$id"
+[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "crashed with a thread: the row names an exact resume" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+# FINISHED, not crashed: the wrapper wrote PROCESS=exited for this attempt, so
+# the same branch state IS a delivery. Unchanged behaviour.
+id=j-0000000000000112; mkjob "$id"
+( cd "$T/$id-work" && echo done > f && git add f && git commit -qm "step one" && \
+  echo more >> f && git commit -qam "step two" )
+want="$(git -C "$T/$id-work" rev-parse HEAD)"
+rm -f "$T/runnerlog"
+jobreconcile "$id" && ok "finished: rc 0" || bad "reconcile failed"
+jobstate_read "$id"
+[ "${JOB_DELIVERY_SHA:-}" = "$want" ] && ok "finished: the exact sha is delivered" || bad "sha" "${JOB_DELIVERY_SHA:-}"
+[ "${JOB_OUTCOME:-}" = "succeeded" ] && ok "finished: succeeded" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+[ ! -e "$T/runnerlog" ] && ok "finished: model NOT rerun" || bad "model rerun on finished work"
+
+# PUSH-THEN-CRASH stays a receipt even though PROCESS=running: the remote
+# already holds the work, so it was delivered however the process died.
+id=j-0000000000000113; mkcrashed "$id"
+( cd "$T/$id-work" && echo done > f && git add f && git commit -qm work )
+del="$(jobgit_deliver "$id" "$T/$id-work" "")"; del="${del#DELIVERY_SHA=}"
+rm -f "$T/runnerlog"
+jobreconcile "$id" && ok "push-then-crash: rc 0" || bad "reconcile failed"
+jobstate_read "$id"
+[ "${JOB_DELIVERY_SHA:-}" = "$del" ] && ok "push-then-crash: DELIVERY_SHA registered from the remote tip" || bad "sha" "${JOB_DELIVERY_SHA:-}"
+[ "${JOB_OUTCOME:-}" = "succeeded" ] && ok "push-then-crash: succeeded" || bad "OUTCOME" "${JOB_OUTCOME:-}"
+[ ! -e "$T/runnerlog" ] && ok "push-then-crash: model NOT rerun" || bad "model rerun on delivered work"
+
 [ "${_i1_probe_survived:-}" = "1" ] && ok "no-base-sha: calling shell survived to run these later assertions [I1]" || bad "script did not survive the BASE_SHA refusal"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
