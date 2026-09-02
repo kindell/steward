@@ -137,7 +137,15 @@ mcp_spawn_prepare() { # <session-id> <document-path>
       rm -f "$errf"
       return 69
     fi
-    printf ' --strict-mcp-config --mcp-config %s' "$doc"
+    # THE PATH IS QUOTED, the same way NAME_ARG quotes its value. This fragment
+    # is spliced into CLAUDE_CMD and then into a string a shell runs, so an
+    # unquoted path with a space in it reaches claude as a TRUNCATED --mcp-config
+    # plus a stray positional argument -- and under --strict-mcp-config that is a
+    # session with no tools and nothing anywhere saying why. STATE_DIR_NAME is
+    # validated and the session id is s-<hex>, so the injectable component today
+    # is $HOME -- and the macOS twin sources this same library on homes named
+    # /Users/First Last.
+    printf ' --strict-mcp-config --mcp-config "%s"' "$doc"
     # DEGRADED IS DETECTED FROM THE RENDER'S OWN WORD. The render already
     # decided what "omitted" means and already named each one; re-deriving it
     # here would be a second opinion that can disagree with the first.
@@ -163,7 +171,7 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     cat "$errf" >&2; rm -f "$errf"
     return 69
   fi
-  printf ' --strict-mcp-config --mcp-config %s' "$doc"
+  printf ' --strict-mcp-config --mcp-config "%s"' "$doc"
   cat "$errf" >&2; rm -f "$errf"
   return 2
 }
