@@ -16,7 +16,7 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 export STEWARD_JOB_STATE_HOME="$T/jobs"
 export JOBRUN_HEARTBEAT_SEC=1 JOBRUN_LEASE_TTL=60 JOBRUN_MAX_ATTEMPTS=2
 # The runtime's transcript store, measured: a thread lives at
-# <store>/<munged-cwd>/<uuid>.jsonl. Every fixture below points the wrapper at
+# <store>/<munged-cwd>/<uuid>.jsonl. Every fixture below aims the wrapper at
 # a store of its own, so what these tests measure is the fixture and never
 # whatever sessions this machine happens to hold.
 export JOBRUN_THREAD_STORE="$T/store"
