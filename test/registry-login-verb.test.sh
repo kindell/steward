@@ -98,12 +98,17 @@ out="$(run add acme --principal alice --account acct-acme-team --provider claude
   --config-dir '~/.claude-logins/acme' --legal-owner 'Acme Corp' --json)"; rc=$?
 is "1: rc 0"            "$rc" "0"
 is "1: ok true"         "$(printf '%s' "$out" | jq -r '.ok')" "true"
-is "1: login echoed"    "$(printf '%s' "$out" | jq -r '.login')" "acme"
+# --json's SHAPE MATCHES `account add --json` — kind, slug, the row's own
+# fields, then file — through the shared _json/jq helper, never a hand-built
+# printf. See MINOR-1 of the task-9 review.
+is "1: kind is login"   "$(printf '%s' "$out" | jq -r '.kind')" "login"
+is "1: slug echoed"     "$(printf '%s' "$out" | jq -r '.slug')" "acme"
 is "1: principal echoed" "$(printf '%s' "$out" | jq -r '.principal')" "alice"
 is "1: account echoed"  "$(printf '%s' "$out" | jq -r '.account')" "acct-acme-team"
 is "1: provider echoed" "$(printf '%s' "$out" | jq -r '.provider')" "claude-team"
 is "1: config_dir echoed" "$(printf '%s' "$out" | jq -r '.config_dir')" "~/.claude-logins/acme"
 is "1: legal_owner echoed" "$(printf '%s' "$out" | jq -r '.legal_owner')" "Acme Corp"
+is "1: file echoed"     "$(printf '%s' "$out" | jq -r '.file')" "$LOGINS/acme.conf"
 is "1: file mode 600"   "$(mode_of "$LOGINS/acme.conf")" "600"
 is "1: loads back via registry_login_load" \
   "$(load_login acme)" "alice|acct-acme-team|claude-team|~/.claude-logins/acme|Acme Corp"
@@ -234,6 +239,144 @@ rc=$?
 is "9b: a hand-written stage with a backtick refuses rc 70" "$rc" "70"
 absent "9b: no side effect — the backtick never ran" "$MARK2"
 rm -f "$HAND2"
+
+echo "== 10. login ls: text and --json, an empty register, one row, two rows, an unreadable row =="
+# A SEPARATE ESTATE, so ls's cases are not entangled with the collisions and
+# refusals proved above (FX/logins.d already carries 'acme' and 'oldschool'
+# by this stage of the suite). This section owns its own logins.d and its own
+# STEWARD_HOME_LOOKUP_CMD stub — the same pattern test/logins-registry.test.sh
+# uses to resolve a login's directory without touching the real system's
+# account database.
+FX2="$(mktemp -d)"
+mkdir -p "$FX2/estate" "$FX2/logins.d"
+cp "$FX/estate/steward.conf" "$FX2/estate/steward.conf"
+LOGINS2="$FX2/logins.d"
+cat > "$FX2/homelookup" <<'STUB'
+#!/bin/bash
+case "$1" in
+  alice) printf '/srv/homes/alice\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX2/homelookup"
+
+run2() {
+  STEWARD_ESTATE_ROOT="$FX2" STEWARD_CONFIG_FILE="$FX2/no-such-config" \
+  STEWARD_HOME_LOOKUP_CMD="$FX2/homelookup" \
+  bash "$STEWARD" registry login "$@" 2>&1
+}
+
+echo "-- 10a. an empty register --"
+out="$(run2 ls --json)"; rc=$?
+is "10a: rc 0 --json"                 "$rc" "0"
+is "10a: an empty logins array"       "$out" '{"logins":[]}'
+out="$(run2 ls)"; rc=$?
+is "10a: rc 0 text"                   "$rc" "0"
+is "10a: text mode prints nothing"    "$out" ""
+
+echo "-- 10b. one row, both modes --"
+run2 add row1 --principal alice --account acct-acme-team --provider claude-team \
+  --config-dir '~/.claude-logins/row1' --legal-owner 'Acme Corp' --json >/dev/null
+out="$(run2 ls)"; rc=$?
+is "10b: rc 0 text"                       "$rc" "0"
+has "10b: text row names the slug"        "$out" "row1"
+has "10b: text row names the account"     "$out" "acct-acme-team"
+has "10b: text row shows the resolved dir" "$out" "/srv/homes/alice/.claude-logins/row1"
+has "10b: text row shows the legal owner"  "$out" "Acme Corp"
+
+out="$(run2 ls --json)"; rc=$?
+is "10b: rc 0 --json"                     "$rc" "0"
+is "10b: exactly one row"                 "$(printf '%s' "$out" | jq '.logins | length')" "1"
+is "10b: row's login field"               "$(printf '%s' "$out" | jq -r '.logins[0].login')" "row1"
+is "10b: row's account field"             "$(printf '%s' "$out" | jq -r '.logins[0].account')" "acct-acme-team"
+is "10b: row's provider field"            "$(printf '%s' "$out" | jq -r '.logins[0].provider')" "claude-team"
+is "10b: row's config_dir field is resolved, not raw" \
+  "$(printf '%s' "$out" | jq -r '.logins[0].config_dir')" "/srv/homes/alice/.claude-logins/row1"
+is "10b: row's legal_owner field"         "$(printf '%s' "$out" | jq -r '.logins[0].legal_owner')" "Acme Corp"
+
+echo "-- 10c. two rows: the JSON comma --"
+run2 add row2 --principal alice --account acct-acme-team --provider claude-team \
+  --config-dir '~/.claude-logins/row2' --legal-owner 'Acme Corp' --json >/dev/null
+out="$(run2 ls --json)"; rc=$?
+is "10c: rc 0"                       "$rc" "0"
+is "10c: two rows, valid JSON"       "$(printf '%s' "$out" | jq '.logins | length')" "2"
+is "10c: row order is row1 then row2" \
+  "$(printf '%s' "$out" | jq -r '.logins[].login' | tr '\n' ' ')" "row1 row2 "
+
+echo "-- 10d. a deliberately unreadable row: text prints UNREADABLE, --json carries it explicitly (MINOR-3) --"
+# A hand-corrupted conf: registry_login_list still names the slug (it only
+# globs *.conf), but registry_login_load refuses it (missing PROVIDER) — the
+# exact asymmetry this register's readers are built to survive, and the one
+# a machine consumer of --json must be able to see too.
+printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-team"\nCONFIG_DIR="~/.claude-logins/broken"\nLEGAL_OWNER="Acme Corp"\n' \
+  > "$LOGINS2/broken.conf"
+chmod 600 "$LOGINS2/broken.conf"
+
+out="$(run2 ls)"; rc=$?
+is "10d: rc 0 text"                        "$rc" "0"
+has "10d: text mode names the unreadable row" "$out" "broken: UNREADABLE"
+
+out="$(run2 ls --json)"; rc=$?
+is "10d: rc 0 --json"                      "$rc" "0"
+is "10d: three rows total, the broken one included" \
+  "$(printf '%s' "$out" | jq '.logins | length')" "3"
+is "10d: the broken row's unreadable marker is explicit, not a drop" \
+  "$(printf '%s' "$out" | jq -r '.logins[] | select(.login=="broken") | .unreadable')" "true"
+is "10d: the two readable rows are unaffected" \
+  "$(printf '%s' "$out" | jq -r '[.logins[] | select(.unreadable != true) | .login] | sort | join(" ")')" \
+  "row1 row2"
+
+rm -rf "$FX2"
+
+echo "== 11. local-variable discipline: k (validator) and K (login add) do not leak into their caller (MINOR-4) =="
+# The mutation this proves: dropping 'k' from _registry_validate_login_stage's
+# local line, or 'K' from cmd_registry_login_add's, makes the sentinel below
+# get overwritten by the loop's last iteration value instead of surviving.
+_extract_fn() { sed -n "/^$1()/,/^}/p" "$STEWARD"; }
+
+out_k="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  eval "$(_extract_fn _registry_validate_login_stage)"
+  _REGW_EXPECT_SLUG="acme"
+  _REGW_EXPECT_PRINCIPAL="alice"
+  _REGW_EXPECT_ACCOUNT="acct-acme-team"
+  _REGW_EXPECT_PROVIDER="claude-team"
+  _REGW_EXPECT_CONFIG_DIR="~/.claude-logins/acme"
+  _REGW_EXPECT_LEGAL_OWNER="Acme Corp"
+  k="SENTINEL"
+  _registry_validate_login_stage "$LOGINS/acme.conf" >/dev/null 2>&1
+  printf '%s' "$k"
+)"
+is "11a: the validator leaves the caller's k untouched" "$out_k" "SENTINEL"
+
+out_K="$(
+  # THE INHERITED EXIT TRAP IS CLEARED FIRST. This subshell inherits the
+  # fixtures rm-the-tempdir EXIT trap set near the top of this file, in
+  # dormant form: present, but never fired unless something re-registers it
+  # with the trap builtin. registry_row_writes own lock does exactly that
+  # (save/restore, so a callers real EXIT trap survives a call into it in
+  # the same shell) and restoring it here would re-arm the dormant trap and
+  # delete the fixture out from under this very call. Clearing it first
+  # makes that save/restore a no-op.
+  trap - EXIT
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  eval "$(_extract_fn _reg_fail)"
+  eval "$(_extract_fn _registry_validate_login_stage)"
+  eval "$(_extract_fn cmd_registry_login_add)"
+  HERE="$here"
+  K="SENTINEL"
+  cmd_registry_login_add kleaktest --principal alice --account acct-acme-team \
+    --provider claude-team --config-dir '~/.claude-logins/kleaktest' \
+    --legal-owner 'Acme Corp' >/dev/null 2>&1
+  printf '%s' "$K"
+)"
+is "11b: cmd_registry_login_add leaves the caller's K untouched" "$out_K" "SENTINEL"
+is "11b: the row was still written correctly under the harness" \
+  "$(load_login kleaktest)" "alice|acct-acme-team|claude-team|~/.claude-logins/kleaktest|Acme Corp"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

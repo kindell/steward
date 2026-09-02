@@ -1063,7 +1063,7 @@ _registry_validate_login_stage() {
   # The `case` below still runs, but as an ordinary top-level statement, which
   # bash 3.2 parses correctly; only the NAME LOOKUP crosses into the
   # substitution, as one indirect expansion.
-  local got varname
+  local got varname k
   for k in PRINCIPAL ACCOUNT PROVIDER CONFIG_DIR LEGAL_OWNER; do
     case "$k" in
       CONFIG_DIR) varname="LOGIN_CONFIG_DIR_RAW" ;;
@@ -1583,11 +1583,12 @@ cmd_registry_account_add() {
 #      that writes a row the register's own reader then refuses produces rubbish
 #      that looks like data.
 #   2. --provider is validated against the closed vocabulary, before the write.
-#   3. registry_login_check runs AFTER publication and, if it fails, the verb
-#      REMOVES the row it just wrote and says why. The collision it catches can
-#      only be decided against the published state, and registry_row_write has
-#      no undo path — so the verb cleans up its own trace rather than leaving a
-#      register the whole fleet then refuses.
+#   3. registry_login_check runs INSIDE the stage validator, UNDER THE
+#      REGISTER'S WRITE LOCK, before publication — so a row whose resolved
+#      directory collides with an existing one is refused before it is ever
+#      published. There is no publish-then-remove step: registry_row_write
+#      has no undo path, so the collision is decided at the one moment a
+#      refusal costs nothing (see _registry_validate_login_stage).
 cmd_registry_login_add() {
   local want_json="" slug="" principal="" account="" provider="" configdir="" legal="" a
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
@@ -1680,7 +1681,7 @@ cmd_registry_login_add() {
 
   # See the matching comment in cmd_registry_team_add: _registry_emit_kv's own
   # refusal is CAPTURED, never left to leak onto this process's real stderr.
-  local kv_err rc kv_principal kv_account kv_provider kv_configdir kv_legal k v
+  local kv_err rc kv_principal kv_account kv_provider kv_configdir kv_legal k v K
   kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry login add: cannot create a temporary file" 70; return 70; }
   for k in principal account provider configdir legal; do
     case "$k" in
@@ -1738,9 +1739,14 @@ cmd_registry_login_add() {
   # still be sound WITH this row" can be asked without a window — and the only
   # place with no undo problem, because a refused stage was never published.
 
+  local file; file="$(registry_login_dir)/$slug.conf"
   if [ -n "$want_json" ]; then
-    printf '{"ok":true,"login":"%s","principal":"%s","account":"%s","provider":"%s","config_dir":"%s","legal_owner":"%s"}\n' \
-      "$slug" "$principal" "$account" "$provider" "$configdir" "$legal"
+    # SAME SHAPE AS `account add --json`: kind, slug, the row's own fields,
+    # then file — through the shared _json/jq helper, never a raw printf.
+    # This verb's success line was the only JSON emitter in the file that
+    # bypassed _json; nothing here needed a hand-built string.
+    _json ok true kind login slug "$slug" principal "$principal" account "$account" \
+      provider "$provider" config_dir "$configdir" legal_owner "$legal" file "$file"
   else
     echo "login '$slug' registered: principal $principal · account $account · $configdir · paid by $legal"
   fi
@@ -1763,7 +1769,17 @@ cmd_registry_login_ls() {
   [ -n "$want_json" ] && printf '{"logins":['
   for slug in $slugs; do
     registry_login_load "$slug" >/dev/null 2>&1 || {
-      [ -n "$want_json" ] || echo "$slug: UNREADABLE"
+      # THE ROW IS NAMED, NOT DROPPED, in --json too. Text mode already said
+      # so ("<slug>: UNREADABLE"); a machine consumer needs the same
+      # distinction — a refused row is not the same fact as an absent one,
+      # in the one register whose whole purpose is that a bad row is visible.
+      if [ -n "$want_json" ]; then
+        [ "$first" = 1 ] || printf ','
+        first=0
+        printf '{"login":"%s","unreadable":true}' "$slug"
+      else
+        echo "$slug: UNREADABLE"
+      fi
       continue
     }
     if ! dir="$(registry_login_config_dir "$slug" "$LOGIN_PRINCIPAL" 2>/dev/null)"; then
