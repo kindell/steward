@@ -646,7 +646,14 @@ grep -q "does-not-exist" "$T/lgout" && ok "LOGIN 6: the refusal names the slug" 
 
 echo "== LOGIN 7: THE SCHEMA GATE -- a declared LOGIN only, both directions =="
 echo "== LOGIN 7a. schema over this checkout's max: rc 78, zero spawn =="
-write_lg_estate 6
+# THE BOUNDARY IS READ FROM THE LIBRARY, not hardcoded -- a fixture that
+# hardcodes "one past REGISTRY_SCHEMA_MAX" as a literal number is only true
+# on the day it was written, and this row also carries a VALID LOGIN, so the
+# case must stay over the ceiling for its own reason (the ceiling, not the
+# LOGIN gate) even after the next bump. Same pattern as
+# test/identity-schema.test.sh's own over-the-ceiling case.
+lg7a_max="$( ( . "$here/../lib/registry.sh"; printf '%s' "$REGISTRY_SCHEMA_MAX" ) )"
+write_lg_estate "$((lg7a_max + 1))"
 id_lg7a="j-00000000000000a7"
 jobstate_create "$id_lg7a" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
   BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \

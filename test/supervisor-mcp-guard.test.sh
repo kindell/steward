@@ -433,11 +433,19 @@ stopptest() { # <description> <rc> <spawn-evidence file> <forbidden string>
 write_login_conf   # the LOGIN-less row from section 8's own helper
 
 echo "== 9a. SCHEMA_VERSION over REGISTRY_SCHEMA_MAX: rc 78, no tmux write =="
-printf 'SCHEMA_VERSION="6"\n' >> "$ROOT/estate/steward.conf"
+# THE BOUNDARY IS READ FROM THE LIBRARY, not hardcoded -- a fixture that
+# hardcodes "one past REGISTRY_SCHEMA_MAX" as a literal number is only true
+# on the day it was written. The number this checkout reads up to moves as
+# the library's own schema history grows; this case must stay "one past
+# whatever that is today", the same pattern test/identity-schema.test.sh
+# already uses for its own over-the-ceiling case.
+max9a="$( ( . "$here/lib/registry.sh"; printf '%s' "$REGISTRY_SCHEMA_MAX" ) )"
+over9a=$((max9a + 1))
+printf 'SCHEMA_VERSION="%s"\n' "$over9a" >> "$ROOT/estate/steward.conf"
 rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
 run_login; rc9a=$?
 out9a="$(cat "$T/out")"
-stopptest "9a Linux supervisor, schema 6" "$rc9a" "$TMUX_LOG" "new-session"
+stopptest "9a Linux supervisor, schema over the ceiling" "$rc9a" "$TMUX_LOG" "new-session"
 has "9a the refusal names the library, not a guess" "$out9a" "registry library will not load this row"
 # The whole reason for the second registry_load call is to relay the
 # LIBRARY's own reason, not just the supervisor's generic sentence above --
