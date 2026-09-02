@@ -96,7 +96,7 @@ _jobrun_takes_session_id() {
 # found with session ID"). Matching the file ANYWHERE under the store is
 # deliberate: the munged directory is derived from the cwd, and a job that moved
 # clones would otherwise look like a job that lost its thread.
-# JOBRUN_THREAD_STORE exists so the suite can point this at a store of its own.
+# JOBRUN_THREAD_STORE exists so the suite can aim this at a store of its own.
 _jobrun_thread_exists() {
   local uuid="$1" store="${JOBRUN_THREAD_STORE:-$HOME/.claude/projects}"
   [ -n "$uuid" ] || return 1
