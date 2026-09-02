@@ -146,6 +146,17 @@ LAUNCH_MARK="$STATE_DIR/$NAME.launched"
 # clears it. While it exists, later rounds keep driving the rename — and a
 # file that stays behind is the trace that the tile may carry a stale name.
 RENAME_PENDING="$STATE_DIR/$NAME.rename-pending"
+# THE DEGRADED-MCP ALARM'S DEDUP MARKER, the same shape as the unacked-mail one
+# below: it holds the KEY of the degradation last delivered to the hub, and is
+# written only on a receipt. A crash-looping session is respawned by this
+# supervisor every few rounds, and the alarm sits on the spawn path -- so
+# without this file the identical sentence about the identical missing asset
+# went out on every respawn, which is the "four times an hour" harm the alarm's
+# own comment names. The key is the rc plus the render's own words, so a set
+# that degrades FURTHER (a second asset gone, or rc 1 becoming rc 2) is news
+# and alarms anew, while a spawn whose set is healthy clears the marker -- a
+# marker that outlives its condition silences the next real alarm.
+MCP_MARK="$STATE_DIR/$NAME.mcp-signalled"
 if [ -n "$_PAUSED_NAME" ] && [ -f "$HOME/.local/state/$_PAUSED_NAME/$NAME" ]; then
   rm -f "$SUSPECT"
   exit 0
@@ -1339,17 +1350,37 @@ spawn_session() {
   # part of its tools, rc 2 means it starts with none and knows it. Neither is
   # a reason to withhold the start; both are a reason to tell a human.
   if [ "${MCP_RC:-3}" -eq 1 ] || [ "${MCP_RC:-3}" -eq 2 ]; then
-    # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, envelope
-    # v2) -- bus_send refuses every SEND without it. Same form as the two
-    # signals above; the subject slug is the thread key on the hub.
-    _mcp_why="the granted set was refused and the session started with NO MCP servers (strict, empty)"
-    [ "$MCP_RC" -eq 1 ] && _mcp_why="part of the granted set was omitted and the session started without it"
-    MCP_MSG="DRIFT mcp-set: $NAME spawned degraded
+    # THE KEY IS THE RC PLUS THE RENDER'S OWN WORDS (see MCP_MARK at the top).
+    # The diagnostics name the omitted assets, so hashing them is what makes
+    # "the same degradation" and "a worse one" two different alarms; the rc is
+    # carried in cleartext so a human reading the marker can see which of the
+    # two outcomes was signalled.
+    _mcp_key="$MCP_RC $(cksum < "$MCP_ERR" 2>/dev/null)"
+    if [ "$_mcp_key" != "$(cat "$MCP_MARK" 2>/dev/null)" ]; then
+      # THE FIRST LINE IS THE ENVELOPE (bus/lib.sh:bus_envelope_parse, envelope
+      # v2) -- bus_send refuses every SEND without it. Same form as the two
+      # signals above; the subject slug is the thread key on the hub.
+      _mcp_why="the granted set was refused and the session started with NO MCP servers (strict, empty)"
+      [ "$MCP_RC" -eq 1 ] && _mcp_why="part of the granted set was omitted and the session started without it"
+      MCP_MSG="DRIFT mcp-set: $NAME spawned degraded
 AUTO-ALERT: $_mcp_why ($NAME on $(hostname -s)). What the render said:
 $(sed 's/^/  /' "$MCP_ERR" 2>/dev/null)"
-    if bus_signalera "the MCP set" "$MCP_MSG"; then
-      echo "session-supervisor: $NAME signaled a degraded MCP set (rc $MCP_RC) to the hub" >&2
+      # THE MARKER IS WRITTEN ON THE RECEIPT, not on the attempt -- exactly
+      # like the unacked-mail marker. A bus that refused the send has told
+      # nobody, and a marker written anyway would make the next spawn treat
+      # that silence as a delivery.
+      if bus_signalera "the MCP set" "$MCP_MSG"; then
+        printf '%s' "$_mcp_key" > "$MCP_MARK"
+        echo "session-supervisor: $NAME signaled a degraded MCP set (rc $MCP_RC) to the hub" >&2
+      fi
+    else
+      echo "session-supervisor: $NAME spawned with a degraded MCP set (rc $MCP_RC), already signaled to the hub -- not repeating it" >&2
     fi
+  else
+    # A SPAWN WHOSE SET IS WHOLE FORGETS. Otherwise the marker outlives the
+    # degradation and the next one -- possibly a different asset entirely --
+    # is compared against a condition that no longer exists.
+    rm -f "$MCP_MARK"
   fi
 }
 

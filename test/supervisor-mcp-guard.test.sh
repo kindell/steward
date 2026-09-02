@@ -237,5 +237,89 @@ is    "6a rc 78"                                "$rc6" "78"
 has   "6b the refusal says the command is empty" "$out6" "empty"
 hasnt "6c and no bare shell was started"        "$(cat "$TMUX_LOG")" "new-session"
 
+echo "== 7. the degraded-MCP alarm is signalled ONCE, not once per respawn =="
+# The alarm sits on the spawn path because a degraded set is a property of the
+# session that was just started. But a crash-looping session is respawned by
+# this same supervisor every few rounds, and each respawn re-sent the identical
+# sentence about the identical missing asset -- the "four times an hour" harm
+# the alarm's own comment names, and the reason the unacked-mail escalation
+# next door carries a dedup marker. So: the same degradation is signalled once,
+# a DIFFERENT one is signalled anew, and a healthy spawn forgets.
+MCP_MARK="$STATE/$NAME.mcp-signalled"
+mkdir -p "$HOMEDIR/bin"
+cat > "$HOMEDIR/bin/bus-send" <<'EOF'
+#!/bin/bash
+# One CALL line per send, so alarms can be COUNTED rather than assumed, then
+# the message itself. The rc comes from a control file: a bus that refuses is
+# a state this section measures too.
+{ printf 'CALL\n'; printf '%s\n' "$2"; } >> "$HOME/bus.log"
+exit "$(cat "$HOME/bus-rc" 2>/dev/null || echo 0)"
+EOF
+chmod 755 "$HOMEDIR/bin/bus-send"
+printf '0\n' > "$HOMEDIR/bus-rc"
+# A deployed spawn library whose outcome the fixture drives: the rc and the
+# render's own words are read from control files, so one library serves the
+# degraded, the changed and the healthy spawn.
+cat > "$LIBS/mcpspawn.sh" <<'EOF'
+mcp_spawn_prepare() {
+  cat "$HOME/mcp-err" >&2
+  local rc; rc="$(cat "$HOME/mcp-rc")"
+  [ "$rc" = "3" ] && return 3
+  printf ' --strict-mcp-config --mcp-config "%s"' "$2"
+  return "$rc"
+}
+mcp_claude_cmd_fragment() {
+  printf 'claude %s --permission-mode bypassPermissions%s%s --remote-control "%s"' "$1" "$2" "$3" "$4"
+}
+EOF
+alarms() { grep -c '^CALL$' "$HOMEDIR/bus.log" 2>/dev/null | tr -d ' '; }
+: > "$HOMEDIR/bus.log"; rm -f "$MCP_MARK"
+printf '1\n' > "$HOMEDIR/mcp-rc"
+printf "mcp render: OMITTED 'tool-one' -- its definition is missing\n" > "$HOMEDIR/mcp-err"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run; rc7=$?
+is  "7a rc 0 -- a degraded set never withholds the start" "$rc7" "0"
+has "7b the session was spawned"        "$(cat "$TMUX_LOG")" "new-session"
+is  "7c and the hub was told, once"     "$(alarms)" "1"
+has "7d in the degraded-set thread"     "$(cat "$HOMEDIR/bus.log")" "DRIFT mcp-set"
+[ -f "$MCP_MARK" ] && ok "7e the delivery left a marker" \
+                   || bad "7e the delivery left a marker" "no $MCP_MARK"
+
+# THE RESPAWN. Same missing asset, same rc: the human has already been told.
+run; rc7b=$?
+is  "7f the respawn still starts the session" "$rc7b" "0"
+has "7g -- the spawn is not what is being suppressed" "$(cat "$TMUX_LOG")" "new-session"
+is  "7h and the hub is NOT told a second time" "$(alarms)" "1"
+
+# A DIFFERENT DEGRADATION IS NEWS. A second asset going missing, or rc 1
+# becoming rc 2, is a fact the first alarm did not carry.
+printf "mcp render: OMITTED 'tool-one' -- its definition is missing\nmcp render: OMITTED 'tool-two' -- its definition is missing\n" > "$HOMEDIR/mcp-err"
+run
+is "7i a degradation that CHANGED alarms anew" "$(alarms)" "2"
+
+# A HEALTHY SPAWN FORGETS (the bug 7 lesson the unacked marker carries: a
+# marker that outlives its condition silences the next real alarm).
+printf '3\n' > "$HOMEDIR/mcp-rc"; : > "$HOMEDIR/mcp-err"
+run
+is "7j a healthy spawn sends nothing" "$(alarms)" "2"
+[ -f "$MCP_MARK" ] && bad "7k and clears the marker" "$MCP_MARK is still there" \
+                   || ok "7k and clears the marker"
+printf '1\n' > "$HOMEDIR/mcp-rc"
+printf "mcp render: OMITTED 'tool-one' -- its definition is missing\n" > "$HOMEDIR/mcp-err"
+run
+is "7l so the degradation coming back is signalled again" "$(alarms)" "3"
+
+# A SEND THAT FAILED IS NOT A SEND. The marker is written on the receipt, like
+# the unacked one, so a refusing bus is retried on the next spawn.
+printf '65\n' > "$HOMEDIR/bus-rc"
+: > "$HOMEDIR/bus.log"; rm -f "$MCP_MARK"
+run
+is "7m a refused send is still an attempt" "$(alarms)" "1"
+[ -f "$MCP_MARK" ] && bad "7n but leaves no marker" "$MCP_MARK was written on a refusal" \
+                   || ok "7n but leaves no marker"
+printf '0\n' > "$HOMEDIR/bus-rc"
+run
+is "7o so the next spawn tries again" "$(alarms)" "2"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
