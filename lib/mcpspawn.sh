@@ -98,15 +98,36 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     return 69
   fi
 
+  # A FAILED PROBE IS NOT A PROBE THAT SAID ZERO. The emptiness probe below is
+  # the ONLY gate in front of rc 3, and rc 3 is the one outcome that leaves the
+  # command line alone -- i.e. hands the session the legacy .mcp.json, whatever
+  # the checkout declares. Reading a non-zero jq (fork failure under memory
+  # pressure, jq replaced mid-deploy) or a non-numeric answer as "length 0"
+  # resolves an UNKNOWN in the single direction this whole library exists to
+  # forbid, and does it silently. So the probe's own rc is captured and a bad
+  # answer falls through to the refusal below, like every other unknown here.
+  local probe_bad=""
   if [ "$rrc" -eq 0 ]; then
     # THE EMPTY DOCUMENT IS THE CONFIGURATION, and it is the one outcome that
     # must leave the command line alone. Read the LENGTH rather than compare
     # text: the render is free to format its output, and a string comparison
     # against one spelling of an empty object would turn a whitespace change
     # into a spawn policy change.
-    local n
-    n="$(printf '%s' "$body" | jq -r '.mcpServers | length' 2>/dev/null)"
-    if [ "${n:-0}" = "0" ]; then
+    local n probe_rc=0
+    n="$(printf '%s' "$body" | jq -r '.mcpServers | length' 2>/dev/null)" || probe_rc=$?
+    if [ "$probe_rc" -ne 0 ]; then
+      probe_bad="the emptiness probe could not be run (jq answered rc $probe_rc)"
+    else
+      # THE ANSWER IS NOT QUOTED BACK. A probe that printed a warning, or a
+      # shim standing in for jq, would put its output into the journal on the
+      # one path that also handles a document naming credential files.
+      case "$n" in
+        ''|*[!0-9]*) probe_bad="the emptiness probe answered something that is not a count" ;;
+      esac
+    fi
+  fi
+  if [ "$rrc" -eq 0 ] && [ -z "$probe_bad" ]; then
+    if [ "$n" = "0" ]; then
       rm -f "$doc"
       rm -f "$errf"
       return 3
@@ -126,6 +147,10 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     fi
     rm -f "$errf"
     return 0
+  fi
+
+  if [ -n "$probe_bad" ]; then
+    echo "mcp spawn: session '$sid' -- $probe_bad, so whether anything was granted is NOT KNOWN; treating it as a REFUSAL (strict, empty) rather than as 'nothing was granted', which would hand the session the legacy set" >&2
   fi
 
   # EVERY OTHER RENDER OUTCOME IS A REFUSAL, and refusals fail closed. rc 65 is

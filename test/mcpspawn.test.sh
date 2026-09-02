@@ -191,5 +191,55 @@ is "9b an RC-free session gets no --remote-control at all" \
    "$(frag "--continue" "" "" "")" \
    'claude --continue --permission-mode bypassPermissions'
 
+echo "== 10. a probe that FAILED is not a probe that answered zero =="
+# THE ONE DIRECTION THIS LIBRARY EXISTS TO FORBID. rc 3 means "the registry
+# never spoke", and it is the only outcome that leaves the command line alone
+# -- i.e. hands the session the repo's own .mcp.json, everything the checkout
+# happens to declare. The emptiness probe answering an ERROR is not that: it is
+# an UNKNOWN, and an unknown answer about a grant must fail closed like every
+# other unknown in this file.
+#
+# The shim fails ONLY the probe's filter, so the render itself still succeeds
+# and still produces a document with a granted server in it -- which is what
+# makes the old behaviour (rc 3, legacy, silent) reachable at all.
+rm -rf "$FX/probebin"; mkdir -p "$FX/probebin"
+REALJQ="$(command -v jq)"
+cat > "$FX/probebin/jq" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+  case "\$a" in *'.mcpServers | length'*) exit 1 ;; esac
+done
+exec "$REALJQ" "\$@"
+EOF
+chmod 755 "$FX/probebin/jq"
+rm -f "$DOC"
+out10="$(PATH="$FX/probebin:$PATH" prep s-full "$DOC" 2>"$FX/e10")"; rc10=$?
+err10="$(cat "$FX/e10")"
+is  "10a a failed probe resolves to rc 2, never rc 3" "$rc10" "2"
+is  "10b and the fragment is the fail-closed one"     "$out10" \
+    " --strict-mcp-config --mcp-config $DOC"
+is  "10c the document written is the EMPTY one"       \
+    "$(jq -c '.mcpServers' "$DOC" 2>/dev/null)" "{}"
+has "10d and the reason is on stderr, not swallowed"  "$err10" "probe"
+
+echo "== 11. a probe that answers something that is not a count refuses too =="
+# rc 0 with garbage on stdout is the same unknown wearing a success code -- a
+# jq replaced mid-run by a deploy, a shim, a wrapper that prints a warning.
+rm -rf "$FX/probebin2"; mkdir -p "$FX/probebin2"
+cat > "$FX/probebin2/jq" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+  case "\$a" in *'.mcpServers | length'*) echo "not-a-number"; exit 0 ;; esac
+done
+exec "$REALJQ" "\$@"
+EOF
+chmod 755 "$FX/probebin2/jq"
+rm -f "$DOC"
+out11="$(PATH="$FX/probebin2:$PATH" prep s-full "$DOC" 2>"$FX/e11")"; rc11=$?
+is    "11a rc 2, not rc 3"                          "$rc11" "2"
+is    "11b the document is empty and present"       \
+      "$(jq -c '.mcpServers' "$DOC" 2>/dev/null)" "{}"
+hasnt "11c the probe's own output is not quoted back" "$(cat "$FX/e11")" "not-a-number"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
