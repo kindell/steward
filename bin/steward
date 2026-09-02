@@ -1028,6 +1028,86 @@ _registry_validate_account_stage() {
   return 0
 }
 
+# _registry_validate_login_stage <staged-file> — the ONLY stage validator in
+# this file that does NOT source what it validates.
+#
+# Its four neighbours source the staged row, which is safe for them: a row they
+# just serialised themselves, in a register whose readers source too. This
+# register's readers do NOT source, and a validator that did would be the one
+# place in the chain where a login row gets executed — the single exception
+# defeating the rule. It reads through registry_login_load, the same parser
+# every consumer uses.
+_registry_validate_login_stage() {
+  local file="$1" dir base
+  # registry_login_load takes a SLUG in its own register; the stage is a
+  # temporary name in that same directory, so it is loaded by its basename.
+  base="$(basename "$file")"; base="${base%.conf}"
+  # The stage's name is .stage.XXXXXX — not a slug. Read it through a
+  # one-shot register whose only member is a copy of the stage, so the parser
+  # is exercised on the exact bytes that will be published.
+  dir="$(mktemp -d)" || { echo "registry: cannot stage-validate a login row" >&2; return 70; }
+  cp "$file" "$dir/stage.conf" || { rm -rf "$dir"; return 70; }
+  chmod 600 "$dir/stage.conf"
+  local rc=0
+  ( STEWARD_LOGINS_DIR="$dir"; registry_login_load stage >/dev/null 2>&1 ) || rc=70
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$dir"
+    echo "registry: the staged login row does not parse with the register's own reader: $file" >&2
+    return 70
+  fi
+  # THE FIELD NAME IS RESOLVED THROUGH INDIRECT EXPANSION (${!varname}), NOT A
+  # `case` STATEMENT WRITTEN INLINE INSIDE $( ). The obvious form — a `case`
+  # as the first command inside a command substitution — is mis-parsed by the
+  # bash 3.2 shipped on macOS (measured: it reads past `esac` as literal text
+  # instead of executing the branches), and this library runs on that shell.
+  # The `case` below still runs, but as an ordinary top-level statement, which
+  # bash 3.2 parses correctly; only the NAME LOOKUP crosses into the
+  # substitution, as one indirect expansion.
+  local got varname
+  for k in PRINCIPAL ACCOUNT PROVIDER CONFIG_DIR LEGAL_OWNER; do
+    case "$k" in
+      CONFIG_DIR) varname="LOGIN_CONFIG_DIR_RAW" ;;
+      *)          varname="LOGIN_$k" ;;
+    esac
+    got="$( STEWARD_LOGINS_DIR="$dir"; registry_login_load stage >/dev/null 2>&1; printf '%s' "${!varname}" )"
+    eval "local want=\"\$_REGW_EXPECT_$k\""
+    if [ "$got" != "$want" ]; then
+      rm -rf "$dir"
+      echo "registry: staged login row's $k does not match what was written: $file" >&2
+      return 70
+    fi
+  done
+  rm -rf "$dir"
+
+  # THE REGISTER-WIDE QUESTION, ASKED UNDER THE LOCK. registry_row_write calls
+  # this validator while it still holds the register's write lock, so this is the
+  # ONE moment where the register PLUS the pending row can be judged together and
+  # a refusal costs nothing: the stage is discarded and nothing was published.
+  #
+  # THE PENDING ROW IS JUDGED AS THE SLUG IT WILL BECOME, not as the stage's
+  # mktemp name — a collision is a question about (PRINCIPAL, relative dir), and
+  # the answer must not depend on what mktemp happened to call the file.
+  local probe existing real
+  probe="$(mktemp -d)" || return 70
+  real="$(registry_login_dir)"
+  if [ -d "$real" ]; then
+    for existing in "$real"/*.conf; do
+      [ -e "$existing" ] || continue
+      cp "$existing" "$probe/" 2>/dev/null || true
+    done
+  fi
+  cp "$file" "$probe/$_REGW_EXPECT_SLUG.conf" || { rm -rf "$probe"; return 70; }
+  chmod 600 "$probe"/*.conf 2>/dev/null
+  if ! ( STEWARD_LOGINS_DIR="$probe"; registry_login_check ) >/dev/null 2>&1; then
+    ( STEWARD_LOGINS_DIR="$probe"; registry_login_check ) 2>&1 >/dev/null | sed 's/^/  /' >&2
+    echo "registry: the register would NOT be sound with this row — refusing to publish it." >&2
+    rm -rf "$probe"
+    return 70
+  fi
+  rm -rf "$probe"
+  return 0
+}
+
 # _registry_validate_session_stage <staged-file> — same shape as the team,
 # client, account and project validators around it, for the session row's
 # full field set: the minted ID, the identity pair (ACCOUNT, SLUG), the
@@ -1083,9 +1163,9 @@ _registry_validate_project_stage() {
 }
 
 # cmd_registry — the `registry` noun's own tiny dispatcher: team|client,
-# account, project, session — add. A later scope adds non-`add` verbs;
-# this refuses anything else by name rather than falling through to
-# the estate-client fallback the top-level dispatcher owns.
+# account, login, project, session — add (login also has ls). A later scope
+# adds non-`add` verbs; this refuses anything else by name rather than
+# falling through to the estate-client fallback the top-level dispatcher owns.
 cmd_registry() {
   case "${1:-}" in
     team)
@@ -1106,6 +1186,13 @@ cmd_registry() {
         add) shift; cmd_registry_account_add "$@" ;;
         *) fel "steward registry account: unknown verb '${1:-}' (allowed: add)" 64 ;;
       esac ;;
+    login)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_login_add "$@" ;;
+        ls)  shift; cmd_registry_login_ls "$@" ;;
+        *)   _reg_fail "" "steward registry login: add|ls" 64; return 64 ;;
+      esac ;;
     project)
       shift
       case "${1:-}" in
@@ -1119,7 +1206,7 @@ cmd_registry() {
         *) fel "steward registry session: unknown verb '${1:-}' (allowed: add)" 64 ;;
       esac ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
-    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, project, session, migrate-session)" 64 ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, project, session, migrate-session)" 64 ;;
   esac
 }
 
@@ -1482,6 +1569,217 @@ cmd_registry_account_add() {
   else
     printf 'steward: wrote accounts.d/%s.conf (account for %s@%s, username %s)\n' "$slug" "$principal" "$host" "$username"
   fi
+  return 0
+}
+
+# cmd_registry_login_add <slug> --principal P --account A --provider V
+#                        --config-dir D --legal-owner O [--json]
+#
+# THE SAME SHAPE as account add — flag loop, form validation BEFORE any write,
+# _registry_emit_kv per field, _REGW_EXPECT_*, one writer core — with three
+# differences that are the reason the verb is worth having:
+#
+#   1. --config-dir is validated against THE GRAMMAR, before the write. A verb
+#      that writes a row the register's own reader then refuses produces rubbish
+#      that looks like data.
+#   2. --provider is validated against the closed vocabulary, before the write.
+#   3. registry_login_check runs AFTER publication and, if it fails, the verb
+#      REMOVES the row it just wrote and says why. The collision it catches can
+#      only be decided against the published state, and registry_row_write has
+#      no undo path — so the verb cleans up its own trace rather than leaving a
+#      register the whole fleet then refuses.
+cmd_registry_login_add() {
+  local want_json="" slug="" principal="" account="" provider="" configdir="" legal="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --principal)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry login add: --principal needs a value" 64; return 64; }
+        principal="$2"; shift 2 ;;
+      --account)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry login add: --account needs a value" 64; return 64; }
+        account="$2"; shift 2 ;;
+      --provider)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry login add: --provider needs a value" 64; return 64; }
+        provider="$2"; shift 2 ;;
+      --config-dir)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry login add: --config-dir needs a value" 64; return 64; }
+        configdir="$2"; shift 2 ;;
+      --legal-owner)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry login add: --legal-owner needs a value" 64; return 64; }
+        legal="$2"; shift 2 ;;
+      -*)
+        _reg_fail "$want_json" "steward registry login add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        if [ -n "$slug" ]; then
+          _reg_fail "$want_json" "steward registry login add: one slug at a time" 64; return 64
+        fi
+        slug="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry login add: a slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry login add: invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  [ -n "$principal" ] || { _reg_fail "$want_json" "steward registry login add: --principal is required" 64; return 64; }
+  if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry login add: invalid --principal '$principal' (allowed: a-z, then a-z0-9-)" 64
+    return 64
+  fi
+  # ACCOUNT is the account's REAL name: non-empty, no whitespace. Deliberately
+  # NOT required to be an address — the field is the account's name on whatever
+  # provider it belongs to, and it must stay updatable without moving a
+  # directory of live credentials.
+  case "$account" in
+    '') _reg_fail "$want_json" "steward registry login add: --account is required (the account's real name)" 64; return 64 ;;
+    *[[:space:]]*) _reg_fail "$want_json" "steward registry login add: --account must not contain whitespace" 64; return 64 ;;
+  esac
+  [ -n "$legal" ] || { _reg_fail "$want_json" "steward registry login add: --legal-owner is required (who pays, and who answers for it?)" 64; return 64; }
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  # THE CLOSED VOCABULARY, CHECKED HERE TOO. The reader refuses an unknown
+  # provider, but a verb that can only be caught by the reader is a verb that
+  # writes rubbish and reports success.
+  case " $_REGISTRY_LOGIN_PROVIDERS " in
+    *" $provider "*) ;;
+    *) _reg_fail "$want_json" "steward registry login add: invalid --provider '$provider' (one of: $_REGISTRY_LOGIN_PROVIDERS)" 64
+       return 64 ;;
+  esac
+
+  # THE GRAMMAR, CHECKED BEFORE THE WRITE. Same two forms, same reasons — see
+  # registry_login_config_dir. The legacy form additionally has to BE the estate's
+  # named row, and that is checked here rather than left to first read.
+  local legacy leaf
+  case "$configdir" in
+    '~/.claude')
+      legacy="$(registry_legacy_login)" || {
+        _reg_fail "$want_json" "steward registry login add: the estate's LEGACY_LOGIN is malformed" 78; return 78; }
+      if [ "$legacy" != "$slug" ]; then
+        _reg_fail "$want_json" "steward registry login add: '~/.claude' is reserved for the estate's LEGACY_LOGIN (currently: ${legacy:-none}), not for '$slug'" 64
+        return 64
+      fi ;;
+    '~/.claude-logins/'*)
+      leaf="${configdir#\~/.claude-logins/}"
+      case "$leaf" in
+        ''|*/*) _reg_fail "$want_json" "steward registry login add: --config-dir must name exactly one directory under ~/.claude-logins/" 64; return 64 ;;
+      esac
+      if ! [[ "$leaf" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        _reg_fail "$want_json" "steward registry login add: --config-dir leaf '$leaf' is not a slug (a-z 0-9 and hyphen)" 64
+        return 64
+      fi ;;
+    *)
+      _reg_fail "$want_json" "steward registry login add: --config-dir must be '~/.claude-logins/<slug>' (or '~/.claude' for the estate's LEGACY_LOGIN); got '$configdir'" 64
+      return 64 ;;
+  esac
+
+  # See the matching comment in cmd_registry_team_add: _registry_emit_kv's own
+  # refusal is CAPTURED, never left to leak onto this process's real stderr.
+  local kv_err rc kv_principal kv_account kv_provider kv_configdir kv_legal k v
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry login add: cannot create a temporary file" 70; return 70; }
+  for k in principal account provider configdir legal; do
+    case "$k" in
+      principal) v="$principal"; K=PRINCIPAL ;;
+      account)   v="$account";   K=ACCOUNT ;;
+      provider)  v="$provider";  K=PROVIDER ;;
+      configdir) v="$configdir"; K=CONFIG_DIR ;;
+      legal)     v="$legal";     K=LEGAL_OWNER ;;
+    esac
+    eval "kv_$k=\"\$(_registry_emit_kv \"\$K\" \"\$v\" 2>\"\$kv_err\")\""; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      rm -f "$kv_err"
+      _reg_fail "$want_json" "steward registry login add: --${k} contains a control character or newline" 64
+      return 64
+    fi
+  done
+  rm -f "$kv_err"
+
+  # _REGW_EXPECT_SLUG IS THE SIXTH VARIABLE THIS VERB MUST SET — the stage
+  # validator's collision probe judges the pending row AS THE SLUG IT WILL
+  # BECOME (see _registry_validate_login_stage), and needs the slug itself,
+  # not just the five row fields, to build that probe's filename.
+  _REGW_EXPECT_SLUG="$slug"
+  _REGW_EXPECT_PRINCIPAL="$principal"
+  _REGW_EXPECT_ACCOUNT="$account"
+  _REGW_EXPECT_PROVIDER="$provider"
+  _REGW_EXPECT_CONFIG_DIR="$configdir"
+  _REGW_EXPECT_LEGAL_OWNER="$legal"
+
+  local rw_err content
+  rw_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry login add: cannot create a temporary file" 70; return 70; }
+  # HEADER + TRAILING NEWLINE — see the matching comment in cmd_registry_team_add.
+  content="$(printf '# %s — login, written by steward registry login add.\n%s\n%s\n%s\n%s\n%s' \
+    "$slug" "$kv_principal" "$kv_account" "$kv_provider" "$kv_configdir" "$kv_legal")"$'\n'
+  registry_login_write "$slug" "$content" _registry_validate_login_stage 2>"$rw_err"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry login add: $(tr '\n' ' ' < "$rw_err")" "$rc"
+    rm -f "$rw_err"
+    return "$rc"
+  fi
+  rm -f "$rw_err"
+
+  # THE COLLISION IS DECIDED UNDER THE LOCK, BEFORE PUBLICATION — see
+  # _registry_validate_login_stage. The first draft published first and removed
+  # the row again on failure, and that is a defect and not a tidiness matter:
+  # between the publish and the removal the register is OBSERVABLY INVALID, and
+  # every reader in the fleet is a concurrent reader. A supervisor spawning in
+  # that window resolves a register that refuses, exits 78, and launchd restarts
+  # it every ten seconds. The window is short and the fleet is large; "short" is
+  # not a guarantee.
+  #
+  # registry_row_write already holds the register's write lock while it calls the
+  # stage validator, so the validator is the ONE place where "would the register
+  # still be sound WITH this row" can be asked without a window — and the only
+  # place with no undo problem, because a refused stage was never published.
+
+  if [ -n "$want_json" ]; then
+    printf '{"ok":true,"login":"%s","principal":"%s","account":"%s","provider":"%s","config_dir":"%s","legal_owner":"%s"}\n' \
+      "$slug" "$principal" "$account" "$provider" "$configdir" "$legal"
+  else
+    echo "login '$slug' registered: principal $principal · account $account · $configdir · paid by $legal"
+  fi
+  return 0
+}
+
+# cmd_registry_login_ls [--json] — one line per row: slug, account, provider,
+# the RESOLVED directory, and who pays.
+#
+# THE RESOLVED DIRECTORY IS SHOWN, not the raw field. The raw one is a grammar
+# fragment; what an operator needs to know before an interactive login is which
+# directory on disk is about to be written. A row that does not resolve prints
+# its refusal in place of the path rather than being skipped.
+cmd_registry_login_ls() {
+  local want_json="" a slug dir first=1
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  local slugs; slugs="$(registry_login_list)" || return 78
+  [ -n "$want_json" ] && printf '{"logins":['
+  for slug in $slugs; do
+    registry_login_load "$slug" >/dev/null 2>&1 || {
+      [ -n "$want_json" ] || echo "$slug: UNREADABLE"
+      continue
+    }
+    if ! dir="$(registry_login_config_dir "$slug" "$LOGIN_PRINCIPAL" 2>/dev/null)"; then
+      dir="(does not resolve)"
+    fi
+    if [ -n "$want_json" ]; then
+      [ "$first" = 1 ] || printf ','
+      first=0
+      printf '{"login":"%s","account":"%s","provider":"%s","config_dir":"%s","legal_owner":"%s"}' \
+        "$slug" "$LOGIN_ACCOUNT" "$LOGIN_PROVIDER" "$dir" "$LOGIN_LEGAL_OWNER"
+    else
+      printf '%-16s %-28s %-12s %-40s %s\n' \
+        "$slug" "$LOGIN_ACCOUNT" "$LOGIN_PROVIDER" "$dir" "$LOGIN_LEGAL_OWNER"
+    fi
+  done
+  [ -n "$want_json" ] && printf ']}\n'
   return 0
 }
 

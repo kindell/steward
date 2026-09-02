@@ -1454,6 +1454,21 @@ registry_session_write() {
   registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_load "session"
 }
 
+# registry_login_write <slug> <content> <validate_fn> — THIN WRAPPER over
+# registry_row_write, the login twin of the entity/project/account/session
+# wrappers above.
+#
+# THE READBACK IS THE STRICT PARSER. registry_login_load is passed as the
+# readback function, so "written ok" means exactly what every reader of this
+# register will see — including its refusals on mode and shape. A writer that
+# read back with a looser reader than the consumers use would publish rows the
+# fleet then refuses at spawn time.
+registry_login_write() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_login_dir)" || return 78
+  registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_login_load "login"
+}
+
 # ── THE ESTATE'S OTHER VALUES ──────────────────────────────────────────────
 # The same shape as the prefix lookup above, and for the same reasons: `local`
 # before `source` so the estate file never leaks a global to the caller, form
