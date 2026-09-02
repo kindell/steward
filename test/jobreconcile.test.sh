@@ -259,16 +259,24 @@ jobstate_read "$id"
 [ -z "${JOB_OUTCOME:-}" ] && ok "crashed: row stays non-terminal" || bad "OUTCOME" "${JOB_OUTCOME:-}"
 grep -q "$id" "$T/runnerlog" 2>/dev/null && ok "crashed: runner re-invoked" || bad "no resume for a crashed attempt"
 [ "$(git -C "$T/$id-work" rev-parse HEAD)" = "$want" ] && ok "crashed: the commits stay on the branch as the checkpoint" || bad "checkpoint lost"
-[ "${JOB_RESUME_KIND:-}" = "fresh-after-crash" ] && ok "crashed: the row names the resume it is about to get" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+# THE RECONCILER NAMES NO RESUME. Which start the next attempt gets is not
+# knowable here — only the runner, standing in front of the runtime, can see
+# whether the thread still exists to be resumed. So the crashed path writes
+# NOTHING before handing over: no RESUME_KIND, no version bump, no journal
+# line that a later reader would take for the record.
+[ -z "${JOB_RESUME_KIND:-}" ] && ok "crashed: the reconciler names no resume kind — the runner owns that word" || bad "RESUME_KIND written by the reconciler" "${JOB_RESUME_KIND:-}"
 
-# The same shape with a thread recorded: the resume IS exact, and the row says so.
+# The same shape with a thread recorded: still no write, still a hand-over.
 id=j-0000000000000111; mkcrashed "$id"
 jobstate_read "$id"; jobstate_transition "$id" "$JOB_VERSION" RUNTIME_THREAD=11111111-2222-4333-a444-555555555555
+jobstate_read "$id"; v="$JOB_VERSION"
 echo half > "$T/$id-work/f"
 rm -f "$T/runnerlog"
 jobreconcile "$id"
 jobstate_read "$id"
-[ "${JOB_RESUME_KIND:-}" = "exact-thread" ] && ok "crashed with a thread: the row names an exact resume" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+[ -z "${JOB_RESUME_KIND:-}" ] && ok "crashed with a thread: still no resume kind from the reconciler" || bad "RESUME_KIND written by the reconciler" "${JOB_RESUME_KIND:-}"
+[ "$JOB_VERSION" = "$v" ] && ok "crashed with a thread: the hand-over bumps no version" || bad "row rewritten on the way to the runner" "v$v -> v$JOB_VERSION"
+grep -q "$id" "$T/runnerlog" 2>/dev/null && ok "crashed with a thread: runner re-invoked" || bad "no resume for a crashed attempt with a thread"
 
 # FINISHED, not crashed: the wrapper wrote PROCESS=exited for this attempt, so
 # the same branch state IS a delivery. Unchanged behaviour.

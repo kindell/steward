@@ -125,10 +125,9 @@ jobreconcile() {
     # carry it after it was already finished and its push met an unreachable
     # origin. Dropping it here would send work that IS done back to the runner
     # the moment origin came back [C3].
-    local finished="" crashed=""
+    local finished=""
     case "${JOB_PROCESS:-}" in
       exited|retry-wait) [ "${JOB_EXIT_CODE:-}" = "0" ] && finished=1 ;;
-      running) crashed=1 ;;
     esac
     if [ -n "$finished" ] && [ -n "$local_sha" ] && [ "$local_sha" != "$JOB_BASE_SHA" ] && [ "$local_sha" != "$have" ]; then
       local out deliver_rc=0
@@ -152,18 +151,11 @@ jobreconcile() {
       fi
       return 0
     fi
-    # THE ROW SAYS WHICH RESUME THIS IS. A thread id already on the row means
-    # the next attempt resumes that exact thread; no thread id means the crash
-    # took the memory with it and attempt N+1 starts fresh on the same branch.
-    # Naming it is the point: the log must never claim an exact resume that
-    # did not happen.
-    if [ -n "$crashed" ]; then
-      if [ -n "${JOB_RUNTIME_THREAD:-}" ]; then
-        jobstate_transition "$id" "$v" RESUME_KIND=exact-thread || return 75
-      else
-        jobstate_transition "$id" "$v" RESUME_KIND=fresh-after-crash || return 75
-      fi
-    fi
+    # WHICH RESUME THIS IS, IS NOT KNOWABLE HERE. A thread id on the row is a
+    # NAME, not a live session: only the runner, standing in front of the
+    # runtime, can see whether that thread still exists to be resumed. So this
+    # path writes nothing on its way over — it hands the job to the runner and
+    # the runner's own transition is the record.
     # 6. Dirty or unfinished worktree, process dead, slots left: resume.
     "${JOBRECONCILE_RUNNER:-$(dirname "${BASH_SOURCE[0]}")/../job-run.sh}" "$id"
     return 0
