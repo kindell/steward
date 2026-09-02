@@ -171,7 +171,12 @@ echo "== 11. a key that is a CODE PATH is REFUSED =="
 # the very next `bash` runs, LD_PRELOAD names a library injected into every
 # child, PATH decides which binary a name resolves to -- all of them turn a
 # 0600 data file back into code execution inside the session.
-for k in BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH PATH IFS PS4; do
+# THE LOADER AND INTERPRETER CLASS IS IN THE LIST TOO. The servers this wrapper
+# parents are node and python processes: NODE_OPTIONS=--require=, PYTHONSTARTUP,
+# PYTHONPATH, PERL5OPT, RUBYOPT and glibc's LD_AUDIT each run code from a data
+# line as surely as BASH_ENV does.
+for k in BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PATH IFS PS4 \
+         NODE_OPTIONS PYTHONSTARTUP PYTHONPATH PERL5OPT RUBYOPT; do
   printf '%s=/tmp/whatever\n' "$k" > "$FX/deny.env"
   bash "$W" "$FX/deny.env" "$SHOW" "$k" >/dev/null 2>"$FX/e11"
   is "11-$k is refused rc 65" "$?" "65"
@@ -190,6 +195,25 @@ printf 'touch "%s/pwned2"\n' "$FX" > "$FX/ran.sh"
 bash "$W" "$FX/preload.env" bash -c 'true' >/dev/null 2>&1
 [ -e "$FX/pwned2" ] && bad "11d the file's BASH_ENV ran a script" \
                     || ok "11d nothing the file named was executed"
+
+echo "== 12. a key bash holds READONLY is refused with the line number, not a bash message =="
+# `export UID=1` aborts bash with its own text about a readonly variable and no
+# line number -- the symptom, not the cause. The refusal has to be this
+# wrapper's, in this wrapper's words.
+for k in UID EUID PPID; do
+  printf 'GOOD=1\n%s=1\n' "$k" > "$FX/ro.env"
+  bash "$W" "$FX/ro.env" "$SHOW" GOOD >/dev/null 2>"$FX/e12"
+  is  "12-$k is refused rc 65"                "$?" "65"
+  has "12-$k names line 2"                    "$(cat "$FX/e12")" "line 2"
+  has "12-$k in the wrapper's own words"      "$(cat "$FX/e12")" "mcp-env: REFUSING"
+done
+
+echo "== 13. a carriage return ANYWHERE in a line is refused, not only at its end =="
+printf 'TOK=ab\rc\n' > "$FX/midcr.env"
+bash "$W" "$FX/midcr.env" "$SHOW" TOK >"$FX/o13" 2>"$FX/e13"
+is    "13a rc 65"                                  "$?" "65"
+has   "13b line 1 is named"                        "$(cat "$FX/e13")" "line 1"
+hasnt "13c and no value with a CR reached the child" "$(cat -v "$FX/o13")" "^M"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

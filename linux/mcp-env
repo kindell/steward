@@ -63,7 +63,13 @@ envfile="$1"; shift
 # list, never from the file's free text, so naming it cannot leak anything the
 # list itself does not already publish -- and a refusal that would not say which
 # key sends an operator to read a file they must not read.
-DENIED_KEYS=" BASH_ENV ENV SHELLOPTS BASHOPTS LD_PRELOAD LD_LIBRARY_PATH PATH IFS PS4 "
+# THE LOADER AND INTERPRETER CLASS IS DENIED AS ONE FAMILY. The servers this
+# wrapper parents are node and python processes, and each interpreter has its
+# own BASH_ENV: NODE_OPTIONS (--require=), PYTHONSTARTUP, PYTHONPATH, PERL5OPT,
+# RUBYOPT; LD_AUDIT is glibc's sibling of LD_PRELOAD. A list that named the
+# shell's hooks and not the interpreters' would deny the one door the session
+# never walks through and leave the ones it does wide open.
+DENIED_KEYS=" BASH_ENV ENV SHELLOPTS BASHOPTS LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PATH IFS PS4 NODE_OPTIONS PYTHONSTARTUP PYTHONPATH PERL5OPT RUBYOPT "
 
 lineno=0
 while IFS= read -r line || [ -n "$line" ]; do
@@ -77,9 +83,11 @@ while IFS= read -r line || [ -n "$line" ]; do
   # is BEFORE the blank-and-comment skip on purpose: in a CRLF file the first
   # line is very often blank or a comment, and skipping it would report the
   # third line of a file that is wrong from its first byte.
+  # ANYWHERE IN THE LINE, not only at its end: a CR in the middle of a value is
+  # the same wrong byte, and one that would travel inside the credential.
   case "$line" in
-    *$'\r')
-      echo "mcp-env: REFUSING: $envfile line $lineno ends with a carriage return -- this file has CRLF line endings" >&2
+    *$'\r'*)
+      echo "mcp-env: REFUSING: $envfile line $lineno contains a carriage return -- this file has CRLF line endings" >&2
       echo "mcp-env: a credential file saved CRLF was edited on the wrong operating system; the carriage return" >&2
       echo "mcp-env: would travel INSIDE the value and fail as an authentication error far from here." >&2
       echo "mcp-env: the line itself is NOT printed -- this file holds credentials. Convert it to LF endings." >&2
@@ -115,6 +123,14 @@ while IFS= read -r line || [ -n "$line" ]; do
       exit 65
       ;;
   esac
+  # A KEY BASH HOLDS READONLY (UID, EUID, PPID, ...) would abort this script
+  # with bash's own message and no line number -- the symptom named, the cause
+  # not. The probe runs in a subshell so the refusal stays this wrapper's.
+  if ! ( export "$key=" ) 2>/dev/null; then
+    echo "mcp-env: REFUSING: $envfile line $lineno sets $key, which the shell holds readonly" >&2
+    echo "mcp-env: the VALUE is NOT printed -- this file holds credentials. Open it and look at line $lineno." >&2
+    exit 65
+  fi
   export "$key=${line#*=}"
 done < "$envfile"
 
