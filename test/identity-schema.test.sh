@@ -170,7 +170,7 @@ konf two 'REPO_PATH="/x"' 'RC_LABEL="Two"' 'OWNER="ada"' 'DOMAIN="d"'
   || bad "an absent ID falls back to the file name" "got '$(ladda two ID)'"
 
 # THE ID IS NOT THE DISPLAY NAME. A conf may carry both, and they may differ —
-# that is the entire point of the split, so a test that never sees them differ
+# that is the entire reason for the split, so a test that never sees them differ
 # proves nothing.
 konf three 'REPO_PATH="/x"' 'RC_LABEL="Renamed Yesterday"' 'OWNER="ada"' 'DOMAIN="d"' 'ID="three"'
 [ "$(ladda three ID)" = "three" ] && [ "$(ladda three RC_LABEL)" = "Renamed Yesterday" ] \
@@ -299,7 +299,7 @@ rc=$?
                  || bad "a newer estate makes registry_load refuse with 78" "rc=$rc"
 
 # THE REFUSAL COMES FIRST. A conf that is ALSO malformed must still fail on the
-# schema, not on its own fields: the point of the gate is that a checkout which
+# schema, not on its own fields: the reason the gate exists is that a checkout which
 # cannot understand the register must not start interpreting it. A test that only
 # uses a valid conf cannot tell the two orders apart. Same fully valid estate as
 # above (still schema 999) — the only thing wrong here is the conf's own KIND.
@@ -487,6 +487,217 @@ leakedP="$( ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$FX/entities.
   printf '%s|%s|%s' "$PROJECT_ID" "$PROJECT_NAME" "$PROJECT_PARENT" ) )"
 [ "$leakedP" = "||" ] && ok "a failed load does not leak the previous project's data" \
   || bad "a failed load does not leak the previous project's data" "got '$leakedP'"
+
+echo
+echo "SCHEMA 6 — LOGIN becomes mandatory, and the refusal comes BEFORE a spawn"
+
+# Under schema 5 and below, an absent LOGIN loads. Under 6 it refuses rc 78.
+# BOTH directions are measured: a gate that only bites in the new schema, and a
+# gate that does not bite in the old one, are two different guarantees and each
+# one is somebody's outage if it is wrong.
+#
+# THE LOWER BOUND IS 5, NOT 4, AND THAT IS THE WHOLE MEANING OF THIS NUMBER.
+# 5 is the MCP register's schema, taken 2026-09-01. Measuring the gate at 4
+# would leave the one boundary that matters — "does a schema-5 estate still load
+# without LOGIN?" — untested, and every estate that bumped for MCP's sake would
+# have started refusing its own rows.
+full_estate() { # <schema> [extra estate lines...]
+  local schema="$1"; shift
+  estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' "SCHEMA_VERSION=\"$schema\"" \
+    'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+    'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+    'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+    'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+    'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"' "$@"
+}
+laddarc() { # <session> [STEWARD_ACCOUNT_DIR] -> rc of registry_load
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+    [ -n "${2:-}" ] && export STEWARD_ACCOUNT_DIR="$2"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_load "$1" >/dev/null 2>&1; echo $? )
+}
+laddaerr() { # <session> [STEWARD_ACCOUNT_DIR] -> stderr of registry_load
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+    [ -n "${2:-}" ] && export STEWARD_ACCOUNT_DIR="$2"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_load "$1" 2>&1 >/dev/null )
+}
+# THE SUBSHELL IS THE OLD CHECKOUT. Lowering REGISTRY_SCHEMA_MAX after sourcing
+# is exactly what an older lib/registry.sh looks like as far as registry_load
+# can tell, and it needs no second checkout on disk. THE VALUE IS 5 — the
+# schema that actually shipped before this one, so the case is the real
+# upgrade step and not a hypothetical one.
+laddarc_old() { # <session> -> rc of registry_load, reader capped at schema 5
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    REGISTRY_SCHEMA_MAX=5
+    registry_load "$1" >/dev/null 2>&1; echo $? )
+}
+laddaerr_old() { # <session> -> stderr of registry_load, reader capped at schema 5
+  ( export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    REGISTRY_SCHEMA_MAX=5
+    registry_load "$1" 2>&1 >/dev/null )
+}
+
+full_estate 5
+konf nologin 'REPO_PATH="/x"' 'RC_LABEL="N"' 'OWNER="alice"' 'DOMAIN="acme"'
+rc="$(laddarc nologin)"
+[ "$rc" = "0" ] && ok "schema 5: an absent LOGIN loads" \
+  || bad "schema 5: an absent LOGIN loads" "rc=$rc"
+
+full_estate 6
+rc="$(laddarc nologin)"
+[ "$rc" = "78" ] && ok "schema 6: an absent LOGIN is rc 78" \
+  || bad "schema 6: an absent LOGIN is rc 78" "rc=$rc"
+err="$(laddaerr nologin)"
+case "$err" in *"which model account"*) ok "the refusal says which account would have paid" ;;
+  *) bad "the refusal says which account would have paid" "$err" ;; esac
+
+konf withlogin 'REPO_PATH="/x"' 'RC_LABEL="W"' 'OWNER="alice"' 'DOMAIN="acme"' 'LOGIN="acme-team"'
+rc="$(laddarc withlogin)"
+[ "$rc" = "0" ] && ok "schema 6: a set LOGIN loads" || bad "schema 6: a set LOGIN loads" "rc=$rc"
+
+# THE GATE SITS AFTER THE SHAPE CHECK, NEVER SHADOWING IT. A malformed LOGIN
+# still refuses via the (pre-existing) shape check regardless of schema — the
+# absence gate only ever fires when LOGIN is EMPTY, never when it is wrong.
+konf badshape 'REPO_PATH="/x"' 'RC_LABEL="B"' 'OWNER="alice"' 'DOMAIN="acme"' 'LOGIN="Not A Slug"'
+rc="$(laddarc badshape)"
+[ "$rc" = "1" ] && ok "a malformed LOGIN still refuses via the shape check, not the absence gate" \
+  || bad "a malformed LOGIN still refuses via the shape check, not the absence gate" "rc=$rc"
+
+# AND THE OLD-READER DIRECTION, which is the half nobody tests, MEASURED AS
+# BEHAVIOUR. Asserting the CONSTANT (REGISTRY_SCHEMA_MAX = 6) proves only that
+# somebody typed a 6 — it says nothing about what a checkout that reads up to 5
+# actually DOES when handed a schema-6 register. That is the outage: an old
+# reader that treats the field as absent starts a session on the wrong account.
+rc="$(laddarc_old withlogin)"
+[ "$rc" = "78" ] && ok "a reader that reads up to 5 REFUSES a schema-6 estate" \
+  || bad "a reader that reads up to 5 REFUSES a schema-6 estate" "rc=$rc"
+out="$(laddaerr_old withlogin)"
+case "$out" in *"schema 6"*) ok "the refusal names both numbers" ;;
+  *) bad "the refusal names both numbers" "$out" ;; esac
+case "$out" in *"pull the product"*) ok "the refusal tells the reader to pull" ;;
+  *) bad "the refusal tells the reader to pull" "$out" ;; esac
+
+# AND THE CONTROL GROUP: the SAME reader on a schema-5 estate must still load.
+# Without it, "an old reader refuses" is satisfied by a reader that refuses
+# everything.
+full_estate 5
+rc="$(laddarc_old withlogin)"
+[ "$rc" = "0" ] && ok "the same reader loads a schema-5 estate" \
+  || bad "the same reader loads a schema-5 estate" "rc=$rc"
+
+# The constant is asserted too — but AFTER the behaviour, and as a reminder that
+# the number and the behaviour must move together, never as the measurement.
+max="$( ( . "$here/lib/registry.sh"; printf '%s' "$REGISTRY_SCHEMA_MAX" ) )"
+[ "$max" = "6" ] && ok "REGISTRY_SCHEMA_MAX is 6 after this change" \
+  || bad "REGISTRY_SCHEMA_MAX is 6 after this change" "got '$max'"
+
+echo
+echo "LOGIN_REQUIRED_FOR — the gate is scoped by principal, not global"
+
+# THE ALLOWLIST IS OF PRINCIPALS, NOT ROWS. Both directions are measured: an
+# alice row without LOGIN refuses, a bob row without LOGIN loads. A grind that
+# only ever bites is indistinguishable from one that refuses everything.
+mkdir -p "$FX/accounts.d"
+acct() { local slug="$1"; shift; printf '%s\n' "$@" > "$FX/accounts.d/$slug.conf"; }
+acct acct-acme-team 'PRINCIPAL="alice"' 'HOST="h1"'
+acct acct-acme-bob   'PRINCIPAL="bob"'   'HOST="h1"'
+
+full_estate 6 'LOGIN_REQUIRED_FOR="alice"'
+
+konf alicerow 'REPO_PATH="/srv/homes/alice/x"' 'RC_LABEL="A"' 'OWNER="alice"' 'DOMAIN="acme"' 'ACCOUNT="acct-acme-team"'
+rc="$(laddarc alicerow "$FX/accounts.d")"
+[ "$rc" = "78" ] && ok "LOGIN_REQUIRED_FOR=alice: an alice row without LOGIN refuses" \
+  || bad "LOGIN_REQUIRED_FOR=alice: an alice row without LOGIN refuses" "rc=$rc"
+
+konf bobrow 'REPO_PATH="/srv/homes/bob/x"' 'RC_LABEL="B"' 'OWNER="bob"' 'DOMAIN="acme"' 'ACCOUNT="acct-acme-bob"'
+rc="$(laddarc bobrow "$FX/accounts.d")"
+[ "$rc" = "0" ] && ok "LOGIN_REQUIRED_FOR=alice: a bob row without LOGIN loads" \
+  || bad "LOGIN_REQUIRED_FOR=alice: a bob row without LOGIN loads" "rc=$rc"
+
+# THE PRINCIPAL COMES FROM ACCOUNT, NOT OWNER — a row whose ACCOUNT resolves to
+# a DIFFERENT human than its OWNER is gated on the resolved human. bob's unix
+# OWNER but alice's ACCOUNT must be treated as alice's row.
+konf mismatch 'REPO_PATH="/srv/homes/bob/x"' 'RC_LABEL="M"' 'OWNER="bob"' 'DOMAIN="acme"' 'ACCOUNT="acct-acme-team"'
+rc="$(laddarc mismatch "$FX/accounts.d")"
+[ "$rc" = "78" ] && ok "the principal is derived from ACCOUNT, not OWNER, when ACCOUNT resolves" \
+  || bad "the principal is derived from ACCOUNT, not OWNER, when ACCOUNT resolves" "rc=$rc"
+
+# THE FALLBACK: a row whose ACCOUNT does not resolve falls back to OWNER, and
+# SAYS SO on stderr — a half-measurement must never look like a measurement.
+konf ghostalice 'REPO_PATH="/srv/homes/alice/x"' 'RC_LABEL="G"' 'OWNER="alice"' 'DOMAIN="acme"' 'ACCOUNT="acct-does-not-exist"'
+rc="$(laddarc ghostalice "$FX/accounts.d")"
+[ "$rc" = "78" ] && ok "an unresolvable ACCOUNT falls back to OWNER=alice, which refuses" \
+  || bad "an unresolvable ACCOUNT falls back to OWNER=alice, which refuses" "rc=$rc"
+err="$(laddaerr ghostalice "$FX/accounts.d")"
+case "$err" in *"could not resolve ACCOUNT"*) ok "the fallback says so on stderr" ;;
+  *) bad "the fallback says so on stderr" "$err" ;; esac
+
+# THE FALLBACK IS A REAL RESOLUTION, NOT A BLANKET REFUSAL — proved by landing
+# on a principal the allowlist does NOT name.
+konf ghostbob 'REPO_PATH="/srv/homes/bob/x"' 'RC_LABEL="G2"' 'OWNER="bob"' 'DOMAIN="acme"' 'ACCOUNT="acct-does-not-exist"'
+rc="$(laddarc ghostbob "$FX/accounts.d")"
+[ "$rc" = "0" ] && ok "an unresolvable ACCOUNT falls back to OWNER=bob, which loads" \
+  || bad "an unresolvable ACCOUNT falls back to OWNER=bob, which loads" "rc=$rc"
+
+echo
+echo "the schema gate widens to the job and service loaders"
+
+# UNTIL THIS TASK NEITHER LOADER CALLED registry_schema_check AT ALL. A reader
+# that cannot understand the estate's schema must not start interpreting job or
+# service rows either.
+mkdir -p "$FX/jobs.d" "$FX/services.d"
+job() { local id="$1"; shift; printf '%s\n' "$@" > "$FX/jobs.d/$id.conf"; }
+svc() { local id="$1"; shift; printf '%s\n' "$@" > "$FX/services.d/$id.conf"; }
+laddajobrc() { # <conf> -> rc of registry_job_load
+  ( export STEWARD_ESTATE_ROOT="$FX"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_job_load "$1" >/dev/null 2>&1; echo $? )
+}
+laddasvcrc() { # <conf> -> rc of registry_service_load
+  ( export STEWARD_ESTATE_ROOT="$FX"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_service_load "$1" >/dev/null 2>&1; echo $? )
+}
+
+full_estate 6
+job nologin-job 'KIND="command"' 'REPO_PATH="/x"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'TIMEOUT_MIN="5"' 'SCHEDULE_MINUTE="0"' 'COMMAND="true"'
+rc="$(laddajobrc "$FX/jobs.d/nologin-job.conf")"
+[ "$rc" = "78" ] && ok "schema 6: a job row without LOGIN refuses rc 78" \
+  || bad "schema 6: a job row without LOGIN refuses rc 78" "rc=$rc"
+
+job withlogin-job 'KIND="command"' 'REPO_PATH="/x"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'TIMEOUT_MIN="5"' 'SCHEDULE_MINUTE="0"' 'COMMAND="true"' 'LOGIN="acme-team"'
+rc="$(laddajobrc "$FX/jobs.d/withlogin-job.conf")"
+[ "$rc" = "0" ] && ok "schema 6: a job row with LOGIN loads" \
+  || bad "schema 6: a job row with LOGIN loads" "rc=$rc"
+
+svc nologin-svc 'OWNER="alice"' 'SERVICE_SCRIPT="run.sh"'
+rc="$(laddasvcrc "$FX/services.d/nologin-svc.conf")"
+[ "$rc" = "78" ] && ok "schema 6: a service row without LOGIN refuses rc 78" \
+  || bad "schema 6: a service row without LOGIN refuses rc 78" "rc=$rc"
+
+svc withlogin-svc 'OWNER="alice"' 'SERVICE_SCRIPT="run.sh"' 'LOGIN="acme-team"'
+rc="$(laddasvcrc "$FX/services.d/withlogin-svc.conf")"
+[ "$rc" = "0" ] && ok "schema 6: a service row with LOGIN loads" \
+  || bad "schema 6: a service row with LOGIN loads" "rc=$rc"
+
+full_estate 5
+rc="$(laddajobrc "$FX/jobs.d/nologin-job.conf")"
+[ "$rc" = "0" ] && ok "schema 5: a job row without LOGIN still loads unchanged" \
+  || bad "schema 5: a job row without LOGIN still loads unchanged" "rc=$rc"
+rc="$(laddasvcrc "$FX/services.d/nologin-svc.conf")"
+[ "$rc" = "0" ] && ok "schema 5: a service row without LOGIN still loads unchanged" \
+  || bad "schema 5: a service row without LOGIN still loads unchanged" "rc=$rc"
 
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

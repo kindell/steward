@@ -193,7 +193,32 @@ registry_estate_name() {
 # day a field lands that an old reader would MISREAD rather than miss — one
 # that changes what an existing key means — the estate's number moves with it
 # and the refusal above is the right answer.
-REGISTRY_SCHEMA_MAX=5
+#
+# 6 (2026-09-02): LOGIN — which model account pays for a consumer's calls —
+# became readable, and at schema 6 it became REQUIRED.
+#
+# AND THIS TIME THE ESTATE'S NUMBER DOES MOVE. That is not a reversal of the
+# paragraph above; it is the case that paragraph's last sentence names.
+#
+#   MCP_ASSETS was OPTIONAL, and an old reader that misses it grants ZERO
+#   capabilities — fewer tools than granted, never more. Fail closed. The
+#   degradation was already safe, so an estate bump would have bought an outage
+#   against a risk that was not there.
+#
+#   LOGIN is MANDATORY, and an old reader that treats it as absent does not
+#   degrade: it starts the session ON THE WRONG ACCOUNT, quietly, and the bill
+#   arrives a month later. A missing LOGIN and a LOGIN an old reader cannot see
+#   are INDISTINGUISHABLE from inside, which is exactly the state this whole
+#   register exists to abolish.
+#
+# So this is a field an old reader would MISREAD rather than miss, and the rule
+# stated above applies unchanged: the estate's number moves with it, and the
+# refusal in registry_schema_check is the right answer for a checkout that is
+# behind. The bump and the requirement land in the same commit on purpose — a
+# schema that permits the field without requiring it IS the transition, and the
+# transition is what makes deliberate-legacy, a typo, a dropped field, an
+# unknown login and an old reader indistinguishable.
+REGISTRY_SCHEMA_MAX=6
 
 # registry_schema_check: rc 0 if this checkout understands the estate's schema,
 # rc 78 if the estate is NEWER than the code reading it.
@@ -208,6 +233,18 @@ REGISTRY_SCHEMA_MAX=5
 # MALFORMED version is not 1: a typo must not be quietly read as the oldest
 # schema by the very gate that exists to stop half-understood estates.
 registry_schema_check() {
+  # _REGISTRY_SCHEMA_SEEN — the estate's declared schema number, published for
+  # gates that must BRANCH on it and not merely be compared against it.
+  #
+  # PUBLISHED FROM HERE AND NOWHERE ELSE. The obvious alternative — a small
+  # `_registry_schema_version` reader — would source the estate a second time
+  # and need its own copy of the `local` declarations below. Most of them would
+  # have been forgotten, and a leak from this function reaches every caller's
+  # shell, i.e. every session on the machine. That is what the list is for; a
+  # second reader is a second place to get it wrong.
+  #
+  # EMPTY MEANS "the estate declares none", which reads as 1 — see below.
+  _REGISTRY_SCHEMA_SEEN=""
   local estate; estate="$(registry_estate_file)"
   [ -f "$estate" ] || return 0
   # Every OTHER key the estate file may define is cleared locally too, for the
@@ -217,8 +254,9 @@ registry_schema_check() {
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
         RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
-        BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" PAUSED_DIR_NAME="" \
-        LEGACY_LOGIN=""
+        BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" \
+        PAUSED_DIR_NAME="" LEGACY_LOGIN="" LOGIN_REQUIRED_FOR="" \
+        LIVENESS_CMD="" ESTATE_CHECKOUT=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0
@@ -231,6 +269,9 @@ registry_schema_check() {
     echo "registry: pull the product before reading this register; do not guess at fields you cannot see." >&2
     return 78
   fi
+  # Published only after validation: a malformed number must never reach a gate
+  # as if it were a version.
+  _REGISTRY_SCHEMA_SEEN="$SCHEMA_VERSION"
   return 0
 }
 
@@ -1588,6 +1629,40 @@ registry_legacy_login() {
   printf '%s\n' "$LEGACY_LOGIN"
 }
 
+# LOGIN_REQUIRED_FOR — the allowlist of principals the schema-6 LOGIN gate
+# applies to. Optional, and its absence means EVERY PRINCIPAL, which is the
+# target state: the migration is about one human's two accounts, not a
+# global requirement, and once every human has a login row the key is
+# deleted and the gate becomes global by itself — the same removable-line
+# pattern as LEGACY_LOGIN above.
+#
+# AN ALLOWLIST OF PRINCIPALS, NOT AN EXEMPTION LIST OF ROWS. A row exemption
+# list grows silently and never shrinks; a principal list is short, readable,
+# and each addition is somebody deciding for themselves.
+#
+# READ THROUGH THE OPTIONAL-VALUE PATH, not _registry_estate_value: an absent
+# key must answer EMPTY with rc 0, while a malformed one refuses. Same
+# three-way split as LEGACY_LOGIN above, and for the same reason.
+registry_login_required_for() {
+  local estate; estate="$(registry_estate_file)"
+  [ -f "$estate" ] || return 0
+  local LOGIN_REQUIRED_FOR=""
+  # shellcheck source=/dev/null
+  if ! source "$estate"; then
+    echo "registry: REFUSING — the estate file could not be read: $estate" >&2
+    return 78
+  fi
+  [ -n "$LOGIN_REQUIRED_FOR" ] || return 0
+  local _w
+  for _w in $LOGIN_REQUIRED_FOR; do
+    if ! [[ "$_w" =~ ^[a-z][a-z0-9-]*$ ]]; then
+      echo "registry: REFUSING — LOGIN_REQUIRED_FOR in $estate contains an invalid principal: '$_w'" >&2
+      return 78
+    fi
+  done
+  printf '%s\n' "$LOGIN_REQUIRED_FOR"
+}
+
 # registry_label_prefixes — sets the three globals, or REFUSES with rc 78.
 #
 # A FUNCTION OF ITS OWN, NOT A LOOKUP AT SOURCE TIME. The prefixes were literals
@@ -1813,6 +1888,38 @@ registry_validate_runtime_set() {
   done <<< "$projects"
 }
 
+# _registry_word_in_list <word> <space-separated list> — rc 0 if the word is
+# one of the list's entries. The usual `case " $list " in *" $w "*` form,
+# padded on both sides so a prefix of another entry never matches by accident.
+_registry_word_in_list() {
+  local w="${1:-}" list="${2:-}"
+  case " $list " in *" $w "*) return 0 ;; *) return 1 ;; esac
+}
+
+# _registry_row_principal <session> — the HUMAN this row belongs to.
+#
+# ACCOUNT FIRST, OWNER AS A NAMED FALLBACK. The account register is the source
+# of truth for "which human is this"; OWNER is the unix account the process runs
+# as, and the two are allowed to differ. But accounts.d is not readable
+# everywhere the loader runs, and a gate that refuses when it cannot resolve
+# would take down every session that reaches it from such a place.
+#
+# THE FALLBACK SAYS SO ON STDERR, EVERY TIME. A half-measurement that looks like
+# a measurement is the failure mode this whole plan is written against: if the
+# gate ever lets a row through on the fallback, the journal must contain the
+# sentence that explains which question was actually answered.
+_registry_row_principal() {
+  local s="${1:-}" p=""
+  if declare -F registry_account_load >/dev/null 2>&1 && [ -n "${ACCOUNT:-}" ]; then
+    p="$( registry_account_load "$ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+  fi
+  if [ -z "$p" ]; then
+    p="${OWNER:-}"
+    echo "registry: $s: could not resolve ACCOUNT '${ACCOUNT:-none}' to a principal; using OWNER='$p' for the schema gate" >&2
+  fi
+  printf '%s' "$p"
+}
+
 registry_load() {
   # THE SCHEMA GATE, WIRED. Until 2026-08-25 registry_schema_check existed and
   # nothing called it: the estate declared a version, the library knew how to
@@ -1922,6 +2029,46 @@ registry_load() {
       return 1
     fi
   done
+  # AT SCHEMA 6 THE FIELD IS REQUIRED. Below it, absence is the transition.
+  #
+  # THE ESTATE'S OWN VERSION DECIDES, not a flag and not a date: one register
+  # crosses the line at one moment, every reader of it at once, and a checkout
+  # that predates the field refuses the estate outright rather than reading it
+  # with the field treated as absent.
+  #
+  # SCOPED BY PRINCIPAL, NOT GLOBAL, AND FROM THE FIRST LINE. A global
+  # requirement at schema 6 refuses every row without LOGIN — and several of
+  # them belong to people whose own login rows are THEIR decision, not this
+  # estate's. A global bump takes their sessions down to close a gap that is not
+  # theirs. Scoping is not a weakening: the migration is about ONE human's two
+  # accounts, and the gate should say so.
+  #
+  # AN ALLOWLIST OF PRINCIPALS, NOT AN EXEMPTION LIST OF ROWS. A row exemption
+  # list grows silently and never shrinks; a principal list is short, readable,
+  # and each addition is somebody deciding for themselves.
+  #
+  # ABSENT KEY = EVERY PRINCIPAL, which is the target state. The scoped form is
+  # the transition; when every human has a login row the key is deleted and the
+  # gate becomes global by itself — the same removable-line pattern as
+  # LEGACY_LOGIN.
+  #
+  # rc 78, AND BEFORE ANY SPAWN. Supervision calls this loader before it builds
+  # a command line, so a row that cannot say who pays never becomes a running
+  # session. A session that runs on the ambient account is indistinguishable
+  # from a healthy one from the outside, and the bill arrives a month later.
+  if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
+     && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
+    local _req _who
+    _req="$(registry_login_required_for)" || return 78
+    _who="$(_registry_row_principal "$project")"
+    if [ -z "$_req" ] || _registry_word_in_list "$_who" "$_req"; then
+      echo "registry: $project.conf REFUSING — no LOGIN: nothing states which model account pays" >&2
+      echo "registry: for this session's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2
+      echo "registry: for ${_req:-every principal}${_req:+ (LOGIN_REQUIRED_FOR)}." >&2
+      echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
+      return 78
+    fi
+  fi
   # THE TARGET IS A TYPED UNION. A session works on a project OR directly on
   # an entity (a team session with no project is legitimate) — a row claiming
   # both is two contradictory claims about the same session, and picking one
@@ -2345,6 +2492,12 @@ _registry_list_in_range() {
 }
 
 registry_job_load() {
+  # THE SCHEMA GATE, WIDENED HERE ON PURPOSE (2026-09-02). Until now only
+  # registry_load called this — a reader that does not understand the estate's
+  # schema must not start interpreting job rows either: it would treat unknown
+  # fields as absent, and an absent LOGIN means something specific from schema
+  # 6 onward.
+  registry_schema_check || return 78
   local conf="${1:-}"
   if [ ! -f "$conf" ]; then echo "registry: no such job conf '$conf'" >&2; return 1; fi
   JOB_NAME="$(basename "$conf" .conf)"
@@ -2352,7 +2505,7 @@ registry_job_load() {
     echo "registry: invalid job name '$JOB_NAME' (allowed: a-z 0-9 -)" >&2; return 1
   fi
   # Reset before sourcing so a prior load never leaks into this one.
-  KIND=""; REPO_PATH=""; OWNER=""; DOMAIN=""; TIMEOUT_MIN=""
+  KIND=""; REPO_PATH=""; OWNER=""; DOMAIN=""; TIMEOUT_MIN=""; LOGIN=""
   SCHEDULE_MINUTE=""; SCHEDULE_HOUR=""; SCHEDULE_WEEKDAY=""
   PROMPT=""; MAX_TURNS=""; PERMISSION_MODE=""; SETTINGS_FILE=""; ALLOWED_TOOLS=""; TOOLS=""; JOB_ENV_KEYS=""; JOB_ENV_FILE=""; DELIVERY_GLOB=""; MCP_CONFIG=""
   PRE_CMD=""; POST_CMD=""; COMMAND=""
@@ -2366,6 +2519,25 @@ registry_job_load() {
   if [ -z "$REPO_PATH" ]; then echo "registry: $JOB_NAME missing REPO_PATH" >&2; return 1; fi
   if ! [[ "$OWNER" =~ ^[a-z][a-z0-9-]*$ ]]; then
     echo "registry: $JOB_NAME missing/invalid OWNER" >&2; return 1
+  fi
+  # AT SCHEMA 6 THE FIELD IS REQUIRED HERE TOO, WITH OWNER AS THE PRINCIPAL
+  # DIRECTLY. The job register has no identity model — no ACCOUNT axis, no
+  # accounts.d row to resolve through — a job runs as OWNER and that is the
+  # only human this row can name. Comparing against OWNER is therefore a
+  # WEAKER measurement than the session gate's account-first resolution, and
+  # that is written out here rather than silently reused, so a reader does not
+  # mistake it for the stronger check.
+  if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
+     && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
+    local _req
+    _req="$(registry_login_required_for)" || return 78
+    if [ -z "$_req" ] || _registry_word_in_list "$OWNER" "$_req"; then
+      echo "registry: $JOB_NAME REFUSING — no LOGIN: nothing states which model account pays" >&2
+      echo "registry: for this job's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2
+      echo "registry: for ${_req:-every principal}${_req:+ (LOGIN_REQUIRED_FOR)}." >&2
+      echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
+      return 78
+    fi
   fi
   if ! [[ "$DOMAIN" =~ ^[a-z0-9-]+$ ]]; then
     echo "registry: $JOB_NAME missing/invalid DOMAIN" >&2; return 1
@@ -2485,13 +2657,17 @@ PLIST
 }
 
 registry_service_load() {
+  # THE SCHEMA GATE, WIDENED HERE ON PURPOSE (2026-09-02). Same reason as
+  # registry_job_load: a reader that does not understand the estate's schema
+  # must not start interpreting service rows either.
+  registry_schema_check || return 78
   local conf="${1:-}"
   if [ ! -f "$conf" ]; then echo "registry: no such service conf '$conf'" >&2; return 1; fi
   SERVICE_NAME="$(basename "$conf" .conf)"
   if ! registry_valid_name "$SERVICE_NAME"; then
     echo "registry: invalid service name '$SERVICE_NAME'" >&2; return 1
   fi
-  OWNER=""; SERVICE_SCRIPT=""; SERVICE_APP=""; SERVICE_LOG=""; SERVICE_DOMAIN=""
+  OWNER=""; SERVICE_SCRIPT=""; SERVICE_APP=""; SERVICE_LOG=""; SERVICE_DOMAIN=""; LOGIN=""
   # shellcheck source=/dev/null
   source "$conf"
   # SERVICE_DOMAIN: where the service belongs in launchd (2026-08-11).
@@ -2519,6 +2695,23 @@ registry_service_load() {
   SERVICE_APP="$(printf '%s' "$SERVICE_APP" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   if ! [[ "$OWNER" =~ ^[a-z][a-z0-9-]*$ ]]; then
     echo "registry: $SERVICE_NAME missing/invalid OWNER" >&2; return 1
+  fi
+  # AT SCHEMA 6 THE FIELD IS REQUIRED HERE TOO, WITH OWNER AS THE PRINCIPAL
+  # DIRECTLY — the same reasoning as registry_job_load above: the service
+  # register has no identity model either, so OWNER is the only human a row
+  # can name, and comparing against it is a WEAKER measurement than the
+  # session gate's account-first resolution, written out rather than reused.
+  if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
+     && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
+    local _req
+    _req="$(registry_login_required_for)" || return 78
+    if [ -z "$_req" ] || _registry_word_in_list "$OWNER" "$_req"; then
+      echo "registry: $SERVICE_NAME REFUSING — no LOGIN: nothing states which model account pays" >&2
+      echo "registry: for this service's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2
+      echo "registry: for ${_req:-every principal}${_req:+ (LOGIN_REQUIRED_FOR)}." >&2
+      echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
+      return 78
+    fi
   fi
   # Exactly one of SERVICE_SCRIPT (bash wrapper under scripts/) / SERVICE_APP
   # (bundle binary, run directly — no bash wrapper, because for TCC-gated
