@@ -349,7 +349,7 @@ echo "== 10c. PRINCIPAL is the human, USERNAME is the unix account =="
 # THE FIXTURE THAT WOULD HAVE CAUGHT THE FIRST registry_login_check.
 # PRINCIPAL=alice, the unix account is a-user, and the resolved directory must
 # land under that account's home. The same pair is proven again through the
-# projection (uppgift 15) and through a launch branch (uppgift 6) — one
+# projection (task 15) and through a launch branch (task 6) — one
 # measurement per layer, because each layer resolves a home for itself.
 #
 # THE HOME ROOT IS /srv/homes/, NEVER /home/. This suite is on PRODUCT FILES
@@ -431,6 +431,15 @@ is "one unparsable row fails the whole register" "$?" "78"
 # it every assertion above is satisfied by a check that refuses EVERYTHING.
 ( registry_login_check >/dev/null 2>&1 )
 is "a register of only sound rows passes rc 0" "$?" "0"
+
+echo "== 12. an EMPTY register is still measured on its own state =="
+mkdir -p "$FX/empty-loose.d"; chmod 777 "$FX/empty-loose.d"
+( STEWARD_LOGINS_DIR="$FX/empty-loose.d" registry_login_check >/dev/null 2>&1 )
+is "an empty group/other-writable register refuses" "$?" "78"
+mkdir -p "$FX/empty-target.d"; chmod 700 "$FX/empty-target.d"
+ln -s "$FX/empty-target.d" "$FX/empty-link.d"
+( STEWARD_LOGINS_DIR="$FX/empty-link.d" registry_login_check >/dev/null 2>&1 )
+is "an empty register reached through a symlink refuses" "$?" "78"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

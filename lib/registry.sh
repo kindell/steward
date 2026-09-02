@@ -2813,6 +2813,31 @@ registry_login_list() {
   done | sort
 }
 
+# _registry_login_dir_state <dir> — the register directory's OWN state: not a
+# symlink, and not group- or other-writable. rc 0 on a sound (or not-yet-
+# existing) directory, rc 78 with a named cause otherwise.
+#
+# SHARED by registry_login_load (once per row) and registry_login_check (once
+# for the whole register) — an EMPTY register with this directory swapped for
+# a symlink, or left world-writable, must refuse exactly the way a register
+# with one bad row does. One instrument, not two copies that can drift apart.
+_registry_login_dir_state() {
+  local dir="$1"
+  if [ -L "$dir" ]; then
+    echo "registry: the login register is a symlink, refusing: $dir" >&2
+    return 78
+  fi
+  if [ -d "$dir" ]; then
+    local dmode; dmode="$(_registry_mode_of "$dir")" || {
+      echo "registry: cannot read the mode of the login register: $dir" >&2; return 78; }
+    if _registry_group_or_other_writable "$dmode"; then
+      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir" >&2
+      return 78
+    fi
+  fi
+  return 0
+}
+
 # registry_login_load <slug> — parse ONE login row. rc 0 · 1 (no such row, or a
 # row whose content is refused) · 78 (the register or the file's own state
 # refuses: symlink, wrong owner, loose mode).
@@ -2833,18 +2858,7 @@ registry_login_load() {
   # can rename it away and put their own file there under the same name, and the
   # mode check on the new file passes. Measured as a class in this estate's own
   # key-permission tool: the boundary is the whole chain, not the leaf.
-  if [ -L "$dir" ]; then
-    echo "registry: the login register is a symlink, refusing: $dir" >&2
-    return 78
-  fi
-  if [ -d "$dir" ]; then
-    local dmode; dmode="$(_registry_mode_of "$dir")" || {
-      echo "registry: cannot read the mode of the login register: $dir" >&2; return 78; }
-    if _registry_group_or_other_writable "$dmode"; then
-      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir" >&2
-      return 78
-    fi
-  fi
+  _registry_login_dir_state "$dir" || return $?
   f="$dir/$slug.conf"
   # THE SYMLINK IS ASKED ABOUT FIRST, ahead of `-f` — `-L` does not follow the
   # link, so this also catches a DANGLING one, which would otherwise read as
@@ -3140,6 +3154,12 @@ registry_login_check() {
     echo "registry: REFUSING — the login register does not exist: $dir" >&2
     return 78
   fi
+  # THE DIRECTORY'S OWN STATE, asked once for the whole register — same
+  # instrument registry_login_load runs per row. Without this, an EMPTY
+  # register that is a symlink or group/other-writable was certified sound:
+  # the row-level checks below never ran because there were no rows to reach
+  # them through.
+  _registry_login_dir_state "$dir" || return $?
   local faults=0 slug seen="" pair rel leaf legacy legacy_seen=""
   local slugs; slugs="$(registry_login_list)" || return 78
   legacy="$(registry_legacy_login)" || return 78
