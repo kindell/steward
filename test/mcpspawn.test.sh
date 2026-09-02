@@ -272,5 +272,27 @@ is "12b the flag is its own argument"                "${argv12[0]:-}" "--strict-
 is "12c and the path arrives WHOLE, as one argument" "${argv12[2]:-}" "$SPACEDOC"
 is "12d with nothing split off the end of it"        "${#argv12[@]}"  "3"
 
+echo "== 13. a document path that is a DIRECTORY is refused, not moved into =="
+# `mv -f "$tmp" "$doc"` with $doc an existing directory MOVES THE TEMP FILE INTO
+# IT and returns 0. The write then reported success, the fragment pointed
+# --mcp-config at a directory, and a 0600 s.mcp.json.tmp.<pid> was left inside it
+# forever. claude cannot read a directory as a config, so the honest answer is
+# the refusal this library already has for a document it cannot write.
+DIRDOC="$FX/dirdoc/s.mcp.json"
+rm -rf "$FX/dirdoc"; mkdir -p "$DIRDOC"
+out13="$(prep s-full "$DIRDOC" 2>"$FX/e13")"; rc13=$?
+is "13a rc 69 -- the document could not be written"  "$rc13" "69"
+is "13b and NOTHING on stdout: no fragment names a directory" "$out13" ""
+has "13c the path is named in the refusal"           "$(cat "$FX/e13")" "$DIRDOC"
+is "13d and no temp file was orphaned inside it" \
+   "$(find "$DIRDOC" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+# THE SAME ON THE REFUSAL PATH. rc 2 writes the empty document through the same
+# helper, and a fail-closed answer that silently wrote nowhere is not one.
+out13b="$(prep s-refused "$DIRDOC" 2>"$FX/e13b")"; rc13b=$?
+is "13e the refusal path refuses too"                "$rc13b" "69"
+is "13f with no fragment"                            "$out13b" ""
+is "13g and still nothing orphaned" \
+   "$(find "$DIRDOC" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

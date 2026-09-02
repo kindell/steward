@@ -63,6 +63,16 @@
 # anyone else, not even for the instant between create and chmod.
 _mcp_write_document() {
   local doc="$1" content="$2" dir tmp
+  # A DIRECTORY AT THE DOCUMENT'S PATH IS A REFUSAL, CHECKED BEFORE ANYTHING IS
+  # CREATED. `mv -f file dir` does not replace the directory -- it moves the
+  # file INSIDE it and returns 0, so the write would report success, the
+  # fragment would point --mcp-config at a directory, and a 0600
+  # s.mcp.json.tmp.<pid> would be left in there for good. claude cannot read a
+  # directory as a config, and under --strict-mcp-config that is a session with
+  # no tools and nothing saying why; the honest answer is the refusal every
+  # other unwritable document already gets. The test comes first so no temp
+  # file is ever made inside a path we are about to refuse.
+  if [ -d "$doc" ]; then return 1; fi
   dir="$(dirname "$doc")"
   mkdir -p "$dir" 2>/dev/null || return 1
   tmp="$doc.tmp.$$"
