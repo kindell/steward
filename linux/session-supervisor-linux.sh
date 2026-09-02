@@ -349,7 +349,19 @@ REPO="${2:-${REPO_PATH:-$HOME/Projects/$NAME}}"
 # on a real checkout: a repo path with a dot maps to a directory where the dot
 # is also a dash. With slash-only munging the lookup globs an empty directory
 # for any dotted repo path and silently forks a fresh thread on every respawn.
-HIST="$HOME/.claude/projects/$(printf '%s' "$REPO" | sed 's|[^a-zA-Z0-9]|-|g')"
+# THE HISTORY ROOT FOLLOWS THE LOGIN. It was $HOME/.claude/projects/... until
+# 2026-08-31. A session that changes model account while keeping the path looks
+# in the WRONG account's history -- and this selector falls OPEN to a fresh
+# start, so it forks a new thread SILENTLY. The session lives, answers, and has
+# lost its conversation.
+#
+# WITHOUT A LOGIN IT IS ~/.claude, unchanged. A branch that moved the directory
+# for everyone would have dropped every existing session's history at once.
+CFG_ROOT="$HOME/.claude"
+if [ -n "${LOGIN:-}" ]; then
+  CFG_ROOT="$(registry_login_config_dir "$LOGIN" "$(id -un)")" || exit 78
+fi
+HIST="$CFG_ROOT/projects/$(printf '%s' "$REPO" | sed 's|[^a-zA-Z0-9]|-|g')"
 # STATE_DIR/SUSPECT/RESUME_TRY are set at the top, at the pause check — they
 # derive from $HOME and $NAME and had to move there together with it.
 
@@ -987,7 +999,16 @@ reap_orphan_claude() {
 # rewrite the file and happen to zero the flag; the next supervision round
 # sets it again. Self-healing beats a one-time fix when you share a file with
 # processes you do not control.
+# THE TRUST STATE LIVES IN THE ACTIVE ACCOUNT'S OWN FILE. Setting the flag in
+# ~/.claude.json while the session reads a different config directory writes
+# to a file nothing consults: the start then sticks at the trust prompt
+# forever, and the journal says the workspace was pre-trusted.
+#
+# MEASURED 2026-09-02, read-only ls against a live session's config
+# directory: under a set CLAUDE_CONFIG_DIR the CLI writes its trust/config
+# file to <cfg>/.claude.json (present, 41587 bytes), not <cfg>.json.
 CLAUDE_JSON="$HOME/.claude.json"
+[ -n "${LOGIN:-}" ] && CLAUDE_JSON="$CFG_ROOT/.claude.json"
 ensure_workspace_trusted() {
   command -v jq >/dev/null 2>&1 || {
     echo "session-supervisor: $NAME — jq is missing, cannot pre-trust the workspace" >&2; return 0; }
