@@ -1561,7 +1561,10 @@ registry_legacy_login() {
   [ -f "$estate" ] || return 0
   local LEGACY_LOGIN=""
   # shellcheck source=/dev/null
-  source "$estate" 2>/dev/null || return 0
+  if ! source "$estate"; then
+    echo "registry: REFUSING — the estate file could not be read: $estate" >&2
+    return 78
+  fi
   [ -n "$LEGACY_LOGIN" ] || return 0
   if ! [[ "$LEGACY_LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
     echo "registry: REFUSING — LEGACY_LOGIN in $estate is not a slug: '$LEGACY_LOGIN'" >&2

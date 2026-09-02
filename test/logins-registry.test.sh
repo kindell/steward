@@ -232,6 +232,12 @@ estate 'LABEL_PREFIX="com.example.claude"' 'LEGACY_LOGIN="acme-old"'
 is "the named slug is returned" "$( registry_legacy_login )" "acme-old"
 estate 'LABEL_PREFIX="com.example.claude"' 'LEGACY_LOGIN="Not A Slug"'
 ( registry_legacy_login >/dev/null 2>&1 ); is "a malformed key is rc 78" "$?" "78"
+echo "== 8b. a broken estate file REFUSES, never reads as absent =="
+printf 'LEGACY_LOGIN="acme"\nthis is not shell (\n' > "$FX/estate/estate/steward.conf"
+( registry_legacy_login >/dev/null 2>&1 ); is "a broken estate file is rc 78" "$?" "78"
+err="$( registry_legacy_login 2>&1 >/dev/null )"
+has "the refusal names the estate file" "$err" "could not be read"
+estate 'LABEL_PREFIX="com.example.claude"'
 unset STEWARD_ESTATE_ROOT
 
 echo "pass=$pass fail=$fail"
