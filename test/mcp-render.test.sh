@@ -19,6 +19,11 @@
 # HERMETIC: a fresh mktemp estate per run, STEWARD_CONFIG_FILE pinned to a path
 # that cannot exist.
 set -u
+# THE WRAPPER KNOB IS UNSET TOO. STEWARD_MCP_WRAPPER changes what the document
+# names; an operator shell that exports it would turn assertions about the
+# default wrapper into assertions about that shell. Same lesson as the estate
+# root: a suite is hermetic against every knob, not just the ones it noticed.
+unset STEWARD_MCP_WRAPPER
 
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STEWARD="$here/bin/steward"
