@@ -19,9 +19,16 @@
 # the FIRST equals sign, no expansion of what comes back.
 #
 # IT DOES NOT PRINT THE FILE. Every refusal below names a PATH or a LINE
-# NUMBER, never a line and never a key. A parser that quoted the offending text
-# to be helpful would put the credential into the journal, which is the one
-# place this whole pattern exists to keep it out of.
+# NUMBER, and never a line, never a value, and never a key the FILE chose. A
+# parser that quoted the offending text to be helpful would put the credential
+# into the journal, which is the one place this whole pattern exists to keep it
+# out of. The single key that IS named is one of the deny-list's own -- a closed
+# vocabulary this file publishes anyway, so saying it leaks nothing.
+#
+# AND THE ENVIRONMENT IT BUILDS IS NOT A CODE PATH EITHER. Refusing to source
+# the file settles what the FILE can do. The deny-list further down settles what
+# the ENVIRONMENT can do, because BASH_ENV, LD_PRELOAD and PATH turn a data file
+# back into code execution one process later.
 set -eu
 
 [ "$#" -ge 2 ] || {
@@ -38,9 +45,47 @@ envfile="$1"; shift
   exit 66
 }
 
+# THE DENY-LIST: KEYS THAT ARE NOT DATA. Not sourcing the file establishes "a
+# credential store must not also be a code path" for the FILE. It does not
+# establish it for the ENVIRONMENT the file builds, and the environment is an
+# execution surface of its own: BASH_ENV names a script the very next bash runs,
+# ENV does the same for a POSIX shell, LD_PRELOAD and LD_LIBRARY_PATH inject a
+# library into every child, PATH decides which binary a bare name resolves to,
+# IFS and PS4 rewrite how a later shell splits words and what it evaluates while
+# tracing. A 0600 file written by deploy tooling is not the likeliest attacker
+# -- but the comment above makes a guarantee, and this is what makes it true.
+#
+# SHELLOPTS AND BASHOPTS ARE HERE FOR A SECOND REASON: bash makes them readonly,
+# so exporting one would abort this script under `set -e` with a message about a
+# readonly variable, which names the symptom and not the cause.
+#
+# THE KEY IS NAMED IN THE REFUSAL, and only here. It comes from this closed
+# list, never from the file's free text, so naming it cannot leak anything the
+# list itself does not already publish -- and a refusal that would not say which
+# key sends an operator to read a file they must not read.
+DENIED_KEYS=" BASH_ENV ENV SHELLOPTS BASHOPTS LD_PRELOAD LD_LIBRARY_PATH PATH IFS PS4 "
+
 lineno=0
 while IFS= read -r line || [ -n "$line" ]; do
   lineno=$((lineno + 1))
+  # A CRLF FILE IS REFUSED, NOT REPAIRED, and the choice is deliberate. Stripping
+  # the carriage return would leave the file broken: the next hand to touch it
+  # saves it CRLF again, and the wrapper keeps quietly patching it forever. A
+  # credential file with CRLF line endings is a file somebody edited on the wrong
+  # operating system -- one loud refusal now, naming the line, beats an
+  # authentication failure at the far end three layers from the cause. The check
+  # is BEFORE the blank-and-comment skip on purpose: in a CRLF file the first
+  # line is very often blank or a comment, and skipping it would report the
+  # third line of a file that is wrong from its first byte.
+  case "$line" in
+    *$'\r')
+      echo "mcp-env: REFUSING: $envfile line $lineno ends with a carriage return -- this file has CRLF line endings" >&2
+      echo "mcp-env: a credential file saved CRLF was edited on the wrong operating system; the carriage return" >&2
+      echo "mcp-env: would travel INSIDE the value and fail as an authentication error far from here." >&2
+      echo "mcp-env: the line itself is NOT printed -- this file holds credentials. Convert it to LF endings." >&2
+      exit 65
+      ;;
+  esac
   # Blank lines (including whitespace-only ones) and comments are skipped.
   case "$line" in *[![:space:]]*) ;; *) continue ;; esac
   case "$line" in '#'*) continue ;; esac
@@ -61,6 +106,15 @@ while IFS= read -r line || [ -n "$line" ]; do
     echo "mcp-env: the line itself is NOT printed -- this file holds credentials. Open it and look at line $lineno." >&2
     exit 65
   }
+  case "$DENIED_KEYS" in
+    *" $key "*)
+      echo "mcp-env: REFUSING: $envfile line $lineno sets $key, which is not data" >&2
+      echo "mcp-env: that variable decides how later programs are LOADED or RUN, so a credential file that" >&2
+      echo "mcp-env: could set it would be a code path after all -- the one thing this wrapper exists to deny." >&2
+      echo "mcp-env: the VALUE is NOT printed -- this file holds credentials. Open it and look at line $lineno." >&2
+      exit 65
+      ;;
+  esac
   export "$key=${line#*=}"
 done < "$envfile"
 

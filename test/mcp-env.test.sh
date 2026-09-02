@@ -141,5 +141,55 @@ printf 'LAST=here' > "$FX/notrail.env"
 is "9 the final line is read" \
    "$(bash "$W" "$FX/notrail.env" "$SHOW" LAST 2>/dev/null)" "LAST=here"
 
+echo "== 10. a CRLF line is REFUSED, by line number =="
+# STRIPPING THE CR WAS THE OTHER OPTION AND IT IS THE WRONG ONE. A silently
+# repaired file stays broken: the next hand to touch it saves it CRLF again.
+# And a credential file with CRLF line endings is a file somebody edited on the
+# wrong operating system -- a fact worth one loud refusal now instead of an
+# authentication failure at the far end, three layers from the cause, on the day
+# the token expires anyway.
+printf 'GOOD=fine\r\nTOK=abc\r\n' > "$FX/crlf.env"
+out10="$(bash "$W" "$FX/crlf.env" "$SHOW" GOOD 2>"$FX/e10")"; rc10=$?
+err10="$(cat "$FX/e10")"
+is    "10a rc 65"                            "$rc10" "65"
+is    "10b the command never ran"            "$out10" ""
+has   "10c the line NUMBER is named"         "$err10" "line 1"
+has   "10d and CRLF is named as the cause"   "$err10" "CRLF"
+# The control group: the same value without the CR is accepted, so 10a is
+# measuring the carriage return and not the fixture.
+printf 'TOK=abc\n' > "$FX/lf.env"
+is    "10e the same file with LF endings is fine" \
+      "$(bash "$W" "$FX/lf.env" "$SHOW" TOK 2>/dev/null)" "TOK=abc"
+# And the CR never reaches the environment on any path.
+hasnt "10f no carriage return leaked into a value" \
+      "$(bash "$W" "$FX/lf.env" "$SHOW" TOK 2>/dev/null | cat -v)" "^M"
+
+echo "== 11. a key that is a CODE PATH is REFUSED =="
+# The wrapper's central claim is that a credential store must not also be a code
+# path. Not sourcing the file establishes that for the FILE; it does not
+# establish it for the ENVIRONMENT the file builds. BASH_ENV names a script that
+# the very next `bash` runs, LD_PRELOAD names a library injected into every
+# child, PATH decides which binary a name resolves to -- all of them turn a
+# 0600 data file back into code execution inside the session.
+for k in BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH PATH IFS PS4; do
+  printf '%s=/tmp/whatever\n' "$k" > "$FX/deny.env"
+  bash "$W" "$FX/deny.env" "$SHOW" "$k" >/dev/null 2>"$FX/e11"
+  is "11-$k is refused rc 65" "$?" "65"
+done
+printf 'HARMLESS=yes\nBASH_ENV=/tmp/x\n' > "$FX/deny2.env"
+bash "$W" "$FX/deny2.env" "$SHOW" HARMLESS >/dev/null 2>"$FX/e11b"
+err11b="$(cat "$FX/e11b")"
+has "11a the line number is named"           "$err11b" "line 2"
+has "11b and so is the key -- it comes from a closed list, not from the file" \
+    "$err11b" "BASH_ENV"
+hasnt "11c the value is still not printed"   "$err11b" "/tmp/x"
+# THE PROOF, not the promise: a BASH_ENV in the file must not make the exec'd
+# bash run the script it names.
+printf 'BASH_ENV=%s/ran.sh\n' "$FX" > "$FX/preload.env"
+printf 'touch "%s/pwned2"\n' "$FX" > "$FX/ran.sh"
+bash "$W" "$FX/preload.env" bash -c 'true' >/dev/null 2>&1
+[ -e "$FX/pwned2" ] && bad "11d the file's BASH_ENV ran a script" \
+                    || ok "11d nothing the file named was executed"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
