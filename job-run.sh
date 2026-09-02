@@ -71,10 +71,20 @@ _jobrun_finalize() {
 # and it runs INSIDE the job's own clone, the one directory this wrapper ever
 # lets the runtime touch — measuring it in whatever directory the caller
 # happened to be standing in is how a probe writes somewhere it was never
-# invited. A runtime that cannot be measured is treated as taking no id.
+# invited — so a row with no WORKDIR is refused here rather than measured in
+# whatever directory this happens to be. A runtime that cannot be measured is
+# treated as taking no id. The flag is matched as a WORD: --fork-session-id
+# and --session-id-file are different flags, and reading either as this one
+# makes the wrapper pass an argument the runtime does not have.
 _jobrun_takes_session_id() {
   local cmd="$1" dir="$2"
-  ( cd "$dir" 2>/dev/null || exit 1; "$cmd" --help 2>/dev/null ) | grep -q -- '--session-id'
+  if [ -z "$dir" ]; then
+    echo "job-run: no WORKDIR on the row — refusing to measure the runtime in" >&2
+    echo "  whatever directory this wrapper happens to be standing in." >&2
+    exit 65
+  fi
+  ( cd "$dir" 2>/dev/null || exit 1; "$cmd" --help 2>/dev/null ) \
+    | grep -Eq '(^|[[:space:]])--session-id([[:space:]]|$)'
 }
 
 # DOES THE THREAD THE ROW NAMES ACTUALLY EXIST? The id on the row is a NAME
@@ -158,7 +168,7 @@ if [ -n "${JOB_RUNTIME_THREAD:-}" ]; then
   else
     thread_flag=(--session-id "$JOB_RUNTIME_THREAD"); resume_kind="fresh-after-crash"
   fi
-elif _jobrun_takes_session_id "$cmd" "${JOB_WORKDIR:-.}"; then
+elif _jobrun_takes_session_id "$cmd" "${JOB_WORKDIR:-}"; then
   minted="$(_jobrun_mint_thread)"
   thread_flag=(--session-id "$minted"); resume_kind="first"
 fi

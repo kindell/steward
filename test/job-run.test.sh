@@ -26,6 +26,7 @@ mkthread() { : > "$T/store/-a-munged-workdir/$1.jsonl"; }
 # Stub runtime: records argv, emits a claude-shaped JSON answer, exits per fixture.
 cat > "$T/rt" <<'EOF'
 #!/bin/bash
+case " $* " in *" --help "*) exit 0 ;; esac
 printf '%s\n' "$*" >> "${RTLOG:?}"
 rc="$(cat "${RTRC:?}")"
 printf '{"session_id":"thread-abc","result":"done"}\n'
@@ -48,6 +49,10 @@ jobstate_read "$id"
 grep -q -- "-p" "$T/rtlog" && ok "attempt 1: headless flag" || bad "no -p"
 grep -q -- "--resume" "$T/rtlog" && bad "attempt 1 resumed a thread that does not exist" || ok "attempt 1: no --resume"
 [ -f "$T/jobs/$id/heartbeat" ] && ok "heartbeat file touched" || bad "no heartbeat"
+# The capability probe is a MEASUREMENT, and a measurement that leaves a line
+# in the log the assertions read is a fixture that documents its own side
+# effect instead of bounding it. The probe's `--help` belongs nowhere in here.
+grep -qx -- '--help' "$T/rtlog" && bad "the probe left its own line in the argv log" "$(cat "$T/rtlog")" || ok "attempt 1: the argv log holds the run, not the probe"
 
 # Attempt 2 must resume EXACTLY thread-abc — the thread attempt 1 created is
 # in the store, so it is there to be resumed.
@@ -391,6 +396,51 @@ jobstate_read "$id14"
 [ "${JOB_THREAD_MISMATCH:-}" = "1" ] && ok "id mismatch: the row says the two ids disagreed" || bad "THREAD_MISMATCH" "${JOB_THREAD_MISMATCH:-unset}"
 grep -q "99999999-8888-4777-a666-555555555555" "$T/liar-err" && ok "id mismatch: stderr names the id the runtime used" || bad "stderr missing the runtime's id" "$(cat "$T/liar-err")"
 grep -q "$minted_id" "$T/liar-err" && ok "id mismatch: stderr names the id the row held" || bad "stderr missing the row's id" "$(cat "$T/liar-err")"
+
+# ── THE PROBE MEASURES THE FLAG, NOT A SUBSTRING OF IT ────────────────────
+# `--fork-session-id` and `--session-id-file` are different flags. A substring
+# match reads either as "this runtime takes a caller-chosen session id", and
+# the wrapper then passes a flag the runtime does not have — which fails the
+# whole attempt. The flag has to be matched as a word.
+cat > "$T/rt-otherflags" <<'EOFOTHER'
+#!/bin/bash
+case " $* " in
+  *" --help "*)
+    printf -- '  --fork-session-id <uuid>   Fork the session under a new id\n'
+    printf -- '  --session-id-file <path>   Write the session id to this file\n'
+    exit 0 ;;
+esac
+printf '%s\n' "$*" >> "${RTLOG:?}"
+printf '{"session_id":"thread-other","result":"done"}\n'
+exit 0
+EOFOTHER
+chmod +x "$T/rt-otherflags"
+
+id15="j-00000000000000fd"
+jobstate_create "$id15" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+: > "$T/rtlog"
+JOBRUN_RUNTIME_CMD="$T/rt-otherflags" bash "$here/../job-run.sh" "$id15" >/dev/null 2>&1
+jobstate_read "$id15"
+grep -q -- "--session-id" "$T/rtlog" \
+  && bad "a longer flag was read as --session-id" "$(cat "$T/rtlog")" \
+  || ok "look-alike flags: the runtime saw no --session-id"
+[ "${JOB_RESUME_KIND:-}" = "thread-at-exit" ] && ok "look-alike flags: the row says the thread only arrives at exit" || bad "RESUME_KIND" "${JOB_RESUME_KIND:-unset}"
+
+# ── A ROW WITHOUT A WORKDIR IS NOT MEASURED IN WHATEVER DIRECTORY THIS IS ──
+# The probe runs the runtime, and it runs it inside the job's own clone — the
+# one directory this wrapper ever lets the runtime touch. Falling back to `.`
+# would run it wherever the caller happened to be standing, which is how a
+# probe writes somewhere it was never invited. So a row with no WORKDIR is
+# refused, loudly, before anything is executed.
+id16="j-00000000000000fe"
+jobstate_create "$id16" GOAL=g OWNER=alice DESIRED=run PROCESS=queued \
+  BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
+: > "$T/rtlog"
+out="$(JOBRUN_RUNTIME_CMD="$T/rt-session" bash "$here/../job-run.sh" "$id16" 2>&1)"; rc=$?
+[ "$rc" -eq 65 ] && ok "no workdir: refused with rc 65" || bad "no-workdir rc" "$rc"
+case "$out" in *WORKDIR*) ok "no workdir: the refusal names the missing field" ;; *) bad "refusal text" "$out" ;; esac
+[ ! -s "$T/rtlog" ] && ok "no workdir: the runtime was never executed" || bad "the probe ran anyway" "$(cat "$T/rtlog")"
 
 printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
