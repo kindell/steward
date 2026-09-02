@@ -221,5 +221,18 @@ is "a known account resolves" "$( _registry_owner_home alice )" "/srv/homes/alic
 err="$( _registry_owner_home nosuch 2>&1 >/dev/null )"
 has "the refusal names the account" "$err" "nosuch"
 
+echo "== 8. the legacy exception is named by the estate, never by the code =="
+mkdir -p "$FX/estate/estate"
+export STEWARD_ESTATE_ROOT="$FX/estate"
+estate() { printf '%s\n' "$@" > "$FX/estate/estate/steward.conf"; }
+
+estate 'LABEL_PREFIX="com.example.claude"'
+is "an estate without the key answers empty, rc 0" "$( registry_legacy_login; echo "rc=$?" )" "rc=0"
+estate 'LABEL_PREFIX="com.example.claude"' 'LEGACY_LOGIN="acme-old"'
+is "the named slug is returned" "$( registry_legacy_login )" "acme-old"
+estate 'LABEL_PREFIX="com.example.claude"' 'LEGACY_LOGIN="Not A Slug"'
+( registry_legacy_login >/dev/null 2>&1 ); is "a malformed key is rc 78" "$?" "78"
+unset STEWARD_ESTATE_ROOT
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

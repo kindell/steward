@@ -217,7 +217,8 @@ registry_schema_check() {
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
         RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
-        BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" PAUSED_DIR_NAME=""
+        BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" PAUSED_DIR_NAME="" \
+        LEGACY_LOGIN=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0
@@ -1540,6 +1541,34 @@ registry_op_token_name()        { _registry_estate_value OP_TOKEN_FILE_NAME   '^
 # JOB_LOG_DIR: a slash would let a typo wander out of the state tree.
 registry_state_dir_name()       { _registry_estate_value STATE_DIR_NAME       '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
 registry_paused_dir_name()      { _registry_estate_value PAUSED_DIR_NAME      '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
+
+# LEGACY_LOGIN — the ONE login row this estate allows to name the runtime's
+# unnamed default directory during a migration. Optional, and its absence is
+# the normal state: an estate whose every login is named has no exception.
+#
+# THE NAME LIVES HERE AND NOT IN THE CODE. Which login is the legacy one is a
+# fact about an installation, exactly like the hub's session name and the label
+# prefix beside it. A product carrying it would carry a person's account name,
+# and would grant the exception to whoever happened to reuse the string.
+#
+# READ THROUGH THE OPTIONAL-VALUE PATH, not _registry_estate_value: an absent
+# key must answer EMPTY with rc 0, while a malformed one refuses. Same
+# three-way split as LIVENESS_CMD, and for the same reason — a clone that does
+# not know the key simply does not read it, and no half-understood truth is
+# created.
+registry_legacy_login() {
+  local estate; estate="$(registry_estate_file)"
+  [ -f "$estate" ] || return 0
+  local LEGACY_LOGIN=""
+  # shellcheck source=/dev/null
+  source "$estate" 2>/dev/null || return 0
+  [ -n "$LEGACY_LOGIN" ] || return 0
+  if ! [[ "$LEGACY_LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: REFUSING — LEGACY_LOGIN in $estate is not a slug: '$LEGACY_LOGIN'" >&2
+    return 78
+  fi
+  printf '%s\n' "$LEGACY_LOGIN"
+}
 
 # registry_label_prefixes — sets the three globals, or REFUSES with rc 78.
 #
