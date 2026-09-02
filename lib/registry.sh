@@ -3222,3 +3222,112 @@ registry_login_check() {
   fi
   return 0
 }
+
+# THE TWO ENVIRONMENT VARIABLES THAT MUST NEVER SURVIVE INTO A SESSION.
+# An API key WINS over subscription auth in the CLI, so the right config
+# directory alone does NOT prove which account pays. Measured twice in this
+# estate through the job runner ("Credit balance is too low", exit 1, five
+# seconds) and written into that file's own comment; the session path had the
+# same hole on two of its branches.
+_REGISTRY_LOGIN_SCRUB="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN"
+
+# registry_login_exec_prefix <slug> <owner> — THE ONE execution rule, as a
+# command prefix. Prints EXACTLY this, and the -u CLAUDE_CONFIG_DIR is part of
+# it — an earlier draft of this comment left it out while the printf below and
+# the suite both carried it, which is a docstring that teaches the skip:
+#
+#   /usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+#                -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=<resolved>
+#
+# EMPTY SLUG -> EMPTY OUTPUT, rc 0. That is the transition: a consumer with no
+# LOGIN field gets the command line it has today, byte for byte. It is a
+# DELIBERATELY temporary branch — see the schema gate that removes it.
+#
+# WHY `env` AND NOT AN EXPORT. Three of the four launch branches build a
+# command STRING that another shell execs, and the fourth (the Linux twin)
+# creates its pane inside a tmux SERVER whose environment came from whenever
+# that server started — an export in the supervisor reaches none of them.
+# `env` carries the whole rule as ARGUMENTS, which no shell reinterprets, and
+# it both unsets and sets in one call so the order can not be got wrong by a
+# branch that only copies half of it.
+#
+# THE PREFIX IS UNQUOTED BY ITS CALLERS, so the resolved path is refused if it
+# carries anything a shell would reinterpret. A home directory with a space in
+# it is legal on both platforms and would split into two arguments — silently,
+# and only for that one account.
+registry_login_exec_prefix() {
+  local slug="${1:-}" owner="${2:-}" dir k out
+  if [ -z "$slug" ]; then
+    return 0
+  fi
+  registry_login_load "$slug" >/dev/null || {
+    echo "registry: REFUSING to launch — login '$slug' does not resolve." >&2
+    return 78
+  }
+  case "$LOGIN_PROVIDER" in
+    claude-max|claude-team) ;;
+    *)
+      echo "registry: REFUSING to launch — login '$slug' declares PROVIDER '$LOGIN_PROVIDER'," >&2
+      echo "registry: which has no isolation recipe yet. The vocabulary word is reserved; the" >&2
+      echo "registry: mechanism is not built. Refusing beats scoping nothing and looking fine." >&2
+      return 78 ;;
+  esac
+  dir="$(registry_login_config_dir "$slug" "$owner")" || return 78
+  case "$dir" in
+    *[!A-Za-z0-9._/-]*)
+      echo "registry: REFUSING to launch — the resolved directory for login '$slug' contains a" >&2
+      echo "registry: character a shell would reinterpret: $dir" >&2
+      return 78 ;;
+  esac
+  out="/usr/bin/env"
+  for k in $_REGISTRY_LOGIN_SCRUB; do out="$out -u $k"; done
+  # -u CLAUDE_CONFIG_DIR BEFORE THE ASSIGNMENT. The spec's rule is binding:
+  # unset the ambient directory, THEN set the resolved one. The assignment alone
+  # already wins, so this is belt and braces — but the rule is what the next
+  # reader copies, and a rule that skips its own first step teaches the skip.
+  #
+  # THE ORDER IS LOAD-BEARING IN THE LITERAL SENSE, measured 2026-08-31:
+  # `env -u X X=v cmd` works and the child sees v; `env X=v -u X cmd` fails
+  # outright ("env: -u: No such file or directory") because env stops parsing
+  # options at the first assignment. Written backwards, every session refuses
+  # to start.
+  printf '%s -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=%s\n' "$out" "$dir"
+}
+
+# registry_login_apply <slug> <owner> — THE SAME RULE, applied to THIS process's
+# own environment instead of returned as a command prefix. rc 0 · 78.
+#
+# WHY BOTH FORMS EXIST, AND WHY THEY ARE NOT TWO RULES. A launch branch builds a
+# command STRING another shell execs, so it needs the prefix. The job runner
+# execs from its own process, so it needs real environment. What must never
+# diverge is the CONTENT — which variables are unset, in what order, and which
+# directory is set — so both forms read the same $_REGISTRY_LOGIN_SCRUB and the
+# same resolver. A fifth branch that hand-wrote `unset ANTHROPIC_API_KEY
+# ANTHROPIC_AUTH_TOKEN` would be a copy that stops following the list the day
+# the list grows.
+#
+# THE ORDER IS THE RULE'S ORDER: unset the ambient config directory, unset the
+# auth overrides, then set exactly the resolved directory.
+#
+# EMPTY SLUG STILL SCRUBS, and still leaves the ambient directory alone — the
+# same asymmetry the prefix form carries, for the same reason.
+registry_login_apply() {
+  local slug="${1:-}" owner="${2:-}" dir k
+  for k in $_REGISTRY_LOGIN_SCRUB; do unset "$k"; done
+  [ -n "$slug" ] || return 0
+  unset CLAUDE_CONFIG_DIR
+  registry_login_load "$slug" >/dev/null || {
+    echo "registry: REFUSING — login '$slug' does not resolve." >&2
+    return 78
+  }
+  case "$LOGIN_PROVIDER" in
+    claude-max|claude-team) ;;
+    *)
+      echo "registry: REFUSING — login '$slug' declares PROVIDER '$LOGIN_PROVIDER'," >&2
+      echo "registry: which has no isolation recipe yet." >&2
+      return 78 ;;
+  esac
+  dir="$(registry_login_config_dir "$slug" "$owner")" || return 78
+  CLAUDE_CONFIG_DIR="$dir"; export CLAUDE_CONFIG_DIR
+  return 0
+}
