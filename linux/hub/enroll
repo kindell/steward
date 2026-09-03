@@ -181,8 +181,22 @@ done
 # "is it stated?" is the schema's; "is it a lie?" is the principal gate
 # further down, once the account is known. Below schema 6 an absent login
 # writes today's row unchanged — the transition, byte for byte.
+#
+# SCOPED BY LOGIN_REQUIRED_FOR, MIRRORING THE READ GATE EXACTLY
+# (lib/registry.sh, registry_load's own schema-6 refusal). This site refuses
+# for a request's PERSON before ACCOUNT_SLUG resolves (that happens further
+# below); the account loop's own `[ "$_ap" = "$PERSON" ]` guarantees PERSON
+# equals the resolved account's ACCOUNT_PRINCIPAL, so PERSON is the right
+# principal to test here. ABSENT KEY = EVERY PRINCIPAL — the same target
+# state as the reader's. A malformed LOGIN_REQUIRED_FOR (an invalid
+# principal in the list) is refused by registry_login_required_for itself,
+# rc 78, and that refusal is propagated here rather than folded into "empty
+# list".
 if [ -z "$LOGIN_S" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
-  fel "field login missing — the estate is schema $_REGISTRY_SCHEMA_SEEN, where a session row must state which account pays for its model calls. Register a login (steward registry login add) and request again with login=<slug>."
+  _login_req_for="$(registry_login_required_for)" || exit 78
+  if [ -z "$_login_req_for" ] || _registry_word_in_list "$PERSON" "$_login_req_for"; then
+    fel "field login missing — the estate is schema $_REGISTRY_SCHEMA_SEEN, where a session row must state which account pays for its model calls. Register a login (steward registry login add) and request again with login=<slug>."
+  fi
 fi
 
 # Enumeration, not a range — see the long explanation in bus/lib.sh at the

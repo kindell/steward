@@ -51,17 +51,32 @@ grep -rln 'sessions\.d\|registry_session_write\|registry_row_write' \
 # path::role::reason — one line per file the grep is expected to name.
 # WRITER means it can mint or rewrite a sessions.d row. READER/NEIGHBOUR
 # means it only reads sessions.d, or touches a different register entirely.
-COVERED_TABLE='bin/steward::writer::cmd_registry_session_add (task 9s --login gate) and cmd_registry_migrate_session (LOGIN carried below)
+#
+# A DOUBLE-QUOTED STRING, NOT SINGLE-QUOTED (task 9B, fix round 1, MINOR-5)
+# — this table is what a future maintainer reads to decide whether a new
+# grep hit is a writer, and a single-quoted string cannot carry an
+# apostrophe at all: every possessive below silently lost its ' ("task 9s",
+# "the hubs", "a sessions rig", "the registrys path"). Double quotes keep the
+# apostrophe literal; the brief's own suggestion of `<<'EOF'` was tried
+# first and DROPPED — under this repo's target shell (bash 3.2, the same
+# one nav-enroll is written to run on) a `'`-quoted heredoc nested inside a
+# `$(...)` command substitution mis-parses the moment its body contains an
+# apostrophe ("unexpected EOF while looking for matching `''`"), a bash 3.2
+# parser bug independent of this file. Measured directly: `X=$(cat <<'EOF'
+# ... it's ... EOF)` fails that way on this machine's bash 3.2.57; the same
+# text as a plain double-quoted assignment does not, since nothing here is
+# `$`, a backtick or a `"` that double quotes would need escaping.
+COVERED_TABLE="bin/steward::writer::cmd_registry_session_add (task 9's --login gate) and cmd_registry_migrate_session (LOGIN carried below)
 lib/registry.sh::core::registry_row_write/registry_session_write and registry_login_principal_gate live here; not itself a session-row writer
-lib/scaffold.sh::writer::estate_scaffold mints a NEW estates sessions.d/accounts.d/logins.d, not a session row
-linux/session-new.sh::requester::composes the ENROLL-REQUEST the hubs enroll writes; never touches sessions.d itself
-linux/hub/enroll::writer::the hubs registration path, writes a session row from a bus request
+lib/scaffold.sh::writer::estate_scaffold mints a NEW estate's sessions.d/accounts.d/logins.d, not a session row
+linux/session-new.sh::requester::composes the ENROLL-REQUEST the hub's enroll writes; never touches sessions.d itself
+linux/hub/enroll::writer::the hub's registration path, writes a session row from a bus request
 linux/hub/bus-send::reader::validates a recipient against sessions.d, writes nothing
 linux/hub/lib.sh::reader::resolves hub/session paths against sessions.d, writes nothing
-linux/browser-stack.sh::reader::reads sessions.d to find a sessions rig, writes browsers.d not sessions.d
+linux/browser-stack.sh::reader::reads sessions.d to find a session's rig, writes browsers.d not sessions.d
 linux/session-supervisor-linux.sh::reader::reads sessions.d to supervise, writes nothing to it
 linux/deploy-self.sh::reader::reconciles the runtime sessions.d against the checkout, does not mint a row
-install.sh::messenger::prints the registrys path as an install hint (one line), writes no row'
+install.sh::messenger::prints the registry's path as an install hint (one line), writes no row"
 
 # every grep hit must be named in the table
 while IFS= read -r f; do

@@ -3207,8 +3207,8 @@ registry_login_load() {
   return 0
 }
 
-# registry_login_principal_gate <login-slug> <account-slug> — GATE 1: a
-# login's PRINCIPAL must be the SAME HUMAN as the account it would ride on.
+# registry_login_principal_gate <login-slug> <account-slug> [label] — GATE 1:
+# a login's PRINCIPAL must be the SAME HUMAN as the account it would ride on.
 # Shared by `steward registry session add` and the hub's enroll, so the pair
 # rule lives in exactly one place instead of two copies that can drift —
 # each caller writes a session row starting from a different shape (a typed
@@ -3221,17 +3221,24 @@ registry_login_load() {
 # register. rc 78 — either slug does not resolve to a known row; the message
 # names which one.
 #
+# LABEL, OPTIONAL, DEFAULT "login" — the rc-78 "no such login" message
+# names the caller's own flag ("--login") when the caller has one, so a CLI
+# refusal keeps pointing at what the operator typed instead of the gate's
+# internal vocabulary. `cmd_registry_session_add` passes "--login"; enroll
+# and migrate-session (neither has a flag of its own for this) take the
+# default.
+#
 # BOTH LOADS ARE SUBSHELLED AND SNAPSHOTTED. registry_login_load and
 # registry_account_load set LOGIN_*/ACCOUNT_* globals in whatever shell
 # calls them; a caller of this gate typically has its own locals of those
 # names in flight (the OWNER field's `principal`, for one) that a load run
 # on the side must never be able to touch.
 registry_login_principal_gate() {
-  local login="$1" account="$2"
+  local login="$1" account="$2" label="${3:-login}"
   local login_principal account_principal
   login_principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
   if [ -z "$login_principal" ]; then
-    echo "login '$login' does not resolve to a known login" >&2
+    echo "$label '$login' does not resolve to a known login" >&2
     return 78
   fi
   account_principal="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"

@@ -2047,7 +2047,7 @@ cmd_registry_session_add() {
       _reg_fail "$want_json" "steward registry session add: invalid --login '$login' (allowed: a-z0-9-, must start a-z0-9)" 64
       return 64
     fi
-    login_gate_err="$( registry_login_principal_gate "$login" "$account" 2>&1 )"; login_gate_rc=$?
+    login_gate_err="$( registry_login_principal_gate "$login" "$account" --login 2>&1 )"; login_gate_rc=$?
     if [ "$login_gate_rc" -ne 0 ]; then
       _reg_fail "$want_json" "steward registry session add: $login_gate_err" "$login_gate_rc"
       return "$login_gate_rc"
@@ -2543,6 +2543,25 @@ cmd_registry_migrate_session() {
   done
   local carried_pm; carried_pm="$(_migrate_snap "$old_conf" PERMISSION_MODE)"
   local carried_login; carried_login="$(_migrate_snap "$old_conf" LOGIN)"
+
+  # 7b. GATE 1 ON THE CARRIED LOGIN — the SAME shared gate `cmd_registry_
+  # session_add` calls (1b above), run against the NEW account this row is
+  # moving to. A LOGIN survives the carry-loop's allowlist unconditionally;
+  # without this, one writer could produce exactly the pair `session add`
+  # and `enroll` both refuse: a session paying on another human's
+  # credentials. Checked BEFORE anything is written (nothing on disk has
+  # changed yet — the body above is still in memory), and skipped entirely
+  # when the old row carries no LOGIN.
+  if [ -n "$carried_login" ]; then
+    local login_gate_err="" login_gate_rc=0
+    login_gate_err="$( registry_login_principal_gate "$carried_login" "$account" 2>&1 )"; login_gate_rc=$?
+    if [ "$login_gate_rc" -ne 0 ]; then
+      rm -f "$kv_err"
+      _reg_fail "$want_json" "steward registry migrate-session: $login_gate_err" "$login_gate_rc"
+      return "$login_gate_rc"
+    fi
+  fi
+
   rm -f "$kv_err"
   if [ "$_mig_rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry migrate-session: could not serialize the row (a field carries a control character or newline)" 70

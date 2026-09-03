@@ -234,7 +234,8 @@ has "CONFIRM still carries the id" "$out2" "id=$id3"
 # mismatch have something real to fail against.
 echo
 echo "nav-enroll — the LOGIN field, schema 6"
-LFX="$(mktemp -d)"; trap 'rm -rf "$LFX" "$FX"' EXIT
+GFX=""
+LFX="$(mktemp -d)"; trap 'rm -rf "$LFX" "$GFX" "$FX"' EXIT
 mkdir -p "$LFX/estate" "$LFX/sessions.d" "$LFX/bus/bin" "$LFX/bin" \
   "$LFX/accounts.d" "$LFX/entities.d" "$LFX/projects.d" "$LFX/logins.d"
 cat > "$LFX/estate/steward.conf" <<'CONF'
@@ -336,6 +337,123 @@ out="$(run_lreq "$LFX/l4.txt")"; rc=$?
 is "L4: no login at schema 6 refuses, rc 65" "$rc" "65"
 has "L4: the refusal names the missing field" "$out" "login"
 is "L4: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
+
+# ── LOGIN_REQUIRED_FOR SCOPES THE WRITE-TIME REFUSAL TOO (task 9B, fix round
+# 1, MAJOR-1) ────────────────────────────────────────────────────────────
+# The read gate (lib/registry.sh, registry_load) refuses a row without LOGIN
+# at schema 6 only when the row's principal is in LOGIN_REQUIRED_FOR (or the
+# key is absent, which means every principal). Before this fix enroll's
+# write-time refusal ignored the list and refused every principal — stricter
+# than the reader, and on a scoped estate it blocked a registration the
+# reader would have accepted. A SEPARATE fixture, schema 6, scoped to a
+# single principal ("bob"): alice is outside the list and must register
+# without login=; bob is inside it and must still be refused.
+GFX="$(mktemp -d)"
+mkdir -p "$GFX/estate" "$GFX/sessions.d" "$GFX/bus/bin" "$GFX/bin" \
+  "$GFX/accounts.d" "$GFX/entities.d" "$GFX/projects.d" "$GFX/logins.d"
+# THE FULL ESTATE KEY SET (not the trimmed one the other fixtures in this
+# file use) — G1 below loads its produced row back through registry_load,
+# which refuses on any of these being missing, unlike enroll itself.
+cat > "$GFX/estate/steward.conf" <<'CONF'
+ESTATE_NAME="prov"
+SCHEMA_VERSION="6"
+LABEL_PREFIX="com.prov.claude"
+RC_LABEL_PREFIX="Hub: "
+HUB_SESSION="hub"
+HUB_HOST="hubhost"
+HUB_SSH="alice@hubhost"
+JOB_LOG_DIR="prov-jobs"
+TMUX_SOCKET="prov.sock"
+PING_MSG="you have mail"
+STATE_DIR_NAME="prov-supervisor"
+PAUSED_DIR_NAME="prov-paused"
+JOB_LABEL_PREFIX="com.prov.job"
+SERVICE_LABEL_PREFIX="com.prov.service"
+BROWSER_LABEL_PREFIX="com.prov.browser"
+OP_TOKEN_FILE_NAME="prov-token"
+LOGIN_REQUIRED_FOR="bob"
+CONF
+cat > "$GFX/sessions.d/asker-alice.conf" <<'CONF'
+HOST="farhost"
+OWNER="alice"
+DOMAIN="d"
+RC_LABEL="Asker"
+REPO_PATH="/tmp/x"
+ID="asker-alice"
+CONF
+cat > "$GFX/sessions.d/asker-bob.conf" <<'CONF'
+HOST="farhost"
+OWNER="bob"
+DOMAIN="d"
+RC_LABEL="Asker"
+REPO_PATH="/tmp/x"
+ID="asker-bob"
+CONF
+cat > "$GFX/entities.d/acme.conf" <<'CONF'
+NAME="Acme"
+CONF
+cat > "$GFX/accounts.d/alice-farhost.conf" <<'CONF'
+PRINCIPAL="alice"
+HOST="farhost"
+CONF
+cat > "$GFX/accounts.d/bob-farhost.conf" <<'CONF'
+PRINCIPAL="bob"
+HOST="farhost"
+CONF
+printf '#!/bin/bash\n' > "$GFX/bus/bin/bus-relay-in"; chmod +x "$GFX/bus/bin/bus-relay-in"
+printf '#!/bin/bash\nexit 0\n' > "$GFX/bin/send"; chmod +x "$GFX/bin/send"
+: > "$GFX/authorized_keys"
+
+run_greq() { # <request-file> <from>
+  STEWARD_ESTATE_ROOT="$GFX" STEWARD_REGISTRY_DIR="$GFX/sessions.d" \
+  STEWARD_RELAY_ROOT="$GFX" STEWARD_AUTHORIZED_KEYS="$GFX/authorized_keys" \
+  STEWARD_BUS_SEND="$GFX/bin/send" STEWARD_ENROLL_FROM="$2" \
+  bash "$ENROLL" --send < "$1" 2>&1
+}
+
+# G1. alice is NOT in LOGIN_REQUIRED_FOR — a request with no login= must
+# register, rc 0, WITHOUT a LOGIN line, and the row must LOAD.
+cat > "$GFX/g1.txt" <<'REQ'
+DRIFT enroll: acme-widgetg-alice requests registration
+ENROLL-REQUEST v1
+namn=acme-widgetg-alice
+doman=acme
+projekt=widgetg
+person=alice
+vard=farhost
+repo=/srv/homes/alice/Projects/widgetg
+pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYGFXAAAAAAAAAAAAAAAAAAAAAAAA test-only
+REQ
+out="$(run_greq "$GFX/g1.txt" asker-alice)"; rc=$?
+is "G1: LOGIN_REQUIRED_FOR scopes the refusal — a principal outside the list registers without login=, rc 0" "$rc" "0"
+id_g1="$(printf '%s' "$out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+conf_g1="$GFX/sessions.d/$id_g1.conf"
+is "G1: no LOGIN line was written" "$(printf '%s' "$(cat "$conf_g1" 2>/dev/null)" | grep -c '^LOGIN=')" "0"
+( STEWARD_CONFIG_FILE="$GFX/no-such-config"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  STEWARD_ESTATE_ROOT="$GFX" registry_load "$id_g1" >/dev/null 2>&1 ) \
+  && ok "G1: the row loads (registry_load rc 0)" \
+  || bad "G1: the row loads (registry_load rc 0)"
+
+# G2. bob IS in LOGIN_REQUIRED_FOR — the same estate, no login= — must
+# refuse exactly as the read gate would, rc 65, nothing written.
+before="$(ls "$GFX/sessions.d" | sort)"
+cat > "$GFX/g2.txt" <<'REQ'
+DRIFT enroll: acme-widgeth-bob requests registration
+ENROLL-REQUEST v1
+namn=acme-widgeth-bob
+doman=acme
+projekt=widgeth
+person=bob
+vard=farhost
+repo=/srv/homes/bob/Projects/widgeth
+pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYGFXBBBBBBBBBBBBBBBBBBBBBBBB test-only
+REQ
+out="$(run_greq "$GFX/g2.txt" asker-bob)"; rc=$?
+is "G2: LOGIN_REQUIRED_FOR scopes the refusal — a listed principal still refuses, rc 65" "$rc" "65"
+after="$(ls "$GFX/sessions.d" | sort)"
+is "G2: nothing was written" "$after" "$before"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
 # Optional field, same contract as registry_liveness_cmd: absent is not broken,

@@ -352,6 +352,11 @@ before="$(sess_hash)"
 out="$(run add --account acme-mac --login no-such-login --project site --slug loginghost --repo /tmp/fixture-repo --json)"; rc=$?
 is "7e: rc 78 — the login does not resolve" "$rc" "78"
 is "7e: sessions.d unchanged" "$(sess_hash)" "$before"
+# THE FLAG THE OPERATOR TYPED SURVIVES INTO THE MESSAGE (task 9B, fix round
+# 1, MINOR-3) — the gate is shared with the hub's enroll, which has no
+# "--login" flag of its own, so the label is this call site's business, not
+# the gate's default.
+has "7e: the refusal names the flag the operator typed" "$(printf '%s' "$out" | jq -r '.reason')" "--login '"
 
 # 7f. WITHOUT --login, NO LOGIN LINE IS WRITTEN — the transition, byte preserved.
 out="$(run add --account acme-mac --project site --slug nologinhere --repo /tmp/fixture-repo --json)"; rc=$?

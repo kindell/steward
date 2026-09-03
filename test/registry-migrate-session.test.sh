@@ -50,7 +50,7 @@ present(){ if [ -e "$2" ]; then ok "$1"; else bad "$1" "expected to exist: $2"; 
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/accounts.d" "$FX/hosts.d" "$FX/sessions.d" \
-         "$FX/entities.d" "$FX/projects.d"
+         "$FX/entities.d" "$FX/projects.d" "$FX/logins.d"
 SESS="$FX/sessions.d"
 
 cat > "$FX/estate/steward.conf" <<'EOF'
@@ -80,6 +80,20 @@ EOF
 
 printf 'PRINCIPAL="a"\nHOST="h1"\n' > "$FX/accounts.d/a-h1.conf"
 printf 'PRINCIPAL="b"\nHOST="h1"\n' > "$FX/accounts.d/b-h1.conf"
+
+# THE LOGIN GATE'S OWN FIXTURES (task 9B, fix round 1, MAJOR-2) — a THIRD
+# principal pair, named per the brief's own convention (alice/bob), kept
+# separate from a-h1/b-h1 so the gate's cases read on their own.
+printf 'PRINCIPAL="alice"\nHOST="h1"\n' > "$FX/accounts.d/acct-acme-team.conf"
+printf 'PRINCIPAL="bob"\nHOST="h1"\n'   > "$FX/accounts.d/acct-bob.conf"
+cat > "$FX/logins.d/acme-team.conf" <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acme-team-seat"
+PROVIDER="claude-team"
+CONFIG_DIR="~/.claude-logins/acme-team"
+LEGAL_OWNER="Acme Corp"
+EOF
+chmod 600 "$FX/logins.d/acme-team.conf"
 
 printf 'NAME="Alpha"\nMEMBERS="a"\n'  > "$FX/entities.d/alpha.conf"
 printf 'NAME="Site"\nPARENT="alpha"\n' > "$FX/projects.d/site.conf"
@@ -299,6 +313,72 @@ is "4: ASSETS round-trips to the literal string, inert" \
    "$(load_field "$ID4" ASSETS)" "\$(touch $CANARY) \`touch $CANARY\`"
 absent "4: still no canary after the reader loaded it" "$CANARY"
 absent "4: old injected row removed" "$SESS/oldinj.conf"
+
+echo "== 5. LOGIN gate (task 9B, fix round 1, MAJOR-2): a carried LOGIN is =="
+echo "== checked against the NEW account, not merely carried forward =="
+# BEFORE THIS GATE: _mig_known already carried LOGIN, but nothing compared
+# it to the account the row was moving TO — the exact pair `session add`
+# and `enroll` both refuse (a session paying on another human's
+# credentials) could be minted by this one writer. The gate must run
+# BEFORE anything is written.
+
+# 5a. THE MATCHING CASE, MADE TO BITE: old row OWNER="alice" LOGIN="acme-team"
+# migrated to --account acct-acme-team (also PRINCIPAL alice) succeeds, and
+# the new row carries LOGIN="acme-team" — this must fail if the carry loop
+# ever drops the field again.
+cat > "$SESS/oldlogin-ok.conf" <<'EOF'
+OWNER="alice"
+DOMAIN="alpha"
+REPO_PATH="/l1"
+LOGIN="acme-team"
+EOF
+out="$(run oldlogin-ok --account acct-acme-team --entity alpha --slug loginok --json)"; rc=$?
+is "5a: matching login/account migrates rc 0" "$rc" "0"
+ID5A="$(printf '%s' "$out" | jq -r '.id')"
+is "5a: LOGIN carried through to the new row" "$(load_field "$ID5A" LOGIN)" "acme-team"
+absent "5a: old row removed" "$SESS/oldlogin-ok.conf"
+
+# 5b. THE MISMATCH: the same shape, migrated to acct-bob (PRINCIPAL bob) —
+# the login belongs to alice, the target account to bob. Refuses rc 65,
+# no new row, old row untouched.
+cat > "$SESS/oldlogin-mismatch.conf" <<'EOF'
+OWNER="alice"
+DOMAIN="alpha"
+REPO_PATH="/l2"
+LOGIN="acme-team"
+EOF
+before="$(row_count)"
+out="$(run oldlogin-mismatch --account acct-bob --entity alpha --slug loginmismatch --json)"; rc=$?
+is "5b: login/account mismatch refuses rc 65" "$rc" "65"
+has "5b: the refusal names the login's own principal" "$out" "alice"
+present "5b: the old row is UNTOUCHED (abortable, no loss)" "$SESS/oldlogin-mismatch.conf"
+is "5b: nothing was written" "$(row_count)" "$before"
+
+# 5c. AN UNKNOWN LOGIN: "ghost" is not in the register. Refuses rc 78, no
+# new row, old row untouched.
+cat > "$SESS/oldlogin-ghost.conf" <<'EOF'
+OWNER="alice"
+DOMAIN="alpha"
+REPO_PATH="/l3"
+LOGIN="ghost"
+EOF
+before="$(row_count)"
+out="$(run oldlogin-ghost --account acct-acme-team --entity alpha --slug loginghost --json)"; rc=$?
+is "5c: unknown login refuses rc 78" "$rc" "78"
+present "5c: the old row is UNTOUCHED" "$SESS/oldlogin-ghost.conf"
+is "5c: nothing was written" "$(row_count)" "$before"
+
+# 5d. A ROW WITHOUT LOGIN IS UNTOUCHED BY THE GATE — no LOGIN line means no
+# gate call at all, and migration proceeds exactly as before this fix.
+cat > "$SESS/oldlogin-none.conf" <<'EOF'
+OWNER="alice"
+DOMAIN="alpha"
+REPO_PATH="/l4"
+EOF
+out="$(run oldlogin-none --account acct-acme-team --entity alpha --slug loginnone --json)"; rc=$?
+is "5d: no LOGIN on the old row migrates rc 0, ungated" "$rc" "0"
+ID5D="$(printf '%s' "$out" | jq -r '.id')"
+is "5d: no LOGIN line on the new row" "$(grep -c '^LOGIN=' "$SESS/$ID5D.conf")" "0"
 
 echo
 echo "pass=$pass fail=$fail"
