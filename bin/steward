@@ -1761,7 +1761,7 @@ cmd_registry_login_add() {
 # directory on disk is about to be written. A row that does not resolve prints
 # its refusal in place of the path rather than being skipped.
 cmd_registry_login_ls() {
-  local want_json="" a slug dir first=1
+  local want_json="" a slug dir account_username first=1
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
@@ -1782,7 +1782,18 @@ cmd_registry_login_ls() {
       fi
       continue
     }
-    if ! dir="$(registry_login_config_dir "$slug" "$LOGIN_PRINCIPAL" 2>/dev/null)"; then
+    # registry_login_config_dir's second argument is a UNIX ACCOUNT, not the
+    # login's PRINCIPAL (the human) — registry_login_check's own docstring
+    # names this exact confusion. The row's ACCOUNT_USERNAME is the unix
+    # account the login actually rides on; PRINCIPAL and USERNAME coincide
+    # today wherever this register runs, but the account row is the field
+    # that carries the difference when they do not. Loaded in a subshell,
+    # the same isolation registry_login_principal_gate uses, so a load run
+    # on the side never touches this loop's own locals.
+    account_username="$( registry_account_load "$LOGIN_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )"
+    if [ -z "$account_username" ]; then
+      dir="(account does not resolve)"
+    elif ! dir="$(registry_login_config_dir "$slug" "$account_username" 2>/dev/null)"; then
       dir="(does not resolve)"
     fi
     if [ -n "$want_json" ]; then

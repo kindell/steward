@@ -248,9 +248,20 @@ echo "== 10. login ls: text and --json, an empty register, one row, two rows, an
 # uses to resolve a login's directory without touching the real system's
 # account database.
 FX2="$(mktemp -d)"
-mkdir -p "$FX2/estate" "$FX2/logins.d"
+mkdir -p "$FX2/estate" "$FX2/logins.d" "$FX2/accounts.d"
 cp "$FX/estate/steward.conf" "$FX2/estate/steward.conf"
 LOGINS2="$FX2/logins.d"
+# THE ACCOUNT ROW IS SPELLED OUT. MINOR-1's fix resolves the listing against
+# the account's own USERNAME rather than the login's PRINCIPAL, so an
+# accounts.d row must exist for 'acct-acme-team' or every row below would
+# print "(account does not resolve)" instead of a path. USERNAME left unset
+# on purpose: it defaults to PRINCIPAL ("alice"), the ordinary case where the
+# two coincide — section 10e below is the case where they do not.
+cat > "$FX2/accounts.d/acct-acme-team.conf" <<'EOF'
+PRINCIPAL="alice"
+HOST="h1"
+EOF
+chmod 600 "$FX2/accounts.d/acct-acme-team.conf"
 cat > "$FX2/homelookup" <<'STUB'
 #!/bin/bash
 case "$1" in
@@ -325,6 +336,59 @@ is "10d: the broken row's unreadable marker is explicit, not a drop" \
 is "10d: the two readable rows are unaffected" \
   "$(printf '%s' "$out" | jq -r '[.logins[] | select(.unreadable != true) | .login] | sort | join(" ")')" \
   "row1 row2"
+
+echo "-- 10e. MINOR-1: the resolved directory follows the ACCOUNT's username, not the login's PRINCIPAL --"
+# A SEPARATE ESTATE again, and this one's STEWARD_HOME_LOOKUP_CMD maps ONLY
+# 'a-user' — 'alice' resolves to nothing. If the verb still asks the lookup
+# about the login's PRINCIPAL (alice) instead of the account's USERNAME
+# (a-user), the row prints "(does not resolve)" instead of a path — that is
+# the red this section is built to see.
+FX3="$(mktemp -d)"
+mkdir -p "$FX3/estate" "$FX3/logins.d" "$FX3/accounts.d"
+cp "$FX/estate/steward.conf" "$FX3/estate/steward.conf"
+LOGINS3="$FX3/logins.d"
+cat > "$FX3/accounts.d/acct-acme-team.conf" <<'EOF'
+PRINCIPAL="alice"
+HOST="h1"
+USERNAME="a-user"
+EOF
+chmod 600 "$FX3/accounts.d/acct-acme-team.conf"
+cat > "$FX3/homelookup3" <<'STUB'
+#!/bin/bash
+case "$1" in
+  a-user) printf '/srv/homes/a-user\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX3/homelookup3"
+
+run3() {
+  STEWARD_ESTATE_ROOT="$FX3" STEWARD_CONFIG_FILE="$FX3/no-such-config" \
+  STEWARD_HOME_LOOKUP_CMD="$FX3/homelookup3" \
+  bash "$STEWARD" registry login "$@" 2>&1
+}
+
+run3 add r1 --principal alice --account acct-acme-team --provider claude-team \
+  --config-dir '~/.claude-logins/r1' --legal-owner 'Acme Corp' --json >/dev/null
+
+out="$(run3 ls)"; rc=$?
+is "10e: rc 0" "$rc" "0"
+has "10e: the listed directory is resolved against the account's username (a-user), not the principal (alice)" \
+  "$out" "/srv/homes/a-user/.claude-logins/r1"
+
+out="$(run3 ls --json)"; rc=$?
+is "10e: rc 0 --json"                     "$rc" "0"
+is "10e: config_dir field carries the same resolution" \
+  "$(printf '%s' "$out" | jq -r '.logins[0].config_dir')" "/srv/homes/a-user/.claude-logins/r1"
+
+echo "-- 10f. MINOR-1: an account row that does not resolve prints a named refusal, not a path --"
+run3 add r2 --principal alice --account acct-ghost --provider claude-team \
+  --config-dir '~/.claude-logins/r2' --legal-owner 'Acme Corp' --json >/dev/null
+out="$(run3 ls)"; rc=$?
+is "10f: rc 0" "$rc" "0"
+has "10f: the row names the account refusal, not a path" "$out" "(account does not resolve)"
+
+rm -rf "$FX3"
 
 rm -rf "$FX2"
 
