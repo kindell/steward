@@ -3576,6 +3576,27 @@ _registry_login_resolve() {
   printf '%s\n' "$dir"
 }
 
+# _registry_login_is_unnamed_default <resolved-dir> — rc 0 when the resolved
+# directory is the runtime's UNNAMED default, `<home>/.claude`. The grammar in
+# registry_login_config_dir admits exactly two forms, `~/.claude` (the one
+# LEGACY_LOGIN row) and `~/.claude-logins/<slug>` with a slug leaf, so the
+# path's last component tells them apart without a second register lookup.
+#
+# WHY THE TWO FORMS ARE EXECUTED DIFFERENTLY. Naming the default directory is
+# NOT the same as leaving it unnamed: with CLAUDE_CONFIG_DIR unset the runtime
+# keeps its state file at `~/.claude.json`, and with the variable set to that
+# very directory it keeps it at `<dir>/.claude.json` — a second, empty state
+# file, so a session with a year of state comes up in the first-run wizard,
+# and the two files then diverge (theme, trust, notices) for as long as both
+# exist. Measured 2026-09-03 on a Linux host, the first time a legacy-login
+# session started through this rule. So the legacy row gets the scrub and the
+# `-u CLAUDE_CONFIG_DIR` (the ambient poison must still go) and NO assignment:
+# the runtime lands on its default by being told nothing.
+_registry_login_is_unnamed_default() {
+  case "${1:-}" in */.claude) return 0 ;; esac
+  return 1
+}
+
 # registry_login_exec_prefix <slug> <owner> — THE ONE execution rule, as a
 # command prefix. Prints EXACTLY this, and the -u CLAUDE_CONFIG_DIR is part of
 # it — an earlier draft of this comment left it out while the printf below and
@@ -3583,6 +3604,10 @@ _registry_login_resolve() {
 #
 #   /usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
 #                -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=<resolved>
+#
+# FOR THE LEGACY ROW THE ASSIGNMENT IS OMITTED and the line ends after the
+# `-u CLAUDE_CONFIG_DIR` — see _registry_login_is_unnamed_default above for
+# the measurement behind that.
 #
 # THE ORDER IS _registry_login_resolve's ORDER (above), FOLLOWED BY THIS
 # FUNCTION'S OWN: resolve+validate the login -> emit -u for the two auth
@@ -3641,7 +3666,11 @@ registry_login_exec_prefix() {
     return 0
   fi
   dir="$(_registry_login_resolve "$slug" "$owner")" || return 78
-  printf '%s -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=%s\n' "$out" "$dir"
+  if _registry_login_is_unnamed_default "$dir"; then
+    printf '%s -u CLAUDE_CONFIG_DIR\n' "$out"
+  else
+    printf '%s -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=%s\n' "$out" "$dir"
+  fi
 }
 
 # registry_login_apply <slug> <owner> — THE SAME RULE, applied to THIS
@@ -3670,7 +3699,9 @@ registry_login_exec_prefix() {
 #
 # THE ORDER, on success, is the rule's order: unset the ambient config
 # directory, THEN unset the auth overrides, THEN set exactly the resolved
-# directory.
+# directory — unless the row is the legacy one, whose directory is the
+# runtime's unnamed default and is reached by NOT setting the variable (see
+# _registry_login_is_unnamed_default). The unsets happen either way.
 #
 # EMPTY SLUG STILL SCRUBS the two auth keys unconditionally — before the slug
 # is even inspected — and still leaves CLAUDE_CONFIG_DIR untouched. An absent
@@ -3691,6 +3722,7 @@ registry_login_apply() {
   dir="$(_registry_login_resolve "$slug" "$owner")" || return 78
   unset CLAUDE_CONFIG_DIR
   for k in $_REGISTRY_LOGIN_SCRUB; do unset "$k"; done
+  _registry_login_is_unnamed_default "$dir" && return 0
   CLAUDE_CONFIG_DIR="$dir"; export CLAUDE_CONFIG_DIR
   return 0
 }

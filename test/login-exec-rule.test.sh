@@ -103,10 +103,23 @@ seen="$( $prefix /bin/sh -c 'printf "%s|%s|%s" "${CLAUDE_CONFIG_DIR-UNSET}" "${A
 is "the child sees the resolved dir and no keys" "$seen" \
    "$FX/home/.claude-logins/acme|UNSET|UNSET"
 
-echo "== 4. the transition legacy row resolves too =="
+echo "== 4. the transition legacy row: the directory is UNSET, never assigned =="
+# THE RUNTIME'S UNNAMED DEFAULT IS NOT THE SAME AS NAMING IT. With
+# CLAUDE_CONFIG_DIR unset the CLI keeps its state file at ~/.claude.json; with
+# the variable set to that very directory it keeps it at <dir>/.claude.json --
+# a second, empty state file, and a session with a year of state comes up in
+# the first-run wizard. Measured 2026-09-03 on a Linux host, the first time a
+# legacy-login session started through this prefix (this suite used to assert
+# the assignment, so it certified the wizard). The legacy row therefore gets
+# the scrub AND the -u -- the ambient poison must still go -- and NO
+# assignment: the runtime lands on its unnamed default by being told nothing.
 mkrow acme-old claude-max "~/.claude"
-out="$( registry_login_exec_prefix acme-old alice )"
-has "the legacy row resolves to the unnamed default" "$out" "CLAUDE_CONFIG_DIR=$FX/home/.claude"
+out="$( registry_login_exec_prefix acme-old alice )"; rc=$?
+is "the legacy row resolves, rc 0" "$rc" "0"
+is "the legacy row gets the scrub and the unset, and no assignment" "$out" \
+   "/usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CONFIG_DIR"
+seen="$( $out /bin/sh -c 'printf "%s|%s|%s" "${CLAUDE_CONFIG_DIR-UNSET}" "${ANTHROPIC_API_KEY-UNSET}" "${ANTHROPIC_AUTH_TOKEN-UNSET}"' )"
+is "through the prefix the child sees no directory and no keys" "$seen" "UNSET|UNSET|UNSET"
 
 echo "== 5. a provider with no recipe REFUSES, never silently does nothing =="
 mkrow oc opencode-chatgpt "~/.claude-logins/oc"
@@ -158,6 +171,18 @@ echo "== 8b. apply with an EMPTY slug scrubs but leaves the directory =="
   printf '%s|%s' "$CLAUDE_CONFIG_DIR" "${ANTHROPIC_API_KEY-UNSET}" ) > "$FX/applied2"
 is "empty slug: key gone, directory kept" "$(cat "$FX/applied2")" \
    "$FX/home/.claude-logins/wrong|UNSET"
+
+echo "== 8c. apply on the legacy row UNSETS the directory, same as the prefix =="
+# The same measurement as case 4, in the form the job runner uses: a legacy
+# login leaves the runtime on its unnamed default, so the ambient directory
+# is removed and nothing is put in its place.
+( export CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong"
+  export ANTHROPIC_API_KEY="sk-should-never-survive"
+  export ANTHROPIC_AUTH_TOKEN="tok-should-never-survive"
+  registry_login_apply acme-old alice
+  printf '%s|%s|%s|%s' "$?" "${CLAUDE_CONFIG_DIR-UNSET}" "${ANTHROPIC_API_KEY-UNSET}" "${ANTHROPIC_AUTH_TOKEN-UNSET}" ) > "$FX/applied-legacy"
+is "apply on the legacy row: rc 0, directory unset, keys unset" "$(cat "$FX/applied-legacy")" \
+   "0|UNSET|UNSET|UNSET"
 
 echo "== 9. apply resolves FIRST: on rc 78 the environment is untouched =="
 # Finding 4: apply used to unset CLAUDE_CONFIG_DIR before validating the
