@@ -42,10 +42,24 @@ mkrow() { # <slug> <provider> <configdir>
   chmod 600 "$FX/logins.d/$1.conf"
 }
 
-echo "== 1. an absent login yields an EMPTY prefix, rc 0 =="
+echo "== 1b. an absent login STILL scrubs the two auth overrides =="
+# THE SCRUB IS NO LONGER CONDITIONAL. It used to sit behind the same `if` as
+# the config directory, so an absent LOGIN produced an EMPTY prefix and the
+# consumer kept whatever auth override its environment carried. An API key
+# WINS over subscription auth, so such a session ran on API billing while
+# every view showed the subscription. The DIRECTORY stays conditional -- see
+# the control group on the second assertion below.
 out="$( registry_login_exec_prefix "" alice )"; rc=$?
 is "empty slug gives rc 0" "$rc" "0"
-is "empty slug gives an empty prefix" "$out" ""
+is "empty slug gives the scrub, without a config dir" "$out" \
+   "/usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN"
+# EXECUTED, NOT ONLY COMPARED -- and the control group runs in the OTHER
+# direction: the ambient DIRECTORY must still survive. Were it unset here,
+# every LOGIN-less session would have changed account silently, which is the
+# opposite error of the same class.
+seen="$( $out /bin/sh -c 'printf "%s|%s|%s" "${CLAUDE_CONFIG_DIR-UNSET}" "${ANTHROPIC_API_KEY-UNSET}" "${ANTHROPIC_AUTH_TOKEN-UNSET}"' )"
+is "the ambient DIRECTORY survives (that is the transition) but no key does" "$seen" \
+   "$FX/home/.claude-logins/wrong|UNSET|UNSET"
 
 echo "== 2. a resolved login gives the whole rule, in order =="
 mkrow named claude-team "~/.claude-logins/acme"

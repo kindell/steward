@@ -782,7 +782,10 @@ fi
 # The prefix carries the whole rule as arguments no shell reinterprets, so it
 # works identically here and inside the macOS branches' exec strings.
 #
-# EMPTY LOGIN -> EMPTY PREFIX: the command line is byte-identical to today's.
+# EMPTY LOGIN -> THE SCRUB WITHOUT A DIRECTORY. It WAS an empty prefix and a
+# byte-identical command line until 2026-09-03; a LOGIN-less line now carries
+# `-u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN` too. The DIRECTORY is what
+# stays transitional: with no LOGIN no CLAUDE_CONFIG_DIR is set at all.
 #
 # THE REFUSAL FIRES AT LOAD TIME, EVERY ROUND -- not only on a spawn. A LOGIN
 # that stops resolving (a row removed from logins.d, a home lookup that
@@ -791,14 +794,18 @@ fi
 # a named slug) beats quiet: a session that silently kept running unsupervised
 # because its login rotted underneath it is worse than one that gets no
 # restarts until someone fixes the row.
-LOGIN_PREFIX=""
-if [ -n "${LOGIN:-}" ]; then
-  if ! LOGIN_PREFIX="$(registry_login_exec_prefix "$LOGIN" "$(id -un)")"; then
-    echo "session-supervisor: $NAME — REFUSING to start: LOGIN=\"$LOGIN\" does not resolve (see above)." >&2
-    exit 78
-  fi
-  [ -n "$LOGIN_PREFIX" ] && LOGIN_PREFIX="$LOGIN_PREFIX "
+# ALWAYS BUILT, EVEN WITHOUT A LOGIN -- see the macOS twin's note. The call used
+# to sit inside `if [ -n "$LOGIN" ]`, so a LOGIN-less session never reached the
+# rule and passed on whatever auth override it inherited. An API key WINS over
+# subscription auth, so that session ran on API billing while every view showed
+# the subscription.
+if ! LOGIN_PREFIX="$(registry_login_exec_prefix "${LOGIN:-}" "$(id -un)")"; then
+  echo "session-supervisor: $NAME — REFUSING to start: LOGIN=\"${LOGIN:-}\" does not resolve (see above)." >&2
+  exit 78
 fi
+# LEADING SPACE, spliced with no separator. The prefix is never empty now; the
+# form is kept so a future empty one cannot break the command line.
+[ -n "$LOGIN_PREFIX" ] && LOGIN_PREFIX="$LOGIN_PREFIX "
 
 # TMUX DOES NOT INHERIT THIS ENVIRONMENT. Measured 2026-08-14, and it is a
 # trap that made the whole credential isolation ineffective for two days

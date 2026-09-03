@@ -3593,14 +3593,27 @@ _registry_login_resolve() {
 # ("env: -u: No such file or directory"). Written backwards, every session
 # refuses to start.
 #
-# EMPTY SLUG -> EMPTY OUTPUT, rc 0. That is the transition: a consumer with no
-# LOGIN field gets the command line it has today, byte for byte. It is a
-# DELIBERATELY temporary branch — see the schema gate that removes it. It
-# returns before _registry_login_resolve is ever called, so an empty slug
-# scrubs NOTHING through this form: no `-u` is emitted at all. That is a
-# DIFFERENT asymmetry than registry_login_apply's own empty-slug case below —
-# apply mutates a real environment it cannot leave half-spoken, this form
-# simply emits nothing.
+# EMPTY SLUG -> THE SCRUB WITHOUT A DIRECTORY, rc 0:
+#
+#   /usr/bin/env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN
+#
+# It returns before _registry_login_resolve is ever called, so no login is
+# looked up and no CLAUDE_CONFIG_DIR is emitted — but the two auth keys are
+# unset all the same. THE SCRUB IS UNCONDITIONAL and the DIRECTORY IS NOT, and
+# the asymmetry is deliberate: unsetting a key can only move a session TOWARD
+# the account it is supposed to run on, while unsetting the directory would
+# move every LOGIN-less session to a different account silently. That is the
+# SAME asymmetry registry_login_apply has on an empty slug below — the two
+# forms now agree on this input, where they used to differ.
+#
+# UNTIL 2026-09-03 THIS BRANCH EMITTED NOTHING AT ALL, so a consumer with no
+# LOGIN got the command line it had before, byte for byte, auth override
+# included. An API key WINS over subscription auth, so such a session ran on
+# API billing while every view showed the subscription.
+#
+# THE CALLERS MUST STOP GUARDING THIS CALL. A branch that only calls this
+# function when LOGIN is set never reaches the unconditional part — the rule
+# would be closed in the library and open in production. See both twins.
 #
 # WHY `env` AND NOT AN EXPORT. Three of the four launch branches build a
 # command STRING that another shell execs, and the fourth (the Linux twin)
@@ -3618,12 +3631,16 @@ _registry_login_resolve() {
 # that one account.
 registry_login_exec_prefix() {
   local slug="${1:-}" owner="${2:-}" dir k out IFS=' '
+  # THE SCRUB IS BUILT BEFORE THE SLUG IS INSPECTED. That ordering is the whole
+  # change: it used to sit after the empty-slug return, so two of the four
+  # launch branches never emitted it.
+  out="/usr/bin/env"
+  for k in $_REGISTRY_LOGIN_SCRUB; do out="$out -u $k"; done
   if [ -z "$slug" ]; then
+    printf '%s\n' "$out"
     return 0
   fi
   dir="$(_registry_login_resolve "$slug" "$owner")" || return 78
-  out="/usr/bin/env"
-  for k in $_REGISTRY_LOGIN_SCRUB; do out="$out -u $k"; done
   printf '%s -u CLAUDE_CONFIG_DIR CLAUDE_CONFIG_DIR=%s\n' "$out" "$dir"
 }
 
@@ -3660,9 +3677,11 @@ registry_login_exec_prefix() {
 # LOGIN is the transition's byte-identical branch for the directory (see
 # registry_login_exec_prefix), but a leaked API key wins over subscription
 # auth in EVERY session regardless of LOGIN, so it is scrubbed unconditionally
-# rather than only when a login resolves. This is NOT the same asymmetry the
-# prefix form has on an empty slug: the prefix emits nothing at all, because
-# it never touches a real environment to begin with.
+# rather than only when a login resolves. THE PREFIX FORM NOW DOES EXACTLY THE
+# SAME on an empty slug — it emits the two `-u` flags and no directory — so
+# the two forms no longer diverge on this input. They did until 2026-09-03,
+# when the prefix emitted nothing at all, and that divergence was the leak:
+# the branches that splice a prefix are the branches that had no scrub.
 registry_login_apply() {
   local slug="${1:-}" owner="${2:-}" dir k IFS=' '
   if [ -z "$slug" ]; then

@@ -409,8 +409,27 @@ rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
 run_login LOGIN=acme-team; rc8_ambient=$?
 log_ambient="$(cat "$TMUX_LOG")"
 is    "8i an ambient LOGIN with a LOGIN-less conf still spawns, rc 0" "$rc8_ambient" "0"
-hasnt "8j and the command line carries no exec prefix" "$log_ambient" "/usr/bin/env -u ANTHROPIC_API_KEY"
+# 8j WAS `hasnt ... "/usr/bin/env -u ANTHROPIC_API_KEY"` UNTIL THE SCRUB BECAME
+# UNCONDITIONAL. It is FLIPPED, not deleted, for the same reason the estate
+# twin's golden master is moved rather than silenced: the assertion that used
+# to prove "no prefix at all" now proves the exact thing that changed -- the
+# scrub is there, the DIRECTORY is not. A deleted assertion would have left the
+# ambient-LOGIN case measuring nothing about the directory.
+has   "8j and the command line carries the scrub but no directory" "$log_ambient" \
+      "-u ANTHROPIC_AUTH_TOKEN $HOMEDIR/.local/bin/claude"
+hasnt "8j the ambient LOGIN still cannot set a config directory" "$log_ambient" "CLAUDE_CONFIG_DIR="
 is    "8k the command line is byte-identical to the no-LOGIN form"    "$log_ambient" "$log_nologin"
+
+echo "== 8l. WITHOUT a LOGIN the branch STILL scrubs both auth overrides =="
+# THE CASE THAT WAS MISSING. The library could make the scrub unconditional
+# while this twin called it only inside `if [ -n "$LOGIN" ]` -- a rule closed
+# in the code and open in production. These three measure the BRANCH, not the
+# function: both keys unset, and NO directory, because the ambient directory
+# must survive a LOGIN-less session (unsetting it would move every such
+# session to another account silently).
+has   "8l the branch emits -u ANTHROPIC_API_KEY with no LOGIN"    "$log_nologin" "-u ANTHROPIC_API_KEY"
+has   "8m the branch emits -u ANTHROPIC_AUTH_TOKEN with no LOGIN" "$log_nologin" "-u ANTHROPIC_AUTH_TOKEN"
+hasnt "8n and it sets no config directory"                        "$log_nologin" "CLAUDE_CONFIG_DIR="
 
 # Restore the shared conf to its LOGIN-less base shape for cleanliness.
 write_login_conf
