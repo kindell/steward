@@ -54,6 +54,7 @@ printf 'NAME="Quiet"\nMEMBERS="a"\n'                                        > "$
 printf 'NAME="Lonely"\nMEMBERS="a"\nMCP_ASSETS="ghost-tool absent-tool"\n'  > "$ENT/lonely.conf"
 printf 'NAME="Starry"\nMEMBERS="a"\nMCP_ASSETS="star-tool"\n'               > "$ENT/starry.conf"
 printf 'NAME="Homely"\nMEMBERS="a"\nMCP_ASSETS="home-tool"\n'               > "$ENT/homely.conf"
+printf 'NAME="Plain"\nMEMBERS="a"\nMCP_ASSETS="plain-tool"\n'               > "$ENT/plain.conf"
 
 # THE ACCOUNTS — personal capability, bound to the human and not to a node.
 printf 'PRINCIPAL="ann"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'              > "$ACC/ann-h1.conf"
@@ -80,6 +81,10 @@ MCP_COMMAND="~/bin/home-server"
 MCP_ARGS="--conf ~/etc/home.conf --tag ~notme/x --literal a~/b"
 MCP_ENV_FILE="~/.local/state/creds/<domain>/home-tool.env"
 EOF
+# A ROW WHOSE ONLY ~/ SITS IN MCP_ARGS — neither MCP_COMMAND nor an
+# MCP_ENV_FILE carries one, so this row can only trip the argv-detection loop
+# and the argv-expansion loop, never the cmdpath or envf branches above it.
+printf 'MCP_COMMAND="/opt/plain/server"\nMCP_ARGS="--conf ~/etc/plain.conf"\n' > "$MCPD/plain-tool.conf"
 # notes-tool, ghost-tool and absent-tool are DELIBERATELY ABSENT.
 
 sess() { printf 'OWNER="a"\nHOST="h1"\nREPO_PATH="/tmp/x"\nID="%s"\n%s\n' "$1" "$2" > "$SESS/$1.conf"; }
@@ -91,6 +96,7 @@ RC_LABEL="L"'
 sess s-star    'DOMAIN="starry"
 RC_LABEL="L"'
 sess s-home    'TARGET_ENTITY="homely"'
+sess s-plain   'TARGET_ENTITY="plain"'
 # SAME entity, DIFFERENT accounts — the pair the account axis exists for.
 sess s-ann     'ACCOUNT="ann-h1"
 TARGET_PROJECT="gamma"'
@@ -350,12 +356,53 @@ has "19c the asset is named"               "$err19" "home-tool"
 has "19d the session is named"             "$err19" "s-home"
 has "19e and the actual reason — HOME, not the register — is named" "$err19" "HOME is unset"
 
+# HOME UNSET is a different shell state than HOME SET AND EMPTY (the case
+# above): `${HOME:-}` masks the difference today, but only a case that runs
+# with HOME truly unset in the child process defends that. `env -u HOME`
+# would NOT do it here — `run` is a shell function, and `env` only reaches an
+# external process — so `unset HOME` happens in this very subshell instead.
+# It cannot go through `run` (bin/steward): the CLI's own bootstrap reads
+# $HOME unguarded before any verb dispatches, unrelated to this feature, so a
+# truly-unset HOME never reaches mcp_render_document that way. Source the
+# libraries directly instead — the exact load order test/mcpspawn.test.sh
+# already proved works standalone, and the one this suite's own header says
+# the session host itself uses.
+render_lib() { # <session-id> -> rc, document on stdout, render stderr on stderr
+  STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config" STEWARD_VIEWER=a \
+  bash -c '. "$1/lib/registry.sh"; . "$1/lib/mcprender.sh"; mcp_render_document "$2"' \
+    _ "$here" "$1"
+}
+out19f="$(unset HOME; render_lib s-home 2>"$FX/e19f")"; rc19f=$?
+err19f="$(cat "$FX/e19f")"
+is  "19f rc 65 — HOME truly UNSET refuses the same way as HOME empty" "$rc19f" "65"
+has "19g the asset is named"   "$err19f" "home-tool"
+has "19h the session is named" "$err19f" "s-home"
+
 echo "== 20. a row with no ~/ is untouched by any of this — same document with HOME set or empty =="
 out20a="$(HOME=/srv/homes/alice run mcp render s-project 2>/dev/null)"
 out20b="$(HOME= run mcp render s-project 2>/dev/null)"
-is "20 chat-tool's rendered entry is byte-identical either way" \
-   "$(printf '%s' "$out20a" | jq -c '.mcpServers["chat-tool"]')" \
-   "$(printf '%s' "$out20b" | jq -c '.mcpServers["chat-tool"]')"
+has "20a sanity — the document is not vacuously empty" "$out20a" "chat-tool"
+is "20b the WHOLE document is byte-identical either way, not just one entry" \
+   "$(printf '%s' "$out20a" | jq -cS .)" \
+   "$(printf '%s' "$out20b" | jq -cS .)"
+
+echo "== 21. minor 1 — the argv-triggered ~/ branch, on a row whose ONLY ~/ is in MCP_ARGS =="
+# plain-tool carries no ~/ in MCP_COMMAND and has no MCP_ENV_FILE at all, so
+# home_needed can only become 1 through the argv-detection loop, and the
+# expansion that follows can only touch argv. Deleting that detection loop
+# leaves this row rendered with the tilde still literal in args (case a) and,
+# worse, rendered at all when HOME is empty instead of refused (case b).
+out21a="$(HOME=/srv/homes/alice run mcp render s-plain 2>"$FX/e21a")"; rc21a=$?
+is  "21a rc 0" "$rc21a" "0"
+has "21a args carries the argv ~/ expanded against alice's home" \
+    "$(printf '%s' "$out21a" | jq -c '.mcpServers["plain-tool"].args')" \
+    "/srv/homes/alice/etc/plain.conf"
+
+out21b="$(HOME= run mcp render s-plain 2>"$FX/e21b")"; rc21b=$?
+err21b="$(cat "$FX/e21b")"
+is  "21b rc 65 — HOME empty, and the row's ONLY ~/ sits in argv" "$rc21b" "65"
+has "21c plain-tool is named on stderr" "$err21b" "plain-tool"
+has "21d and the actual reason — HOME is unset" "$err21b" "HOME is unset"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

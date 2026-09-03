@@ -194,6 +194,17 @@ mcp_render_document() {
       fi
       case "$cmdpath" in "~/"*) cmdpath="$HOME/${cmdpath#"~/"}" ;; esac
       case "$envf" in "~/"*) envf="$HOME/${envf#"~/"}" ;; esac
+      # NO `+` GUARD HERE, UNLIKE THE VALUE FORM ABOVE (and the detection loop
+      # three lines up). Two independent reasons, not one: first, the INDEX
+      # form `${!argv[@]}` does not trip `set -u` on an empty array even on
+      # bash 3.2.57, unlike `${argv[@]}` — so no guard is needed for safety.
+      # Second, the guard idiom used elsewhere in this file, applied literally
+      # to the index form as `${!argv[@]+"${!argv[@]}"}`, is not equivalent to
+      # it: bash's `!name[@]` "list of keys" grammar does not compose with a
+      # trailing `+word` the way the plain `name[@]+word` form does, and
+      # collapses to empty instead of the real indices — verified empirically,
+      # not assumed. Adding it here would silently break this loop on every
+      # non-empty argv. Left unguarded on purpose.
       local _hi
       for _hi in "${!argv[@]}"; do
         case "${argv[$_hi]}" in "~/"*) argv[$_hi]="$HOME/${argv[$_hi]#"~/"}" ;; esac
