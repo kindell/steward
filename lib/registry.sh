@@ -2552,6 +2552,21 @@ registry_job_load() {
   if ! [[ "$DOMAIN" =~ ^[a-z0-9-]+$ ]]; then
     echo "registry: $JOB_NAME missing/invalid DOMAIN" >&2; return 1
   fi
+  # LOGIN — which model account pays for this job's calls (logins.d slug).
+  #
+  # THE PAYER IS NEVER DERIVED FROM THE DOMAIN. A job's domain says what it
+  # works on, not who is billed for the tokens; a fleet where those coincide
+  # today is a fleet where the first exception bills the wrong company
+  # silently. Every job states it.
+  #
+  # SET ON COMMAND-KIND JOBS TOO, where it changes no behaviour: the field's
+  # second job is making visible which account each unit belongs to, and a
+  # register where only some rows carry it cannot answer that.
+  #
+  # LENIENT, SHAPE ONLY, never resolved — same posture as the session loader.
+  if [ -n "$LOGIN" ] && ! [[ "$LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: $JOB_NAME invalid LOGIN '$LOGIN' (a-z 0-9 and hyphen)" >&2; return 1
+  fi
   if ! [[ "$TIMEOUT_MIN" =~ ^[0-9]+$ ]]; then
     echo "registry: $JOB_NAME missing/invalid TIMEOUT_MIN" >&2; return 1
   fi
@@ -2722,6 +2737,22 @@ registry_service_load() {
       echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
       return 78
     fi
+  fi
+  # LOGIN — which model account pays for this service's calls (logins.d slug).
+  #
+  # THE PAYER IS NEVER DERIVED FROM THE DOMAIN. A service's domain says what it
+  # works on, not who is billed for the tokens; a fleet where those coincide
+  # today is a fleet where the first exception bills the wrong company
+  # silently. Every service states it.
+  #
+  # SET EVEN WHEN THE SERVICE MAKES NO MODEL CALLS ITSELF, where it changes no
+  # behaviour: the field's second job is making visible which account each
+  # unit belongs to, and a register where only some rows carry it cannot
+  # answer that.
+  #
+  # LENIENT, SHAPE ONLY, never resolved — same posture as the session loader.
+  if [ -n "$LOGIN" ] && ! [[ "$LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: $SERVICE_NAME invalid LOGIN '$LOGIN' (a-z 0-9 and hyphen)" >&2; return 1
   fi
   # Exactly one of SERVICE_SCRIPT (bash wrapper under scripts/) / SERVICE_APP
   # (bundle binary, run directly — no bash wrapper, because for TCC-gated

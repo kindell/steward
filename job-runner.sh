@@ -178,16 +178,44 @@ wake_browser_if_needed() {
 }
 wake_browser_if_needed
 
+# THE ONE RULE, APPLIED BEFORE THE KIND BRANCH — for BOTH kinds.
+#
+# WHY BOTH. A claude-kind job's model calls are billed to whichever account it
+# runs on, so it obviously needs the rule. A command-kind job needs it too, and
+# for a reason that is easy to miss: the commands in this estate INCLUDE tools
+# that read credentials (the auth probe) and tools that shell out to claude. A
+# rule that stopped at the claude branch would have left the one job that
+# MEASURES credentials measuring whichever account the process inherited.
+#
+# registry_login_apply IS THE RULE — not a hand-written copy of it. This runner
+# execs CMD from its own process, so it needs real environment rather than a
+# command prefix; that is the only difference, and both forms read the same
+# $_REGISTRY_LOGIN_SCRUB and the same resolver. A fifth branch spelling out
+# `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN` by hand would be a copy that
+# stops following the list the day the list grows.
+if ! registry_login_apply "${LOGIN:-}" "$OWNER"; then
+  log "FATAL: LOGIN=\"${LOGIN:-}\" does not resolve — the job does NOT run. A job that"
+  log "runs on the ambient account bills whoever happens to own this process."
+  exit 78
+fi
+if [ -n "${LOGIN:-}" ]; then
+  # THE SLUG TRAVELS WITH THE DIRECTORY. A command-kind job that MEASURES
+  # credentials has to be able to NAME which account it measured, and the
+  # directory alone does not carry the name. This is the seam the estate's
+  # auth probe reads (see the plan's task 17) — the alternative, an argument
+  # inside COMMAND, does not work: the runner execs `bash "$REPO_PATH/$COMMAND"`,
+  # so a COMMAND with a space in it becomes one impossible filename.
+  export STEWARD_LOGIN="$LOGIN"
+  log "login: $LOGIN -> $CLAUDE_CONFIG_DIR"
+else
+  log "login: none declared — running on the ambient account (transition)"
+fi
+
 if [ "$KIND" = "claude" ]; then
-  # The .env sourcing above leaks ANTHROPIC_API_KEY into claude's environment,
-  # and the CLI lets an API key take over authentication from the subscription
-  # the jobs are meant to run on (the API account has no credits either).
-  # Demonstrated twice, 2026-07-15 and 2026-07-16: exit 1, "Credit balance is too
-  # low", after five seconds. The key is needed only by repository scripts, never
-  # by the claude process itself — a script that needs it can source
-  # $REPO_PATH/.env for itself. ANTHROPIC_AUTH_TOKEN is scrubbed for the same
-  # reason.
-  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+  # (The scrub of ANTHROPIC_API_KEY/AUTH_TOKEN lived here until 2026-08-31 and
+  # now lives in registry_login_apply above, for BOTH kinds. The reason and the
+  # two measurements — exit 1, "Credit balance is too low", 2026-07-15 and
+  # -16 — stay in that function's header comment, where the rule now lives.)
   CMD=("$CLAUDE_BIN" -p "$PROMPT" --permission-mode "$PERMISSION_MODE" --max-turns "$MAX_TURNS")
   [ -n "$SETTINGS_FILE" ] && CMD+=(--settings "$REPO_PATH/$SETTINGS_FILE")
   # MCP_CONFIG (optional, jobs.d): narrow the job's MCP surface to EXACTLY the
