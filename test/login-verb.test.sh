@@ -47,6 +47,23 @@ printf 'HOST="h1"\nOWNER="b"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nI
 printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="oc"\nRUNTIME="opencode"\nMODEL="openai/gpt-5.3-codex"\nOPENCODE_VERSION="1.18.14"\nOPENCODE_PORT="4097"\nAUTO_APPROVE="true"\nCLAUDE_MEMORY_ROOT="/tmp/mem"\n' \
   > "$FX/sessions.d/oc.conf"
 
+# Three rows for the LOGIN-scoping cases below: a row that names a login, a
+# row that names none (the transition's byte-identical branch), and a row
+# that names a login the register has no entry for.
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="withlogin"\nLOGIN="acme-team"\n' \
+  > "$FX/sessions.d/withlogin.conf"
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="nologin"\n' \
+  > "$FX/sessions.d/nologin.conf"
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="ghostlogin"\nLOGIN="ghost"\n' \
+  > "$FX/sessions.d/ghostlogin.conf"
+
+# The login register itself: one resolvable row, "acme-team", owned by the
+# same fixture principal "a" that runs this suite.
+mkdir -p "$FX/logins.d"
+printf 'PRINCIPAL="a"\nACCOUNT="acct-acme-team"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude-logins/acme"\nLEGAL_OWNER="alice"\n' \
+  > "$FX/logins.d/acme-team.conf"
+chmod 600 "$FX/logins.d/acme-team.conf"
+
 cat > "$FX/bin/hostcmd-hub" <<'EOF'
 #!/bin/bash
 echo h1
@@ -85,6 +102,26 @@ claude_stub="$FX/bin/claude-stub"
 opencode_stub="$FX/bin/opencode-stub"
 missing_bin="$FX/bin/does-not-exist"
 
+# STEWARD_HOME_LOOKUP_CMD stub for the LOGIN-scoping cases: answers "a"'s home
+# as the fixture HOME, the same model test/job-run.test.sh uses for its own
+# login-apply section.
+cat > "$FX/bin/homecmd" <<EOF
+#!/bin/bash
+printf '%s\n' "$FX/home"
+EOF
+chmod +x "$FX/bin/homecmd"
+
+# The login flow's own stub: writes what it actually SAW in its environment
+# to LOGIN_STUB_LOG, so a case can assert on what the flow received rather
+# than on what the verb printed before handing off.
+cat > "$FX/bin/claude-login-stub" <<'STUB'
+#!/bin/bash
+printf '%s\n' "cfg=${CLAUDE_CONFIG_DIR-UNSET}" >> "$LOGIN_STUB_LOG"
+printf '%s\n' "key=${ANTHROPIC_API_KEY-UNSET}" >> "$LOGIN_STUB_LOG"
+printf '%s\n' "args=$*" >> "$LOGIN_STUB_LOG"
+STUB
+chmod +x "$FX/bin/claude-login-stub"
+
 clear_markers() {
   rm -f "$FX/claude.ran" "$FX/claude.args" "$FX/opencode.ran" "$FX/opencode.args"
 }
@@ -104,6 +141,28 @@ run() {
     STEWARD_LOGIN_CMD_CLAUDE="$claudecmd" STEWARD_LOGIN_CMD_OPENCODE="$opencodecmd" \
     "${extra[@]+"${extra[@]}"}" \
     bash "$STEWARD" login "$@" </dev/null 2>&1
+}
+
+# run_login <session> [VAR=val ...] -> combined stdout+stderr; caller reads $?
+#
+# The LOGIN-scoping sibling of run(): always hub-local, claude-code, tty
+# assumed, the claude-login-stub wired with its own LOGIN_STUB_LOG, and
+# STEWARD_HOME_LOOKUP_CMD pointed at the fixture home stub above (without it
+# the resolver falls through to getent/dscl for account "a" and refuses for
+# the wrong reason). Extra VAR=val pairs are layered on top — used by the
+# cases below to plant a wrong CLAUDE_CONFIG_DIR / ANTHROPIC_API_KEY the flow
+# must never see once a login resolves.
+run_login() {
+  local session="$1"; shift
+  env -i PATH="$PATH" HOME="$FX/home" STEWARD_ESTATE_ROOT="$FX" \
+    STEWARD_CONFIG_FILE="$FX/no-such-operator-config" \
+    STEWARD_HOSTNAME_CMD="$hub_host" STEWARD_VIEWER="a" \
+    STEWARD_LOGIN_CMD_CLAUDE="$FX/bin/claude-login-stub" \
+    STEWARD_LOGIN_ASSUME_TTY=1 \
+    STEWARD_HOME_LOOKUP_CMD="$FX/bin/homecmd" \
+    LOGIN_STUB_LOG="$FX/stublog" \
+    "$@" \
+    bash "$STEWARD" login "$session" </dev/null 2>&1
 }
 
 echo "== owned, hub-local, claude-code: the claude stub runs =="
@@ -213,6 +272,32 @@ out="$(env -i PATH="$FX/fakebin:$PATH" HOME="$FX/home" STEWARD_ESTATE_ROOT="$FX"
 is      "empty viewer: rc 77"             "$rc" "77"
 has     "refusal names the owner"         "$out" "owned by a"
 absent  "claude stub did not run"         "$FX/claude.ran"
+
+echo "== login: a session WITH login scopes the flow =="
+: > "$FX/stublog"
+out="$(run_login withlogin \
+  CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong" \
+  ANTHROPIC_API_KEY="sk-should-never-survive")"
+has  "the flow saw the resolved directory" "$(cat "$FX/stublog")" \
+     "cfg=$FX/home/.claude-logins/acme"
+has  "the flow saw no API key" "$(cat "$FX/stublog")" "key=UNSET"
+has  "the verb SAYS the account before running" "$out" "acct-acme-team"
+has  "the verb SAYS the directory before running" "$out" "$FX/home/.claude-logins/acme"
+
+echo "== login: a session WITHOUT a login is byte-identical, and SAYS so =="
+: > "$FX/stublog"
+out="$(run_login nologin CLAUDE_CONFIG_DIR="$FX/home/.claude-logins/wrong")"
+has "the inherited directory is untouched" "$(cat "$FX/stublog")" \
+    "cfg=$FX/home/.claude-logins/wrong"
+has "the verb WARNS that it does not know the account" "$out" "inherited"
+is  "the stub still ran (warning, not a refusal)" \
+    "$([ -s "$FX/stublog" ] && echo yes || echo no)" "yes"
+
+echo "== login: a set but unresolvable login REFUSES, stub never runs =="
+: > "$FX/stublog"
+run_login ghostlogin >/dev/null
+is "an unresolvable login is rc 78" "$?" "78"
+is "the stub never ran" "$(cat "$FX/stublog")" ""
 
 echo
 echo "pass=$pass fail=$fail"

@@ -3935,6 +3935,45 @@ cmd_login() {
     return 64
   fi
 
+  # THE LOGIN FLOW WRITES CREDENTIALS, so it must never run in whatever
+  # directory this process happened to inherit. registry_login_apply is THE
+  # rule, applied to this process's own environment — the handoff below execs
+  # from here, so there is no command string and no prefix.
+  #
+  # THE LOAD RUNS IN THIS SHELL, un-subshelled, because the printed line needs
+  # LOGIN_ACCOUNT. Sourcing an untrusted row is not the risk here that it is
+  # elsewhere: this register is parsed, never sourced.
+  local login_dir="" login_account=""
+  if [ -n "${LOGIN:-}" ]; then
+    registry_login_load "$LOGIN" >/dev/null || {
+      fel "login '$LOGIN' does not resolve — refusing to hand off an interactive login to an unknown account" 78
+    }
+    login_account="$LOGIN_ACCOUNT"
+    login_dir="$(registry_login_config_dir "$LOGIN" "$OWNER")" || \
+      fel "login '$LOGIN' does not resolve to a directory — see the message above" 78
+    registry_login_apply "$LOGIN" "$OWNER" || \
+      fel "login '$LOGIN' could not be applied" 78
+  fi
+
+  # SAY WHERE IT IS GOING, EVERY TIME, BEFORE ANYTHING RUNS. An interactive
+  # login is a one-way door: it REPLACES the credentials in whichever directory
+  # it lands in. Whoever runs this must be able to read the target off the
+  # screen rather than deduce it from a register.
+  #
+  # THE "inherited" WORDING IS THE PURPOSE OF THE NO-LOGIN BRANCH. A line that
+  # names a directory reads as a decision; a line that says "inherited" is the
+  # only form that makes visible that the verb does NOT know whose credentials
+  # are about to be replaced. ${VAR-} under set -u: the variable may be unset,
+  # and a nounset abort here would turn a warning into a crash.
+  if [ -n "$login_dir" ]; then
+    echo "steward login: account '$login_account' · directory '$login_dir'"
+  else
+    echo "steward login: account UNKNOWN · directory '<inherited: ${CLAUDE_CONFIG_DIR-the runtime default}>'"
+    echo "steward login: WARNING — this session declares no LOGIN, so this flow will replace" >&2
+    echo "steward login: the credentials of whichever account this process inherited." >&2
+    echo "steward login: register a login and set LOGIN on the row to make the target explicit." >&2
+  fi
+
   local cmd
   local -a args
   case "$RUNTIME" in
