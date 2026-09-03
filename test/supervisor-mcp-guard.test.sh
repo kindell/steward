@@ -452,14 +452,14 @@ has "9a the refusal names the library, not a guess" "$out9a" "registry library w
 # without this assertion, deleting the relay line leaves the suite green.
 has "9a the library's own reason is relayed" "$out9a" "this checkout reads up to"
 
-echo "== 9b. SCHEMA_VERSION at REGISTRY_SCHEMA_MAX: starts, byte-identical to the no-LOGIN control =="
+echo "== 9b. SCHEMA_VERSION below the ceiling: starts, byte-identical to the no-LOGIN control =="
 sed -i.bak '/^SCHEMA_VERSION=/d' "$ROOT/estate/steward.conf"
 printf 'SCHEMA_VERSION="5"\n' >> "$ROOT/estate/steward.conf"
 rm -f "$ROOT/estate/steward.conf.bak"
 rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
 run_login; rc9b=$?
 log9b="$(cat "$TMUX_LOG")"
-is  "9b rc 0 -- this checkout reads schema 5"                       "$rc9b" "0"
+is  "9b rc 0 -- schema 5 is below the ceiling"                       "$rc9b" "0"
 has "9b the session was spawned"                                    "$log9b" "new-session"
 is  "9b the launch line is byte-identical to the no-LOGIN control" "$log9b" "$log_nologin"
 

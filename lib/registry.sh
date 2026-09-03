@@ -2037,11 +2037,12 @@ registry_load() {
   # with the field treated as absent.
   #
   # SCOPED BY PRINCIPAL, NOT GLOBAL, AND FROM THE FIRST LINE. A global
-  # requirement at schema 6 refuses every row without LOGIN — and several of
-  # them belong to people whose own login rows are THEIR decision, not this
-  # estate's. A global bump takes their sessions down to close a gap that is not
-  # theirs. Scoping is not a weakening: the migration is about ONE human's two
-  # accounts, and the gate should say so.
+  # requirement at schema 6 refuses every row without LOGIN — and eight of
+  # them (measured 2026-09-02: seven belonging to one other human, one
+  # machine session) belong to people whose own login rows are THEIR
+  # decision, not this estate's. A global bump takes their sessions down to
+  # close a gap that is not theirs. Scoping is not a weakening: the migration
+  # is about ONE human's two accounts, and the gate should say so.
   #
   # AN ALLOWLIST OF PRINCIPALS, NOT AN EXEMPTION LIST OF ROWS. A row exemption
   # list grows silently and never shrinks; a principal list is short, readable,
@@ -2058,9 +2059,18 @@ registry_load() {
   # from a healthy one from the outside, and the bill arrives a month later.
   if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
      && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
-    local _req _who
+    local _req _who=""
     _req="$(registry_login_required_for)" || return 78
-    _who="$(_registry_row_principal "$project")"
+    # THE PRINCIPAL IS RESOLVED ONLY WHEN A QUESTION IS ACTUALLY ASKED. With
+    # LOGIN_REQUIRED_FOR absent (the ABSENT KEY = EVERY PRINCIPAL case, and the
+    # estate's actual state today), every principal is refused regardless of
+    # who this row belongs to -- resolving _who unconditionally would fire
+    # _registry_row_principal's fallback stderr line on that path too, even
+    # though no principal question was asked. The line's whole reason to exist
+    # is to say which question the fallback answered when the answer mattered.
+    if [ -n "$_req" ]; then
+      _who="$(_registry_row_principal "$project")"
+    fi
     if [ -z "$_req" ] || _registry_word_in_list "$_who" "$_req"; then
       echo "registry: $project.conf REFUSING — no LOGIN: nothing states which model account pays" >&2
       echo "registry: for this session's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2

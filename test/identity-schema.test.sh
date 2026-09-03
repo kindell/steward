@@ -599,6 +599,43 @@ max="$( ( . "$here/lib/registry.sh"; printf '%s' "$REGISTRY_SCHEMA_MAX" ) )"
   || bad "REGISTRY_SCHEMA_MAX is 6 after this change" "got '$max'"
 
 echo
+echo "_REGISTRY_SCHEMA_SEEN is reset every call, not just published once"
+
+# THE OUTAGE THIS GUARDS AGAINST. _REGISTRY_SCHEMA_SEEN is a global published
+# by registry_schema_check. Every assertion above this one calls registry_load
+# in its OWN fresh subshell, so a missing reset at the top of the function
+# would never show up: each subshell starts with the global unset regardless.
+# The only way to see a stale SEEN leak is two loads in the SAME shell -- a
+# schema-6 estate first, then an estate with NO SCHEMA_VERSION at all. If the
+# reset is missing, the second load still carries SEEN=6 from the first and
+# refuses a LOGIN-less row for a schema number the second estate never wrote
+# down.
+full_estate_noschema() { # like full_estate, but no SCHEMA_VERSION line at all
+  estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' \
+    'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
+    'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
+    'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
+    'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
+    'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"' "$@"
+}
+full_estate 6
+konf seenwith 'REPO_PATH="/x"' 'RC_LABEL="SW"' 'OWNER="alice"' 'DOMAIN="acme"' 'LOGIN="acme-team"'
+rc2="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+  # shellcheck source=/dev/null
+  . "$here/lib/registry.sh"
+  registry_load seenwith >/dev/null 2>&1
+  rc1=$?
+  [ "$rc1" -eq 0 ] || { echo "FIRST-LOAD-FAILED-rc=$rc1"; exit 1; }
+  full_estate_noschema
+  konf seennoschema 'REPO_PATH="/x"' 'RC_LABEL="SN"' 'OWNER="alice"' 'DOMAIN="acme"'
+  registry_load seennoschema >/dev/null 2>&1
+  echo $?
+)"
+[ "$rc2" = "0" ] && ok "a second load in the same shell, estate has no SCHEMA_VERSION, LOGIN-less row still succeeds" \
+  || bad "a second load in the same shell, estate has no SCHEMA_VERSION, LOGIN-less row still succeeds" "$rc2"
+
+echo
 echo "LOGIN_REQUIRED_FOR — the gate is scoped by principal, not global"
 
 # THE ALLOWLIST IS OF PRINCIPALS, NOT ROWS. Both directions are measured: an
@@ -645,6 +682,23 @@ konf ghostbob 'REPO_PATH="/srv/homes/bob/x"' 'RC_LABEL="G2"' 'OWNER="bob"' 'DOMA
 rc="$(laddarc ghostbob "$FX/accounts.d")"
 [ "$rc" = "0" ] && ok "an unresolvable ACCOUNT falls back to OWNER=bob, which loads" \
   || bad "an unresolvable ACCOUNT falls back to OWNER=bob, which loads" "rc=$rc"
+
+# UNSCOPED (LOGIN_REQUIRED_FOR ABSENT): no principal question is ever asked,
+# so the fallback line must never fire, even when ACCOUNT does not resolve.
+# The refusal itself is unchanged -- absent means every principal, so the row
+# refuses regardless of who it belongs to -- but the STDERR must not claim a
+# resolution attempt that never happened.
+full_estate 6
+konf ghostunscoped 'REPO_PATH="/srv/homes/alice/x"' 'RC_LABEL="GU"' 'OWNER="alice"' 'DOMAIN="acme"' 'ACCOUNT="acct-does-not-exist"'
+rc="$(laddarc ghostunscoped "$FX/accounts.d")"
+[ "$rc" = "78" ] && ok "unscoped: a LOGIN-less row with an unresolvable ACCOUNT still refuses" \
+  || bad "unscoped: a LOGIN-less row with an unresolvable ACCOUNT still refuses" "rc=$rc"
+err="$(laddaerr ghostunscoped "$FX/accounts.d")"
+case "$err" in *"could not resolve ACCOUNT"*)
+    bad "unscoped: the fallback line is NOT printed (no principal question was asked)" "$err" ;;
+  *) ok "unscoped: the fallback line is NOT printed (no principal question was asked)" ;; esac
+case "$err" in *"which model account"*) ok "unscoped: the gate's own refusal text is unchanged" ;;
+  *) bad "unscoped: the gate's own refusal text is unchanged" "$err" ;; esac
 
 echo
 echo "the schema gate widens to the job and service loaders"

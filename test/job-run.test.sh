@@ -667,7 +667,7 @@ rc=$?
 grep -q "this checkout reads up to" "$T/lgout" && ok "LOGIN 7a: the schema refusal is relayed" \
   || bad "LOGIN 7a: refusal text" "$(cat "$T/lgout")"
 
-echo "== LOGIN 7b. schema at this checkout's max: runs =="
+echo "== LOGIN 7b. schema below this checkout's max: runs =="
 write_lg_estate 5
 id_lg7b="j-00000000000000a8"
 jobstate_create "$id_lg7b" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
@@ -676,15 +676,22 @@ jobstate_create "$id_lg7b" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR
 : > "$T/lg7blog"
 lg_run "$id_lg7b" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg7blog"
 rc=$?
-[ "$rc" -eq 0 ] && ok "LOGIN 7b: rc 0 -- this checkout reads schema 5" \
+[ "$rc" -eq 0 ] && ok "LOGIN 7b: rc 0 -- schema 5 is below this checkout's max" \
   || bad "LOGIN 7b: rc" "$rc: $(cat "$T/lgout")"
 [ -s "$T/lg7blog" ] && ok "LOGIN 7b: the runtime ran" || bad "LOGIN 7b: runtime never ran" "$(cat "$T/lg7blog")"
 
 echo "== LOGIN 7c. no-LOGIN control: an estate over this checkout's max still runs a LOGIN-less row =="
+# THE BOUNDARY IS READ FROM THE LIBRARY HERE TOO. This case exists to prove
+# that job-run.sh only reaches registry_schema_check inside the
+# [ -n "${JOB_LOGIN:-}" ] branch (job-run.sh's SCHEMA GATE) -- so an
+# UNREADABLE estate must still not stop a LOGIN-less row. A literal "6" only
+# proved that on the day it was written; this task's own bump turned it into
+# a readable schema, after which the case stopped exercising the gate at all
+# and started passing for a different reason (the row simply loads).
 id_lg7c="j-00000000000000a9"
 jobstate_create "$id_lg7c" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
   BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code
-write_lg_estate 6
+write_lg_estate "$((lg7a_max + 1))"
 : > "$T/lg7clog"
 lg_run "$id_lg7c" JOBRUN_RUNTIME_CMD="$T/rt-env" RTLOG="$T/lg7clog"
 rc=$?

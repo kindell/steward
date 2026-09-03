@@ -343,13 +343,21 @@ echo "== 20. the schema max covers the mcp register and MCP_ASSETS =="
 # MCP_ASSETS field are new readable surface, so the promise moved.
 is "20a REGISTRY_SCHEMA_MAX is at least 5" \
    "$( [ "${REGISTRY_SCHEMA_MAX:-0}" -ge 5 ] && echo yes || echo no )" "yes"
-mkdir -p "$FX/s5/estate" "$FX/s6/estate"
-for v in 5 6; do
-  { cat "$FX/estate/steward.conf"; printf 'SCHEMA_VERSION="%s"\n' "$v"; } > "$FX/s$v/estate/steward.conf"
-done
+# 20b's "5" stays a literal: 20a already pins REGISTRY_SCHEMA_MAX >= 5 as an
+# invariant, so 5 is below the ceiling for as long as that invariant holds --
+# no future bump can turn it back into "newer than the code". 20c means the
+# opposite thing ("one past whatever the ceiling is today") and MUST be read
+# out of the library, the same pattern test/identity-schema.test.sh already
+# uses for its own over-the-ceiling case: a hardcoded "one past 5" was true
+# only until this checkout's own bump made 6 the ceiling, after which the
+# fixture silently stopped being "newer than the code" at all.
+over20="$((REGISTRY_SCHEMA_MAX + 1))"
+mkdir -p "$FX/s5/estate" "$FX/sover/estate"
+{ cat "$FX/estate/steward.conf"; printf 'SCHEMA_VERSION="5"\n'; } > "$FX/s5/estate/steward.conf"
+{ cat "$FX/estate/steward.conf"; printf 'SCHEMA_VERSION="%s"\n' "$over20"; } > "$FX/sover/estate/steward.conf"
 ( STEWARD_ESTATE_ROOT="$FX/s5" registry_schema_check ) >/dev/null 2>&1
 is "20b an estate declaring schema 5 is READ, not refused" "$?" "0"
-( STEWARD_ESTATE_ROOT="$FX/s6" registry_schema_check ) >/dev/null 2>&1
+( STEWARD_ESTATE_ROOT="$FX/sover" registry_schema_check ) >/dev/null 2>&1
 is "20c an estate NEWER than the code still refuses with 78" "$?" "78"
 # AN ABSENT MCP_ASSETS IS "NO ASSETS DECLARED", read explicitly and not as a
 # leftover. This is the compatibility decision the schema comment records: the
