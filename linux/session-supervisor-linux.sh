@@ -1101,6 +1101,49 @@ rename_pane_busy() {
   return 1
 }
 
+# rename_receipt_seen <pane-text> <label> — 0 iff some pane LINE is the receipt
+# for EXACTLY this label. The receipt line the runtime prints is indented and
+# carries a "⎿" marker ("  ⎿  Session renamed to: <name>"); leading indent and
+# marker are stripped, trailing whitespace too, and what remains must EQUAL
+# "Session renamed to: <label>" — never contain it.
+#
+# WHY LINE-EQUAL AND NOT SUBSTRING (measured 2026-09-03 19:06-19:09): the
+# rename's Enter was lost, the re-ping of the same round landed on the same
+# input line, and the session was renamed to "<label> <ping text>". The
+# substring match found "Session renamed to: <label>" inside that receipt and
+# logged "receipt verified" — a wrong tile, receipted as right. A receipt one
+# character longer than the label is a receipt for a different name.
+rename_receipt_seen() {
+  local _line
+  while IFS= read -r _line; do
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    _line="${_line#⎿}"
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    _line="${_line%"${_line##*[![:space:]]}"}"
+    [ "$_line" = "Session renamed to: $2" ] && return 0
+  done <<EOF
+${1:-}
+EOF
+  return 1
+}
+
+# type_line <text> — type one line into the session's pane: the text
+# literally, a settle pause, then Enter. THE PAUSE IS THE FIX. Text and
+# Enter in the same breath is how the rename's Enter went missing on
+# 2026-09-03 (the text stayed in the input box, unsubmitted, and the next
+# keystrokes appended to it); the hand repair that worked the same evening
+# was exactly this shape — text, two seconds, Enter. STEWARD_KEY_SETTLE_SEC
+# overrides the pause (the suites set 0). Callers hold the busy/alive guards;
+# this only types. TYPED_THIS_ROUND records that keys went to the pane, so
+# the round's other typing site can stand down — see the re-ping.
+TYPED_THIS_ROUND=""
+type_line() {
+  tmuxc send-keys -t "$NAME" -l "$1" 2>/dev/null
+  sleep "${STEWARD_KEY_SETTLE_SEC:-2}"
+  tmuxc send-keys -t "$NAME" Enter 2>/dev/null
+  TYPED_THIS_ROUND=1
+}
+
 # bus_signalera <what> <text> — send an AUTO-ALERT to the hub and REPORT THE
 # TRUTH about why it failed. rc 0 on success, non-zero otherwise.
 #
@@ -1188,15 +1231,14 @@ if claude_alive_in_session; then
     # the same measured rule as the re-ping below (capture-pane and send-keys
     # refuse the =form on tmux 3.4 and 3.6b).
     _rn_pane="$(tmuxc capture-pane -p -t "$NAME" 2>/dev/null)"
-    case "$_rn_pane" in
-      *"Session renamed to: $RC_LABEL"*)
-        # The receipt — the ONLY thing that clears the pending file. Exact
-        # string match on the whole label (spaces and arrows verbatim), never
-        # a regex: a truncated or prefix receipt must not count.
+    if rename_receipt_seen "$_rn_pane" "$RC_LABEL"; then
+        # The receipt — the ONLY thing that clears the pending file. A pane
+        # line EQUAL to the receipt for the whole label (spaces and arrows
+        # verbatim), never a regex, never a substring: a truncated receipt
+        # must not count, and neither must one with a tail after the label.
         rm -f "$RENAME_PENDING"
         echo "session-supervisor: $NAME — rename receipt verified: the tile now carries '$RC_LABEL'" >&2
-        ;;
-      *)
+    else
         if rename_pane_busy "$_rn_pane"; then
           : # busy pane: never type — the round burns no attempt, retry next round
         elif [ "$_rn_tries" -ge 5 ]; then
@@ -1214,12 +1256,10 @@ if claude_alive_in_session; then
           # a later round retries once the session is genuinely up.
           : # zombie/bash pane: never type a conf-derived label into a shell
         else
-          tmuxc send-keys -t "$NAME" -l "/rename $RC_LABEL" 2>/dev/null
-          tmuxc send-keys -t "$NAME" Enter 2>/dev/null
+          type_line "/rename $RC_LABEL"
           printf '%s %s\n' "$(( _rn_tries + 1 ))" "$RC_LABEL" > "$RENAME_PENDING"
         fi
-        ;;
-    esac
+    fi
   fi
   # RE-PING: a ping that arrived while the session was working was lost.
   #
@@ -1304,9 +1344,16 @@ if claude_alive_in_session; then
       # established, and tmux resolves an existing exact name before any
       # prefix match (also measured, against the sibling pair that found the
       # original trap).
-      if ! tmuxc capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
-        tmuxc send-keys -t "$NAME" -l "$PING_MSG" 2>/dev/null
-        tmuxc send-keys -t "$NAME" Enter 2>/dev/null
+      # ONE KEY BURST PER ROUND. The rename above and this ping typed into the
+      # same pane tens of milliseconds apart on 2026-09-03; the rename's Enter
+      # was lost and the ping text landed on the SAME input line — the
+      # session was renamed to "<label> <ping text>". A round that already
+      # typed stands down here: the mark is NOT written, so the next round
+      # (three minutes later, the rename receipted or not) pings as usual.
+      if [ -n "$TYPED_THIS_ROUND" ]; then
+        echo "session-supervisor: $NAME has unread mail but the rename typed this round — ping deferred to the next round" >&2
+      elif ! tmuxc capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
+        type_line "$PING_MSG"
         printf '%s %s' "$OLDEST_FILE" "$(date +%s)" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
