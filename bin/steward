@@ -2035,26 +2035,22 @@ cmd_registry_session_add() {
   # Two gates for two questions: "is it stated?" is the schema's, "is it a lie?"
   # is this one.
   #
-  # SUBSHELLED, SNAPSHOTTED. registry_login_load does not source — but it does
-  # set LOGIN_* globals in the caller, and this function's own `principal` and
-  # `login` are lowercase locals that a later load must not be able to touch.
-  local login_principal=""
+  # THE COMPARISON ITSELF IS SHARED — registry_login_principal_gate
+  # (lib/registry.sh), so this verb and the hub's enroll enforce the SAME
+  # pair rule instead of two copies that can drift. It re-resolves the
+  # account (subshelled, snapshotted, exactly like `principal` two steps
+  # above) so it stays self-contained: no LOGIN_*/ACCOUNT_* global is left
+  # behind by either load.
+  local login_gate_err="" login_gate_rc=0
   if [ -n "$login" ]; then
     if ! [[ "$login" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
       _reg_fail "$want_json" "steward registry session add: invalid --login '$login' (allowed: a-z0-9-, must start a-z0-9)" 64
       return 64
     fi
-    login_principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
-    if [ -z "$login_principal" ]; then
-      _reg_fail "$want_json" "steward registry session add: --login '$login' does not resolve to a known login" 78
-      return 78
-    fi
-    if [ "$login_principal" != "$principal" ]; then
-      # rc 65 — a REFUSED ACTION, not a malformed call. Both values are valid;
-      # the PAIR is what is forbidden. And the message names both sides: a
-      # refusal that says only "mismatch" sends the reader to the wrong register.
-      _reg_fail "$want_json" "steward registry session add: REFUSING — login '$login' belongs to principal '$login_principal', but account '$account' belongs to '$principal'. A session may only carry a login of its own human: the login names the directory holding that human's credentials." 65
-      return 65
+    login_gate_err="$( registry_login_principal_gate "$login" "$account" 2>&1 )"; login_gate_rc=$?
+    if [ "$login_gate_rc" -ne 0 ]; then
+      _reg_fail "$want_json" "steward registry session add: $login_gate_err" "$login_gate_rc"
+      return "$login_gate_rc"
     fi
   fi
 
@@ -2389,7 +2385,7 @@ cmd_registry_migrate_session() {
   # yet, so the refusal costs nothing. SESSION_NAME is the one known-dead
   # key: live confs still carry it, and registry_load overwrites it
   # unconditionally on every read, so dropping it is correct, not a loss.
-  local _mig_known=" ID ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT OWNER DOMAIN RC_LABEL REPO_PATH HOST SESSION_NAME PERMISSION_MODE ENV_REFRESH OP_RUN ENV_FILE ENV_SOURCE OP_TOKEN_FILE KIND LIFECYCLE ASSETS VISIBILITY VISIBLE_TO BROWSER_RIG BROWSER_DISPLAY BROWSER_CDP BROWSER_VNC BROWSER_PROFILE RUNTIME MODEL OPENCODE_VERSION OPENCODE_PORT AUTO_APPROVE CLAUDE_MEMORY_ROOT "
+  local _mig_known=" ID ACCOUNT SLUG TARGET_ENTITY TARGET_PROJECT OWNER DOMAIN RC_LABEL REPO_PATH HOST SESSION_NAME PERMISSION_MODE ENV_REFRESH OP_RUN ENV_FILE ENV_SOURCE OP_TOKEN_FILE KIND LIFECYCLE ASSETS VISIBILITY VISIBLE_TO BROWSER_RIG BROWSER_DISPLAY BROWSER_CDP BROWSER_VNC BROWSER_PROFILE RUNTIME MODEL OPENCODE_VERSION OPENCODE_PORT AUTO_APPROVE CLAUDE_MEMORY_ROOT LOGIN "
   local _mig_key
   for _mig_key in $(grep -oE '^[A-Z_]+=' "$old_conf" 2>/dev/null | sed 's/=$//' | sort -u); do
     case "$_mig_known" in
@@ -2541,10 +2537,12 @@ cmd_registry_migrate_session() {
   for _cf in PERMISSION_MODE ENV_REFRESH OP_RUN ENV_FILE ENV_SOURCE OP_TOKEN_FILE \
              KIND LIFECYCLE ASSETS VISIBILITY VISIBLE_TO \
              BROWSER_RIG BROWSER_DISPLAY BROWSER_CDP BROWSER_VNC BROWSER_PROFILE \
-             RUNTIME MODEL OPENCODE_VERSION OPENCODE_PORT AUTO_APPROVE CLAUDE_MEMORY_ROOT; do
+             RUNTIME MODEL OPENCODE_VERSION OPENCODE_PORT AUTO_APPROVE CLAUDE_MEMORY_ROOT \
+             LOGIN; do
     _mig_add "$_cf" "$(_migrate_snap "$old_conf" "$_cf")"
   done
   local carried_pm; carried_pm="$(_migrate_snap "$old_conf" PERMISSION_MODE)"
+  local carried_login; carried_login="$(_migrate_snap "$old_conf" LOGIN)"
   rm -f "$kv_err"
   if [ "$_mig_rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry migrate-session: could not serialize the row (a field carries a control character or newline)" 70
@@ -2566,11 +2564,12 @@ cmd_registry_migrate_session() {
   _REGW_EXPECT_REPO_PATH="$old_repo"
   _REGW_EXPECT_OWNER="$principal"
   _REGW_EXPECT_PERMISSION_MODE="$carried_pm"
-  # LOGIN IS NOT CARRIED BY THIS VERB (a later scope's question) — but the
-  # SHARED validator now compares it on every session row, so this verb must
-  # still declare what it expects: no LOGIN line, unchanged from before LOGIN
-  # existed at all.
-  _REGW_EXPECT_LOGIN=""
+  # LOGIN IS CARRIED, NOT MINTED — this verb migrates a row's SHAPE, never
+  # its identity, and a LOGIN the old conf already carried (hand-added, or a
+  # session migrated a second time in a later scope) must survive the cut
+  # exactly like every other operational field above. Empty when the old
+  # conf had none, which is the transition, byte for byte.
+  _REGW_EXPECT_LOGIN="$carried_login"
   # A LITERAL newline joins the header to the body — a command substitution
   # would strip it and glue the first field onto the comment line, hiding it
   # from every reader that sources the row.

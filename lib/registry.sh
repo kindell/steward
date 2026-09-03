@@ -3207,6 +3207,45 @@ registry_login_load() {
   return 0
 }
 
+# registry_login_principal_gate <login-slug> <account-slug> — GATE 1: a
+# login's PRINCIPAL must be the SAME HUMAN as the account it would ride on.
+# Shared by `steward registry session add` and the hub's enroll, so the pair
+# rule lives in exactly one place instead of two copies that can drift —
+# each caller writes a session row starting from a different shape (a typed
+# flag vs. a bus request), but the question "may this login pay for this
+# account's calls" is the same question either way.
+#
+# rc 0 — the pair matches, nothing on stderr. rc 65 — both slugs resolve but
+# the principals differ: a REFUSED action, not a malformed call, and the
+# message names both sides — a bare "mismatch" sends the reader to the wrong
+# register. rc 78 — either slug does not resolve to a known row; the message
+# names which one.
+#
+# BOTH LOADS ARE SUBSHELLED AND SNAPSHOTTED. registry_login_load and
+# registry_account_load set LOGIN_*/ACCOUNT_* globals in whatever shell
+# calls them; a caller of this gate typically has its own locals of those
+# names in flight (the OWNER field's `principal`, for one) that a load run
+# on the side must never be able to touch.
+registry_login_principal_gate() {
+  local login="$1" account="$2"
+  local login_principal account_principal
+  login_principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
+  if [ -z "$login_principal" ]; then
+    echo "login '$login' does not resolve to a known login" >&2
+    return 78
+  fi
+  account_principal="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+  if [ -z "$account_principal" ]; then
+    echo "account '$account' does not resolve to a known account" >&2
+    return 78
+  fi
+  if [ "$login_principal" != "$account_principal" ]; then
+    echo "REFUSING — login '$login' belongs to principal '$login_principal', but account '$account' belongs to '$account_principal'. A session may only carry a login of its own human: the login names the directory holding that human's credentials." >&2
+    return 65
+  fi
+  return 0
+}
+
 # registry_login_config_dir <slug> <owner-unix-username> — the login's
 # ABSOLUTE credential directory. rc 0 · 1 (the row itself is refused) ·
 # 78 (grammar, the owner's home, or the directory's own state refuses).

@@ -203,8 +203,8 @@ CTX
   say "context: estate block appended to ~/.claude/CLAUDE.md"
 fi
 
-# The unit templates ship pointing at the deployed image (~/scripts). This
-# install runs from a CHECKOUT, so a drop-in override points ExecStart at the
+# The unit templates ship aimed at the deployed image (~/scripts). This
+# install runs from a CHECKOUT, so a drop-in override aims ExecStart at the
 # checkout and carries the estate root — the same mechanism systemd offers for
 # exactly this, and the shipped unit stays byte-identical for image installs.
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then

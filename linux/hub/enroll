@@ -104,6 +104,12 @@ NAV_VARD="$(registry_hub_host)"       || exit 78
 RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
 NAV="$(registry_hub_session)"         || exit 78
 
+# THE ESTATE'S DECLARED SCHEMA, learned once, the same way registry_load's own
+# session gate does — populates _REGISTRY_SCHEMA_SEEN for the LOGIN-required
+# check below. Never guessed: a malformed SCHEMA_VERSION refuses here exactly
+# as it would on every other read of this register.
+registry_schema_check || exit 78
+
 AUTH_KEYS="${STEWARD_AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"
 FROM="${STEWARD_ENROLL_FROM:-}"
 
@@ -113,7 +119,7 @@ FROM="${STEWARD_ENROLL_FROM:-}"
 # file tried to draw was unmeasurable. Default stays 65 for every bare call.
 fel() { echo "nav-enroll: REFUSING — $1" >&2; exit "${2:-65}"; }
 
-NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""
+NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""; LOGIN_S=""
 forsta=1; kuvertrad_provad=""
 # `|| [ -n "$rad" ]`: a final line WITHOUT a trailing newline is still a line.
 # read returns nonzero on EOF-without-delimiter but has already assigned — drop
@@ -152,6 +158,9 @@ while IFS= read -r rad || [ -n "$rad" ]; do
     # OPTIONAL. The requester knows what the session should be CALLED; the
     # protocol used to drop it, and the hub then invented prefix+name.
     rc_label=*) RC_ONSKAD="${rad#rc_label=}" ;;
+    # OPTIONAL. Which login the new session pays with — see the LOGIN gate
+    # below, once the account (and so its principal) is resolved.
+    login=*)   LOGIN_S="${rad#login=}" ;;
     from=*)    fel "the payload carries a from field — the identity comes from the envelope, never from the text" ;;
     "")        : ;;
     *)         fel "unknown line in the request: '$rad'" ;;
@@ -167,12 +176,24 @@ done
 [ -n "$REPO_S" ]  || fel "field REPO missing"
 [ -n "$PUBKEY" ]  || fel "field PUBKEY missing"
 
+# LOGIN IS OPTIONAL BELOW THE ESTATE'S SCHEMA, REQUIRED AT IT — the same two
+# questions registry_load's own gate asks of a session row read back later:
+# "is it stated?" is the schema's; "is it a lie?" is the principal gate
+# further down, once the account is known. Below schema 6 an absent login
+# writes today's row unchanged — the transition, byte for byte.
+if [ -z "$LOGIN_S" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
+  fel "field login missing — the estate is schema $_REGISTRY_SCHEMA_SEEN, where a session row must state which account pays for its model calls. Register a login (steward registry login add) and request again with login=<slug>."
+fi
+
 # Enumeration, not a range — see the long explanation in bus/lib.sh at the
 # subject guard. A range here would have admitted a capitalised
 # <Domain>-<Person> name in a UTF-8 locale.
 case "$NAMN$DOMAN$PROJEKT$PERSON$VARD" in
   *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "illegal characters — the namespace is [a-z0-9-]" ;;
 esac
+if [ -n "$LOGIN_S" ] && ! [[ "$LOGIN_S" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  fel "field login has an invalid shape (allowed: a-z0-9-, must start a-z0-9): '$LOGIN_S'"
+fi
 # The convention is CONSTRUCTED from the fields and compared. The name is never parsed.
 [ "$NAMN" = "${DOMAN}-${PROJEKT}-${PERSON}" ] || \
   fel "the name '$NAMN' does not match the convention doman-projekt-person ('${DOMAN}-${PROJEKT}-${PERSON}')"
@@ -334,6 +355,21 @@ for _af in "$_ACDIR"/*.conf; do
 done
 [ -n "$ACCOUNT_SLUG" ] || fel "no account resolves for owner '$PERSON' on host '$VARD' — register the account in accounts.d first"
 
+# ── THE LOGIN — GATE 1, THE SAME SHARED GATE `steward registry session add`
+# USES (lib/registry.sh) ─────────────────────────────────────────────────────
+# A login named in the request must belong to the SAME human as the account
+# it would ride on; otherwise a request the hub trusts implicitly could mint
+# a session against another human's credentials. Not routed through fel():
+# the gate's own message already opens with "REFUSING —" on a mismatch, and
+# fel() would prepend a second one.
+if [ -n "$LOGIN_S" ]; then
+  _login_gate_err="$(registry_login_principal_gate "$LOGIN_S" "$ACCOUNT_SLUG" 2>&1)"; _login_gate_rc=$?
+  if [ "$_login_gate_rc" -ne 0 ]; then
+    echo "nav-enroll: $_login_gate_err" >&2
+    exit "$_login_gate_rc"
+  fi
+fi
+
 # ── THE COMPOSITE (ACCOUNT, SLUG) GATE ───────────────────────────────────────
 # THE FILENAME COLLISION CHECK ABOVE CATCHES OLD-SHAPE ROWS (filename ==
 # NAMN); a new-shape row is filed under its minted id, so the SAME name in the
@@ -467,6 +503,15 @@ PERMISSION_MODE="bypassPermissions"
 OWNER="$PERSON"
 DOMAIN="$DOMAN"
 CONFEOF
+# LOGIN IS APPENDED, NEVER INTERPOLATED INTO THE HEREDOC ABOVE. Below the
+# estate's schema a request with no login= line must produce BYTE-IDENTICAL
+# output to before LOGIN existed — enroll is a layer-2 file (checkout-run,
+# ungated nightly pull), and an interpolated-but-empty line would change that
+# output even when nothing about the row's meaning changed. The shape was
+# already checked when the request was parsed.
+if [ -n "$LOGIN_S" ]; then
+  printf 'LOGIN="%s"\n' "$LOGIN_S" >> "$tmpc"
+fi
 mv "$tmpc" "$conf" || exit 70
 
 # THE GATE: the conf must SOURCE with every field set — otherwise everything is

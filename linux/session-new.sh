@@ -322,8 +322,24 @@ if [ "${1:-}" = "--domain" ]; then
   shift 2
 fi
 
-PROJEKT="${1:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
-REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
+# --login <slug>: WHICH ACCOUNT THE NEW SESSION PAYS WITH, sent with the
+# request. Absent flag falls back to the REQUESTING session's own conf
+# (LOGIN in $EGEN, resolved below once $EGEN is known) — a newborn session
+# pays with its requester's account by default, same owner, same domain. If
+# neither is set the request carries no login= line at all, and the hub's
+# own schema decides whether that is refused.
+LOGIN_FLAG=""
+if [ "${1:-}" = "--login" ]; then
+  LOGIN_FLAG="${2:-}"
+  [ -n "$LOGIN_FLAG" ] || fel "--login requires a login slug" 64
+  case "$LOGIN_FLAG" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "login may contain only [a-z0-9-]" 64 ;;
+  esac
+  shift 2
+fi
+
+PROJEKT="${1:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] <project> <repo-path>}"
+REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] <project> <repo-path>}"
 
 # AN UNKNOWN FLAG MUST REFUSE AS A FLAG, NOT PASS AS A NAME. The project
 # charset allows dashes, so '--anything' sailed through as a project name and
@@ -331,7 +347,7 @@ REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] <project> <repo-path>}"
 # naming the wrong cause, measured live 2026-08-21 when the flag's old
 # pre-rename spelling was used against the renamed script.
 case "$PROJEKT" in
-  -*) fel "unknown flag '$PROJEKT' — the flags are --activate <id> <slug>, --label <text> and --domain <d>" 64 ;;
+  -*) fel "unknown flag '$PROJEKT' — the flags are --activate <id> <slug>, --label <text>, --domain <d> and --login <slug>" 64 ;;
 esac
 case "$PROJEKT" in
   *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") echo "session-new: project may contain only [a-z0-9-]" >&2; exit 64 ;;
@@ -346,6 +362,12 @@ EGEN="$SESS_D/$SJALV.conf"
 [ -f "$EGEN" ] || fel "no conf for '$SJALV' in $SESS_D — a request must come from a registered session"
 DOMAN="$(sed -n 's/^DOMAIN="\(.*\)"/\1/p' "$EGEN" | head -1)"
 VARD="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$EGEN" | head -1)"
+# --login WINS WHEN GIVEN; otherwise the REQUESTING session's own LOGIN is
+# carried forward — the same file DOMAIN and HOST are read from above. Empty
+# either way means no login= line goes on the wire; the hub's schema decides
+# whether that is refused.
+LOGIN_EGEN="$(sed -n 's/^LOGIN="\(.*\)"/\1/p' "$EGEN" | head -1)"
+LOGIN_ANV="${LOGIN_FLAG:-$LOGIN_EGEN}"
 # A SILENT FALLBACK HERE WAS A REAL FAULT, measured 2026-08-14: with DOMAIN
 # unset the credential directory fell back to the session name, so one session
 # quietly got a PRIVATE credential store instead of the domain's shared one.
@@ -423,6 +445,7 @@ bygg_begaran() {
   # a trailing newline once lost its final line, and that line is the one
   # registration hangs on (suite case 8b2).
   [ -n "$RC_ONSKAD" ] && printf 'rc_label=%s\n' "$RC_ONSKAD"
+  [ -n "$LOGIN_ANV" ] && printf 'login=%s\n' "$LOGIN_ANV"
   printf 'pubkey=%s\n' "$PUB"
 }
 

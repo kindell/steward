@@ -53,7 +53,13 @@ estate_scaffold() {
   # estate scaffolded without it answers "the capability register cannot be
   # read" the first time anything asks what a session is granted, which is not
   # what a fresh estate means.
-  mkdir -p "$dir"/{estate,sessions.d,entities.d,projects.d,mcp.d,jobs.d,services.d,browsers.d,hosts.d} 2>/dev/null \
+  #
+  # accounts.d AND logins.d ARE THE SAME GAP, measured in the writer census: a
+  # scaffolded estate could not resolve a single session's principal
+  # (registry_account_load) or answer the empty-vs-unreadable question for its
+  # own login register (registry_login_list, rc 78 on a missing directory) —
+  # from birth, the same failure shape hosts.d had before it was added here.
+  mkdir -p "$dir"/{estate,sessions.d,entities.d,projects.d,mcp.d,jobs.d,services.d,browsers.d,hosts.d,accounts.d,logins.d} 2>/dev/null \
     || { echo "scaffold: could not create $dir" >&2; return 70; }
 
   # SIXTEEN FIELDS. The 14 the installer already wrote, plus ESTATE_NAME and

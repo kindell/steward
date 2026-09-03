@@ -23,6 +23,7 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 has()    { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+is()     { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/sessions.d" "$FX/bus/bin" "$FX/bin" \
@@ -75,7 +76,7 @@ doman=acme
 projekt=widget
 person=someone
 vard=farhost
-repo=/home/someone/Projects/widget
+repo=/srv/homes/someone/Projects/widget
 pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYFORTESTONLYxxxxxxxxxxxxxxxxxxxxxxx test-only
 REQ
 
@@ -123,6 +124,15 @@ has "SLUG carries the constructed name" "$body" 'SLUG="acme-widget-someone"'
 has "ACCOUNT resolves (OWNER, HOST) to the accounts.d row" "$body" 'ACCOUNT="someone-farhost"'
 has "TARGET_ENTITY names the domain's own entity row" "$body" 'TARGET_ENTITY="acme"'
 
+# THIS ESTATE IS SCHEMA 3 (below the LOGIN-required schema) AND THE REQUEST
+# CARRIES NO login= LINE — the transition, byte for byte: no LOGIN line
+# appears on a row this estate's own reader does not require it on. Writer
+# census, task 9B: the append-only-when-given form below (linux/hub/enroll)
+# must never interpolate an empty LOGIN line into the heredoc, only append a
+# real one — this is that guarantee, read back off disk.
+is "no LOGIN line on a schema-3, no-login row (transition, byte for byte)" \
+   "$(printf '%s' "$body" | grep -c '^LOGIN=')" "0"
+
 # ── WHAT IS SENT IS NOT WHAT MAY BE WRITTEN ─────────────────────────────────
 # Two request fields land in a conf that is then SOURCED — by this tool's own
 # gate and by every later reader of the register. Unguarded, `repo=/x$(touch
@@ -147,7 +157,7 @@ mk_req() { # <file> <keytag> <sed expression>
 before_n="$(ls "$FX/sessions.d"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
 rm -f "$FX/PWNED"
 
-mk_req x A 's|^repo=.*|repo=/home/x$(touch '"$FX"'/PWNED)y|'
+mk_req x A 's|^repo=.*|repo=/srv/homes/x$(touch '"$FX"'/PWNED)y|'
 out2="$(run_req "$FX/mut.txt")"; rc2=$?
 if [ "$rc2" -eq 65 ]; then ok "a command substitution in repo= is refused"
 else bad "a command substitution in repo= is refused" "rc=$rc2 out=$out2"; fi
@@ -215,6 +225,117 @@ out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d" \
 id3="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 has "the activate command carries id and slug" "$out2" "--activate $id3 acme-cog-someone"
 has "CONFIRM still carries the id" "$out2" "id=$id3"
+
+# ── THE LOGIN FIELD (writer census, task 9B) ────────────────────────────────
+# A SEPARATE, SCHEMA-6 FIXTURE — the estate above is schema 3 deliberately
+# (the transition case, proved above), so the LOGIN-required gate needs its
+# own estate to exercise. Two accounts, two principals, one login, so both
+# the "no login" refusal and the shared registry_login_principal_gate
+# mismatch have something real to fail against.
+echo
+echo "nav-enroll — the LOGIN field, schema 6"
+LFX="$(mktemp -d)"; trap 'rm -rf "$LFX" "$FX"' EXIT
+mkdir -p "$LFX/estate" "$LFX/sessions.d" "$LFX/bus/bin" "$LFX/bin" \
+  "$LFX/accounts.d" "$LFX/entities.d" "$LFX/projects.d" "$LFX/logins.d"
+cat > "$LFX/estate/steward.conf" <<'CONF'
+ESTATE_NAME="prov"
+SCHEMA_VERSION="6"
+RC_LABEL_PREFIX="Hub: "
+HUB_SESSION="hub"
+HUB_HOST="hubhost"
+CONF
+cat > "$LFX/sessions.d/asker.conf" <<'CONF'
+HOST="farhost"
+OWNER="someone"
+DOMAIN="d"
+RC_LABEL="Asker"
+REPO_PATH="/tmp/x"
+ID="asker"
+CONF
+cat > "$LFX/entities.d/acme.conf" <<'CONF'
+NAME="Acme"
+CONF
+cat > "$LFX/accounts.d/someone-farhost.conf" <<'CONF'
+PRINCIPAL="someone"
+HOST="farhost"
+CONF
+cat > "$LFX/logins.d/acme-team.conf" <<'CONF'
+PRINCIPAL="someone"
+ACCOUNT="acme-team-seat"
+PROVIDER="claude-team"
+CONFIG_DIR="~/.claude-logins/acme-team"
+LEGAL_OWNER="Acme Corp"
+CONF
+chmod 600 "$LFX/logins.d/acme-team.conf"
+# A SECOND LOGIN, A DIFFERENT PRINCIPAL — the requester's identity (PERSON,
+# via the owner check above) fixes WHICH account resolves, so a mismatch
+# case cannot come from changing PERSON; it has to come from naming a login
+# that belongs to somebody else entirely.
+cat > "$LFX/logins.d/other-login.conf" <<'CONF'
+PRINCIPAL="other"
+ACCOUNT="other-seat"
+PROVIDER="claude-team"
+CONFIG_DIR="~/.claude-logins/other-login"
+LEGAL_OWNER="Other Corp"
+CONF
+chmod 600 "$LFX/logins.d/other-login.conf"
+printf '#!/bin/bash\n' > "$LFX/bus/bin/bus-relay-in"; chmod +x "$LFX/bus/bin/bus-relay-in"
+printf '#!/bin/bash\nexit 0\n' > "$LFX/bin/send"; chmod +x "$LFX/bin/send"
+: > "$LFX/authorized_keys"
+
+run_lreq() { # <request-file>
+  STEWARD_ESTATE_ROOT="$LFX" STEWARD_REGISTRY_DIR="$LFX/sessions.d" \
+  STEWARD_RELAY_ROOT="$LFX" STEWARD_AUTHORIZED_KEYS="$LFX/authorized_keys" \
+  STEWARD_BUS_SEND="$LFX/bin/send" STEWARD_ENROLL_FROM=asker \
+  bash "$ENROLL" --send < "$1" 2>&1
+}
+lreq() { # <file> <namn/projekt-suffix> <login-line-or-empty>
+  cat > "$1" <<EOF2
+DRIFT enroll: acme-$2-someone requests registration
+ENROLL-REQUEST v1
+namn=acme-$2-someone
+doman=acme
+projekt=$2
+person=someone
+vard=farhost
+repo=/srv/homes/someone/Projects/$2
+${3}pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY$2xxxxxxxxxxxxxxxxxxxxxxx test-only
+EOF2
+}
+
+# L1. login= NAMES A LOGIN WHOSE PRINCIPAL MATCHES THE RESOLVED ACCOUNT.
+lreq "$LFX/l1.txt" widgetl "login=acme-team
+"
+out="$(run_lreq "$LFX/l1.txt")"; rc=$?
+is "L1: a login whose principal matches the account registers, rc 0" "$rc" "0"
+id1="$(printf '%s' "$out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+has "L1: the row carries the LOGIN line" "$(cat "$LFX/sessions.d/$id1.conf" 2>/dev/null)" 'LOGIN="acme-team"'
+
+# L2. login= NAMES A LOGIN THAT BELONGS TO A DIFFERENT PRINCIPAL THAN THE
+# RESOLVED ACCOUNT — GATE 1, the shared registry_login_principal_gate.
+before="$(ls "$LFX/sessions.d" | sort)"
+lreq "$LFX/l2.txt" widgetm "login=other-login
+"
+out="$(run_lreq "$LFX/l2.txt")"; rc=$?
+is "L2: a login whose principal does NOT match the account refuses, rc 65" "$rc" "65"
+has "L2: the refusal names the login's own principal" "$out" "other"
+is "L2: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
+
+# L3. login= NAMES A LOGIN THAT DOES NOT EXIST.
+before="$(ls "$LFX/sessions.d" | sort)"
+lreq "$LFX/l3.txt" widgetn "login=no-such-login
+"
+out="$(run_lreq "$LFX/l3.txt")"; rc=$?
+is "L3: an unknown login refuses, rc 78" "$rc" "78"
+is "L3: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
+
+# L4. NO login= AT ALL, AGAINST A SCHEMA-6 ESTATE.
+before="$(ls "$LFX/sessions.d" | sort)"
+lreq "$LFX/l4.txt" widgeto ""
+out="$(run_lreq "$LFX/l4.txt")"; rc=$?
+is "L4: no login at schema 6 refuses, rc 65" "$rc" "65"
+has "L4: the refusal names the missing field" "$out" "login"
+is "L4: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
 # Optional field, same contract as registry_liveness_cmd: absent is not broken,
