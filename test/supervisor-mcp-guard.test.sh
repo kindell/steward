@@ -141,7 +141,7 @@ is    "1b the alive round did its last-sid bookkeeping" \
 hasnt "1c and nothing was spawned"              "$(cat "$TMUX_LOG")" "new-session"
 
 echo "== 2. a half-deployed host still supervises a LIVE session =="
-# The whole point of I3: mcprender.sh/mcpspawn.sh are only needed to SPAWN.
+# The whole purpose of I3: mcprender.sh/mcpspawn.sh are only needed to SPAWN.
 # A host that has the supervisor but not yet its spawn libraries must keep
 # doing everything that does not spawn.
 rm -f "$LIBS/mcprender.sh" "$LIBS/mcpspawn.sh"
