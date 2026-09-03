@@ -590,6 +590,35 @@ trust10dctrl="$(jq -r --arg p "$HOMEDIR/Projects/repo" '.projects[$p].hasTrustDi
 is "10d-ctrl without LOGIN the legacy trust file is still the one written, unchanged" \
    "$trust10dctrl" "true"
 
+echo "== 10e. the LEGACY login: the trust file is \$HOME/.claude.json, and the launch line names no directory =="
+# The legacy row resolves to the runtime's unnamed default, and for THAT
+# directory the runtime keeps its state file beside the directory
+# (~/.claude.json), not inside it -- the inside form only exists when
+# CLAUDE_CONFIG_DIR is set. The exec prefix stopped setting it for the legacy
+# row on 2026-09-03 (lib/registry.sh); the supervisor's own CLAUDE_JSON line
+# still said "<cfg>/.claude.json whenever LOGIN is set", so it pre-trusted a
+# file nothing read, and after a fix that removed that stray file it would
+# have returned 0 without writing anything -- a start stuck at the trust
+# prompt with a journal saying the workspace was pre-trusted.
+reset_projects
+printf 'LEGACY_LOGIN="acme-old"\n' >> "$ROOT/estate/steward.conf"
+printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-max"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude"\nLEGAL_OWNER="alice"\n' \
+  > "$ROOT/logins.d/acme-old.conf"
+chmod 600 "$ROOT/logins.d/acme-old.conf"
+write_login_conf acme-old
+mkdir -p "$HOMEDIR/.claude"
+printf '{"projects":{}}\n' > "$HOMEDIR/.claude.json"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10e=$?
+log10e="$(cat "$TMUX_LOG")"
+is "10e rc 0" "$rc10e" "0"
+trust10e="$(jq -r --arg p "$HOMEDIR/Projects/repo" '.projects[$p].hasTrustDialogAccepted // false' "$HOMEDIR/.claude.json" 2>/dev/null)"
+is "10e the legacy login's trust is written to \$HOME/.claude.json" "$trust10e" "true"
+[ -e "$HOMEDIR/.claude/.claude.json" ] && bad "10e and no state file was created inside ~/.claude" "it exists" \
+                                        || ok "10e and no state file was created inside ~/.claude"
+has   "10e the launch line unsets the directory" "$log10e" "-u CLAUDE_CONFIG_DIR $HOMEDIR/.local/bin/claude"
+hasnt "10e and assigns none"                     "$log10e" "CLAUDE_CONFIG_DIR="
+
 # Restore the shared conf to its LOGIN-less base shape, and drop the login
 # directories this section created, for cleanliness.
 write_login_conf

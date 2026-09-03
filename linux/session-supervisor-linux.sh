@@ -1028,8 +1028,30 @@ reap_orphan_claude() {
 # MEASURED 2026-09-02, read-only ls against a live session's config
 # directory: under a set CLAUDE_CONFIG_DIR the CLI writes its trust/config
 # file to <cfg>/.claude.json (present, 41587 bytes), not <cfg>.json.
+#
+# EXCEPT FOR THE LEGACY LOGIN, whose directory is the runtime's unnamed
+# default: the exec prefix leaves CLAUDE_CONFIG_DIR UNSET for that row (see
+# _registry_login_is_unnamed_default in lib/registry.sh, 2026-09-03), so the
+# CLI keeps its file BESIDE the directory, at ~/.claude.json, exactly as with
+# no LOGIN at all. Setting the flag in <cfg>/.claude.json there is the same
+# mistake as the paragraph above, mirrored -- and once that stray file is
+# gone, ensure_workspace_trusted returns 0 without writing, so the start
+# sticks at the trust prompt while the journal says it was pre-trusted.
+#
+# THE CHOICE FOLLOWS THE LIBRARY THAT IS ACTUALLY DEPLOYED. A registry
+# library without the helper is one whose prefix still ASSIGNS the legacy
+# directory, and under that prefix the CLI does read <cfg>/.claude.json --
+# so on such a host the old line is the right line. The two must move
+# together, and this way they cannot disagree.
 CLAUDE_JSON="$HOME/.claude.json"
-[ -n "${LOGIN:-}" ] && CLAUDE_JSON="$CFG_ROOT/.claude.json"
+if [ -n "${LOGIN:-}" ]; then
+  if declare -F _registry_login_is_unnamed_default >/dev/null 2>&1 \
+     && _registry_login_is_unnamed_default "$CFG_ROOT"; then
+    :   # legacy row: the file beside the directory, as with no LOGIN
+  else
+    CLAUDE_JSON="$CFG_ROOT/.claude.json"
+  fi
+fi
 ensure_workspace_trusted() {
   command -v jq >/dev/null 2>&1 || {
     echo "session-supervisor: $NAME — jq is missing, cannot pre-trust the workspace" >&2; return 0; }
