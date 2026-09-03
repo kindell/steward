@@ -799,6 +799,20 @@ fi
 # rule and passed on whatever auth override it inherited. An API key WINS over
 # subscription auth, so that session ran on API billing while every view showed
 # the subscription.
+#
+# PRESENCE IS NOT CONTENTS -- the same guard the spawn libraries get above
+# (:116-121), and now needed for the same rollout state. A registry library that
+# sources cleanly but PREDATES registry_login_exec_prefix makes this call a
+# command-not-found: rc 127, which `if !` below reads as a refusal. Until the
+# call became unconditional that could only strike a row WITH a login; it now
+# strikes every row, and the refusal below would name the ROW ("LOGIN=\"\" does
+# not resolve") and send the person debugging it into logins.d looking for a
+# line that was never there. So the library is measured by what it DEFINES, and
+# the refusal names the library.
+if ! declare -F registry_login_exec_prefix >/dev/null 2>&1; then
+  echo "session-supervisor: $NAME — REFUSING to start: $REG_LIB does not define registry_login_exec_prefix — deploy the product first." >&2
+  exit 78
+fi
 if ! LOGIN_PREFIX="$(registry_login_exec_prefix "${LOGIN:-}" "$(id -un)")"; then
   echo "session-supervisor: $NAME — REFUSING to start: LOGIN=\"${LOGIN:-}\" does not resolve (see above)." >&2
   exit 78

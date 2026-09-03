@@ -221,6 +221,34 @@ has   "5b the refusal itself names the missing function" \
       "$out5" "does not define mcp_claude_cmd_fragment"
 hasnt "5c and nothing was spawned"                   "$(cat "$TMUX_LOG")" "new-session"
 
+echo "== 5-login. the SAME half-deploy, on the REGISTRY library and the login rule =="
+# THE SISTER CASE TO 5, and it exists because the login rule stopped being
+# conditional. registry_login_exec_prefix is called for EVERY row now, LOGIN-less
+# ones included -- so a registry library that sources cleanly and PREDATES the
+# function turns the call into a command-not-found: rc 127, which `if !` reads as
+# a refusal. The message that came out named the ROW ("LOGIN=\"\" does not
+# resolve") and sent the reader into a login register that has nothing wrong
+# with it, while the actual cause was a half-deployed library. A refusal that
+# sends the person debugging it to the wrong file is worse than the fault it
+# reports.
+#
+# THE FIXTURE ROW HAS NO LOGIN -- the state that used to be exempt and is not
+# any more, which is exactly why this case is new.
+cp "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
+sed 's/^registry_login_exec_prefix()/_predates_registry_login_exec_prefix()/' \
+  "$here/lib/registry.sh" > "$LIBS/registry.sh"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run; rc5l=$?
+out5l="$(cat "$T/out")"
+is    "5e rc 78"                                     "$rc5l" "78"
+has   "5f the refusal names the library"             "$out5l" "$LIBS/registry.sh"
+has   "5g and the function the library does not define" \
+      "$out5l" "does not define registry_login_exec_prefix"
+has   "5h and says which side has to move"           "$out5l" "deploy the product first"
+hasnt "5i and it does NOT blame the row's own LOGIN" "$out5l" "does not resolve"
+hasnt "5j and nothing was spawned"                   "$(cat "$TMUX_LOG")" "new-session"
+cp "$here/lib/registry.sh" "$LIBS/registry.sh"
+
 echo "== 6. an EMPTY claude command is refused in its own right =="
 # The belt to section 5's braces. A library that defines every function the
 # check asks for and still yields an empty command line must not reach tmux:

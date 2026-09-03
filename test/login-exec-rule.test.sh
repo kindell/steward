@@ -42,7 +42,7 @@ mkrow() { # <slug> <provider> <configdir>
   chmod 600 "$FX/logins.d/$1.conf"
 }
 
-echo "== 1b. an absent login STILL scrubs the two auth overrides =="
+echo "== 1. an absent login STILL scrubs the two auth overrides =="
 # THE SCRUB IS NO LONGER CONDITIONAL. It used to sit behind the same `if` as
 # the config directory, so an absent LOGIN produced an EMPTY prefix and the
 # consumer kept whatever auth override its environment carried. An API key

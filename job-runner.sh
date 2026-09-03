@@ -215,7 +215,9 @@ if [ "$KIND" = "claude" ]; then
   # (The scrub of ANTHROPIC_API_KEY/AUTH_TOKEN lived here until 2026-08-31 and
   # now lives in registry_login_apply above, for BOTH kinds. The reason and the
   # two measurements — exit 1, "Credit balance is too low", 2026-07-15 and
-  # -16 — stay in that function's header comment, where the rule now lives.)
+  # -16 — stay in lib/registry.sh, in the comment above _REGISTRY_LOGIN_SCRUB:
+  # the LIST is what the two forms share, so that is where its motivation
+  # lives, not in either form's own header.)
   CMD=("$CLAUDE_BIN" -p "$PROMPT" --permission-mode "$PERMISSION_MODE" --max-turns "$MAX_TURNS")
   [ -n "$SETTINGS_FILE" ] && CMD+=(--settings "$REPO_PATH/$SETTINGS_FILE")
   # MCP_CONFIG (optional, jobs.d): narrow the job's MCP surface to EXACTLY the
