@@ -48,6 +48,15 @@
 #                      set could not be known. Both are faults. Printing {}
 #                      for either would report a fault as the configuration
 #                      above, and the reader could not tell them apart.
+#
+# A LEADING ~/ IN A ROW IS ONE HOME AT A TIME — THE RENDERING PROCESS'S OWN.
+# The register is written once and read on every machine that runs a session
+# for it; a row is not allowed to say whose home that is, only that it is
+# relative to one. So `steward mcp render` run by hand from a checkout prints
+# the OPERATOR's own home in any row that asked for it — that is what the verb
+# means when it is run that way, not a bug. lib/mcpspawn.sh already resolves
+# its wrapper's `~/bin/mcp-env` the same way, against $HOME, at spawn time;
+# this file's rows now follow the same rule.
 
 # THE SESSION ID IS THE WHOLE ARGUMENT LIST. Flag parsing stayed with the verb
 # in bin/steward: a library that answers rc 64 for a flag would be describing a
@@ -144,6 +153,53 @@ mcp_render_document() {
     # asterisk, not as whatever happens to sit in the operator's cwd.
     _registry_words "$MCP_ARGS"
     local argv=( "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}" )
+
+    # A LEADING ~/ IN A ROW IS THE RENDERING PROCESS'S OWN $HOME. The register
+    # is written once, on the machine that HOLDS it, and read on every machine
+    # that RUNS a session for it — and on a team of more than one person those
+    # are different home directories. A row that hardcoded one member's
+    # `/home/alice/...` handed alice's paths to bob's session too, which bob
+    # cannot even read (a home is 750) and the server dies in the handshake.
+    # `~/` fixes that the way lib/mcpspawn.sh already fixes it for the
+    # wrapper's own path (~:121 there): write the row relative to the
+    # OPERATOR's home and let the process that renders it supply the home.
+    #
+    # ONLY A LEADING `~/` COUNTS, and only that. `~` alone and `~user/...` are
+    # a passwd lookup for a DIFFERENT user's home, not a string this function
+    # owns — resolving it would need getent/dscl, a second kind of lookup this
+    # loop has no business doing, and the row almost certainly did not mean
+    # "some other named account's home" anyway. A `~/` that shows up in the
+    # MIDDLE of a word (the `a~/b` case the fixture carries) is DATA, not a
+    # path prefix, and rewriting it would corrupt an argument the row meant
+    # literally. `case "$x" in "~/"*)` matches exactly the leading form and
+    # nothing else, with no `eval` and no shell tilde-expansion (`set -f`
+    # already governs this loop for the same reason).
+    local home_needed=0
+    case "$cmdpath" in "~/"*) home_needed=1 ;; esac
+    case "$envf" in "~/"*) home_needed=1 ;; esac
+    local _hw
+    for _hw in "${argv[@]+"${argv[@]}"}"; do
+      case "$_hw" in "~/"*) home_needed=1 ;; esac
+    done
+    if [ "$home_needed" -eq 1 ]; then
+      if [ -z "${HOME:-}" ]; then
+        # THE SAME HOLE THE <domain> BRANCH BELOW NAMES, IN THE SAME WORDS:
+        # a template that needs a value this process does not have is OMITTED
+        # and NAMED rather than rendered with the tilde left in — a literal
+        # "~" reaching an MCP client that spawns `command` directly (no shell
+        # between them) is a directory named "~", and the server dies with
+        # ENOENT under --strict-mcp-config with no clue why.
+        echo "steward: mcp render: session '$sid': the asset '$(registry_printable "$slug")' names a home-relative path (~/) and HOME is unset in this process — OMITTED rather than rendered against a hole" >&2
+        continue
+      fi
+      case "$cmdpath" in "~/"*) cmdpath="$HOME/${cmdpath#"~/"}" ;; esac
+      case "$envf" in "~/"*) envf="$HOME/${envf#"~/"}" ;; esac
+      local _hi
+      for _hi in "${!argv[@]}"; do
+        case "${argv[$_hi]}" in "~/"*) argv[$_hi]="$HOME/${argv[$_hi]#"~/"}" ;; esac
+      done
+    fi
+
     if [ -n "$envf" ]; then
       case "$envf" in
         *"<domain>"*)

@@ -53,6 +53,7 @@ printf 'NAME="Gamma"\nPARENT="beta"\nMCP_ASSETS="notes-tool"\n'             > "$
 printf 'NAME="Quiet"\nMEMBERS="a"\n'                                        > "$ENT/quiet.conf"
 printf 'NAME="Lonely"\nMEMBERS="a"\nMCP_ASSETS="ghost-tool absent-tool"\n'  > "$ENT/lonely.conf"
 printf 'NAME="Starry"\nMEMBERS="a"\nMCP_ASSETS="star-tool"\n'               > "$ENT/starry.conf"
+printf 'NAME="Homely"\nMEMBERS="a"\nMCP_ASSETS="home-tool"\n'               > "$ENT/homely.conf"
 
 # THE ACCOUNTS — personal capability, bound to the human and not to a node.
 printf 'PRINCIPAL="ann"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'              > "$ACC/ann-h1.conf"
@@ -70,6 +71,15 @@ cat > "$MCPD/star-tool.conf" <<'EOF'
 MCP_COMMAND="/opt/star/server"
 MCP_ARGS="* --flag"
 EOF
+# A ROW BEARING A HOME-RELATIVE PATH IN EVERY ONE OF ITS THREE FIELDS, plus one
+# argument that LOOKS like the prefix and two that must NOT be touched: a
+# `~user/...` form (a passwd lookup, not this row's business) and a tilde
+# buried mid-word (data, not a path).
+cat > "$MCPD/home-tool.conf" <<'EOF'
+MCP_COMMAND="~/bin/home-server"
+MCP_ARGS="--conf ~/etc/home.conf --tag ~notme/x --literal a~/b"
+MCP_ENV_FILE="~/.local/state/creds/<domain>/home-tool.env"
+EOF
 # notes-tool, ghost-tool and absent-tool are DELIBERATELY ABSENT.
 
 sess() { printf 'OWNER="a"\nHOST="h1"\nREPO_PATH="/tmp/x"\nID="%s"\n%s\n' "$1" "$2" > "$SESS/$1.conf"; }
@@ -80,6 +90,7 @@ sess s-lonely  'DOMAIN="lonely"
 RC_LABEL="L"'
 sess s-star    'DOMAIN="starry"
 RC_LABEL="L"'
+sess s-home    'TARGET_ENTITY="homely"'
 # SAME entity, DIFFERENT accounts — the pair the account axis exists for.
 sess s-ann     'ACCOUNT="ann-h1"
 TARGET_PROJECT="gamma"'
@@ -304,6 +315,47 @@ is  "17a rc 65, not 0"                     "$rc17" "65"
 is  "17b and NOTHING on stdout"            "$out17" ""
 has "17c the account that failed is named" "$err17" "ghost-h1"
 has "17d and the session with it"          "$err17" "s-noacct"
+
+echo "== 18. a leading ~/ in a row is expanded against the RENDERING PROCESS's HOME =="
+# `run` never sets HOME itself (section 6 above already proved the suite is
+# hermetic against every knob it noticed) — it is set on the invocation, one
+# call at a time, so each assertion below says exactly which home is in play.
+out18="$(HOME=/srv/homes/alice run mcp render s-home 2>"$FX/e18")"; rc18=$?
+err18="$(cat "$FX/e18")"
+is "18a rc 0" "$rc18" "0"
+is "18b command is the wrapper — an MCP_ENV_FILE is declared" \
+   "$(printf '%s' "$out18" | jq -r '.mcpServers["home-tool"].command')" "~/bin/mcp-env"
+is "18c args[0] is the env file — home AND <domain> both substituted, home first" \
+   "$(printf '%s' "$out18" | jq -r '.mcpServers["home-tool"].args[0]')" \
+   "/srv/homes/alice/.local/state/creds/homely/home-tool.env"
+is "18d args[1] is the real command, home-expanded" \
+   "$(printf '%s' "$out18" | jq -r '.mcpServers["home-tool"].args[1]')" \
+   "/srv/homes/alice/bin/home-server"
+has "18e a home-relative flag argument is expanded too" \
+   "$(printf '%s' "$out18" | jq -c '.mcpServers["home-tool"].args')" \
+   "/srv/homes/alice/etc/home.conf"
+has "18f a ~user form is left untouched — that is a passwd lookup, not a string this function rewrites" \
+   "$(printf '%s' "$out18" | jq -c '.mcpServers["home-tool"].args')" \
+   "~notme/x"
+has "18g a tilde in the middle of a word is data, not a path prefix" \
+   "$(printf '%s' "$out18" | jq -c '.mcpServers["home-tool"].args')" \
+   "a~/b"
+
+echo "== 19. HOME unset in the rendering process: the row is OMITTED and NAMED, not rendered against a hole =="
+out19="$(HOME= run mcp render s-home 2>"$FX/e19")"; rc19=$?
+err19="$(cat "$FX/e19")"
+is  "19a rc 65 — home-tool is s-home's only asset, so nothing rendered (all-or-nothing)" "$rc19" "65"
+is  "19b nothing on stdout"                "$out19" ""
+has "19c the asset is named"               "$err19" "home-tool"
+has "19d the session is named"             "$err19" "s-home"
+has "19e and the actual reason — HOME, not the register — is named" "$err19" "HOME is unset"
+
+echo "== 20. a row with no ~/ is untouched by any of this — same document with HOME set or empty =="
+out20a="$(HOME=/srv/homes/alice run mcp render s-project 2>/dev/null)"
+out20b="$(HOME= run mcp render s-project 2>/dev/null)"
+is "20 chat-tool's rendered entry is byte-identical either way" \
+   "$(printf '%s' "$out20a" | jq -c '.mcpServers["chat-tool"]')" \
+   "$(printf '%s' "$out20b" | jq -c '.mcpServers["chat-tool"]')"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
