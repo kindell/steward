@@ -624,5 +624,53 @@ hasnt "10e and assigns none"                     "$log10e" "CLAUDE_CONFIG_DIR="
 write_login_conf
 reset_projects
 
+echo "== 11. THE RIG PORT TRAVELS WITH THE SESSION =="
+# A rig is declared on the session row (BROWSER_CDP), but every tool that talks
+# to that rig used to learn the port from its OWN default -- and a default is
+# one owner's port. Measured 2026-09-04 in a second home: two MCP servers
+# reached for 127.0.0.1:9225, which is the FIRST owner's rig behind a guard, and
+# the error named the caller's own machine. The path in those rows had already
+# been made home-relative for exactly this reason; the port is the same fault
+# one level down.
+#
+# So the supervisor exports it, next to the credential directories, for the same
+# reason they are exported: a setting that depends on inheritance depends on
+# process history, and nobody reads process history.
+cat > "$ROOT/sessions.d/$NAME.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="alpha"
+REPO_PATH="$HOMEDIR/Projects/repo"
+ID="$NAME"
+RC_LABEL="L"
+BROWSER_RIG="yes"
+BROWSER_PROFILE="p"
+BROWSER_DISPLAY="24"
+BROWSER_CDP="9327"
+BROWSER_VNC="5924"
+EOF
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run; rc11=$?
+log11="$(cat "$TMUX_LOG")"
+is  "11a rc 0"                                    "$rc11" "0"
+has "11b the rig's own port is in the session environment" "$log11" "-e STEWARD_BROWSER_CDP=9327"
+
+echo "== 12. a session with no rig exports no port =="
+# The variable must not appear EMPTY either: an empty value reads as "there is a
+# rig and it is on port nothing", and a tool that trusts the variable would then
+# fail differently than one that falls back to its own default.
+cat > "$ROOT/sessions.d/$NAME.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="alpha"
+REPO_PATH="$HOMEDIR/Projects/repo"
+ID="$NAME"
+RC_LABEL="L"
+EOF
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run; rc12=$?
+is    "12a rc 0"                                  "$rc12" "0"
+hasnt "12b no STEWARD_BROWSER_CDP is exported"    "$(cat "$TMUX_LOG")" "STEWARD_BROWSER_CDP"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

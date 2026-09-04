@@ -851,6 +851,22 @@ CRED_ENV_ARGS=(
   -e "GH_CONFIG_DIR=$GH_CONFIG_DIR"
   -e "CLOUDSDK_CONFIG=$CLOUDSDK_CONFIG"
 )
+# THE RIG'S PORT TRAVELS WITH THE SESSION, for the same reason the directories
+# above do. A rig is declared on the session row; the tools that drive it used
+# to learn the port from their own default, and a default is ONE owner's port.
+# Measured 2026-09-04 in a second home: two servers reached for 127.0.0.1:9225
+# -- the first owner's rig, behind a guard -- and the error named the caller's
+# own machine, which sends the reader to the wrong rig entirely. The PATHS in
+# those same rows had already been made home-relative for this exact reason;
+# the port is the same fault one level down.
+#
+# ONLY WHEN THERE IS A RIG. An empty value would read as "there is a rig, on
+# port nothing", and a tool that trusts the variable then fails differently
+# from one that falls back to its own default -- two failure modes for one
+# missing declaration.
+if [ -n "${BROWSER_CDP:-}" ]; then
+  CRED_ENV_ARGS+=( -e "STEWARD_BROWSER_CDP=$BROWSER_CDP" )
+fi
 # (The send-keys variant of this environment is gone WITH the send-keys
 # repair: every start path below creates a fresh pane via new-session -e, so
 # the array above is the whole story.)
