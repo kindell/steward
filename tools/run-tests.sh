@@ -78,14 +78,24 @@ run_with_timeout() {
 
 counts() {
   # Either format -> "N/M" (passed/failed), or empty if neither was found.
-  local out="$1" p f
+  local out="$1" p f g
   p="$(printf '%s' "$out" | grep -oE 'pass=[0-9]+ fail=[0-9]+' | tail -1)"
   if [ -n "$p" ]; then
     printf '%s' "$p" | sed -E 's/pass=([0-9]+) fail=([0-9]+)/\1\/\2/'
     return
   fi
   f="$(printf '%s' "$out" | grep -oE '[0-9]+ klarade, [0-9]+ föll' | tail -1)"
-  [ -n "$f" ] && printf '%s' "$f" | sed -E 's/([0-9]+) klarade, ([0-9]+) föll/\1\/\2/'
+  if [ -n "$f" ]; then
+    printf '%s' "$f" | sed -E 's/([0-9]+) klarade, ([0-9]+) föll/\1\/\2/'
+    return
+  fi
+  # A THIRD PHRASING EXISTS, and it was invisible until Linux. test/liveness-host
+  # ends with "36 passed, 3 failed"; the parser knew two forms, reported ?/? for
+  # this one and counted it red -- correct as a refusal, useless as a
+  # measurement, since a suite that RAN and failed three assertions looked
+  # exactly like a suite that could not run at all.
+  g="$(printf '%s' "$out" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)"
+  [ -n "$g" ] && printf '%s' "$g" | sed -E 's/([0-9]+) passed, ([0-9]+) failed/\1\/\2/'
 }
 
 echo "== shell suites =="
