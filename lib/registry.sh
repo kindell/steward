@@ -1246,7 +1246,7 @@ registry_row_write() {
   #
   # A reported trap may also not even be the caller's own: inside a subshell,
   # bash 4+ reports the PARENT's handler here. There is no way to tell those two
-  # apart, and both answers point the same way -- do not touch it.
+  # apart, and both answers lead to the same rule -- do not touch it.
   local _prev_trap; _prev_trap="$(trap -p EXIT)"
   if [ -z "$_prev_trap" ]; then
     trap 'rmdir "'"$lock"'" 2>/dev/null' EXIT
