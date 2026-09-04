@@ -79,7 +79,7 @@ is "1: ok true"              "$(printf '%s' "$out" | jq -r '.ok')" "true"
 is "1: kind team"            "$(printf '%s' "$out" | jq -r '.kind')" "team"
 is "1: slug echoed"          "$(printf '%s' "$out" | jq -r '.slug')" "acme"
 is "1: membersSource default" "$(printf '%s' "$out" | jq -r '.membersSource')" "default"
-is "1: file mode 600"        "$(stat -f '%Lp' "$CONF/acme.conf" 2>/dev/null || stat -c '%a' "$CONF/acme.conf")" "600"
+is "1: file mode 600"        "$(stat -c '%a' "$CONF/acme.conf" 2>/dev/null || stat -f '%Lp' "$CONF/acme.conf")" "600"
 (
   NAME=""; MEMBERS=""
   # shellcheck source=/dev/null

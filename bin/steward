@@ -3262,11 +3262,14 @@ _doctor_oneline() {
 # as a DIAGNOSIS ("does the binary look older than its sources"), never as
 # provenance of anything — a touched file can lie in either direction.
 _doctor_mtime_of() {
+  # ONLY DIGITS COUNT -- see _CFG_MODE_OF above for the trap: `stat -f` on GNU
+  # reports the FILESYSTEM and exits 0, so a non-empty check accepts an ext4
+  # report as an epoch and every age computed from it is nonsense.
   local p="$1" m
-  m="$(stat -f '%m' "$p" 2>/dev/null)"
-  [ -n "$m" ] || m="$(stat -c '%Y' "$p" 2>/dev/null)"
-  [ -n "$m" ] || return 1
-  printf '%s' "$m"
+  for m in "$(stat -f '%m' "$p" 2>/dev/null)" "$(stat -c '%Y' "$p" 2>/dev/null)"; do
+    case "$m" in ''|*[!0-9]*) continue ;; *) printf '%s' "$m"; return 0 ;; esac
+  done
+  return 1
 }
 
 # self-path — reports on the SAME symlink-resolution loop at the top of this
@@ -4255,7 +4258,9 @@ cmd_jobs() {
       measured=$((measured+1))
       age=null; hbtext="-"
       hb="$home/$id/heartbeat"
-      [ -f "$hb" ] && { age=$((now - $(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null))); hbtext="$age"; }
+      # _doctor_mtime_of, not a bare stat: the BSD-first probe answers about the
+      # FILESYSTEM on GNU and $(( )) would then fail on an ext4 report.
+      [ -f "$hb" ] && { _hbm="$(_doctor_mtime_of "$hb")" && { age=$((now - _hbm)); hbtext="$age"; }; }
       if [ -n "$want_json" ]; then
         rows="$(jq -n --argjson rows "$rows" \
           --arg id "$id" --arg goal "${JOB_GOAL:-}" --arg owner "${JOB_OWNER:-}" \

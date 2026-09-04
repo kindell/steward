@@ -102,7 +102,7 @@ is "1: rc 0"          "$rc" "0"
 is "1: ok true"       "$(printf '%s' "$out" | jq -r '.ok')" "true"
 is "1: kind account"  "$(printf '%s' "$out" | jq -r '.kind')" "account"
 is "1: slug echoed"   "$(printf '%s' "$out" | jq -r '.slug')" "a-h1"
-is "1: file mode 600" "$(stat -f '%Lp' "$ACCT/a-h1.conf" 2>/dev/null || stat -c '%a' "$ACCT/a-h1.conf")" "600"
+is "1: file mode 600" "$(stat -c '%a' "$ACCT/a-h1.conf" 2>/dev/null || stat -f '%Lp' "$ACCT/a-h1.conf")" "600"
 is "1: loads back via registry_account_load — --username defaults to --principal" \
   "$(load_account a-h1)" "a|h1|a"
 

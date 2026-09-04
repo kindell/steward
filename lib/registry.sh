@@ -1069,9 +1069,17 @@ _registry_restore_exit_trap() {
 # process wrote under the same name a moment later" — a name match is not an
 # identity match.
 _registry_stat_id() {
+  # SHAPE-CHECKED FOR THE SAME REASON AS _registry_mode_of: `stat -f` on GNU
+  # answers about the FILESYSTEM, exits 0, and its report would be accepted here
+  # as an identity. Two different files would then compare EQUAL -- and this
+  # function exists precisely to tell them apart.
   local p="$1" out
-  out="$(stat -f '%i:%z' "$p" 2>/dev/null)" && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
-  out="$(stat -c '%i:%s' "$p" 2>/dev/null)" && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+  for out in "$(stat -f '%i:%z' "$p" 2>/dev/null)" "$(stat -c '%i:%s' "$p" 2>/dev/null)"; do
+    case "$out" in
+      ''|*[!0-9:]*|*:*:*) continue ;;
+      *:*) printf '%s' "$out"; return 0 ;;
+    esac
+  done
   return 1
 }
 
@@ -2981,9 +2989,18 @@ _REGISTRY_LOGIN_PROVIDERS="claude-max claude-team opencode-chatgpt codex-openai"
 # config, defined before it sources this file. Collapsing them is a separate
 # change; doing it here would move a guard the config reader depends on.
 _registry_mode_of() {
+  # ONLY AN OCTAL ANSWER COUNTS -- the same trap bin/steward's _CFG_MODE_OF
+  # documents. On GNU/Linux `stat -f` means FILESYSTEM status: the BSD-first
+  # probe exits 0 with a multi-line ext4 report, so a non-empty check passes it
+  # through as though it were a mode and the GNU form is never tried. Measured
+  # 2026-09-04, the first time the suites ran on the Linux host at all: 23 of 59
+  # went red on this one shape.
   local p="$1" m
-  m="$(stat -f '%Lp' "$p" 2>/dev/null)" && [ -n "$m" ] && { printf '%s' "$m"; return 0; }
-  m="$(stat -c '%a' "$p" 2>/dev/null)" && [ -n "$m" ] && { printf '%s' "$m"; return 0; }
+  for m in "$(stat -f '%Lp' "$p" 2>/dev/null)" "$(stat -c '%a' "$p" 2>/dev/null)"; do
+    case "$m" in
+      [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$m"; return 0 ;;
+    esac
+  done
   return 1
 }
 

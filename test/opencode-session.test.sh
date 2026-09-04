@@ -14,7 +14,16 @@ check() { local desc="$1"; shift; if "$@"; then ok; else bad "$desc"; fi; }
 check_eq() { local desc="$1" got="$2" want="$3"; [ "$got" = "$want" ] && ok || bad "$desc (got '$got', want '$want')"; }
 check_file_contains() { local desc="$1" file="$2" text="$3"; grep -F -- "$text" "$file" >/dev/null 2>&1 && ok || bad "$desc"; }
 check_arg() { check_file_contains "$1" "$capture_tui" "$2"; }
-mode() { stat -f '%Lp' "$1"; }
+mode() { # BSD or GNU, and ONLY AN OCTAL ANSWER COUNTS: on GNU
+            # `stat -f` reports the FILESYSTEM and exits 0, so an empty-check
+            # accepts an ext4 report as a mode (measured on the Linux host
+            # 2026-09-04: 23 of 59 suites went red on this one shape).
+  local m 2>/dev/null || true
+  for m in "$(stat -f '%Lp' "$1" 2>/dev/null)" "$(stat -c '%a' "$1" 2>/dev/null)"; do
+    case "$m" in [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$m"; return 0 ;; esac
+  done
+  return 1
+}
 
 estate="$fx/estate"
 home="$fx/home"

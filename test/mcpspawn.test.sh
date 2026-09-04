@@ -36,7 +36,16 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "unexpectedly present '$3' in: $2" ;; *) 
 # The mode digits, on either stat. A document that is world-readable is the
 # whole pattern lost: it names credential FILES, and a reader who can list them
 # knows where to go next.
-mode_of() { stat -f '%OLp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+mode_of() { # BSD or GNU, and ONLY AN OCTAL ANSWER COUNTS: on GNU
+            # `stat -f` reports the FILESYSTEM and exits 0, so an empty-check
+            # accepts an ext4 report as a mode (measured on the Linux host
+            # 2026-09-04: 23 of 59 suites went red on this one shape).
+  local m 2>/dev/null || true
+  for m in "$(stat -f '%Lp' "$1" 2>/dev/null)" "$(stat -c '%a' "$1" 2>/dev/null)"; do
+    case "$m" in [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$m"; return 0 ;; esac
+  done
+  return 1
+}
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/entities.d" "$FX/projects.d" "$FX/sessions.d" "$FX/mcp.d" \

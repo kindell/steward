@@ -44,7 +44,16 @@ run() {
     bash "$STEWARD" config "$@" 2>&1
 }
 
-mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+mode_of() { # BSD or GNU, and ONLY AN OCTAL ANSWER COUNTS: on GNU
+            # `stat -f` reports the FILESYSTEM and exits 0, so an empty-check
+            # accepts an ext4 report as a mode (measured on the Linux host
+            # 2026-09-04: 23 of 59 suites went red on this one shape).
+  local m 2>/dev/null || true
+  for m in "$(stat -f '%Lp' "$1" 2>/dev/null)" "$(stat -c '%a' "$1" 2>/dev/null)"; do
+    case "$m" in [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$m"; return 0 ;; esac
+  done
+  return 1
+}
 
 echo "== 1. init: creates the file 0600, FORMAT=1 first, directory 0700 =="
 mkdir -p "$FX/init/home"

@@ -107,9 +107,9 @@ wpid=$!
 sleep 2
 kill -9 "$wpid" 2>/dev/null
 wait "$wpid" 2>/dev/null || true
-mtime1="$(stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
+mtime1="$(stat -c%Y "$T/jobs/$id4/heartbeat" 2>/dev/null || stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
 sleep 2
-mtime2="$(stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
+mtime2="$(stat -c%Y "$T/jobs/$id4/heartbeat" 2>/dev/null || stat -f%m "$T/jobs/$id4/heartbeat" 2>/dev/null || echo 0)"
 [ "$mtime1" = "$mtime2" ] && ok "heartbeat stopped after wrapper SIGKILL" || bad "heartbeat kept advancing after SIGKILL" "mtime1=$mtime1 mtime2=$mtime2"
 
 # C2: the heartbeat tick RENEWS THE LEASE (jobstate_lease_renew), not just a
