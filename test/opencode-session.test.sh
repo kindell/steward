@@ -160,7 +160,13 @@ check "temporary server is terminated" test -f "$capture_server_stop"
 check "snapshot copies MEMORY.md" cmp "$memory/MEMORY.md" "$snapshot/MEMORY.md"
 check "snapshot copies topic memory" cmp "$memory/topics/topic.md" "$snapshot/topics/topic.md"
 check "proposal directory is writable" test -w "$proposals"
-check_eq "snapshot file is read-only" "$(mode "$snapshot/MEMORY.md" 2>/dev/null)" 444
+# READ-ONLY IS THE CLAIM; 444 WAS THE OPERATOR'S UMASK. The runtime does
+# `chmod -R a-w` -- it CLEARS write bits and keeps whatever read bits the copy
+# carried. Under umask 022 that lands on 444, under 077 on 400, and both are
+# exactly as read-only as the runtime asked for. Asserting the number turned a
+# machine's default into a requirement: the suite went red on Linux for a file
+# that was, if anything, stricter than the one it wanted.
+check_eq "snapshot file has no write bit for anyone" "$(( 8#$(mode "$snapshot/MEMORY.md" 2>/dev/null) & 0222 ))" 0
 check_file_contains "config selects registry model" "$config_file" "openai/gpt-5.3-codex"
 check_file_contains "config broadly allows normal work" "$config_file" '"*": "allow"'
 check_file_contains "config allows this state directory" "$config_file" "$state"

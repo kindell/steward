@@ -33,6 +33,20 @@
 # syntax error
 
 set -u
+
+# THE UMASK IS PART OF THE FIXTURE, so the runner fixes it. A suite that builds
+# a directory tree inherits the operator's umask, and the guards under test then
+# judge a fixture the test never described: on Ubuntu (umask 002) a fixture
+# directory is created 0775, several guards correctly refuse a group-writable
+# trust root, and the suite reports a product fault that exists nowhere outside
+# the fixture. Measured 2026-09-04, the first time these suites ran on Linux:
+# 19 of 59 red, all of them this. macOS (umask 022) never showed it.
+#
+# 0077 is the strict end, so a suite that WANTS a lax mode still sets it
+# explicitly with chmod -- and then the mode is written down in the test, which
+# is where a mode a guard will judge belongs.
+umask 077
+
 # The repo under test is the CURRENT DIRECTORY by default, not this script's own
 # tree. The runner lives in the product but is used by any checkout that has a
 # test/ directory — an estate runs its own suites through this exact file.
