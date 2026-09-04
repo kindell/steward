@@ -293,7 +293,7 @@ mcp_spawn_prepare() {
   cat "$HOME/mcp-err" >&2
   local rc; rc="$(cat "$HOME/mcp-rc")"
   [ "$rc" = "3" ] && return 3
-  printf ' --strict-mcp-config --mcp-config "%s"' "$2"
+  printf ' --mcp-config "%s"' "$2"
   return "$rc"
 }
 mcp_claude_cmd_fragment() {

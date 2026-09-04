@@ -58,7 +58,7 @@
 # TEMP PLUS RENAME, NOT A TRUNCATING REDIRECT. The supervisor rewrites this
 # file on every round while claude may be reading it; a redirect empties the
 # file first and leaves a window in which the document exists and is empty --
-# which under --strict-mcp-config is a session with no tools and no reason
+# which is a session that gets nothing from the register and no reason
 # given. The mode is set on the temp file, so the document is never readable by
 # anyone else, not even for the instant between create and chmod.
 _mcp_write_document() {
@@ -68,7 +68,7 @@ _mcp_write_document() {
   # file INSIDE it and returns 0, so the write would report success, the
   # fragment would point --mcp-config at a directory, and a 0600
   # s.mcp.json.tmp.<pid> would be left in there for good. claude cannot read a
-  # directory as a config, and under --strict-mcp-config that is a session with
+  # directory as a config, and that is a session the register reaches with
   # no tools and nothing saying why; the honest answer is the refusal every
   # other unwritable document already gets. The test comes first so no temp
   # file is ever made inside a path we are about to refuse.
@@ -106,7 +106,7 @@ mcp_spawn_prepare() { # <session-id> <document-path>
   # session host, at spawn time, and hands the document straight to claude --
   # and an MCP client spawns a server's `command` DIRECTLY, with no shell to
   # expand anything. A literal tilde there is a directory named "~", the server
-  # dies with ENOENT, and under --strict-mcp-config that is a granted asset that
+  # dies with ENOENT, and that is a granted asset that
   # silently never starts.
   #
   # A `local` RATHER THAN AN EXPORT: bash's dynamic scoping makes it visible to
@@ -173,12 +173,22 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     # THE PATH IS QUOTED, the same way NAME_ARG quotes its value. This fragment
     # is spliced into CLAUDE_CMD and then into a string a shell runs, so an
     # unquoted path with a space in it reaches claude as a TRUNCATED --mcp-config
-    # plus a stray positional argument -- and under --strict-mcp-config that is a
+    # plus a stray positional argument -- and that is a
     # session with no tools and nothing anywhere saying why. STATE_DIR_NAME is
     # validated and the session id is s-<hex>, so the injectable component today
     # is $HOME -- and the macOS twin sources this same library on homes named
     # /Users/First Last.
-    printf ' --strict-mcp-config --mcp-config "%s"' "$doc"
+    # ADDITIVE, NOT EXCLUSIVE. The register contributes servers; it does not
+    # take away what the operator's own account already grants. --strict-mcp-config
+    # would close every other source -- and the account-level claude.ai connectors
+    # (Gmail, Slack, Drive, Calendar, HubSpot, Microsoft 365) live in exactly one
+    # of those sources, so a granted set of three silently replaced a working set
+    # of ten when a session moved onto a host where the register had rows for it.
+    # Measured on a live session 2026-09-04; Jon's ruling the same day: every
+    # connector the user has must reach the session. Giving a configured asset
+    # precedence over a connector of the same name is a later feature, not this
+    # one.
+    printf ' --mcp-config "%s"' "$doc"
     # DEGRADED IS DETECTED FROM THE RENDER'S OWN WORD. The render already
     # decided what "omitted" means and already named each one; re-deriving it
     # here would be a second opinion that can disagree with the first.
@@ -191,7 +201,7 @@ mcp_spawn_prepare() { # <session-id> <document-path>
   fi
 
   if [ -n "$probe_bad" ]; then
-    echo "mcp spawn: session '$sid' -- $probe_bad, so whether anything was granted is NOT KNOWN; treating it as a REFUSAL (strict, empty) rather than as 'nothing was granted', which would hand the session the legacy set" >&2
+    echo "mcp spawn: session '$sid' -- $probe_bad, so whether anything was granted is NOT KNOWN; treating it as a REFUSAL (an empty document) rather than as 'nothing was granted', which would hand the session the checkout's own set as though the register had said so" >&2
   fi
 
   # EVERY OTHER RENDER OUTCOME IS A REFUSAL, and refusals fail closed. rc 65 is
@@ -204,7 +214,7 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     cat "$errf" >&2; rm -f "$errf"
     return 69
   fi
-  printf ' --strict-mcp-config --mcp-config "%s"' "$doc"
+  printf ' --mcp-config "%s"' "$doc"
   cat "$errf" >&2; rm -f "$errf"
   return 2
 }

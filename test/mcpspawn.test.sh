@@ -91,7 +91,7 @@ echo "== 1. rc 0 -- a set that rendered whole =="
 out="$(prep s-full "$DOC" 2>"$FX/e1")"; rc=$?
 is "1a rc 0"                        "$rc" "0"
 is "1b the fragment carries its own leading space, like NAME_ARG does" \
-   "$out" " --strict-mcp-config --mcp-config \"$DOC\""
+   "$out" " --mcp-config \"$DOC\""
 is "1c the document exists and holds the granted server" \
    "$(jq -r '.mcpServers | keys_unsorted | join(",")' "$DOC" 2>/dev/null)" "chat-tool"
 is "1d 0600 -- it names credential files, so nobody else may read it" \
@@ -106,22 +106,23 @@ out2="$(prep s-degraded "$DOC" 2>"$FX/e2")"; rc2=$?
 err2="$(cat "$FX/e2")"
 is  "2a rc 1"                       "$rc2" "1"
 is  "2b the fragment is the same one -- the session starts"  \
-    "$out2" " --strict-mcp-config --mcp-config \"$DOC\""
+    "$out2" " --mcp-config \"$DOC\""
 is  "2c the document holds what DID render" \
     "$(jq -r '.mcpServers | keys_unsorted | join(",")' "$DOC" 2>/dev/null)" "chat-tool"
 has "2d the omitted asset is named on stderr, for the caller to alarm with" "$err2" "notes-tool"
 has "2e and the render's own word for it is carried through"                "$err2" "OMITTED"
 
-echo "== 3. rc 2 -- the render REFUSED: strict and empty, never legacy =="
-# THE FAIL-CLOSED ROW. Every granted asset failed to resolve. Handing the
-# session the repo's own .mcp.json here would answer a refusal with MORE tools
-# than the registry ever granted, and nothing in the running session would
-# show that the grant had been lost.
+echo "== 3. rc 2 -- the render REFUSED: an empty document, never a legacy set =="
+# THE FAIL-CLOSED ROW, as far as the REGISTRY is concerned. Every granted asset
+# failed to resolve, so the document the register contributes is empty and the
+# refusal is named on stderr for the caller to alarm with. It is no longer
+# strict: the operator's own account-level connectors are theirs, not something
+# a failed render may take away (Jon, 2026-09-04).
 out3="$(prep s-refused "$DOC" 2>"$FX/e3")"; rc3=$?
 err3="$(cat "$FX/e3")"
 is  "3a rc 2"                        "$rc3" "2"
-is  "3b the fragment is STILL strict -- an empty document, deliberately" \
-    "$out3" " --strict-mcp-config --mcp-config \"$DOC\""
+is  "3b the fragment is an EMPTY document -- additive, so the account keeps its own" \
+    "$out3" " --mcp-config \"$DOC\""
 is  "3c and the document is empty, not absent" \
     "$(jq -c '.mcpServers' "$DOC" 2>/dev/null)" "{}"
 is  "3d 0600 here too"               "$(mode_of "$DOC")" "600"
@@ -187,9 +188,9 @@ echo "== 8. the splice: the label is the LAST argument =="
 # appended after it does not fail loudly -- it makes aliveness measurement
 # quietly wrong, and a supervisor that misjudges aliveness writes into live
 # conversations. This is the assertion that keeps the order.
-cmd="$(frag "--continue" " --strict-mcp-config --mcp-config /s/d.json" " --name \"disp\"" "L")"
+cmd="$(frag "--continue" " --mcp-config /s/d.json" " --name \"disp\"" "L")"
 is "8a the whole command, in order" "$cmd" \
-   'claude --continue --permission-mode bypassPermissions --strict-mcp-config --mcp-config /s/d.json --name "disp" --remote-control "L"'
+   'claude --continue --permission-mode bypassPermissions --mcp-config /s/d.json --name "disp" --remote-control "L"'
 case "$cmd" in
   *' --remote-control "L"') ok "8b the label ends the command line" ;;
   *) bad "8b the label ends the command line" "got: $cmd" ;;
@@ -231,8 +232,8 @@ rm -f "$DOC"
 out10="$(PATH="$FX/probebin:$PATH" prep s-full "$DOC" 2>"$FX/e10")"; rc10=$?
 err10="$(cat "$FX/e10")"
 is  "10a a failed probe resolves to rc 2, never rc 3" "$rc10" "2"
-is  "10b and the fragment is the fail-closed one"     "$out10" \
-    " --strict-mcp-config --mcp-config \"$DOC\""
+is  "10b and the fragment is the empty-document one"     "$out10" \
+    " --mcp-config \"$DOC\""
 is  "10c the document written is the EMPTY one"       \
     "$(jq -c '.mcpServers' "$DOC" 2>/dev/null)" "{}"
 has "10d and the reason is on stderr, not swallowed"  "$err10" "probe"
@@ -273,9 +274,9 @@ SPACEDOC="$FX/state dir/s.mcp.json"
 out12="$(prep s-full "$SPACEDOC" 2>/dev/null)"; rc12=$?
 is "12a rc 0"                       "$rc12" "0"
 argv12=(); eval "argv12=($out12)"
-is "12b the flag is its own argument"                "${argv12[0]:-}" "--strict-mcp-config"
-is "12c and the path arrives WHOLE, as one argument" "${argv12[2]:-}" "$SPACEDOC"
-is "12d with nothing split off the end of it"        "${#argv12[@]}"  "3"
+is "12b the flag is its own argument"                "${argv12[0]:-}" "--mcp-config"
+is "12c and the path arrives WHOLE, as one argument" "${argv12[1]:-}" "$SPACEDOC"
+is "12d with nothing split off the end of it"        "${#argv12[@]}"  "2"
 
 echo "== 13. a document path that is a DIRECTORY is refused, not moved into =="
 # `mv -f "$tmp" "$doc"` with $doc an existing directory MOVES THE TEMP FILE INTO

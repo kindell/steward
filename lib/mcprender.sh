@@ -86,7 +86,7 @@ mcp_render_document() {
   # renders ON the host at spawn time and hands the result straight to claude is
   # in the opposite situation: an MCP client spawns a server's `command`
   # DIRECTLY, with no shell between them, so a literal tilde is a directory
-  # named "~" and the server dies with ENOENT — under --strict-mcp-config, a
+  # named "~" and the server dies with ENOENT — a
   # granted asset that silently never starts. lib/mcpspawn.sh sets this to
   # $HOME/bin/mcp-env for its own render. The DEFAULT is unchanged so that
   # `steward mcp render` and test/mcp-render.test.sh stay byte for byte what
@@ -188,7 +188,7 @@ mcp_render_document() {
         # and NAMED rather than rendered with the tilde left in — a literal
         # "~" reaching an MCP client that spawns `command` directly (no shell
         # between them) is a directory named "~", and the server dies with
-        # ENOENT under --strict-mcp-config with no clue why.
+        # ENOENT with no clue why.
         echo "steward: mcp render: session '$sid': the asset '$(registry_printable "$slug")' names a home-relative path (~/) and HOME is unset in this process — OMITTED rather than rendered against a hole" >&2
         continue
       fi
