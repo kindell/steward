@@ -1060,8 +1060,20 @@ _registry_emit_kv() {
 # or clears the trap entirely if there was none. A caller's own
 # `trap ... EXIT` (a test fixture's cleanup, say) must survive a call into
 # registry_entity_write in the same shell — this is what makes that true.
-_registry_restore_exit_trap() {
-  if [ -n "$1" ]; then eval "$1"; else trap - EXIT; fi
+_registry_restore_exit_trap() { # <saved-trap-string>
+  # RESTORING IS ARMING, so this only ever clears -- it never eval:s a handler
+  # back. See registry_row_write: the writer installs its own EXIT trap ONLY
+  # when the caller had none, so the only trap there can be to take down here is
+  # the writer's own.
+  #
+  # WHY IT USED TO EVAL. On bash 3.2 (macOS) `trap -p EXIT` inside a subshell
+  # returns an EMPTY string, so eval-ing the "saved" trap back was a no-op and
+  # looked harmless for a year. On bash 4+ the same call reports the PARENT's
+  # handler, and eval-ing it ARMS it as the subshell's own -- so it runs when the
+  # subshell ends. And `x="$(... write ...)"` is a subshell. Measured on the Linux
+  # host 2026-09-04: one write inside a subshell fired the caller's
+  # `trap rm -rf "$FX" EXIT` and deleted the whole register mid-run.
+  if [ -n "$1" ]; then trap - EXIT; else trap - EXIT; fi
 }
 
 # _registry_stat_id <path> — "<inode>:<size>", BSD or GNU stat, or empty on
@@ -1227,8 +1239,18 @@ registry_row_write() {
   # cleanup can restore it rather than wipe it out — a caller's own
   # `trap ... EXIT` (a test fixture's cleanup, say) must survive a call into
   # this function in the same shell.
+  # THE CALLER'S EXIT TRAP IS NOT OURS TO HOLD. If one is reported, we install
+  # NOTHING: every return path below removes the lock explicitly (they always
+  # did -- the trap was the belt to that pair of braces), and a lock left behind
+  # by a kill is a smaller fault than a caller's cleanup fired early.
+  #
+  # A reported trap may also not even be the caller's own: inside a subshell,
+  # bash 4+ reports the PARENT's handler here. There is no way to tell those two
+  # apart, and both answers point the same way -- do not touch it.
   local _prev_trap; _prev_trap="$(trap -p EXIT)"
-  trap 'rmdir "'"$lock"'" 2>/dev/null' EXIT
+  if [ -z "$_prev_trap" ]; then
+    trap 'rmdir "'"$lock"'" 2>/dev/null' EXIT
+  fi
 
   # 2. RECHECK, under the lock.
   if [ -e "$final" ] || [ -L "$final" ]; then

@@ -289,5 +289,45 @@ check_available a-h1 squatter; is "6d: a conf declaring account=/slug= cannot fa
 check_available a-h1 free-slug; is "6e: unrelated pair still reads available past the hostile row — rc 0" "$?" "0"
 rm -f "$SESS/hostile.conf"
 
+echo "== 7. THE CALLER'S EXIT TRAP MUST NOT FIRE BECAUSE A WRITE RAN IN A SUBSHELL =="
+# THE WRITER RESTORES THE CALLER'S EXIT TRAP, and on bash 4+ that restoration
+# ARMS the trap in whatever shell does it. A subshell -- and `x="$(write ...)"`
+# IS a subshell -- then runs the caller's cleanup when the substitution ends,
+# not when the caller ends.
+#
+# bash 3.2 (macOS) returns an EMPTY `trap -p EXIT` inside a subshell, so nothing
+# was restored and nothing fired; bash 5 (Linux) returns the parent's handler.
+# Measured 2026-09-04 on the Linux host: section 4 above wrote one row inside a
+# subshell and the fixture's own `trap 'rm -rf "$FX"' EXIT` deleted the WHOLE
+# register mid-suite. Twelve assertions failed downstream, all of them reporting
+# something other than the fault.
+#
+# The fixture here is its own directory: a regression must not be able to take
+# the rest of this suite with it.
+TRAPDIR="$(mktemp -d)"
+mkdir -p "$TRAPDIR/estate" "$TRAPDIR/accounts.d" "$TRAPDIR/hosts.d"
+printf 'OWNER="a"\n' > "$TRAPDIR/hosts.d/h1.conf"
+CANARY="$TRAPDIR/canary"
+: > "$CANARY"
+(
+  trap 'rm -f "$CANARY"' EXIT
+  (
+    STEWARD_ESTATE_ROOT="$TRAPDIR"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    _trap_ok() { return 0; }
+    _c="$(printf '# t\nPRINCIPAL="a"\nHOST="h1"\nUSERNAME="u"\n')"
+    registry_account_write trapcase "$_c" _trap_ok
+  ) >/dev/null 2>&1
+  [ -e "$CANARY" ] || printf 'FIRED\n' > "$TRAPDIR/verdict"
+)
+if [ -f "$TRAPDIR/verdict" ]; then
+  bad "7: the caller's EXIT trap did not fire early" "the trap ran when the write's subshell exited, not when its own shell did"
+else
+  ok "7: the caller's EXIT trap did not fire early"
+fi
+is "7: and the row was still published" "$([ -f "$TRAPDIR/accounts.d/trapcase.conf" ] && echo yes || echo no)" "yes"
+rm -rf "$TRAPDIR"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
