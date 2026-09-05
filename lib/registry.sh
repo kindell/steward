@@ -1604,14 +1604,88 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
 # against, which is exactly the damage this key exists to prevent.
 registry_rc_label_prefix() { _registry_estate_value RC_LABEL_PREFIX '^[A-Za-z0-9][A-Za-z0-9 :._-]*$'; }
 
+# ── THE HUB ADDRESS IS PER HOST, NOT PER ESTATE ────────────────────────────
+#
+# HUB_SESSION / HUB_HOST / HUB_SSH used to be plain estate values, and for one
+# hub that was right. A FEDERATION OF HUBS makes it wrong: the estate file is ONE
+# file that the deploy copies into every home — measured 2026-09-05, line 74 of
+# ~/scripts/estate/steward.conf is identical in all nineteen homes on basement —
+# so an estate-wide answer would keep every session on a machine relaying to the
+# hub that machine no longer has.
+#
+# The row for the CALLING host may therefore override, per key. Three rules,
+# each of which cost something to learn:
+#
+#  * PER KEY, NOT PER FILE. A host row that names HUB_SSH but not HUB_SESSION
+#    gets the estate's session. Anything else would force every row to restate
+#    values it does not care about, and a restated value is a value that drifts.
+#  * A MALFORMED VALUE REFUSES, rc 78 — it does NOT fall back. This is the
+#    reason the reader exists as its own function. A mistyped relay target that
+#    quietly became the estate's would send this machine's mail to the OTHER
+#    hub, and it would look exactly like success.
+#  * THE SELF-HOST NAME BUILDS A PATH, so it is validated before use. An
+#    unregistered or oddly named host simply has no row and falls back quietly;
+#    that is the normal case for every machine that is not a hub.
+#
+# Self host comes from the same two sources estate-status and liveness-host
+# already use: STEWARD_SELF_HOST, else `hostname -s`. Adding a third source here
+# would mean two answers to "which machine is this".
+_registry_self_host() {
+  local _h="${STEWARD_SELF_HOST:-}"
+  [ -n "$_h" ] || _h="$(hostname -s 2>/dev/null || hostname 2>/dev/null)"
+  printf '%s' "$_h"
+}
+
+# _registry_host_hub_value <key> <regex>
+#   rc 0  — the host row answers, value on stdout
+#   rc 1  — no row, or the row is silent on this key (caller falls back)
+#   rc 78 — the row answers in the wrong form (caller must NOT fall back)
+_registry_host_hub_value() {
+  local _key="$1" _form="$2" _self _conf _varde
+  _self="$(_registry_self_host)"
+  registry_valid_name "$_self" || return 1
+  _conf="$(registry_host_dir)/$_self.conf"
+  [ -f "$_conf" ] || return 1
+  # Sourced in a SUBSHELL, unlike registry_host_load: this is a reader, not a
+  # loader, and its callers are library functions that must not silently acquire
+  # an OWNER or an OPERATOR from a file they only asked one key of.
+  _varde="$(
+    HUB_SESSION="" HUB_HOST="" HUB_SSH=""
+    # shellcheck source=/dev/null
+    source "$_conf" >/dev/null 2>&1 || exit 3
+    case "$_key" in
+      HUB_SESSION) printf '%s' "$HUB_SESSION" ;;
+      HUB_HOST)    printf '%s' "$HUB_HOST" ;;
+      HUB_SSH)     printf '%s' "$HUB_SSH" ;;
+    esac
+  )" || return 1
+  [ -n "$_varde" ] || return 1
+  if ! [[ "$_varde" =~ $_form ]]; then
+    echo "registry: REFUSING — $_conf has $_key=\"$_varde\", expected the form $_form" >&2
+    echo "registry: a host's hub address never falls back to the estate's — a mistyped target would quietly become the other hub's, and look like success." >&2
+    return 78
+  fi
+  printf '%s\n' "$_varde"
+}
+
+_registry_hub_value() { # <key> <regex> — host row first, estate as the fallback
+  local _varde _rc
+  _varde="$(_registry_host_hub_value "$1" "$2")"; _rc=$?
+  case "$_rc" in
+    0)  printf '%s\n' "$_varde"; return 0 ;;
+    78) return 78 ;;
+  esac
+  _registry_estate_value "$1" "$2"
+}
+
 # HUB_SESSION is the hub's name on the bus — a session name, so the same form the
 # name validator requires.
-registry_hub_session()    { _registry_estate_value HUB_SESSION '^[a-z0-9][a-z0-9-]*$'; }
+registry_hub_session()    { _registry_hub_value HUB_SESSION '^[a-z0-9][a-z0-9-]*$'; }
 
 # HUB_HOST is the hub's MACHINE name — the same form as a host name in the
 # registry, and deliberately a SEPARATE key even though it holds the same string
 # as HUB_SESSION in this estate. See the estate file for why.
-registry_hub_host()       { _registry_estate_value HUB_HOST '^[a-z0-9][a-z0-9-]*$'; }
+registry_hub_host()       { _registry_hub_value HUB_HOST '^[a-z0-9][a-z0-9-]*$'; }
 
 # The three label prefixes and the token file's name. A prefix has the form of a
 # reversed domain: dot-separated segments, no trailing dot — a typo with a
@@ -1722,7 +1796,7 @@ registry_job_log_dir()    { _registry_estate_value JOB_LOG_DIR '^[A-Za-z0-9][A-Z
 # parts: a bare host name would make ssh use the CALLING account's name, which on
 # a multi-tenant machine is the wrong account rather than the intended one — and
 # the fault first appears as a rejected key exchange, far from its cause.
-registry_hub_ssh()        { _registry_estate_value HUB_SSH '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$'; }
+registry_hub_ssh()        { _registry_hub_value HUB_SSH '^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$'; }
 
 # TMUX_SOCKET is ONE FILE NAME under ~/.tmux, never a path — the same reason as
 # JOB_LOG_DIR: a slash would name another server's socket.
