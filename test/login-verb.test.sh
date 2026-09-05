@@ -302,11 +302,11 @@ is "the stub never ran" "$(cat "$FX/stublog")" ""
 # THE HANDLE PEOPLE SAY IS THE SLUG. After the naming model a row's filename
 # is an opaque id; every other verb that takes a session from a person
 # (attach, peek, the bus) resolves the slug first. Measured 2026-09-05 on the
-# first machine-steward login: `steward login basement` answered "unknown
-# project basement" because the row is s-<hex>.conf with SLUG="basement".
+# first machine-steward login: `steward login <slug>` answered "unknown
+# project <slug>" because the row is s-<hex>.conf and the slug is only a field.
 echo "== login: a SLUG resolves to its row =="
-printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="s-0000000000000001"\nSLUG="byslug"\n' \
-  > "$FX/sessions.d/s-0000000000000001.conf"
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="s-a1b2c3d4e5f6a7b8"\nSLUG="byslug"\n' \
+  > "$FX/sessions.d/s-a1b2c3d4e5f6a7b8.conf"
 clear_markers
 out="$(run "$hub_host" "$claude_stub" "$opencode_stub" 1 byslug)"; rc=$?
 present "claude stub ran for the slug"          "$FX/claude.ran"
