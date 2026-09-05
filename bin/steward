@@ -17,6 +17,7 @@
 #   steward <estate> ls [--sort name|slug|display|owner|host|lineage]
 #   steward <estate> attach <session>
 #   steward <estate> peek <session>
+#   steward <estate> login [session]      (lands you at the runtime's /login, in the owner's home)
 #   steward init <estate> <ssh-target>
 #   steward scaffold <dir> org=<> team=<> owner=<> session=<> [assets=<>] [--json]
 #   steward assets <session> [--json]
@@ -872,6 +873,80 @@ cmd_attach() {
   # =name: tmux -t prefix-matches, and attaching to the wrong session because
   # its name extends yours is exactly the trap measured 2026-08-21.
   exec "$SSH_BIN" -t "$SSH" "$(_attach_cmd "$sess")"
+}
+
+# `steward <estate> login [session]` — the laptop-side login. Two hops:
+#
+#   1. READ-ONLY, to the estate's own ssh target: "where does this session
+#      sit?" — the row's key, OWNER, HOST, and the answering account's HOME.
+#   2. INTERACTIVE, as the OWNER on the HOST: the hub-side `steward login`,
+#      which refuses unless it is that owner on that machine — so hop 2 goes
+#      exactly where hop 1 said, or it goes nowhere.
+#
+# WHY TWO HOPS AND NOT ONE. A session's home is not the estate's ssh account:
+# the machine steward is the owner's SECOND account, a colleague's session is
+# a colleague's home, and homes are 750. Hopping from the estate account into
+# the owner's home would need every estate account to hold a key into every
+# home on the machine — the exact key sprawl the federation exists to end.
+# The person's own laptop key already opens the homes they may enter; the
+# product only has to say which one.
+#
+# THE SECOND HOP IS THE ANSWER TO "how do I even get to /login?", measured
+# 2026-09-05: without it the instruction was a hand-dictated ssh + tmux -S
+# <socket> attach line, and the product had every fact needed to print it.
+_seat_cmd() { # <handle-or-empty> -> the remote read-only line
+  # THE HUB SESSION IS THE DEFAULT, read off the estate remotely — the same
+  # rule the hub-side verb applies when it gets no name.
+  printf 'R="%s"; P="%s"; N="%s"; [ -n "$N" ] || N=$(sed -n '"'"'s/^HUB_SESSION="\([a-z0-9-]*\)"$/\\1/p'"'"' "$R/estate/steward.conf" | tail -1); for c in "$P/linux/estate-status.sh" "$R/estate-status.sh"; do [ -f "$c" ] || continue; K=$(STEWARD_ESTATE_ROOT="$R" bash "$c" resolve "$N") || exit $?; F="$R/sessions.d/$K.conf"; printf '"'"'%%s\\n%%s\\n%%s\\n%%s\\n'"'"' "$K" "$(sed -n '"'"'s/^OWNER="\([^"]*\)"$/\\1/p'"'"' "$F" | head -1)" "$(sed -n '"'"'s/^HOST="\([^"]*\)"$/\\1/p'"'"' "$F" | head -1)" "$HOME"; exit 0; done; echo "estate-status.sh found in neither layout (%s/linux/, %s/)" >&2; exit 78' \
+    "$ESTATE_ROOT" "$PRODUCT_DIR" "$1" "$PRODUCT_DIR" "$ESTATE_ROOT"
+}
+
+cmd_estate_login() { # <estate> [session]
+  local name="$1" sess="${2:-}"
+  case "$sess" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fel "session name: [a-z0-9-] only" 64 ;;
+  esac
+  estate_las "$name"
+
+  local seat rc
+  seat="$("$SSH_BIN" "$SSH" "$(_seat_cmd "$sess")")"; rc=$?
+  [ "$rc" -eq 0 ] || fel "could not place '${sess:-the hub session}' in estate '$name' — see the message above" "$rc"
+
+  # THE ANSWER IS INPUT INTO AN SSH TARGET AND A REMOTE LINE, so every field
+  # is validated to its own shape before either is built. A row that sneaks
+  # a shell metacharacter into OWNER would otherwise become a command.
+  local key owner host home
+  key="$(printf '%s\n' "$seat" | sed -n 1p)"
+  owner="$(printf '%s\n' "$seat" | sed -n 2p)"
+  host="$(printf '%s\n' "$seat" | sed -n 3p)"
+  home="$(printf '%s\n' "$seat" | sed -n 4p)"
+  case "$key"   in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)  fel "could not read the estate's answer for '$sess' (key '$key')" 78 ;; esac
+  case "$owner" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789_-]*) fel "could not read the estate's answer for '$sess' (owner '$owner')" 78 ;; esac
+  case "$host"  in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789.-]*) fel "could not read the estate's answer for '$sess' (host '$host')" 78 ;; esac
+  case "$home"  in /*) ;; *) fel "could not read the estate's answer for '$sess' (home '$home')" 78 ;; esac
+
+  # THE CARD'S OWN TARGET WINS WHEN IT IS THE SAME ACCOUNT — it may be an ssh
+  # alias, a tailnet name, a port; owner@HOST is the derived form for every
+  # OTHER account, whose door the card knows nothing about.
+  local target="$owner@$host"
+  case "$SSH" in "$owner@"*) target="$SSH" ;; esac
+
+  # THE ESTATE ROOT IN THE OWNER'S HOME. A root under the answering HOME is
+  # the deployed image, present in every home the estate deploys to — so it
+  # is the same path relative to $HOME there. A root elsewhere is shared and
+  # goes through as it is.
+  local root
+  case "$ESTATE_ROOT" in
+    "$home"/*) root='$HOME/'"${ESTATE_ROOT#"$home"/}" ;;
+    *)         root="$ESTATE_ROOT" ;;
+  esac
+
+  echo "steward: ${sess:-$key} sits in $owner's home on $host — taking you there for the login"
+  # THE SHELF, THEN THE CHECKOUT: install.sh links ~/.local/bin/steward, and a
+  # home the estate deployed to by hand has only the checkout. Not on PATH —
+  # a non-login ssh command rarely has ~/.local/bin on it.
+  exec "$SSH_BIN" -t "$target" \
+    'S="$HOME/.local/bin/steward"; [ -x "$S" ] || S="$HOME/Projects/steward/bin/steward"; [ -x "$S" ] || { echo "steward: no steward binary in this home (looked in ~/.local/bin and ~/Projects/steward/bin)" >&2; exit 69; }; exec env STEWARD_ESTATE_ROOT="'"$root"'" "$S" login '"$key"
 }
 
 cmd_init() {
@@ -4619,6 +4694,7 @@ case "${1:-}" in
     case "${1:-}" in
       attach) shift; cmd_attach "$est" "${1:-}" ;;
       peek)   shift; cmd_peek "$est" "${1:-}" ;;
+      login)  shift; cmd_estate_login "$est" "${1:-}" ;;
       # SHIFT PAST "ls", AND FORWARD THE REST. Measured live: `steward <estate>
       # ls --sort slug` neither sorted nor refused — this branch called
       # `cmd_ls "$est"` and nothing else, so `--sort slug` was never even
