@@ -14,7 +14,7 @@
 #
 # THE FALLBACK IS PER KEY, NOT PER FILE, and it is one-directional: a host row
 # may override, a missing key falls back to the estate, and a MALFORMED key
-# refuses with rc 78 rather than falling back. That last one is the whole point
+# refuses with rc 78 rather than falling back. That last one is the whole purpose
 # of the file — a mistyped relay target must not quietly become the other hub's
 # address. A silent fallback there is indistinguishable from success.
 #

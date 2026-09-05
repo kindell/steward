@@ -9,7 +9,7 @@
 # place: the gate, the delivery and the reader must never read different rows
 # for the same name.
 #
-# THE REFUSALS ARE THE POINT. An ambiguous slug is never chosen silently (two
+# THE REFUSALS ARE THE PURPOSE. An ambiguous slug is never chosen silently (two
 # people's sessions may share it) — rc 65 naming the rows AND the accounts. A
 # row carrying SLUG without ID is broken and an ID is never guessed for it. An
 # invalid name never reaches the file system: '*' would be a glob over the

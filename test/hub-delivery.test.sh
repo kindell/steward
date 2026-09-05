@@ -26,7 +26,7 @@
 #   * Four header lines then JSON to EOF; the remote script is static.
 #   * Read timeouts on everything from outside: a half-open connection used to
 #     leave the remote side in pipe_read forever.
-#   * The remote nudge goes over the home's socket, named by that home's estate.
+#   * The remote wake goes over the home's socket, named by that home's estate.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pass=0; fail=0
@@ -144,7 +144,7 @@ rem="$FX/hh/.config/agent-bus/s-00000000000000ee/inbox"
 is  "the remote side wrote the record under the ID" "$(count_json "$rem")" "1"
 is  ".to carries the ID on the remote copy too" "$(jq -r .to "$rem/$f")" "s-00000000000000ee"
 is  ".klass survives the wire" "$(jq -r .klass "$rem/$f")" "DRIFT"
-has "the remote nudge went over the home's socket, named by its estate" "$(cat "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000ee"
+has "the remote wake went over the home's socket, named by its estate" "$(cat "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000ee"
 has "...and typed the registry's ping text" "$(cat "$TMUX_CALLS")" "send-keys -t s-00000000000000ee -l [bus] you have mail"
 is  "the sender's archive got the copy after success" "$(count_json "$FX/bus-home/legacy/sent")" "5"
 unset TMUX_ALIVE
