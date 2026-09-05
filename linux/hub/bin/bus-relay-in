@@ -15,8 +15,15 @@ here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib.sh
 source "$here/lib.sh"
 
-IFS= read -r to || { echo "relay: empty stdin" >&2; exit 64; }
-text="$(head -c 65536)"   # cap: 64 kB - a bus message is a short notice, not a file
+# READ TIMEOUTS ON EVERYTHING FROM OUTSIDE, as in bus-relay-deliver: a half-open
+# connection must not leave this forced command in pipe_read forever. The body cap
+# is coreutils timeout when present, gtimeout when present, otherwise plain - the
+# client side ServerAlive remains the guard where neither exists.
+RT="${BUS_RELAY_READ_TIMEOUT:-15}"
+IFS= read -r -t "$RT" to || { echo "relay: empty stdin, or nothing within ${RT}s" >&2; exit 64; }
+_cap=""; command -v timeout >/dev/null 2>&1 && _cap="timeout $RT"
+[ -n "$_cap" ] || { command -v gtimeout >/dev/null 2>&1 && _cap="gtimeout $RT"; }
+text="$($_cap head -c 65536)" || { echo "relay: timeout reading the text" >&2; exit 64; }   # cap: 64 kB - a bus message is a short notice, not a file
 [ -n "$text" ] || { echo "relay: empty text" >&2; exit 64; }
 
 # The sender field is ALWAYS the key's identity. Should the remote side send a

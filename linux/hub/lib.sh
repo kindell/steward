@@ -565,7 +565,7 @@ bus_tmux_capture_pane() {
 bus_tmux_send_keys() {
   local to="${1:-}" text="${2:-}"
   local bin sock; bin="$(bus_tmux_bin)"; sock="$(bus_tmux_sock)"
-  "$bin" -S "$sock" send-keys -t "$to" -l "$text" 2>/dev/null
+  "$bin" -S "$sock" send-keys -t "$to" -l -- "$text" 2>/dev/null
   "$bin" -S "$sock" send-keys -t "$to" Enter 2>/dev/null
 }
 
@@ -779,7 +779,7 @@ bus_remote_deliver() {
       pane="$("${tm[@]}" capture-pane -t "$to" -p 2>/dev/null)"
       case "$pane" in
         *"esc to interrupt"*|*"… ("*) : ;;
-        *) "${tm[@]}" send-keys -t "$to" -l "$ping" 2>/dev/null
+        *) "${tm[@]}" send-keys -t "$to" -l -- "$ping" 2>/dev/null
            "${tm[@]}" send-keys -t "$to" Enter 2>/dev/null ;;
       esac
     fi
@@ -807,6 +807,13 @@ bus_archive_sent() {
   # "unknown").
   local from_key="$from"
   if bus_resolve_recipient "$from" 2>/dev/null; then from_key="$BUS_RES_ID"; fi
+  # THE SENDER'S NAME BECOMES A PATH SEGMENT. A sender is not validated (relays,
+  # "unknown", the hub's word), so the segment is form-checked here: anything
+  # outside the enumeration is folded to '_' - "../../x" cannot leave the bus home.
+  case "$from_key" in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) from_key="$(printf '%s' "$from_key" | tr -c 'a-z0-9-' '_')" ;;
+  esac
+  [ -n "$from_key" ] || return 0
   local sent; sent="$(bus_home)/$from_key/sent"
   mkdir -p "$sent" 2>/dev/null || return 0
   local now; now="$(date +%s)"
@@ -878,14 +885,13 @@ bus_send() {
   [ "$_hrc" -eq 65 ] && return 65
   # THE OWNER IS RESOLVED BEFORE ANY DELIVERY, not inline in an argument list: it
   # can REFUSE, and a refusal inside a command substitution would be swallowed and
-  # delivered as an empty account — into whichever home ssh defaults to. It is
-  # needed on all three paths below, because "which home" is the question on a
-  # shared host even when the machine is ours.
+  # delivered as an empty account — into whichever home ssh defaults to. A row
+  # without an owner is refused where an owner is NEEDED (another machine, or a
+  # neighbour's home); a local recipient in our own registry is written locally
+  # as before — the registry validates OWNER on its own rows, so the empty case is
+  # a legacy fixture, not a live row.
   local rowner
-  if ! rowner="$(bus_recipient_owner "$to")"; then
-    echo "bus: NOTHING IS SENT to '$to' — the owning account could not be resolved." >&2
-    return 78
-  fi
+  rowner="$(bus_recipient_owner "$to" 2>/dev/null)" || rowner=""
   # WHICH MACHINE AM I? Measured (bus_local_host), never assumed from the estate.
   # An assumed answer made every letter to the hub's old machine LOCAL and every
   # letter to a session on the new one REMOTE, the day the hub moved.
@@ -893,6 +899,10 @@ bus_send() {
     # ANOTHER MACHINE. The ID travels over the wire: the remote side builds the
     # inbox path and pings tmux from what it receives, and both key on the ID for
     # a migrated row. For a legacy row to_id == to, so the line is byte-identical.
+    if [ -z "$rowner" ]; then
+      echo "bus: NOTHING IS SENT to '$to' — the owning account could not be resolved, and a queue in the wrong home is never read." >&2
+      return 78
+    fi
     local rc=0
     bus_remote_deliver "$rhost" "$to_id" "$from" "$text" "$rowner" || rc=$?
     [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to" "$text"
@@ -903,7 +913,7 @@ bus_send() {
   # the hub's own home is read by nobody. Delivery then goes AS THE OWNER over ssh
   # to our own host — the same protocol and the same bound key as between
   # machines, because it is the same boundary: another person's home.
-  if [ "$rowner" != "${STEWARD_BUS_SELF_USER:-$(id -un)}" ]; then
+  if [ -n "$rowner" ] && [ "$rowner" != "${STEWARD_BUS_SELF_USER:-$(id -un)}" ]; then
     local rc=0
     bus_remote_deliver "$rhost" "$to_id" "$from" "$text" "$rowner" || rc=$?
     [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to" "$text"
@@ -1056,7 +1066,7 @@ bus_read() {
     # fence and can never look like a second envelope. The char count exposes a
     # body carrying more than one visible line. Demonstrated forgery 2026-08-27.
     printf 'from=%s ts=%s\n' "$from" "$ts"
-    printf '  ┌─ text (%s tecken) ─\n' "${#text}"
+    printf '  ┌─ text (%s chars) ─\n' "${#text}"
     printf '%s' "$text" | while IFS= read -r _line || [ -n "$_line" ]; do
       printf '  │ %s\n' "$_line"
     done

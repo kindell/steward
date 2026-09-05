@@ -25,8 +25,8 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/hh/.tmux" "$FX/bin"
-export STEWARD_REGISTRY_DIR="$FX/sessions.d"
+mkdir -p "$FX/reg" "$FX/hh/.tmux" "$FX/bin"
+export STEWARD_REGISTRY_DIR="$FX/reg"
 export STEWARD_BUS_HOME="$FX/bus-home"
 export HOME="$FX/hh"
 cat > "$FX/estate.conf" <<'EOF'
@@ -36,9 +36,9 @@ TMUX_SOCKET="hub-one.sock"
 PING_MSG="[bus] you have mail"
 EOF
 export STEWARD_ESTATE="$FX/estate.conf"
-printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/legacy.conf"
-printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000aa.conf"
-printf 'ID="s-00000000000000mm"\nSLUG="machine"\nACCOUNT="operator-c-hub"\nOWNER="operator-c"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL=""\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000mm.conf"
+printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/legacy.conf"
+printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000aa.conf"
+printf 'ID="s-00000000000000mm"\nSLUG="machine"\nACCOUNT="operator-c-hub"\nOWNER="operator-c"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL=""\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000mm.conf"
 
 # A tmux stub that logs every call. It answers has-session with TMUX_ALIVE and
 # capture-pane with PANE_TEXT, like the estate's relay-deliver fixture.
@@ -55,6 +55,12 @@ STUB
 chmod 755 "$FX/bin/tmux"
 export TMUX_CALLS="$FX/tmux-calls"
 
+# NO REAL SSH FROM A TEST. The estate's suite once delivered a fixture's record into
+# a colleague's real home: a row with another OWNER on the same host is an ssh
+# boundary to the merged library. Every ssh attempt here is refused and counted;
+# the suite ends by asserting there were none.
+printf '#!/bin/bash\necho "$*" >> "${SSH_REFUSED:?}"; exit 255\n' > "$FX/ssh-refuse"; chmod 755 "$FX/ssh-refuse"
+export STEWARD_BUS_SSH_BIN="$FX/ssh-refuse" SSH_REFUSED="$FX/ssh-refused"; : > "$SSH_REFUSED"
 # shellcheck source=/dev/null
 . "$here/linux/hub/lib.sh"
 
@@ -66,8 +72,13 @@ echo "1. the tmux wrappers use bus_tmux_bin - the one on PATH, never a literal p
 is  "four wrappers, five tmux calls (send-keys is two)" "$(wc -l < "$TMUX_CALLS" | tr -d ' ')" "5"
 has "has-session over the estate's socket"  "$(sed -n 1p "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000aa"
 has "capture-pane over the socket"          "$(sed -n 2p "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock capture-pane"
-has "send-keys: literal text"               "$(sed -n 3p "$TMUX_CALLS")" "send-keys -t s-00000000000000aa -l [bus] you have mail"
+has "send-keys: literal text, options closed with --" "$(sed -n 3p "$TMUX_CALLS")" "send-keys -t s-00000000000000aa -l -- [bus] you have mail"
 has "send-keys: a separate Enter"           "$(sed -n 4p "$TMUX_CALLS")" "send-keys -t s-00000000000000aa Enter"
+# A TEXT THAT BEGINS WITH A DASH is still text: without '--' tmux would read it as
+# an option and the ping would fall silently.
+: > "$TMUX_CALLS"
+( export PATH="$FX/bin:$PATH" STEWARD_BUS_TMUX_BIN=; bus_tmux_send_keys legacy "-x looks like an option" )
+has "send-keys ends its options with -- before the text" "$(sed -n 1p "$TMUX_CALLS")" "send-keys -t legacy -l -- -x looks like an option"
 : > "$TMUX_CALLS"
 ( export PATH="$FX/empty" STEWARD_BUS_TMUX_BIN="$FX/bin/tmux" TMUX_ALIVE=1; bus_tmux_has_session legacy )
 is "STEWARD_BUS_TMUX_BIN still overrides the PATH lookup" "$(wc -l < "$TMUX_CALLS" | tr -d ' ')" "1"
@@ -107,6 +118,9 @@ bus_ar_maskinsession nobody 2>/dev/null && bad "unknown name is not a machine se
 # THE GATE ON TOP: same owner via slug is allowed, and an unresolvable party refuses.
 bus_fraga_tillatet legacy alpha && ok "gate: same owner via slug allowed" || bad "gate: same owner via slug allowed"
 bus_fraga_tillatet legacy nobody && bad "gate: unresolvable recipient refused" || ok "gate: unresolvable recipient refused"
+
+echo "z. no test reached a real ssh"
+is "ssh was never called" "$(wc -l < "$SSH_REFUSED" | tr -d ' ')" "0"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"

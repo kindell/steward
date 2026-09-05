@@ -94,6 +94,7 @@ setup; python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.arg
 has "idle session is pinged with the header's ping text" "$(cat "$SENDKEYS")" "[bus] you have mail"
 has "forced: has-session over the home's socket" "$(cat "$TMUX_CALLS")" "-S $T/hh/.tmux/hub-one.sock has-session -t recipient"
 has "forced: send-keys over the home's socket"   "$(cat "$TMUX_CALLS")" "-S $T/hh/.tmux/hub-one.sock send-keys"
+has "forced: options end with -- before the ping text" "$(cat "$TMUX_CALLS")" "send-keys -t recipient -l -- [bus] you have mail"
 : > "$TMUX_CALLS"; : > "$SENDKEYS"
 ( export TMUX_ALIVE=1 PANE_TEXT="normal prompt"; run_inline recipient )
 has "inline: has-session over the home's socket" "$(cat "$TMUX_CALLS")" "-S $T/hh/.tmux/hub-one.sock has-session -t recipient"
@@ -154,6 +155,17 @@ printf 'inbound\n' | STEWARD_REGISTRY_DIR="$T/reg2" STEWARD_ESTATE="$T/estate.co
 is  "recipient but no text: rc 64" "$rc" "64"
 bash "$RELAY_IN" </dev/null >/dev/null 2>&1; rc=$?
 [ "$rc" -ne 0 ] && ok "no identity argument: refused" || bad "no identity argument: refused"
+# A SENDER THAT NEVER SENDS: the recipient line arrives, then silence without EOF.
+fifo2="$T/fifo2"; mkfifo "$fifo2"
+( printf 'inbound\n'; sleep 30 ) > "$fifo2" &
+producer2=$!
+t0=$SECONDS
+( export BUS_RELAY_READ_TIMEOUT=2 STEWARD_REGISTRY_DIR="$T/reg2" STEWARD_ESTATE="$T/estate.conf" STEWARD_BUS_HOME="$T/bus-home"
+  bash "$RELAY_IN" far-machine < "$fifo2" >/dev/null 2>&1 ); rc=$?
+dt=$(( SECONDS - t0 ))
+kill "$producer2" 2>/dev/null
+[ "$dt" -lt 10 ] && ok "relay-in gives up on a silent sender within the timeout (${dt}s)" || bad "relay-in hung on a silent sender" "${dt}s"
+[ "$rc" -ne 0 ] && ok "...and fails the call" || bad "...and fails the call"
 teardown
 
 echo

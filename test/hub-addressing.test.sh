@@ -29,8 +29,8 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/empty.d" "$FX/hh"
-export STEWARD_REGISTRY_DIR="$FX/sessions.d"
+mkdir -p "$FX/reg" "$FX/empty.d" "$FX/hh"
+export STEWARD_REGISTRY_DIR="$FX/reg"
 export STEWARD_BUS_HOME="$FX/bus-home"
 export HOME="$FX/hh"
 cat > "$FX/estate.conf" <<'EOF'
@@ -45,14 +45,20 @@ TMUX_SOCKET="hub-one.sock"
 PING_MSG="[bus] you have mail"
 EOF
 export STEWARD_ESTATE="$FX/estate.conf"
-printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/legacy.conf"
-printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/remote.conf"
-printf 'OWNER="operator-b"\nDOMAIN="entity-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/homeless.conf"
-printf 'DOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/ownerless.conf"
-printf 'OWNER="Not Valid"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/badowner.conf"
-printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000aa.conf"
-printf 'ID="s-00000000000000ff"\nSLUG="hub-one"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL="Hub"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000ff.conf"
+printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/legacy.conf"
+printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/remote.conf"
+printf 'OWNER="operator-b"\nDOMAIN="entity-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/homeless.conf"
+printf 'DOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/ownerless.conf"
+printf 'OWNER="Not Valid"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/badowner.conf"
+printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000aa.conf"
+printf 'ID="s-00000000000000ff"\nSLUG="hub-one"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL="Hub"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000ff.conf"
 
+# NO REAL SSH FROM A TEST. The estate's suite once delivered a fixture's record into
+# a colleague's real home: a row with another OWNER on the same host is an ssh
+# boundary to the merged library. Every ssh attempt here is refused and counted;
+# the suite ends by asserting there were none.
+printf '#!/bin/bash\necho "$*" >> "${SSH_REFUSED:?}"; exit 255\n' > "$FX/ssh-refuse"; chmod 755 "$FX/ssh-refuse"
+export STEWARD_BUS_SSH_BIN="$FX/ssh-refuse" SSH_REFUSED="$FX/ssh-refused"; : > "$SSH_REFUSED"
 # shellcheck source=/dev/null
 . "$here/linux/hub/lib.sh"
 noop_ping() { :; }
@@ -110,6 +116,9 @@ is "listed via slug: two lines" "$(bus_list_unacked alpha | grep -c '.')" "2"
 is "listed via ID: the same two" "$(bus_list_unacked s-00000000000000aa | grep -c '.')" "2"
 has "format is <file>|<age>|<from>" "$(bus_list_unacked alpha | head -1)" "|legacy"
 is "an unresolvable name lists nothing, rc 0" "$(bus_list_unacked nobody; echo "rc=$?")" "rc=0"
+
+echo "z. no test reached a real ssh"
+is "ssh was never called" "$(wc -l < "$SSH_REFUSED" | tr -d ' ')" "0"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"

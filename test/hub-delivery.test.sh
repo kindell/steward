@@ -38,8 +38,8 @@ count_json() { find "$1" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d 
 old_days() { date -v-"$1"d '+%Y%m%d%H%M' 2>/dev/null || date -d "$1 days ago" '+%Y%m%d%H%M'; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/hh/.tmux" "$FX/hh/scripts/estate" "$FX/bin"
-export STEWARD_REGISTRY_DIR="$FX/sessions.d"
+mkdir -p "$FX/reg" "$FX/hh/.tmux" "$FX/hh/scripts/estate" "$FX/bin"
+export STEWARD_REGISTRY_DIR="$FX/reg"
 export STEWARD_BUS_HOME="$FX/bus-home"
 export HOME="$FX/hh"
 export STEWARD_BUS_LOCAL_HOST=host-one
@@ -54,18 +54,18 @@ export STEWARD_ESTATE="$FX/estate.conf"
 # The "remote" home's estate - read by the remote-side script for its socket name.
 printf 'TMUX_SOCKET="hub-one.sock"\n' > "$FX/hh/scripts/estate/steward.conf"
 
-printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/legacy.conf"
-printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000aa.conf"
-printf 'ID="s-00000000000000bb"\nSLUG="beta"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000bb.conf"
-printf 'ID="s-00000000000000cc"\nSLUG="beta"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000cc.conf"
-printf 'ID="s-00000000000000ff"\nSLUG="hub-one"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL="Hub"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000ff.conf"
+printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/legacy.conf"
+printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000aa.conf"
+printf 'ID="s-00000000000000bb"\nSLUG="beta"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000bb.conf"
+printf 'ID="s-00000000000000cc"\nSLUG="beta"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000cc.conf"
+printf 'ID="s-00000000000000ff"\nSLUG="hub-one"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL="Hub"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000ff.conf"
 # A neighbour: same host, ANOTHER person's home.
-printf 'ID="s-00000000000000ee"\nSLUG="neighbour"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000ee.conf"
+printf 'ID="s-00000000000000ee"\nSLUG="neighbour"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000ee.conf"
 # A session on another machine.
-printf 'OWNER="operator-b"\nDOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/faraway.conf"
+printf 'OWNER="operator-b"\nDOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/faraway.conf"
 # Somebody with a different owner but the same entity - the FRAGA gate's permit.
-printf 'OWNER="operator-b"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/colleague.conf"
-printf 'OWNER="operator-c"\nDOMAIN="entity-nine"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/stranger.conf"
+printf 'OWNER="operator-b"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/colleague.conf"
+printf 'OWNER="operator-c"\nDOMAIN="entity-nine"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/stranger.conf"
 
 # ssh stub: logs its arguments, then runs the LAST argument (the remote script)
 # locally with the same stdin - so the remote side really executes, in $HOME.
@@ -145,7 +145,7 @@ is  "the remote side wrote the record under the ID" "$(count_json "$rem")" "1"
 is  ".to carries the ID on the remote copy too" "$(jq -r .to "$rem/$f")" "s-00000000000000ee"
 is  ".klass survives the wire" "$(jq -r .klass "$rem/$f")" "DRIFT"
 has "the remote wake went over the home's socket, named by its estate" "$(cat "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000ee"
-has "...and typed the registry's ping text" "$(cat "$TMUX_CALLS")" "send-keys -t s-00000000000000ee -l [bus] you have mail"
+has "...and typed the registry's ping text" "$(cat "$TMUX_CALLS")" "send-keys -t s-00000000000000ee -l -- [bus] you have mail"
 is  "the sender's archive got the copy after success" "$(count_json "$FX/bus-home/legacy/sent")" "5"
 unset TMUX_ALIVE
 
@@ -160,6 +160,15 @@ before="$(count_json "$FX/bus-home/legacy/sent")"
 STEWARD_BUS_SSH_BIN="$FX/bin/ssh-dead" bus_send faraway legacy "DRIFT topic: lost" recording_ping >/dev/null 2>&1; rc=$?
 is "a dead link fails the send"          "$([ "$rc" -ne 0 ] && echo nonzero)" "nonzero"
 is "...and nothing is archived for it"   "$(count_json "$FX/bus-home/legacy/sent")" "$before"
+
+echo "4b. a row without OWNER: written locally, refused where an owner is needed"
+printf 'DOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/ownerless-local.conf"
+printf 'DOMAIN="entity-one"\nHOST="host-two"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/ownerless-far.conf"
+f="$(bus_send ownerless-local legacy "DRIFT topic: local" recording_ping 2>/dev/null)"; rc=$?
+is  "local recipient without OWNER: rc 0" "$rc" "0"
+is  "...written in our own bus home" "$(count_json "$FX/bus-home/ownerless-local/inbox")" "1"
+bus_send ownerless-far legacy "DRIFT topic: far" recording_ping >/dev/null 2>&1; rc=$?
+is  "remote recipient without OWNER: rc 78 - a queue in the wrong home is never read" "$rc" "78"
 
 echo "5. the read path: loud on unknown, ID-keyed, envelope line, fenced text, sweep first"
 out="$(bus_read nobody 2>&1)"; rc=$?
@@ -186,7 +195,7 @@ old2="$d/ancient-2.json"; printf '{}' > "$old2"; touch -t "$(old_days 200)" "$ol
 STEWARD_BUS_GC_DAYS="" bus_read alpha >/dev/null 2>&1
 is  "STEWARD_BUS_GC_DAYS='' turns the sweep off" "$([ -f "$old2" ] && echo kept || echo swept)" "kept"
 # EVEN WHEN THE INBOX IS MISSING: the silent session's archive is the oldest one.
-printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/silent.conf"
+printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/silent.conf"
 sd="$FX/bus-home/silent/done"; mkdir -p "$sd"; s_old="$sd/ancient.json"; printf '{}' > "$s_old"; touch -t "$(old_days 200)" "$s_old"
 rm -rf "$FX/bus-home/silent/inbox"
 bus_read silent >/dev/null 2>&1

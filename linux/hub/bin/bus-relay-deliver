@@ -88,7 +88,7 @@ if "${tm[@]}" has-session -t "$to" 2>/dev/null; then
   pane="$("${tm[@]}" capture-pane -t "$to" -p 2>/dev/null)"
   case "$pane" in
     *"esc to interrupt"*|*"… ("*) : ;;
-    *) "${tm[@]}" send-keys -t "$to" -l "$ping" 2>/dev/null
+    *) "${tm[@]}" send-keys -t "$to" -l -- "$ping" 2>/dev/null
        "${tm[@]}" send-keys -t "$to" Enter 2>/dev/null ;;
   esac
 fi

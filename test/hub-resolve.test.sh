@@ -10,7 +10,7 @@
 # for the same name.
 #
 # THE REFUSALS ARE THE PURPOSE. An ambiguous slug is never chosen silently (two
-# people's sessions may share it) — rc 65 naming the rows AND the accounts. A
+# people's sessions may share it) — a refusal that names the rows AND the accounts, rc 65. A
 # row carrying SLUG without ID is broken and an ID is never guessed for it. An
 # invalid name never reaches the file system: '*' would be a glob over the
 # whole registry.
@@ -27,8 +27,8 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/hh/.tmux" "$FX/bin"
-export STEWARD_REGISTRY_DIR="$FX/sessions.d"
+mkdir -p "$FX/reg" "$FX/hh/.tmux" "$FX/bin"
+export STEWARD_REGISTRY_DIR="$FX/reg"
 export STEWARD_BUS_HOME="$FX/bus-home"
 export HOME="$FX/hh"
 
@@ -41,37 +41,43 @@ PING_MSG="[bus] you have mail"
 EOF
 export STEWARD_ESTATE="$FX/estate.conf"
 
-row() { printf '%s\n' "$@" > "$FX/sessions.d/$1.conf"; }
+row() { printf '%s\n' "$@" > "$FX/reg/$1.conf"; }
 # Legacy row without an ID line: the file name IS the id (same fallback as
 # registry_load's `: "${ID:=$project}"`).
 printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/legacy.conf"
+  > "$FX/reg/legacy.conf"
 # Legacy row WITH an ID line (ID == file name).
 printf 'ID="with-id"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/with-id.conf"
+  > "$FX/reg/with-id.conf"
 # Migrated row: file name = opaque ID, SLUG + ACCOUNT.
 printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/s-00000000000000aa.conf"
+  > "$FX/reg/s-00000000000000aa.conf"
 # Two rows sharing a slug on different accounts — the ambiguity that must never
 # be chosen silently.
 printf 'ID="s-00000000000000bb"\nSLUG="beta"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/s-00000000000000bb.conf"
+  > "$FX/reg/s-00000000000000bb.conf"
 printf 'ID="s-00000000000000cc"\nSLUG="beta"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/s-00000000000000cc.conf"
+  > "$FX/reg/s-00000000000000cc.conf"
 # New-form row MISSING its ID — broken; an id is never guessed for it.
 printf 'SLUG="gamma"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/s-00000000000000dd.conf"
+  > "$FX/reg/s-00000000000000dd.conf"
 # The hub's own row: opaque ID, SLUG = the estate's HUB_SESSION.
 printf 'ID="s-00000000000000ff"\nSLUG="hub-one"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL="Hub"\nREPO_PATH="/tmp/x"\n' \
-  > "$FX/sessions.d/s-00000000000000ff.conf"
+  > "$FX/reg/s-00000000000000ff.conf"
 
+# NO REAL SSH FROM A TEST. The estate's suite once delivered a fixture's record into
+# a colleague's real home: a row with another OWNER on the same host is an ssh
+# boundary to the merged library. Every ssh attempt here is refused and counted;
+# the suite ends by asserting there were none.
+printf '#!/bin/bash\necho "$*" >> "${SSH_REFUSED:?}"; exit 255\n' > "$FX/ssh-refuse"; chmod 755 "$FX/ssh-refuse"
+export STEWARD_BUS_SSH_BIN="$FX/ssh-refuse" SSH_REFUSED="$FX/ssh-refused"; : > "$SSH_REFUSED"
 # shellcheck source=/dev/null
 . "$here/linux/hub/lib.sh"
 
 echo "1. resolution: exact name"
 bus_resolve_recipient legacy && ok "legacy row resolves" || bad "legacy row resolves"
 is "legacy: ID is the file name"        "${BUS_RES_ID:-}"   "legacy"
-is "legacy: conf is the exact file"     "${BUS_RES_CONF:-}" "$FX/sessions.d/legacy.conf"
+is "legacy: conf is the exact file"     "${BUS_RES_CONF:-}" "$FX/reg/legacy.conf"
 bus_resolve_recipient with-id && ok "row with ID line resolves" || bad "row with ID line resolves"
 is "ID line is read from the row"       "${BUS_RES_ID:-}"   "with-id"
 bus_resolve_recipient s-00000000000000aa && ok "migrated row resolves on its exact ID" || bad "migrated row resolves on its exact ID"
@@ -80,7 +86,7 @@ is "exact ID: queue key is the ID"      "${BUS_RES_ID:-}"   "s-00000000000000aa"
 echo "2. resolution: slug"
 bus_resolve_recipient alpha && ok "unique slug resolves" || bad "unique slug resolves"
 is "slug: ID comes from the matched row"   "${BUS_RES_ID:-}"   "s-00000000000000aa"
-is "slug: conf is the matched row"         "${BUS_RES_CONF:-}" "$FX/sessions.d/s-00000000000000aa.conf"
+is "slug: conf is the matched row"         "${BUS_RES_CONF:-}" "$FX/reg/s-00000000000000aa.conf"
 
 echo "3. ambiguous slug: refusal that names rows and accounts"
 err="$(bus_resolve_recipient beta 2>&1)"; rc=$?
@@ -107,10 +113,10 @@ bus_resolve_recipient nobody 2>/dev/null; rc=$?
 is "unknown name: rc 1 (unknown, not refused)" "$rc" "1"
 
 echo "6. the form filter in the scan: a junk-named conf cannot poison a slug"
-printf 'ID="s-00000000000000ee"\nSLUG="alpha"\nACCOUNT="mallory-hub"\nOWNER="mallory"\n' > "$FX/sessions.d/UPPER.Weird.conf"
+printf 'ID="s-00000000000000ee"\nSLUG="alpha"\nACCOUNT="mallory-hub"\nOWNER="mallory"\n' > "$FX/reg/UPPER.Weird.conf"
 bus_resolve_recipient alpha 2>/dev/null && ok "junk-named conf does not make 'alpha' ambiguous" || bad "junk-named conf does not make 'alpha' ambiguous"
 is "form filter: the real row was still chosen" "${BUS_RES_ID:-}" "s-00000000000000aa"
-rm -f "$FX/sessions.d/UPPER.Weird.conf"
+rm -f "$FX/reg/UPPER.Weird.conf"
 
 echo "7. one message builder, every caller"
 u="$(bus_message_json snd rcv 1700000000 "hello" '{}')"; rc=$?
@@ -177,6 +183,15 @@ is "an unregistered sender archives under its own name" \
    "$(find "$FX/bus-home/unknown-sender/sent" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
 bus_archive_sent "" legacy "DRIFT topic: x"; rc=$?
 is "empty sender: nothing written, rc 0" "$rc" "0"
+# THE SENDER'S NAME IS A PATH SEGMENT AND IS NOT VALIDATED UPSTREAM (relays,
+# "unknown"): a climbing name must be folded, never followed.
+mkdir -p "$FX/outside"
+bus_archive_sent "../../outside/evil" legacy "DRIFT topic: x"; rc=$?
+is "a climbing sender name: rc 0, nothing outside the bus home" "$(find "$FX/outside" -name '*.json' | wc -l | tr -d ' ')" "0"
+is "...the copy lands under a folded name inside it" "$(find "$FX/bus-home" -path '*/sent/*.json' -newer "$FX/estate.conf" | grep -c '_')" "1"
+
+echo "z. no test reached a real ssh"
+is "ssh was never called" "$(wc -l < "$SSH_REFUSED" | tr -d ' ')" "0"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
