@@ -721,30 +721,60 @@ bus_remote_deliver() {
   # remote script is ENTIRELY static (single-quoted, zero interpolation): no
   # quoting bug, and no value can become shell code on the other side. The first
   # attempt built the script with embedded variables and died on nested quotes.
+  # The record comes from the ONE builder, envelope fields included — the remote
+  # copy must carry exactly what the local copy would.
   local ping; ping="$(bus_ping_msg)" || return 78
+  # ServerAlive tears a dead connection down from the CLIENT'S side; the read
+  # timeouts below protect the RECIPIENT'S. Belt and braces, because the two
+  # catch different halves of the same gap.
   { printf '%s\n%s\n%s\n%s\n' "$to" "$now" "$safe_from" "$ping"
-    jq -n --arg from "$from" --arg to "$to" --argjson ts "$now" --arg text "$text" \
-      '{from: $from, to: $to, ts: $ts, text: $text}'
-  } | "${STEWARD_BUS_SSH_BIN:-ssh}" -o BatchMode=yes -o ConnectTimeout=8 ${owner:+-l "$owner"} "$host" '
+    bus_message_json "$from" "$to" "$now" "$text" "$(bus_extra_flags)"
+  } | "${STEWARD_BUS_SSH_BIN:-ssh}" -o BatchMode=yes -o ConnectTimeout=8 \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 ${owner:+-l "$owner"} "$host" '
     set -u
-    IFS= read -r to; IFS= read -r now; IFS= read -r sf; IFS= read -r ping
+    # READ TIMEOUTS ON EVERYTHING FROM OUTSIDE. A delivery is milliseconds; input
+    # that does not arrive within RT seconds is a broken connection, not a slow
+    # one. An ssh client that died half-way — bytes sent, FIN never arrived, a
+    # tailnet gap — used to leave this process in pipe_read FOREVER, with an open
+    # sshd beside it and a process that looked alive. Measured: a relay that had
+    # hung for over an hour and grew with the traffic. A forced command without a
+    # limit of its own is a leak that stacks.
+    RT="${BUS_RELAY_READ_TIMEOUT:-15}"
+    IFS= read -r -t "$RT" to   || { echo "relay: timeout waiting for the recipient" >&2; exit 1; }
+    IFS= read -r -t "$RT" now  || { echo "relay: timeout waiting for the timestamp" >&2; exit 1; }
+    IFS= read -r -t "$RT" sf   || { echo "relay: timeout waiting for the sender" >&2; exit 1; }
+    IFS= read -r -t "$RT" ping || { echo "relay: timeout waiting for the ping text" >&2; exit 1; }
+    # The recipient name comes from outside and becomes a path — an enumeration,
+    # not a range: in a UTF-8 locale `[a-z]` follows collation and lets upper
+    # case through, and "../" must never get anywhere near mkdir.
     case "$to" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") echo "relay: bad recipient" >&2; exit 1;; esac
     inbox="$HOME/.config/agent-bus/$to/inbox"
     mkdir -p "$inbox" || exit 1
     tmp="$(mktemp "$inbox/.tmp.XXXXXX")" || exit 1
-    cat > "$tmp" || { rm -f "$tmp"; exit 1; }
+    # timeout around cat: the body is read to EOF, and EOF is exactly what a
+    # half-open connection withholds. Without the cap, cat hangs in pipe_read.
+    timeout "$RT" cat > "$tmp" || { rm -f "$tmp"; echo "relay: timeout reading the body" >&2; exit 1; }
     f="$now-$sf-$$.json"; n=1
     until ln "$tmp" "$inbox/$f" 2>/dev/null; do
       n=$((n+1)); [ "$n" -gt 10000 ] && { rm -f "$tmp"; exit 1; }
       f="$now-$sf-$$-$n.json"
     done
     rm -f "$tmp"
-    if tmux has-session -t "$to" 2>/dev/null; then
-      pane="$(tmux capture-pane -t "$to" -p 2>/dev/null)"
+    # The ping goes over the socket of THIS HOME, named by the estate of this
+    # home (TMUX_SOCKET) — not by a word in this script. There is no library here, so
+    # the key is read with sed, never source, the way a row is read. No estate or
+    # no socket: the default server, as before. Measured before this existed: the
+    # ping asked the default socket on a host whose sessions lived on a named
+    # one, found nothing, and the mail landed unannounced — a genuine receipt,
+    # which is why nobody saw it.
+    sock="$(sed -n "s/^TMUX_SOCKET=\"\(.*\)\"/\1/p" "$HOME/scripts/estate/steward.conf" 2>/dev/null | head -1)"
+    tm=(tmux); [ -n "$sock" ] && [ -S "$HOME/.tmux/$sock" ] && tm=(tmux -S "$HOME/.tmux/$sock")
+    if "${tm[@]}" has-session -t "$to" 2>/dev/null; then
+      pane="$("${tm[@]}" capture-pane -t "$to" -p 2>/dev/null)"
       case "$pane" in
         *"esc to interrupt"*|*"… ("*) : ;;
-        *) tmux send-keys -t "$to" -l "$ping" 2>/dev/null
-           tmux send-keys -t "$to" Enter 2>/dev/null ;;
+        *) "${tm[@]}" send-keys -t "$to" -l "$ping" 2>/dev/null
+           "${tm[@]}" send-keys -t "$to" Enter 2>/dev/null ;;
       esac
     fi
     printf "%s\n" "$f"'
@@ -808,10 +838,18 @@ bus_send() {
     70) echo "bus: NOTHING IS SENT — the parking guard could not read its list (the reason is above). Repair the list, or remove it if nothing should be parked." >&2
         return 70 ;;
   esac
-  if ! bus_valid_recipient "$to"; then
+  # ONE RESOLUTION, ONCE. The row and the queue key come out of the same answer,
+  # and the FRAGA gate below reads the same row through the same function. For
+  # every legacy row ID == name, so the queue lies exactly where it lay before.
+  local to_id="$to" _rrc=0
+  bus_resolve_recipient "$to" || _rrc=$?
+  # A refusal (ambiguous slug, broken ID) has already explained itself on stderr.
+  [ "$_rrc" -eq 65 ] && return 65
+  if [ "$_rrc" -ne 0 ]; then
     echo "bus: unknown recipient '$to'" >&2
     return 1
   fi
+  to_id="$BUS_RES_ID"
   # THE FRAGA GATE. Only this class is restricted — ordinary messages are
   # unchanged. The reason: a FRAGA is answered MECHANICALLY out of a registry, so
   # it hands the asker something they could not otherwise see (homes are 750). An
@@ -821,8 +859,8 @@ bus_send() {
   # nothing, and the next attempt is identical.
   if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
     echo "bus: '$from' may not put a FRAGA to '$to'." >&2
-    echo "     Regeln: samma AGARE, eller samma DOMAN (entiteten man jobbar pa)." >&2
-    echo "     Vanliga meddelanden (BESLUT FYND SAMORDNING DRIFT) ar oberorda." >&2
+    echo "     The rule: same OWNER, or same DOMAIN (the entity being worked on)." >&2
+    echo "     Ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected." >&2
     return 1
   fi
   # If the recipient lives on another machine, deliver over ssh — the queue lands
@@ -832,39 +870,68 @@ bus_send() {
   # the estate says where the recipient lives; an empty host would otherwise be
   # read as "local" one line below — the same fail-open, moved one step.
   [ "$_hrc" -eq 65 ] && return 65
-  # WHICH MACHINE AM I? Defaults to the hub's host from the estate, because this
-  # client belongs on the hub. STEWARD_BUS_LOCAL_HOST overrides it for tests.
-  local localhost_name="${STEWARD_BUS_LOCAL_HOST:-}"
-  [ -n "$localhost_name" ] || localhost_name="$(registry_hub_host)" || return 78
-  if [ -n "$rhost" ] && [ "$rhost" != "$localhost_name" ]; then
-    # THE OWNER IS RESOLVED BEFORE THE SEND, not inline in the argument list: it
-    # can now REFUSE, and a refusal inside a command substitution would have been
-    # swallowed and delivered as an empty account.
-    local rowner
-    if ! rowner="$(bus_recipient_owner "$to")"; then
-      echo "bus: NOTHING IS SENT to '$to' — the owning account could not be resolved." >&2
-      return 78
-    fi
-    bus_remote_deliver "$rhost" "$to" "$from" "$text" "$rowner"
-    return $?
+  # THE OWNER IS RESOLVED BEFORE ANY DELIVERY, not inline in an argument list: it
+  # can REFUSE, and a refusal inside a command substitution would be swallowed and
+  # delivered as an empty account — into whichever home ssh defaults to. It is
+  # needed on all three paths below, because "which home" is the question on a
+  # shared host even when the machine is ours.
+  local rowner
+  if ! rowner="$(bus_recipient_owner "$to")"; then
+    echo "bus: NOTHING IS SENT to '$to' — the owning account could not be resolved." >&2
+    return 78
   fi
-  local inbox; inbox="$(bus_home)/$to/inbox"
+  # WHICH MACHINE AM I? Measured (bus_local_host), never assumed from the estate.
+  # An assumed answer made every letter to the hub's old machine LOCAL and every
+  # letter to a session on the new one REMOTE, the day the hub moved.
+  if [ -n "$rhost" ] && [ "$rhost" != "$(bus_local_host)" ]; then
+    # ANOTHER MACHINE. The ID travels over the wire: the remote side builds the
+    # inbox path and pings tmux from what it receives, and both key on the ID for
+    # a migrated row. For a legacy row to_id == to, so the line is byte-identical.
+    local rc=0
+    bus_remote_deliver "$rhost" "$to_id" "$from" "$text" "$rowner" || rc=$?
+    [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to" "$text"
+    return "$rc"
+  fi
+  # SAME MACHINE, OTHER HOME. A hub on a shared host has neighbours in the house:
+  # sessions live in their owners' homes, homes are 750, and a queue written in
+  # the hub's own home is read by nobody. Delivery then goes AS THE OWNER over ssh
+  # to our own host — the same protocol and the same bound key as between
+  # machines, because it is the same boundary: another person's home.
+  if [ "$rowner" != "${STEWARD_BUS_SELF_USER:-$(id -un)}" ]; then
+    local rc=0
+    bus_remote_deliver "$rhost" "$to_id" "$from" "$text" "$rowner" || rc=$?
+    [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to" "$text"
+    return "$rc"
+  fi
+  # THE QUEUE IS KEYED ON THE ID, not on the name the sender typed — otherwise a
+  # session had two inboxes (one per spelling) and the reader emptied only one.
+  local inbox; inbox="$(bus_home)/$to_id/inbox"
   mkdir -p "$inbox" || return 1
 
   local now; now="$(date +%s)"
   local safe_from; safe_from="$(printf '%s' "$from" | tr -c 'A-Za-z0-9._-' '_')"
 
   local tmp; tmp="$(mktemp "$inbox/.tmp.XXXXXX")" || return 1
-  if ! jq -n --arg from "$from" --arg to "$to" --argjson ts "$now" --arg text "$text" \
-      '{from: $from, to: $to, ts: $ts, text: $text}' > "$tmp" 2>/dev/null; then
+  # .to CARRIES THE ID — the same value the remote path writes, so the two
+  # delivery paths cannot carry different truths about the recipient. ONE
+  # BUILDER, and the record carries the envelope fields and the not_a_secret
+  # claim (bus_extra_flags). THE CLAIM MUST BE VISIBLE IN THE ARCHIVE: it used
+  # to be loud in the sender's terminal and SILENT on disk, so a review could not
+  # tell "the guard never fired" from "it fired and somebody went past it" —
+  # exactly the distinction the escape hatch rests on. Older records are MUTE
+  # about it, not clean; the field has a known start date and is never
+  # back-filled, because an archive that can be edited afterwards is weaker
+  # evidence than an empty record with a known start.
+  if ! bus_message_json "$from" "$to_id" "$now" "$text" \
+      "$(bus_extra_flags)" > "$tmp" 2>/dev/null; then
     echo "bus: jq failed building message to '$to'" >&2
     rm -f "$tmp"
     return 1
   fi
   # Race-free name allocation (a review measured that check-then-mv silently lost
-  # 27 of 30 concurrent sends from the same process). ln(1) is atomic — the link
-  # FAILS if the target name already exists, so the loop tries the next suffix
-  # until it wins. No window, no silent overwrite.
+  # most of thirty concurrent sends from the same process). ln(1) is atomic — the
+  # link FAILS if the target name already exists, so the loop tries the next
+  # suffix until it wins. No window, no silent overwrite.
   local fname="${now}-${safe_from}-$$.json" n=1
   until ln "$tmp" "$inbox/$fname" 2>/dev/null; do
     n=$((n + 1))
@@ -877,8 +944,11 @@ bus_send() {
   done
   rm -f "$tmp"
 
+  bus_archive_sent "$from" "$to" "$text"
   printf '%s\n' "$fname"
-  "$pingfn" "$to" || true
+  # The ping goes to the tmux session, which is named by the ID (supervision keys
+  # on the ID). The hub's word goes through the wake alias — see bus_wake_target.
+  "$pingfn" "$(bus_wake_target "$to_id")" || true
   return 0
 }
 
@@ -906,22 +976,74 @@ bus_list_unacked() {
 }
 
 # bus_read <to> — the recipient's only command: prints every inbox entry
-# (from, ts, text — one per line) and acks EACH by moving it to done/ (never
-# rm — done/ is cleaned up later by bus_gc). Prints nothing and is a safe
-# no-op if <to> is unknown or has no inbox.
+# (envelope line, from/ts, fenced text) and acks EACH by moving it to done/
+# (never rm — done/ is swept later by bus_gc). rc 0 and nothing printed when
+# the inbox is empty or missing; rc 1 when <to> is UNKNOWN, and loudly so.
 bus_read() {
   local to="${1:-}"
-  bus_valid_recipient "$to" || return 0
-  local base; base="$(bus_home)/$to"
+  # THE NAME GUARD RUNS IN BOTH DIRECTIONS. It did not, once: bus_send refused an
+  # unknown name loudly (rc 1, "unknown recipient", the payload kept in failed/)
+  # while bus_read answered rc 0 with zero bytes on stdout AND stderr. Same
+  # registry, two directions, one guard.
+  #
+  # The consequence was worse than cosmetic: a session that misspelled ITS OWN
+  # name got an empty inbox that could not be told from "no mail", and read on in
+  # silence while mail piled up under the right name. The unacknowledged-mail
+  # alarm does not save it — it measures whether mail LEFT an inbox, not whether
+  # the right party read it — so the silent read path had no second line behind
+  # it. The session-host client solved it more strongly on its side: it DERIVES
+  # the identity from the pane and refuses an argument that says otherwise. The
+  # hub client cannot — it is called with a name — but it can stop lying about
+  # the outcome.
+  local to_id="$to" _rrc=0
+  bus_resolve_recipient "$to" || _rrc=$?
+  # A refusal (ambiguous slug, broken ID) has explained itself on stderr, and
+  # guessing one of two people's inboxes would be worse than refusing to read.
+  [ "$_rrc" -eq 65 ] && return 65
+  if [ "$_rrc" -ne 0 ]; then
+    echo "bus: unknown recipient '$to' — no inbox was read." >&2
+    echo "     An empty print from a MISSPELLED recipient cannot be told from" >&2
+    echo "     'no mail', so this is an error and not a silence." >&2
+    return 1
+  fi
+  to_id="$BUS_RES_ID"
+  # SWEEP BEFORE THE READ, not after. bus_gc walks EVERY recipient's archive on
+  # the machine, so any read sweeps the whole machine — chosen over a job of its
+  # own because a job is one more thing that can stop running unnoticed. bus_gc
+  # had sat two weeks WITHOUT A CALLER, green test and all, sweeping nothing: a
+  # test that calls a function proves that it WORKS, never that it RUNS.
+  #
+  # The order is not cosmetic. With the sweep AFTER the loop, a record delivered
+  # long ago was deleted in the same breath as it was read — it never existed in
+  # the archive, and there was no trace of it having been read. Now the sweep
+  # applies to the archive as it was BEFORE this run; today's mail is judged next
+  # time.
+  #
+  # And it runs BEFORE the inbox check, not after. After it, the sweep was skipped
+  # for every recipient without an inbox — exactly the silent sessions whose
+  # archive is oldest, and the one place where sweeping is actually needed. A
+  # sweeper that only sweeps what is in use does not sweep. (Found by mutation
+  # testing: a debug print placed after the read loop never printed.)
+  # "0" is not off; it is "everything older than a day". Empty turns it off.
+  local gcd="${STEWARD_BUS_GC_DAYS-90}"
+  case "$gcd" in ""|0|*[!0-9]*) gcd="" ;; esac
+  [ -n "$gcd" ] && bus_gc "$gcd"
+
+  local base; base="$(bus_home)/$to_id"
   local inbox="$base/inbox" done_dir="$base/done"
   [ -d "$inbox" ] || return 0
   mkdir -p "$done_dir" || return 1
-  local f from ts text
+  local f from ts text envelope
   while IFS= read -r f; do
     [ -e "$f" ] || continue
     from="$(jq -r '.from // empty' "$f" 2>/dev/null)"
     ts="$(jq -r '.ts // empty' "$f" 2>/dev/null)"
     text="$(jq -r '.text // empty' "$f" 2>/dev/null)"
+    # THE ENVELOPE LINE: [CLASS] subject — headline, BEFORE the from/ts line.
+    # The condition is has("klass") — records without the fields (the archive's
+    # older ones) get no line, and the print below is unchanged for them.
+    envelope="$(jq -r 'if has("klass") then "[" + .klass + "] " + .amne + " — " + .rubrik else empty end' "$f" 2>/dev/null)"
+    [ -n "$envelope" ] && printf '%s\n' "$envelope"
     # QUOTE FENCE: the renderer owns the only unindented lines. The text is
     # sender-controlled, so every line of it is prefixed '  │ ' without
     # exception. A body containing 'from=...' or its own '└─' lands inside the
