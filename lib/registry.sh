@@ -1609,7 +1609,7 @@ registry_rc_label_prefix() { _registry_estate_value RC_LABEL_PREFIX '^[A-Za-z0-9
 # HUB_SESSION / HUB_HOST / HUB_SSH used to be plain estate values, and for one
 # hub that was right. A FEDERATION OF HUBS makes it wrong: the estate file is ONE
 # file that the deploy copies into every home — measured 2026-09-05, line 74 of
-# ~/scripts/estate/steward.conf is identical in all nineteen homes on basement —
+# ~/scripts/estate/steward.conf is identical in all nineteen homes on a shared Linux host —
 # so an estate-wide answer would keep every session on a machine relaying to the
 # hub that machine no longer has.
 #
@@ -1653,10 +1653,15 @@ _registry_host_hub_value() {
     HUB_SESSION="" HUB_HOST="" HUB_SSH=""
     # shellcheck source=/dev/null
     source "$_conf" >/dev/null 2>&1 || exit 3
+    # PARENTHESISED PATTERNS ON PURPOSE. bash 3.2 (the macOS /bin/bash) reads
+    # a bare `HUB_SESSION)` inside $( ... ) as the END of the substitution and
+    # fails with a syntax error at the next line -- measured 2026-09-05: 12 of
+    # 19 claims red on the Mac, all green on bash 5. The (pattern) form parses
+    # the same on both.
     case "$_key" in
-      HUB_SESSION) printf '%s' "$HUB_SESSION" ;;
-      HUB_HOST)    printf '%s' "$HUB_HOST" ;;
-      HUB_SSH)     printf '%s' "$HUB_SSH" ;;
+      (HUB_SESSION) printf '%s' "$HUB_SESSION" ;;
+      (HUB_HOST)    printf '%s' "$HUB_HOST" ;;
+      (HUB_SSH)     printf '%s' "$HUB_SSH" ;;
     esac
   )" || return 1
   [ -n "$_varde" ] || return 1
