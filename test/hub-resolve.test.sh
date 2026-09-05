@@ -188,7 +188,10 @@ is "empty sender: nothing written, rc 0" "$rc" "0"
 mkdir -p "$FX/outside"
 bus_archive_sent "../../outside/evil" legacy "DRIFT topic: x"; rc=$?
 is "a climbing sender name: rc 0, nothing outside the bus home" "$(find "$FX/outside" -name '*.json' | wc -l | tr -d ' ')" "0"
-is "...the copy lands under a folded name inside it" "$(find "$FX/bus-home" -path '*/sent/*.json' -newer "$FX/estate.conf" | grep -c '_')" "1"
+# Measured RELATIVE to the bus home: on macOS mktemp -d yields a path with an
+# underscore in it (/var/folders/xx/abc_def...), and a count over the full path
+# then finds every archive file, not the folded one.
+is "...the copy lands under a folded name inside it" "$(find "$FX/bus-home" -path '*/sent/*.json' -newer "$FX/estate.conf" | sed "s|^$FX/bus-home/||" | grep -c '_')" "1"
 
 echo "z. no test reached a real ssh"
 is "ssh was never called" "$(wc -l < "$SSH_REFUSED" | tr -d ' ')" "0"
