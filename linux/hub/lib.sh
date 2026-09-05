@@ -238,9 +238,9 @@ bus_home() {
 #
 # REFUSAL IS THE DEFAULT. If owner or domain cannot be read for either party, the
 # function answers NO. An unreadable registry must never become a permit. The
-# controller name is a valid RECIPIENT even without a conf (bus_valid_recipient),
-# but that does not make it a valid FRAGA recipient: with no conf there is no
-# owner to compare against.
+# The hub is a session with a row like every other (bus_valid_recipient), so it
+# is a FRAGA recipient on the same terms: its row carries the owner to compare
+# against.
 bus_fraga_falt() { # <session> <FIELD> -> the value, or empty
   local s="${1:-}" f="${2:-}" c
   # THE SAME RESOLUTION AS THE DELIVERY (bus_resolve_recipient): a FRAGA at a
@@ -393,12 +393,23 @@ bus_fraga_tillatet() {
   return 1
 }
 
+# bus_valid_recipient <to> — 0 iff <to> resolves to a registry row: an exact
+# file name, a legacy name, or a unique slug (bus_resolve_recipient). No silent
+# drop: an unknown recipient is an error for the CALLER, on the send path and on
+# the read path alike.
+#
+# THE HUB IS A SESSION WITH A ROW, like every other. Its name used to be admitted
+# here WITHOUT a row — a special case from the time the hub had none. With the
+# special case in place, a hub whose row had migrated held TWO queues: one under
+# the word (everything addressed by name) and one under the ID (everything
+# addressed by ID), and the second was read by nobody. Mail landing rc 0 in a
+# queue nobody reads is worse than a refusal — the sender holds a receipt. Now
+# the word resolves like any slug, the queue is keyed on the ID, and without a
+# row the word is simply unknown.
 bus_valid_recipient() {
   local to="${1:-}"
   [ -z "$to" ] && return 1
-  local hub; hub="$(registry_hub_session)" || return 1
-  [ "$to" = "$hub" ] && return 0
-  registry_list | grep -qxF "$to"
+  bus_resolve_recipient "$to"
 }
 
 # ------------------------------------------------ recipient resolution
@@ -634,25 +645,35 @@ bus_wake_target() {
 # returns 1 (message to stderr, nothing written) if <to> is unknown. A ping
 # failure never fails the send — the message is already durably queued.
 # bus_recipient_host <to> — which machine does the recipient live on? Reads HOST
-# from the sessions.d conf, defaulting to the hub's host. The hub session lives on
-# the hub by definition. An unknown name yields an empty string — the caller has
-# already validated.
+# from the RESOLVED row (bus_resolve_recipient — a slug-addressed recipient's host
+# comes from the row the send path resolved, never from a file that happens to
+# be named like the slug). A row without HOST lives on the estate's HUB_HOST —
+# the registry's own default, so the bus and the registry cannot disagree about
+# where a session lives. The hub itself lives where ITS row says.
+#
+# rc 1 for an unknown name (the caller has already validated) — and rc 65, a
+# REFUSAL, when neither the row nor the estate says where the recipient lives.
+# It used to fall back on a literal hub name there: fail-open towards a machine
+# that, once the estate is split, is not even reachable — and a letter sent there
+# looks delivered to the sender. 65 is the same code as a broken neighbour row:
+# it stops the send.
 #
 # BOTH the hub's SESSION name and the hub's HOST name come from the estate, and
-# they are two keys even though they hold the same string here. A product that
+# they are two keys even though they may hold the same string. A product that
 # assumes they are always equal breaks the first time somebody names a machine
 # after the room it stands in and a session after what it does.
 bus_recipient_host() {
   local to="${1:-}"
-  local hub_s hub_h
-  hub_s="$(registry_hub_session)" || return 1
-  hub_h="$(registry_hub_host)"    || return 1
-  [ "$to" = "$hub_s" ] && { printf '%s' "$hub_h"; return 0; }
-  local conf; conf="$(registry_dir)/$to.conf"
-  [ -f "$conf" ] || return 1
+  bus_resolve_recipient "$to" 2>/dev/null || return 1
+  local conf="$BUS_RES_CONF"
   local h; h="$(grep -m1 '^HOST=' "$conf" | tr -d '"' | cut -d= -f2)"
   case "$h" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) h='' ;; esac
-  printf '%s' "${h:-$hub_h}"
+  [ -n "$h" ] || h="$(registry_hub_host 2>/dev/null)"
+  if [ -z "$h" ]; then
+    echo "bus: cannot tell where '$to' lives — the row has no HOST and the estate no HUB_HOST. No guess: a letter to the wrong hub looks delivered." >&2
+    return 65
+  fi
+  printf '%s' "$h"
 }
 
 # bus_recipient_owner <to> — which ACCOUNT on the host owns the recipient?
@@ -670,11 +691,13 @@ bus_recipient_host() {
 # so rather than pick a home.
 bus_recipient_owner() {
   local to="${1:-}"
-  local conf; conf="$(registry_dir)/$to.conf"
-  if [ ! -f "$conf" ]; then
-    echo "bus: no conf for '$to' — cannot tell which account owns the recipient" >&2
+  # The same resolution as the delivery: a slug-addressed recipient's owner is
+  # read from the row that was resolved, never from a file named after the slug.
+  if ! bus_resolve_recipient "$to" 2>/dev/null; then
+    echo "bus: no row for '$to' — cannot tell which account owns the recipient" >&2
     return 1
   fi
+  local conf="$BUS_RES_CONF"
   local o; o="$(grep -m1 '^OWNER=' "$conf" | tr -d '"' | cut -d= -f2)"
   case "$o" in
     ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
@@ -804,7 +827,11 @@ bus_send() {
   fi
   # If the recipient lives on another machine, deliver over ssh — the queue lands
   # AT the recipient, never in an intermediary that can be forgotten.
-  local rhost; rhost="$(bus_recipient_host "$to")"
+  local rhost _hrc=0; rhost="$(bus_recipient_host "$to")" || _hrc=$?
+  # A REFUSAL IS A REFUSAL. bus_recipient_host answers 65 when neither the row nor
+  # the estate says where the recipient lives; an empty host would otherwise be
+  # read as "local" one line below — the same fail-open, moved one step.
+  [ "$_hrc" -eq 65 ] && return 65
   # WHICH MACHINE AM I? Defaults to the hub's host from the estate, because this
   # client belongs on the hub. STEWARD_BUS_LOCAL_HOST overrides it for tests.
   local localhost_name="${STEWARD_BUS_LOCAL_HOST:-}"
@@ -860,7 +887,11 @@ bus_send() {
 # Prints nothing (rc 0) if <to> has no inbox yet.
 bus_list_unacked() {
   local to="${1:-}"
-  local inbox; inbox="$(bus_home)/$to/inbox"
+  # The queue lives under the ID; a name that does not resolve is listed as
+  # before under itself (this function never validated — empty is empty).
+  local to_key="$to"
+  if bus_resolve_recipient "$to" 2>/dev/null; then to_key="$BUS_RES_ID"; fi
+  local inbox; inbox="$(bus_home)/$to_key/inbox"
   [ -d "$inbox" ] || return 0
   local now; now="$(date +%s)"
   local f ts from age
