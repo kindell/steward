@@ -249,7 +249,17 @@ for conf in "$RDIR"/*.conf; do
   runtime="${runtime:-claude-code}"
   model="${model:--}"
   host="${host:-$HUB_HOST}"
-  if [ "$host" = "$SELF_HOST" ]; then
+  if [ "$host" = "$SELF_HOST" ] && [ "$owner" != "$SELF_USER" ]; then
+    # THE SOCKET IS PER HOME. Another account's tmux server lives in a home
+    # that is closed to us, so asking OUR socket about THEIR session can only
+    # ever say "no such session" — and that used to print as "down": an alarm
+    # in the one column a human acts on, produced by a question whose answer
+    # was known before it was asked. Same refusal the remote sweep already
+    # makes for other people's rows (below), same ?(who) form as an
+    # unreachable host. Measured on a hub on a shared Linux host: every other
+    # account's session read "down" while its owner was typing in it.
+    tm="?($owner)"; ti="?($owner)"
+  elif [ "$host" = "$SELF_HOST" ]; then
     # =name, the exact form — tmux -t prefix-matches, and a session whose name
     # prefixes a sibling's would otherwise borrow the sibling's answer
     # (measured live 2026-08-21, same fault family as the supervisor's).
