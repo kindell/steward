@@ -241,10 +241,15 @@ bus_home() {
 # controller name is a valid RECIPIENT even without a conf (bus_valid_recipient),
 # but that does not make it a valid FRAGA recipient: with no conf there is no
 # owner to compare against.
-bus_fraga_falt() { # <session> <FALT> -> vardet, eller tomt
+bus_fraga_falt() { # <session> <FIELD> -> the value, or empty
   local s="${1:-}" f="${2:-}" c
-  c="$(registry_dir)/$s.conf"
-  [ -f "$c" ] || return 1
+  # THE SAME RESOLUTION AS THE DELIVERY (bus_resolve_recipient): a FRAGA at a
+  # slug must read exactly the row the send path resolved — never a second
+  # interpretation of its own that can diverge. Refusal (unknown, ambiguous,
+  # broken ID) becomes 1, and the gate on top then answers NO — refusal is the
+  # default, as before.
+  bus_resolve_recipient "$s" 2>/dev/null || return 1
+  c="$BUS_RES_CONF"
   sed -n "s/^$f=\"\(.*\)\"/\\1/p" "$c" | head -1
 }
 
@@ -253,8 +258,9 @@ bus_fraga_falt() { # <session> <FALT> -> vardet, eller tomt
 # and omitted are identical in a shell, and they mean different things here.
 bus_ar_maskinsession() {
   local s="${1:-}" c
-  c="$(registry_dir)/$s.conf"
-  [ -f "$c" ] || return 1
+  # The same resolution as the delivery — see bus_fraga_falt.
+  bus_resolve_recipient "$s" 2>/dev/null || return 1
+  c="$BUS_RES_CONF"
   grep -q '^RC_LABEL=""[[:space:]]*$' "$c"
 }
 
@@ -532,13 +538,13 @@ bus_tmux_sock() {
 
 bus_tmux_has_session() {
   local to="${1:-}"
-  "${STEWARD_BUS_TMUX_BIN:-/opt/homebrew/bin/tmux}" -S "$(bus_tmux_sock)" \
+  "$(bus_tmux_bin)" -S "$(bus_tmux_sock)" \
     has-session -t "$to" 2>/dev/null
 }
 
 bus_tmux_capture_pane() {
   local to="${1:-}"
-  "${STEWARD_BUS_TMUX_BIN:-/opt/homebrew/bin/tmux}" -S "$(bus_tmux_sock)" \
+  "$(bus_tmux_bin)" -S "$(bus_tmux_sock)" \
     capture-pane -t "$to" -p 2>/dev/null
 }
 
@@ -547,7 +553,7 @@ bus_tmux_capture_pane() {
 # one interpreted keystroke sequence.
 bus_tmux_send_keys() {
   local to="${1:-}" text="${2:-}"
-  local bin="${STEWARD_BUS_TMUX_BIN:-/opt/homebrew/bin/tmux}" sock; sock="$(bus_tmux_sock)"
+  local bin sock; bin="$(bus_tmux_bin)"; sock="$(bus_tmux_sock)"
   "$bin" -S "$sock" send-keys -t "$to" -l "$text" 2>/dev/null
   "$bin" -S "$sock" send-keys -t "$to" Enter 2>/dev/null
 }
@@ -567,7 +573,7 @@ bus_tmux_send_keys() {
 # The classic shape: delivery looks done from the sender's side.
 bus_recipient_busy() {
   local to="${1:-}"
-  local bin="${STEWARD_BUS_TMUX_BIN:-/opt/homebrew/bin/tmux}" sock; sock="$(bus_tmux_sock)"
+  local bin sock; bin="$(bus_tmux_bin)"; sock="$(bus_tmux_sock)"
   "$bin" -S "$sock" capture-pane -p -t "$to" 2>/dev/null | grep -q "esc to interrupt"
 }
 
@@ -900,16 +906,37 @@ bus_read() {
   done < <(find "$inbox" -maxdepth 1 -type f -name '*.json' -print 2>/dev/null | sort)
 }
 
-# bus_gc <days> — removes done/ entries (any recipient) older than <days>
-# (mtime-based — done/ entries are acked receipts, not live content, so
-# filesystem mtime at ack time is the right clock). Default 7 days, per plan.
+# bus_gc <days> — removes done/, sent/ AND failed/ entries (any recipient) older
+# than <days>. mtime-based, and that mtime is the DELIVERY time, not the ack time:
+# the reader preserves the file's original mtime across the acknowledgement, so
+# the criterion is "N days after delivery" — independent of when somebody
+# happened to read, and mail that lay unread for long is swept all the same.
+#
+# DEFAULT 90 DAYS, RAISED FROM 7 (2026-08-14). Two reasons, pulling the same way:
+#
+#   * The archive IS the review material. Seven days was not enough to answer
+#     "what was decided and by whom" — and now that outgoing mail is archived
+#     too, it is the only complete source of what the sessions told each other.
+#     A sweeper that deletes the decision record is not hygiene; it is loss.
+#   * The volume is negligible. Measured after two weeks of fleet traffic: a few
+#     hundred records in all; ninety days lands in the order of a few megabytes.
+#
+# What remains is that the archive is permanent ENOUGH that a secret which
+# slipped onto the bus stays around for a long time. The rule "secrets never
+# travel over the bus" is therefore not softer now — it is MORE binding, because
+# the mistake is now preserved in two archives instead of one.
+#
+# THAT THIS FUNCTION EXISTED WITHOUT A CALLER was itself a finding: it had a
+# green test and swept nothing, for two weeks. A test that calls the function
+# proves that it WORKS, never that it RUNS. It is called opportunistically from
+# bus_read — every read sweeps the whole machine's archive.
 bus_gc() {
-  local days="${1:-7}"
+  local days="${1:-90}"
   local home; home="$(bus_home)"
   [ -d "$home" ] || return 0
   local d
   while IFS= read -r d; do
     [ -d "$d" ] || continue
     find "$d" -maxdepth 1 -type f -name '*.json' -mtime "+$days" -delete 2>/dev/null
-  done < <(find "$home" -mindepth 2 -maxdepth 2 -type d -name done -print 2>/dev/null)
+  done < <(find "$home" -mindepth 2 -maxdepth 2 -type d \( -name done -o -name sent -o -name failed \) -print 2>/dev/null)
 }
