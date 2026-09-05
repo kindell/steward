@@ -73,3 +73,7 @@ linux/hub/enroll               scripts/bus/enroll                   755  scripts
 # host. Both belong to the hub library above and land beside it, under bin/.
 linux/hub/bin/bus-relay-in       scripts/bus/bin/bus-relay-in         755  scripts
 linux/hub/bin/bus-relay-deliver  scripts/bus/bin/bus-relay-deliver    755  scripts
+# The mechanical answerer for FRAGA. Its catalogue is the ESTATE'S file, delivered
+# by the estate's own deploy beside the library; this file only runs what the
+# catalogue's allow line permits.
+linux/hub/bin/bus-fraga-svar     scripts/bus/bin/bus-fraga-svar       755  scripts

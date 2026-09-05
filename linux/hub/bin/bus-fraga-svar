@@ -1,0 +1,184 @@
+#!/bin/bash
+# bus-fraga-svar [recipient] - answer FRAGA records MECHANICALLY, before any model.
+#
+# WHY IT EXISTS. Two measurements: a question across estates through a model's own
+# channel arrived, but the answer could never travel back - the return address was
+# unreachable from the receiving side and the sender only saw "idle". And the
+# question "what session are you" cost a live session ninety seconds of model time
+# for an answer that stands in the registry.
+#
+# The bus gives what that channel never did: proof of delivery, acknowledgement, an
+# alarm after fifteen minutes. What was missing was something that ANSWERS without
+# waking a model.
+#
+# AN ANSWER IS A MEASUREMENT, NEVER AN ACTION. The catalogue's commands are checked
+# against an ALLOWLIST, not a blocklist: a blocklist grows with every new dangerous
+# verb form and looks complete right up to the next one.
+#
+# THE ALLOWLIST IS THE ESTATE'S DATA, THE FORM IS THE PRODUCT'S. Which scripts may
+# be run is written in the catalogue's header, on a line the older reader treats as
+# a comment:
+#
+#     #!allow estate-status.sh job-status.sh
+#
+# The product enforces only the FORM: the command begins with `/usr/bin/env bash`
+# followed by a script from that list, and carries no chaining, redirection or
+# substitution. No allow line means no answer at all - rc 78 - never a guess.
+#
+# AN UNKNOWN QUESTION DEGRADES TO THE MODEL, NEVER TO SILENCE. A headline outside
+# the catalogue is LEFT in the inbox so the ordinary path takes it - slower, but
+# never unanswered. Acknowledging a question one cannot answer would be deleting
+# it.
+#
+# THE CATALOGUE: STEWARD_FRAGA_KATALOG first, then the file beside this library
+# (delivered by the estate's own deploy, like the registry rows), then rc 78.
+set -uo pipefail
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib.sh
+source "$here/lib.sh"
+
+RECIPIENT="${1:-}"
+# Without an argument we answer for THE HUB - whose name is the registry's, not a
+# word here.
+if [ -z "$RECIPIENT" ]; then RECIPIENT="$(bus_hub_word)" || exit 78; fi
+
+# THE SAME RESOLUTION AS THE DELIVERY. The queue is keyed on the ID
+# (bus_send/bus_read go through bus_resolve_recipient), but the answerer once
+# built its inbox path from its RAW argument. For a migrated row (file name =
+# opaque ID, SLUG=) it then read an EMPTY slug inbox while the questions lay in
+# the ID queue: FRAGA stood unanswered until bus_read took it - exactly the race
+# the ordering rule (answer BEFORE reading) exists to make impossible. The hub is
+# a session with a row like every other: the word resolves, the queue is the ID.
+RECIPIENT_ID="$RECIPIENT"
+_rrc=0
+bus_resolve_recipient "$RECIPIENT" || _rrc=$?
+case "$_rrc" in
+  0) RECIPIENT_ID="$BUS_RES_ID" ;;
+  65|78)
+    # A refusal (ambiguous slug / broken ID / unreadable registry) - the reason
+    # is on stderr already, and guessing an inbox would be worse than refusing.
+    exit "$_rrc" ;;
+  *)
+    # Unknown recipient: no inbox, nothing touched.
+    echo "bus-fraga-svar: 0 questions (no inbox for '$RECIPIENT')"; exit 0 ;;
+esac
+
+CATALOGUE="${STEWARD_FRAGA_KATALOG:-$here/fraga-katalog}"
+[ -f "$CATALOGUE" ] || { echo "bus-fraga-svar: the catalogue is missing: $CATALOGUE" >&2; exit 78; }
+
+# The allowlist - a data line in the catalogue's header. Its absence is a refusal
+# of the whole run: a catalogue that names commands but not what may run them is
+# not a catalogue, and answering from it would be running arbitrary scripts.
+ALLOWED_PROGRAM="/usr/bin/env bash"
+ALLOWED_SCRIPTS="$(sed -n 's/^#!allow[[:space:]]\{1,\}//p' "$CATALOGUE" | head -1)"
+if [ -z "$ALLOWED_SCRIPTS" ]; then
+  echo "bus-fraga-svar: REFUSING - the catalogue $CATALOGUE has no '#!allow <script> ...' line." >&2
+  echo "bus-fraga-svar:   Which scripts may answer is the estate's decision, and it is not guessed." >&2
+  exit 78
+fi
+
+catalogue_lookup() { # <key> -> command, or empty
+  local k="$1" line
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue ;; esac
+    [ "${line%%|*}" = "$k" ] || continue
+    printf '%s' "${line#*|}"
+    return 0
+  done < "$CATALOGUE"
+  return 1
+}
+
+command_is_read_only() { # REFUSAL IS THE DEFAULT. Unknown = no.
+  local c="$1" rest script s
+  case "$c" in "$ALLOWED_PROGRAM "*) ;; *) return 1 ;; esac
+  # No chaining, no redirection, no substitution, no second line - one command.
+  local nl; nl=$'\n'
+  case "$c" in *';'*|*'&'*|*'|'*|*'>'*|*'<'*|*'`'*|*'$('*|*"$nl"*) return 1 ;; esac
+  # The script is the word right after the program; it must be on the allow
+  # line, compared as a whole word - a substring would let "x-estate-status.sh"
+  # through on the strength of "estate-status.sh".
+  rest="${c#"$ALLOWED_PROGRAM" }"
+  script="${rest%% *}"; script="${script##*/}"
+  [ -n "$script" ] || return 1
+  for s in $ALLOWED_SCRIPTS; do [ "$s" = "$script" ] && return 0; done
+  return 1
+}
+
+inbox="$(bus_home)/$RECIPIENT_ID/inbox"
+[ -d "$inbox" ] || { echo "bus-fraga-svar: 0 questions (no inbox)"; exit 0; }
+
+answered=0; left=0; refused=0
+for f in "$inbox"/*.json; do
+  [ -f "$f" ] || continue
+  text="$(jq -r '.text // empty' "$f" 2>/dev/null)" || continue
+  from="$(jq -r '.from // empty' "$f" 2>/dev/null)"
+  line1="$(printf '%s\n' "$text" | sed -n 1p)"
+  case "$line1" in FRAGA\ *) ;; *) continue ;; esac
+  subject="$(printf '%s' "$line1" | sed -n 's/^FRAGA \([a-z0-9-]*\):.*/\1/p')"
+  headline="$(printf '%s' "$line1" | sed -n 's/^FRAGA [a-z0-9-]*: *//p')"
+  key="$(printf '%s' "$headline" | awk '{print tolower($1)}')"
+  [ -n "$subject" ] && [ -n "$key" ] || { left=$((left+1)); continue; }
+
+  # THE GATE AGAIN, AUTHORITATIVELY HERE. The send path refuses already, but that
+  # gate sits in the sender's own client. This one sits where the ANSWER is
+  # produced, and it owns the decision. A record that arrived before the rule, or
+  # by a path nobody thought of, is not answered just because it sits in the queue.
+  #
+  # AND A REFUSAL ANSWERS. Leaving the question in the queue would have looked
+  # like "unknown question, the model takes it" - the wrong diagnosis for both the
+  # asker and whoever reads the inbox. The asker gets a DRIFT reply naming the
+  # rule, and the question is acknowledged, because it has been answered.
+  if ! bus_fraga_tillatet "$from" "$RECIPIENT_ID"; then
+    bus_send "$from" "$RECIPIENT_ID" "DRIFT $subject: FRAGA refused
+'$from' may not put a FRAGA to '$RECIPIENT_ID'.
+The rule: same OWNER, or same DOMAIN (the entity being worked on).
+Ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected and go through." bus_tmux_ping >/dev/null \
+      && { mkdir -p "$(bus_home)/$RECIPIENT_ID/done"; mv "$f" "$(bus_home)/$RECIPIENT_ID/done/" 2>/dev/null; refused=$((refused+1)); } \
+      || left=$((left+1))
+    continue
+  fi
+
+  if ! cmd="$(catalogue_lookup "$key")"; then
+    echo "bus-fraga-svar: '$key' is not in the catalogue - left for the model" >&2
+    left=$((left+1)); continue
+  fi
+  if ! command_is_read_only "$cmd"; then
+    # AN UNREADABLE CATALOGUE LINE FAILS THE WHOLE RUN. Skipping it and answering
+    # the rest would turn a broken catalogue into a silent partial one.
+    echo "bus-fraga-svar: REFUSING - the catalogue line for '$key' is not a read-only command: $cmd" >&2
+    exit 78
+  fi
+
+  # NON-ZERO IS NOT THE SAME AS BROKEN, and the answerer cannot know which. The
+  # catalogue's tools carry their VERDICT in the exit code on purpose: a rig probe
+  # is non-zero when a port is ungated, a host probe when a host does not answer.
+  # A silent zero over a finding makes the report unreadable to anything that does
+  # not read the text - and most of what reads it is machines. The wrapper once
+  # said "the command failed"; the recipient reported reading a CORRECT report as a
+  # tool error and discounting it. Since the answerer cannot tell the two apart it
+  # does not guess: it gives the number, names both possibilities, and lets the
+  # output decide.
+  answer="$(eval "$cmd" 2>&1)"; _cmd_rc=$?
+  if [ "$_cmd_rc" -ne 0 ]; then
+    answer="(the command exited with rc $_cmd_rc. The catalogue's tools carry their verdict in
+the exit code, so this may be a FINDING as well as an error - the output decides.)
+$answer"
+  fi
+  # The reply carries THE SAME subject - the subject is the thread key.
+  if bus_send "$from" "$RECIPIENT_ID" "DRIFT $subject: answer to FRAGA $key
+Machine answer from $RECIPIENT_ID, no model involved. Command: $cmd
+
+$answer" bus_tmux_ping >/dev/null; then
+    mkdir -p "$(bus_home)/$RECIPIENT_ID/done"
+    mv "$f" "$(bus_home)/$RECIPIENT_ID/done/" 2>/dev/null
+    answered=$((answered+1))
+  else
+    # IF THE ANSWER IS NOT DELIVERED THE QUESTION STAYS. Acknowledging a question
+    # whose answer did not arrive would be deleting it and letting the sender wait.
+    echo "bus-fraga-svar: the answer to '$from' did not get through - the question stays" >&2
+    left=$((left+1))
+  fi
+done
+
+echo "bus-fraga-svar: $answered answered, $refused refused, $left left for the model"
+exit 0
