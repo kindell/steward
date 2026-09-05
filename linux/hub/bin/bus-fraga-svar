@@ -95,12 +95,27 @@ command_is_read_only() { # REFUSAL IS THE DEFAULT. Unknown = no.
   local nl; nl=$'\n'
   case "$c" in *';'*|*'&'*|*'|'*|*'>'*|*'<'*|*'`'*|*'$('*|*"$nl"*) return 1 ;; esac
   # The script is the word right after the program; it must be on the allow
-  # line, compared as a whole word - a substring would let "x-estate-status.sh"
-  # through on the strength of "estate-status.sh".
+  # line, compared as a WHOLE word - a substring would let "x-estate-status.sh"
+  # through on the strength of "estate-status.sh". An entry carrying a slash is
+  # compared against the script's whole path; an entry without one against its
+  # base name - the estate chooses how tightly to pin. A path that climbs ("..")
+  # is refused whichever form the entry has.
   rest="${c#"$ALLOWED_PROGRAM" }"
-  script="${rest%% *}"; script="${script##*/}"
+  script="${rest%% *}"
   [ -n "$script" ] || return 1
-  for s in $ALLOWED_SCRIPTS; do [ "$s" = "$script" ] && return 0; done
+  case "/$script/" in *"/../"*) return 1 ;; esac
+  local base="${script##*/}" _glob=""
+  # THE LIST IS SPLIT ON WHITESPACE ONLY. Unquoted, an entry like '*.sh' would be
+  # expanded against the current directory and admit whatever happens to be there.
+  case $- in *f*) _glob=1 ;; esac
+  set -f
+  for s in $ALLOWED_SCRIPTS; do
+    case "$s" in
+      */*) [ "$s" = "$script" ] && { [ -n "$_glob" ] || set +f; return 0; } ;;
+      *)   [ "$s" = "$base" ]   && { [ -n "$_glob" ] || set +f; return 0; } ;;
+    esac
+  done
+  [ -n "$_glob" ] || set +f
   return 1
 }
 

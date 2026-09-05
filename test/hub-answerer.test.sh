@@ -66,6 +66,11 @@ status|/usr/bin/env bash $FX/probe.sh
 finding|/usr/bin/env bash $FX/finding.sh
 unlisted|/usr/bin/env bash $FX/other.sh
 chained|/usr/bin/env bash $FX/probe.sh; rm -rf /
+spaced|/usr/bin/env bash $FX/probe.sh ; touch $FX/PWNED
+redirect|/usr/bin/env bash $FX/probe.sh > $FX/PWNED
+subst|/usr/bin/env bash $FX/probe.sh \$(touch $FX/PWNED)
+backtick|/usr/bin/env bash $FX/probe.sh \`touch $FX/PWNED\`
+climb|/usr/bin/env bash $FX/../$(basename "$FX")/probe.sh
 EOF
 
 echo "1. an allowed question is answered mechanically, in the same subject, and acknowledged"
@@ -117,6 +122,32 @@ is  "...and nothing was answered" "$(answers asker)" "0"
 rm -rf "$FX/bus-home"; ask asker chained
 run hub-one >/dev/null; rc=$?
 is  "a chained command: rc 78 even though the script is allowed" "$rc" "78"
+# THE METACHARACTER GUARD, PROVEN ON ITS OWN. With ' ; ' the base name is still an
+# allowed script, so only the guard can refuse these - a mutation that removes it
+# turns every one of them green and creates the file.
+for k in spaced redirect subst backtick; do
+  rm -rf "$FX/bus-home" "$FX/PWNED"; ask asker "$k"
+  run hub-one >/dev/null; rc=$?
+  is  "$k: rc 78" "$rc" "78"
+  [ -e "$FX/PWNED" ] && bad "$k: the command RAN" || ok "$k: nothing ran"
+done
+rm -rf "$FX/bus-home"; ask asker climb
+run hub-one >/dev/null; rc=$?
+is  "a path that climbs (..) is refused even with an allowed base name" "$rc" "78"
+# THE ALLOW LINE IS NOT A GLOB. '*.sh' must match nothing, not everything in cwd.
+sed 's/^#!allow.*$/#!allow *.sh/' "$FX/catalogue" > "$FX/catalogue-glob"
+rm -rf "$FX/bus-home"; ask asker status
+( cd "$FX" && CAT="$FX/catalogue-glob" run hub-one >/dev/null ); rc=$?
+is  "'#!allow *.sh' admits nothing (no glob expansion), rc 78" "$rc" "78"
+# AN ENTRY WITH A SLASH PINS THE WHOLE PATH.
+sed "s|^#!allow.*$|#!allow $FX/elsewhere/probe.sh|" "$FX/catalogue" > "$FX/catalogue-path"
+rm -rf "$FX/bus-home"; ask asker status
+CAT="$FX/catalogue-path" run hub-one >/dev/null; rc=$?
+is  "a full-path entry does not admit the same base name elsewhere" "$rc" "78"
+sed "s|^#!allow.*$|#!allow $FX/probe.sh finding.sh|" "$FX/catalogue" > "$FX/catalogue-path2"
+rm -rf "$FX/bus-home"; ask asker status
+CAT="$FX/catalogue-path2" run hub-one >/dev/null; rc=$?
+is  "...and admits exactly that path" "$rc" "0"
 sed 's/^#!allow.*$/# (no allow line)/' "$FX/catalogue" > "$FX/catalogue-noallow"
 rm -rf "$FX/bus-home"; ask asker status
 CAT="$FX/catalogue-noallow" run hub-one >/dev/null; rc=$?
