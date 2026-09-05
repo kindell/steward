@@ -124,6 +124,17 @@ kill "$producer" 2>/dev/null
 [ "$dt" -lt 10 ] && ok "the relay gave up within the timeout (${dt}s, RT=2)" || bad "the relay hung on a withheld EOF" "${dt}s"
 teardown
 
+echo "6b. without coreutils timeout on PATH the forced command still delivers"
+# On a macOS host timeout lives only under Homebrew, off the PATH sshd gives a
+# forced command. The cap is optional; delivery is not.
+setup
+mkdir -p "$T/nobin"; for c in bash cat mktemp ln rm mkdir sed head printf jq tmux; do p="$(command -v $c 2>/dev/null)"; [ -n "$p" ] && ln -s "$p" "$T/nobin/$c"; done
+ln -sf "$T/bin/tmux" "$T/nobin/tmux"
+( export HOME="$T/hh" PATH="$T/nobin"; feed recipient | bash "$DELIVER" >/dev/null 2>&1 ); rc=$?
+is "rc 0 without timeout on PATH" "$rc" "0"
+is "the record landed all the same" "$(queue_count recipient)" "1"
+teardown
+
 echo "7. bus-relay-in: the sender is the KEY's identity, never the message's"
 setup
 mkdir -p "$T/reg2"

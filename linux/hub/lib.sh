@@ -751,9 +751,15 @@ bus_remote_deliver() {
     inbox="$HOME/.config/agent-bus/$to/inbox"
     mkdir -p "$inbox" || exit 1
     tmp="$(mktemp "$inbox/.tmp.XXXXXX")" || exit 1
-    # timeout around cat: the body is read to EOF, and EOF is exactly what a
+    # A cap around cat: the body is read to EOF, and EOF is exactly what a
     # half-open connection withholds. Without the cap, cat hangs in pipe_read.
-    timeout "$RT" cat > "$tmp" || { rm -f "$tmp"; echo "relay: timeout reading the body" >&2; exit 1; }
+    # coreutils timeout is NOT a hard requirement: on a macOS host it lives only
+    # under Homebrew, which is not on the PATH sshd gives a forced command. Where
+    # it is missing the body is read plain, and the client side ServerAlive is the
+    # remaining guard against a dead link.
+    _cap=""; command -v timeout >/dev/null 2>&1 && _cap="timeout $RT"
+    [ -n "$_cap" ] || { command -v gtimeout >/dev/null 2>&1 && _cap="gtimeout $RT"; }
+    $_cap cat > "$tmp" || { rm -f "$tmp"; echo "relay: timeout/error reading the body" >&2; exit 1; }
     f="$now-$sf-$$.json"; n=1
     until ln "$tmp" "$inbox/$f" 2>/dev/null; do
       n=$((n+1)); [ "$n" -gt 10000 ] && { rm -f "$tmp"; exit 1; }
