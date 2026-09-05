@@ -26,12 +26,12 @@ ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d"
+mkdir -p "$FX/reg"
 
 conf() { # <name> <owner> <domain> <host> <rc-label-line>
   { printf 'OWNER="%s"\nDOMAIN="%s"\nHOST="%s"\n' "$2" "$3" "$4"
     [ -n "${5:-}" ] && printf '%s\n' "$5"
-  } > "$FX/sessions.d/$1.conf"
+  } > "$FX/reg/$1.conf"
 }
 
 #            name        owner       domain    host     RC_LABEL
@@ -43,7 +43,7 @@ conf far-b    operator-b  entity-two  host-two  'RC_LABEL="D"'
 conf machine  operator-c  entity-mac  host-one  'RC_LABEL=""'
 conf machine2 operator-c  entity-mac  host-two  'RC_LABEL=""'
 
-export STEWARD_REGISTRY_DIR="$FX/sessions.d"
+export STEWARD_REGISTRY_DIR="$FX/reg"
 # shellcheck source=/dev/null
 source "$here/linux/hub/lib.sh"
 

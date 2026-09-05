@@ -26,7 +26,7 @@ has()    { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; 
 is()     { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/estate" "$FX/sessions.d" "$FX/bus/bin" "$FX/bin" \
+mkdir -p "$FX/estate" "$FX/reg" "$FX/bus/bin" "$FX/bin" \
   "$FX/accounts.d" "$FX/entities.d" "$FX/projects.d"
 
 cat > "$FX/estate/steward.conf" <<'CONF'
@@ -39,7 +39,7 @@ CONF
 
 # THE REQUESTER MUST EXIST AND LIVE ON THE HOST IT NAMES. enroll checks both;
 # without the conf the run refuses on identity and measures nothing about ID.
-cat > "$FX/sessions.d/asker.conf" <<'CONF'
+cat > "$FX/reg/asker.conf" <<'CONF'
 HOST="farhost"
 OWNER="someone"
 DOMAIN="d"
@@ -81,7 +81,7 @@ pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYFORTESTONLYxxxxxxxxxxxxxxxxxx
 REQ
 
 out="$( STEWARD_ESTATE_ROOT="$FX" \
-        STEWARD_REGISTRY_DIR="$FX/sessions.d" \
+        STEWARD_REGISTRY_DIR="$FX/reg" \
         STEWARD_RELAY_ROOT="$FX" \
         STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
         STEWARD_BUS_SEND="$FX/bin/send" \
@@ -95,7 +95,7 @@ echo "nav-enroll — the conf it writes"
 # 2026-09-01), not the constructed name — measured out of enroll's own
 # success line ("... registered as s-<hex> ...").
 id="$(printf '%s' "$out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
-conf="$FX/sessions.d/$id.conf"
+conf="$FX/reg/$id.conf"
 if [ "$rc" -eq 0 ] && [ -n "$id" ] && [ -f "$conf" ]; then ok "a valid request registers the name"
 else bad "a valid request registers the name" "rc=$rc id=$id out=$out"; fi
 
@@ -141,7 +141,7 @@ is "no LOGIN line on a schema-3, no-login row (transition, byte for byte)" \
 # primitive handed to the population the enrolment path exists to grow.
 run_req() { # <file> [extra env assignments are the caller's business]
   STEWARD_ESTATE_ROOT="$FX" \
-  STEWARD_REGISTRY_DIR="$FX/sessions.d" \
+  STEWARD_REGISTRY_DIR="$FX/reg" \
   STEWARD_RELAY_ROOT="$FX" \
   STEWARD_ESTATE_CHECKOUT="${CHECKOUT_OVERRIDE:-}" \
   STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
@@ -154,7 +154,7 @@ run_req() { # <file> [extra env assignments are the caller's business]
 mk_req() { # <file> <keytag> <sed expression>
   sed "s/FAKEKEYFORTESTONLYxxxxxxxxxxxxxxxxxxxxxxx/FAKEKEY$2xxxxxxxxxxxxxxxxxxxxxxx/; $3" "$req" > "$FX/mut.txt"
 }
-before_n="$(ls "$FX/sessions.d"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
+before_n="$(ls "$FX/reg"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
 rm -f "$FX/PWNED"
 
 mk_req x A 's|^repo=.*|repo=/srv/homes/x$(touch '"$FX"'/PWNED)y|'
@@ -177,7 +177,7 @@ out2="$(run_req "$FX/mut.txt")"; rc2=$?
 if [ "$rc2" -eq 65 ]; then ok "a relative repo path is refused"
 else bad "a relative repo path is refused" "rc=$rc2 out=$out2"; fi
 
-after_n="$(ls "$FX/sessions.d"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
+after_n="$(ls "$FX/reg"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$before_n" -eq "$after_n" ]; then ok "no refused request left a row behind"
 else bad "no refused request left a row behind" "$before_n -> $after_n"; fi
 
@@ -194,7 +194,7 @@ id2="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1
 if [ "$rc2" -eq 0 ] && [ -n "$id2" ] && [ -f "$FX/checkout/sessions.d/$id2.conf" ]; then
   ok "the row is written to the estate checkout too"
 else bad "the row is written to the estate checkout too" "rc=$rc2 id=$id2 out=$out2"; fi
-if cmp -s "$FX/checkout/sessions.d/$id2.conf" "$FX/sessions.d/$id2.conf"; then
+if cmp -s "$FX/checkout/sessions.d/$id2.conf" "$FX/reg/$id2.conf"; then
   ok "the checkout row is byte-identical to the runtime row"
 else bad "the checkout row is byte-identical to the runtime row"; fi
 has "the operator is told to commit it" "$out2" "COMMIT AND PUSH IT"
@@ -218,7 +218,7 @@ has "no checkout prints the conf itself" "$out2" 'SLUG="acme-sprocket-someone"'
 # under, so the hub, which knows both names here, prints both.
 # --no-send, because that is the mode that prints the messages themselves.
 mk_req x F 's|^namn=.*|namn=acme-cog-someone|; s|^projekt=.*|projekt=cog|'
-out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d" \
+out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
          STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
          STEWARD_ENROLL_FROM=asker \
          bash "$ENROLL" --no-send < "$FX/mut.txt" 2>&1 )"
