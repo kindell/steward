@@ -65,6 +65,19 @@ bus_ping_msg() {
   printf '%s' "$m"
 }
 
+# bus_hub_word — the hub's name ON THE BUS, read from the registry.
+#
+# It was a literal in the estate's library — on eleven lines, from the time one
+# machine was the fleet's only hub. The same library then had to carry a hub on a
+# second machine, where the literal made that hub's own word ANOTHER hub's: mail
+# to the literal was local, mail to the hub itself went remote. HUB_SESSION is
+# resolved per host (the hub-per-host reader), so one line answers correctly on
+# every machine without a branch. Refuses rc 78 when the estate cannot be read: a
+# hub without a name does not guess its name.
+bus_hub_word() {
+  registry_hub_session
+}
+
 # ------------------------------------------- the envelope and parked subjects
 #
 # THIS FILE IS A DELIBERATE, SELF-CONTAINED COPY of the hub's own bus library —
@@ -148,6 +161,47 @@ bus_parked() {
     [ "$rad" = "$amne" ] && return 0
   done < "$fil"
   return 1
+}
+
+# ------------------------------------------------------- the message record
+#
+# ONE BUILDER, EVERY CALLER. Three places used to assemble the record with their
+# own jq -n — the local write, the remote delivery and the sender's archive — and
+# a field added to one was missing from the others. Measured right after the
+# not_a_secret flag was introduced: the recipient's copy carried it, the sender's
+# archive did not, so the half of the trail that is examined when someone asks
+# what a session SENT was silent about it.
+#
+# THE DEFAULT IS SET ON ITS OWN LINE, not in the expansion. `${5:-\{\}}` yields the
+# LITERAL string `\{\}` — the backslashes are characters here, not quoting — and jq
+# answers "invalid JSON text passed to --argjson", rc 70. Neither `${5:-{\}}` nor
+# `${5:-\{\}}` is fixable with more quoting; bash keeps the backslash in both. No
+# caller relied on the default when this was found, but the signature PROMISES
+# it, and the next caller to trust the promise would get an error that does not
+# look like it came from what they wrote.
+bus_message_json() { # <from> <to> <ts> <text> [extra-json-object]
+  local from="$1" to="$2" ts="$3" text="$4" extra="${5:-}"
+  [ -n "$extra" ] || extra='{}'
+  jq -n --arg from "$from" --arg to "$to" --argjson ts "$ts" --arg text "$text" \
+        --argjson extra "$extra" \
+    '{from: $from, to: $to, ts: $ts, text: $text} + $extra' || return 70
+}
+
+# bus_extra_flags [delivered] — the record's optional fields, as one JSON object
+# for the builder above. The envelope fields come from the globals bus_send
+# exports after parsing (BUS_KLASS, BUS_AMNE, BUS_RUBRIK); absent class means an
+# unparsed text and no fields. STEWARD_BUS_NOT_A_SECRET marks a send that passed
+# the secret guard on the sender's explicit claim — the claim travels with the
+# record so the recipient can see it was made. `delivered` is the archive's mark.
+bus_extra_flags() {
+  local obj="{}"
+  if [ -n "${BUS_KLASS:-}" ]; then
+    obj="$(printf '%s' "$obj" | jq -c --arg k "$BUS_KLASS" --arg a "${BUS_AMNE:-}" \
+             --arg r "${BUS_RUBRIK:-}" '. + {klass:$k, amne:$a, rubrik:$r}')"
+  fi
+  [ -n "${STEWARD_BUS_NOT_A_SECRET:-}" ] && obj="$(printf '%s' "$obj" | jq -c '. + {not_a_secret:true}')"
+  [ "${1:-}" = delivered ] && obj="$(printf '%s' "$obj" | jq -c '. + {delivered:true}')"
+  printf '%s' "$obj"
 }
 
 # bus_home — prints the queue root, honoring STEWARD_BUS_HOME.
@@ -341,6 +395,121 @@ bus_valid_recipient() {
   registry_list | grep -qxF "$to"
 }
 
+# ------------------------------------------------ recipient resolution
+#
+# THE QUEUE IS KEYED ON A SESSION'S ID, never on the name the sender typed. For
+# every legacy row (file name == ID) that is byte-identical to before. A MIGRATED
+# row (file name = opaque ID, SLUG= + ACCOUNT=) is addressed by its slug and its
+# mail lands in <bus home>/<ID>/inbox — one queue per session, whichever name
+# was used. Measured before this existed: a hub whose row had migrated had TWO
+# queues, one under the word and one under the ID, and the second was read by
+# nobody. Mail landing rc 0 in a queue nobody reads is worse than a refusal: the
+# sender holds a receipt.
+#
+# bus_resolve_recipient <name> — ONE resolution, ONE place. Every caller that
+# used to build <registry>/<name>.conf itself (validation, the FRAGA fields, the
+# machine-session question, HOST, OWNER) goes through here, so the gate and the
+# delivery can never read different rows for the same name.
+#
+# Sets BUS_RES_CONF (the row's path) and BUS_RES_ID (the key the queue uses).
+# rc 0 = resolved · rc 1 = unknown recipient · rc 65 = REFUSED with an
+# explanation on stderr · rc 78 = the registry cannot be read.
+#
+# THE ORDER IS THE CONTRACT:
+#   1. FORM FIRST — the same character enumeration the rest of this file uses
+#      (never a range: in a UTF-8 locale `[a-z]` follows collation and lets upper
+#      case through). An invalid name must NEVER reach the file system: '*' would
+#      otherwise be a glob pattern over the whole registry.
+#   2. EXACT: <registry>/<name>.conf exists -> that row. The ID is read with the
+#      same sed extraction the FRAGA fields use — NEVER `source` in the caller's
+#      shell. A legacy row without an ID line falls back to its file name, the
+#      same migration fallback registry_load applies (`: "${ID:=$project}"`) — an
+#      existing truth, not a guess. A row carrying SLUG without ID is refused: a
+#      migrated row has nothing to fall back on, and an id is never guessed.
+#   3. SLUG SCAN: the comparison is string EQUALITY ([ = ]), never a case
+#      pattern — the name is not pushed through a glob (the envelope forgery
+#      taught that). 0 hits -> unknown recipient. >1 -> a refusal that names the
+#      rows AND the accounts; an ambiguous slug is never chosen silently, because
+#      the two sessions belong to different people.
+BUS_RES_CONF=""; BUS_RES_ID=""
+
+# _bus_res_id <conf> <fallback> — extract and form-check the ID; sets
+# BUS_RES_ID. <fallback> is empty when falling back is not allowed (slug hit).
+_bus_res_id() {
+  local conf="$1" fallback="${2:-}" id
+  id="$(sed -n 's/^ID="\(.*\)"/\1/p' "$conf" | head -1)"
+  if [ -z "$id" ]; then
+    if [ -n "$fallback" ] && ! grep -q '^SLUG=' "$conf" 2>/dev/null; then
+      id="$fallback"
+    else
+      echo "bus: $(basename "$conf") has no ID field — the queue is keyed on the ID, and an id is never guessed." >&2
+      return 65
+    fi
+  fi
+  # Enumeration, not a range — see the resolver's contract above.
+  case "$id" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"")
+    echo "bus: $(basename "$conf") carries an ID that is not [a-z0-9-]+ — refusing to use it as a queue key." >&2
+    return 65 ;;
+  esac
+  BUS_RES_ID="$id"
+}
+
+bus_resolve_recipient() {
+  BUS_RES_CONF=""; BUS_RES_ID=""
+  local name="${1:-}"
+  case "$name" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;; esac
+  local dir; dir="$(registry_dir)" || return 78
+  local conf="$dir/$name.conf"
+  if [ -f "$conf" ]; then
+    _bus_res_id "$conf" "$name" || return $?
+    BUS_RES_CONF="$conf"
+    return 0
+  fi
+  local f s b hit="" count=0 rows=""
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || continue
+    # THE FORM APPLIES TO THE CANDIDATE TOO. A base name (without .conf) that is
+    # not [a-z0-9-]+ can never be a registry row — the registry refuses the form
+    # everywhere else. Without this filter a junk-named file (UPPER.Weird.conf)
+    # carrying somebody else's SLUG made a legitimate slug AMBIGUOUS and silenced
+    # a real recipient with rc 65 — an addressing denial via a file that should
+    # never have counted.
+    b="$(basename "$f" .conf)"
+    case "$b" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
+    s="$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$f" | head -1)"
+    [ "$s" = "$name" ] || continue
+    count=$((count+1)); hit="$f"
+    rows="$rows $(basename "$f" .conf) (account: $(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$f" | head -1))"
+  done
+  [ "$count" -eq 0 ] && return 1
+  if [ "$count" -gt 1 ]; then
+    echo "bus: the slug '$name' is AMBIGUOUS — several rows carry it:$rows" >&2
+    echo "     An ambiguous slug is never chosen silently. Address the session by its ID." >&2
+    return 65
+  fi
+  _bus_res_id "$hit" "" || return $?
+  BUS_RES_CONF="$hit"
+  return 0
+}
+
+# bus_local_host — which machine is THIS hub standing on? It was a literal in the
+# estate's library, from the time one machine was the only hub; carried to a
+# second machine, the literal made every letter to the first machine LOCAL
+# (written into the sender's own home) and every letter to a session on the
+# second machine REMOTE. The machine is measured, not assumed.
+# STEWARD_BUS_LOCAL_HOST is the override for tests and emergencies.
+bus_local_host() {
+  printf '%s' "${STEWARD_BUS_LOCAL_HOST:-$(hostname -s 2>/dev/null)}"
+}
+
+# bus_tmux_bin — tmux is the one on PATH. A Homebrew path was hard-coded in four
+# places; on a Linux host every ping then failed SILENTLY, because a ping failure
+# never fails the send — the recipient got mail without being told. The Homebrew
+# path stays as the last resort for a launchd environment without PATH.
+bus_tmux_bin() {
+  printf '%s' "${STEWARD_BUS_TMUX_BIN:-$(command -v tmux 2>/dev/null || echo /opt/homebrew/bin/tmux)}"
+}
+
 # ------------------------------------------------------------- tmux ping
 
 # bus_tmux_sock — the hub's tmux socket path.
@@ -433,6 +602,21 @@ bus_tmux_ping() {
   if bus_recipient_busy "$to"; then
     echo "bus: $to IS BUSY — the ping may have been lost. The mail is queued and supervision will ping again once the session is idle." >&2
   fi
+}
+
+# bus_wake_target <to_id> — the tmux TARGET for a ping. The hub's word is a stable
+# public QUEUE ADDRESS, but the ping goes to a tmux session — and the hub's tmux
+# is named by its opaque ID once its row has migrated. Only the hub's OWN word is
+# translated (through the same resolution as any recipient); everything else
+# passes through untouched. FAIL-OPEN at every step: a miss leaves the target as
+# it was — mail is durable, and the watch re-pings whoever was not woken.
+bus_wake_target() {
+  local _target="${1:-}"
+  local _hub; _hub="$(bus_hub_word 2>/dev/null)" || _hub=""
+  { [ -n "$_hub" ] && [ "$_target" = "$_hub" ]; } || { printf '%s' "$_target"; return 0; }
+  local _id
+  _id="$( bus_resolve_recipient "$_hub" >/dev/null 2>&1 && printf '%s' "$BUS_RES_ID" )" || _id=""
+  [ -n "$_id" ] && printf '%s' "$_id" || printf '%s' "$_target"
 }
 
 # ------------------------------------------------------------- queue ops
@@ -535,6 +719,47 @@ bus_remote_deliver() {
       esac
     fi
     printf "%s\n" "$f"'
+}
+
+# bus_archive_sent <from> <to> <text> — a copy of outgoing mail in the sender's
+# sent/. CALLED ONLY AFTER A SUCCESSFUL DELIVERY: an archive written before the
+# send holds messages that never arrived, and since the archive is what gets
+# examined afterwards it would be a record lying in exactly the direction nobody
+# checks.
+#
+# Why it exists: the bus used to archive RECEIVED mail only. That made every
+# volume measurement one-sided and every "who said what" dependent on the other
+# party's archive — one session had dozens received and zero sent, and a review
+# of the traffic had to ESTIMATE the outgoing half.
+#
+# Never blocking: if archiving fails the mail has still been delivered, and
+# failing the send afterwards would report the wrong thing.
+bus_archive_sent() {
+  local from="${1:-}" to="${2:-}" text="${3:-}"
+  [ -n "$from" ] || return 0
+  # The archive follows the sender's ID when the sender is in the registry (the
+  # same key as its inbox), and the sender's name unchanged otherwise (relays,
+  # "unknown").
+  local from_key="$from"
+  if bus_resolve_recipient "$from" 2>/dev/null; then from_key="$BUS_RES_ID"; fi
+  local sent; sent="$(bus_home)/$from_key/sent"
+  mkdir -p "$sent" 2>/dev/null || return 0
+  local now; now="$(date +%s)"
+  local safe_to; safe_to="$(printf '%s' "$to" | tr -c 'A-Za-z0-9._-' '_')"
+  local tmp; tmp="$(mktemp "$sent/.tmp.XXXXXX" 2>/dev/null)" || return 0
+  # THE SAME FIELDS AS THE RECIPIENT'S COPY. The first version set the flags only
+  # on the recipient's record and left sent/ without them — half the trail, and
+  # the half that is examined when asking what SOMEONE SENT.
+  if bus_message_json "$from" "$to" "$now" "$text" \
+      "$(bus_extra_flags delivered)" > "$tmp" 2>/dev/null; then
+    local fname="${now}-${safe_to}-$$.json" n=1
+    until ln "$tmp" "$sent/$fname" 2>/dev/null; do
+      n=$((n + 1)); [ "$n" -gt 10000 ] && break
+      fname="${now}-${safe_to}-$$-$n.json"
+    done
+  fi
+  rm -f "$tmp"
+  return 0
 }
 
 bus_send() {
