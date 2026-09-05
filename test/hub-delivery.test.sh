@@ -38,10 +38,10 @@ count_json() { find "$1" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d 
 old_days() { date -v-"$1"d '+%Y%m%d%H%M' 2>/dev/null || date -d "$1 days ago" '+%Y%m%d%H%M'; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/home/.tmux" "$FX/home/scripts/estate" "$FX/bin"
+mkdir -p "$FX/sessions.d" "$FX/hh/.tmux" "$FX/hh/scripts/estate" "$FX/bin"
 export STEWARD_REGISTRY_DIR="$FX/sessions.d"
 export STEWARD_BUS_HOME="$FX/bus-home"
-export HOME="$FX/home"
+export HOME="$FX/hh"
 export STEWARD_BUS_LOCAL_HOST=host-one
 export STEWARD_BUS_SELF_USER=operator-a
 cat > "$FX/estate.conf" <<'EOF'
@@ -52,7 +52,7 @@ PING_MSG="[bus] you have mail"
 EOF
 export STEWARD_ESTATE="$FX/estate.conf"
 # The "remote" home's estate - read by the remote-side script for its socket name.
-printf 'TMUX_SOCKET="hub-one.sock"\n' > "$FX/home/scripts/estate/steward.conf"
+printf 'TMUX_SOCKET="hub-one.sock"\n' > "$FX/hh/scripts/estate/steward.conf"
 
 printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/legacy.conf"
 printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/sessions.d/s-00000000000000aa.conf"
@@ -134,17 +134,17 @@ bus_send stranger legacy "FRAGA status: how" recording_ping >/dev/null 2>&1 && b
 echo "3. same machine, other home: delivered AS THE OWNER over ssh, then archived"
 : > "$SSH_CALLS"; : > "$TMUX_CALLS"
 export TMUX_ALIVE=1 PANE_TEXT="normal prompt"
-python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$FX/home/.tmux/hub-one.sock" 2>/dev/null || :
+python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$FX/hh/.tmux/hub-one.sock" 2>/dev/null || :
 f="$(bus_send neighbour legacy "DRIFT topic: over the fence" recording_ping)"; rc=$?
 is  "rc 0" "$rc" "0"
 has "ssh ran as the neighbour's owner"   "$(cat "$SSH_CALLS")" "-l operator-b"
 has "...to our own host"                 "$(cat "$SSH_CALLS")" " host-one "
 is  "nothing was written in the hub's own home for the neighbour" "$(ls -d "$FX/bus-home/s-00000000000000ee" 2>/dev/null)" ""
-rem="$FX/home/.config/agent-bus/s-00000000000000ee/inbox"
+rem="$FX/hh/.config/agent-bus/s-00000000000000ee/inbox"
 is  "the remote side wrote the record under the ID" "$(count_json "$rem")" "1"
 is  ".to carries the ID on the remote copy too" "$(jq -r .to "$rem/$f")" "s-00000000000000ee"
 is  ".klass survives the wire" "$(jq -r .klass "$rem/$f")" "DRIFT"
-has "the remote nudge went over the home's socket, named by its estate" "$(cat "$TMUX_CALLS")" "-S $FX/home/.tmux/hub-one.sock has-session -t s-00000000000000ee"
+has "the remote nudge went over the home's socket, named by its estate" "$(cat "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000ee"
 has "...and typed the registry's ping text" "$(cat "$TMUX_CALLS")" "send-keys -t s-00000000000000ee -l [bus] you have mail"
 is  "the sender's archive got the copy after success" "$(count_json "$FX/bus-home/legacy/sent")" "5"
 unset TMUX_ALIVE

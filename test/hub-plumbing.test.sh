@@ -25,10 +25,10 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/home/.tmux" "$FX/bin"
+mkdir -p "$FX/sessions.d" "$FX/hh/.tmux" "$FX/bin"
 export STEWARD_REGISTRY_DIR="$FX/sessions.d"
 export STEWARD_BUS_HOME="$FX/bus-home"
-export HOME="$FX/home"
+export HOME="$FX/hh"
 cat > "$FX/estate.conf" <<'EOF'
 HUB_SESSION="hub-one"
 HUB_HOST="host-one"
@@ -64,8 +64,8 @@ echo "1. the tmux wrappers use bus_tmux_bin - the one on PATH, never a literal p
   bus_tmux_has_session s-00000000000000aa; bus_tmux_capture_pane s-00000000000000aa >/dev/null
   bus_tmux_send_keys s-00000000000000aa "[bus] you have mail"; bus_recipient_busy s-00000000000000aa )
 is  "four wrappers, five tmux calls (send-keys is two)" "$(wc -l < "$TMUX_CALLS" | tr -d ' ')" "5"
-has "has-session over the estate's socket"  "$(sed -n 1p "$TMUX_CALLS")" "-S $FX/home/.tmux/hub-one.sock has-session -t s-00000000000000aa"
-has "capture-pane over the socket"          "$(sed -n 2p "$TMUX_CALLS")" "-S $FX/home/.tmux/hub-one.sock capture-pane"
+has "has-session over the estate's socket"  "$(sed -n 1p "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000aa"
+has "capture-pane over the socket"          "$(sed -n 2p "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock capture-pane"
 has "send-keys: literal text"               "$(sed -n 3p "$TMUX_CALLS")" "send-keys -t s-00000000000000aa -l [bus] you have mail"
 has "send-keys: a separate Enter"           "$(sed -n 4p "$TMUX_CALLS")" "send-keys -t s-00000000000000aa Enter"
 : > "$TMUX_CALLS"

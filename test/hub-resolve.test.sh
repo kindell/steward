@@ -27,10 +27,10 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/home/.tmux" "$FX/bin"
+mkdir -p "$FX/sessions.d" "$FX/hh/.tmux" "$FX/bin"
 export STEWARD_REGISTRY_DIR="$FX/sessions.d"
 export STEWARD_BUS_HOME="$FX/bus-home"
-export HOME="$FX/home"
+export HOME="$FX/hh"
 
 cat > "$FX/estate.conf" <<'EOF'
 RC_LABEL_PREFIX="Fixture: "

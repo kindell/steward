@@ -67,3 +67,9 @@ linux/browser-stack.timer          .config/systemd/user/browser-stack.timer     
 linux/hub/bus-send             scripts/bus/bus-send                 755  scripts
 linux/hub/lib.sh               scripts/bus/lib.sh                   644  scripts
 linux/hub/enroll               scripts/bus/enroll                   755  scripts
+# The hub's receiving side. bus-relay-in is the forced command behind every
+# session host's relay key in the hub's authorized_keys; bus-relay-deliver is the
+# forced command behind the hub's delivery key in a neighbour's home on the same
+# host. Both belong to the hub library above and land beside it, under bin/.
+linux/hub/bin/bus-relay-in       scripts/bus/bin/bus-relay-in         755  scripts
+linux/hub/bin/bus-relay-deliver  scripts/bus/bin/bus-relay-deliver    755  scripts

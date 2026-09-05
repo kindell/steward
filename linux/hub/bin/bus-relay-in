@@ -1,0 +1,24 @@
+#!/bin/bash
+# bus-relay-in <sender-identity> - the receiving side of the bus's machine bridge.
+#
+# NEVER run directly: it is the forced command for a remote machine's ssh key in
+# ~/.ssh/authorized_keys (restrict,command="... bus-relay-in <identity>"). It is
+# the whole envelope model in miniature: THE SENDER COMES FROM THE KEY, not from
+# the message. A remote machine cannot claim to be somebody else, because the
+# identity is pinned in the authorized_keys line on OUR side - and the key can do
+# nothing else (no pty, no forwarding, no shell).
+#
+# Protocol on stdin: line 1 = recipient, the rest to EOF = text.
+set -euo pipefail
+IDENTITY="${1:?bus-relay-in requires an identity (set in authorized_keys)}"
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib.sh
+source "$here/lib.sh"
+
+IFS= read -r to || { echo "relay: empty stdin" >&2; exit 64; }
+text="$(head -c 65536)"   # cap: 64 kB - a bus message is a short notice, not a file
+[ -n "$text" ] || { echo "relay: empty text" >&2; exit 64; }
+
+# The sender field is ALWAYS the key's identity. Should the remote side send a
+# from-claim of its own, there is no path for it to get here.
+bus_send "$to" "$IDENTITY" "$text"

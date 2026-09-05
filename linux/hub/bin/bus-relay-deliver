@@ -1,0 +1,91 @@
+#!/bin/bash
+# bus-relay-deliver - the receiving side of the bus's cross-home delivery, as a
+# FORCED COMMAND in another person's authorized_keys.
+#
+# Never run by hand. The line looks like this at the recipient:
+#
+#   restrict,command="$HOME/scripts/bus/bin/bus-relay-deliver" ssh-ed25519 AAAA... <hub-key>
+#
+# WHY IT EXISTS. The bus's delivery between homes sshes in as the recipient's
+# OWNER and runs a small script there. As long as every session belonged to one
+# person a plain key was enough: the hub got a shell in its owner's own account.
+# With a second person in the fleet the same pattern became wrong - it would
+# have given one person's hub a shell in another person's home directory, the
+# exact opposite of the 0750 boundary around that home.
+#
+# `restrict` removes pty, port forwarding, agent and X11 forwarding, and
+# `command=` means the key can run nothing but this file. The hub can deliver
+# bus messages and nothing more. The boundary becomes mechanical instead of an
+# agreement - and an agreement is only as strong as the memory of whoever made it.
+#
+# NO CLIENT CHANGE WAS NEEDED. A forced command replaces the command but inherits
+# the SAME STDIN, so bus_remote_deliver keeps piping exactly the same bytes to
+# every host. Where the key is unbound the remote side runs the client's inline
+# script; where it is bound it runs this file. Same protocol, two framings.
+#
+# The protocol on stdin (four lines, then JSON to EOF):
+#   1: recipient      2: timestamp      3: sanitized sender      4: ping text
+#
+# Keep this file in step with the inline script in lib.sh:bus_remote_deliver.
+# They are identical in behaviour on purpose; test/hub-relay.test.sh compares them.
+set -u
+
+# READ TIMEOUTS ON EVERYTHING FROM OUTSIDE. A delivery is milliseconds; input that
+# does not arrive within RT seconds is a broken connection, not a slow one. An ssh
+# client that died half-way - bytes sent, FIN never arrived, a tailnet gap between
+# two machines - used to leave this process in pipe_read FOREVER, with an open
+# sshd beside it and a process that looked alive. Measured: a relay that had hung
+# for over an hour and grew with the traffic. A forced command without a limit of
+# its own is a leak that stacks.
+RT="${BUS_RELAY_READ_TIMEOUT:-15}"
+IFS= read -r -t "$RT" to   || { echo "relay: timeout/EOF waiting for the recipient" >&2; exit 1; }
+IFS= read -r -t "$RT" now  || { echo "relay: timeout waiting for the timestamp" >&2; exit 1; }
+IFS= read -r -t "$RT" sf   || { echo "relay: timeout waiting for the sender" >&2; exit 1; }
+IFS= read -r -t "$RT" ping || { echo "relay: timeout waiting for the ping text" >&2; exit 1; }
+
+# The recipient name comes from outside and becomes a path - hence a character
+# allowlist, not a blocklist. Without it a single "../" writes outside the bus.
+# The characters are ENUMERATED: `[!a-z0-9-]` would have looked the same but
+# followed collation, and in a UTF-8 locale the upper case sits inside a-z. The
+# traversal was stopped anyway (dot and slash lie outside the letters in every
+# collation), but a capitalised name would have slipped through and written an
+# inbox nobody reads.
+case "$to" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") echo "relay: bad recipient" >&2; exit 1;; esac
+
+inbox="$HOME/.config/agent-bus/$to/inbox"
+mkdir -p "$inbox" || exit 1
+tmp="$(mktemp "$inbox/.tmp.XXXXXX")" || exit 1
+# timeout around cat: the body is read to EOF, and EOF is exactly what a half-open
+# connection withholds. Without the cap, cat hangs in pipe_read.
+timeout "$RT" cat > "$tmp" || { rm -f "$tmp"; echo "relay: timeout/error reading the body" >&2; exit 1; }
+
+# Atomic name via ln: two simultaneous deliveries never get the same file, and a
+# half-written file is never visible in the queue, because it is renamed only
+# once it is whole.
+f="$now-$sf-$$.json"; n=1
+until ln "$tmp" "$inbox/$f" 2>/dev/null; do
+  n=$((n+1)); [ "$n" -gt 10000 ] && { rm -f "$tmp"; exit 1; }
+  f="$now-$sf-$$-$n.json"
+done
+rm -f "$tmp"
+
+# A contentless ping, and NEVER into an answer in progress. Typing into a working
+# session is exactly the mistake the two-round rule exists to avoid.
+#
+# The ping goes over the socket of THIS HOME, named by the estate of this home
+# (TMUX_SOCKET) - not by a word in this script. This file has no library - it is a
+# forced command in another home - so the key is read with sed, never source, the
+# way a row is read. No estate or no socket: the default server, as before. Mirror
+# lib.sh:bus_remote_deliver.
+sock="$(sed -n "s/^TMUX_SOCKET=\"\(.*\)\"/\1/p" "$HOME/scripts/estate/steward.conf" 2>/dev/null | head -1)"
+tm=(tmux); [ -n "$sock" ] && [ -S "$HOME/.tmux/$sock" ] && tm=(tmux -S "$HOME/.tmux/$sock")
+if "${tm[@]}" has-session -t "$to" 2>/dev/null; then
+  pane="$("${tm[@]}" capture-pane -t "$to" -p 2>/dev/null)"
+  case "$pane" in
+    *"esc to interrupt"*|*"… ("*) : ;;
+    *) "${tm[@]}" send-keys -t "$to" -l "$ping" 2>/dev/null
+       "${tm[@]}" send-keys -t "$to" Enter 2>/dev/null ;;
+  esac
+fi
+
+printf "%s\n" "$f"
