@@ -133,6 +133,7 @@ Generic commands; substitute your estate and session names:
 ```bash
 steward <estate> attach <session>     # take over the TUI
 steward <estate> peek <session>       # snapshot the screen without attaching
+steward <estate> login [session]      # land at the runtime's own login prompt, in the owner's home
 steward <estate> status               # runtime and model per session
 ```
 

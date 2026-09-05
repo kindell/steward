@@ -293,6 +293,25 @@ for a human at a terminal. Neither channel is the only one.
 pane (keystroke injection loses content — the estates' own rule) — attach
 hands the terminal to the human and gets out of the way.
 
+**The seat is resolved first.** A session's tmux server runs in its OWNER's
+home on its HOST — not necessarily the home the estate card's ssh target
+opens. So attach is two hops: a read-only one to the card's target ("where
+does this session sit?" — key, OWNER, HOST, HOME) and an interactive one as
+`OWNER@HOST` (the card's own target when the owner is the card's account).
+Homes are 750 and the person's own laptop key already opens the homes they
+may enter; the product only has to say which one. Measured 2026-09-05 when
+the hub session moved into the machine steward's account and attach
+answered "can't find session" one home over.
+
+### `steward <estate> login [session]`
+
+The same two hops, ending in the hub-side `steward login <key>` in the
+owner's home — the runtime's own interactive `/login`, which only a human
+with a browser can complete. Without a session name the estate's hub
+session is the target. The hub-side verb refuses unless it runs as the
+owner on the session's HOST, so hop 2 lands exactly where hop 1 said or
+nowhere.
+
 ### `steward <estate> users`
 
 The registry distilled per OWNER, measured against the host in the same
