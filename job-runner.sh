@@ -206,7 +206,15 @@ if [ -n "${LOGIN:-}" ]; then
   # inside COMMAND, does not work: the runner execs `bash "$REPO_PATH/$COMMAND"`,
   # so a COMMAND with a space in it becomes one impossible filename.
   export STEWARD_LOGIN="$LOGIN"
-  log "login: $LOGIN -> $CLAUDE_CONFIG_DIR"
+  # THE LEGACY ROW LEAVES THE VARIABLE UNSET ON PURPOSE. registry_login_apply
+  # removes CLAUDE_CONFIG_DIR for the estate's LEGACY_LOGIN and puts nothing in
+  # its place — the runtime lands on its unnamed default by being told nothing
+  # (login-exec-rule 8c). Under set -u this receipt line read the variable
+  # bare, so every job on the legacy login died with "unbound variable" before
+  # it started; the first of them was the session watchdog, which is the job
+  # that would have reported the others. Measured across two days of five-
+  # minute runs. The receipt names the default explicitly instead.
+  log "login: $LOGIN -> ${CLAUDE_CONFIG_DIR:-(runtime default)}"
 else
   log "login: none declared — running on the ambient account (transition)"
 fi
