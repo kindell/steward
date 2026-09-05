@@ -3916,7 +3916,12 @@ cmd_login() {
   # registry_load itself returns for "no such session" (a bare 1): every
   # other caller in this file that wraps a registry-layer failure reports it
   # as 78, and a session name is exactly that layer.
-  registry_load "$session" || return 78
+  #
+  # THE HANDLE IS RESOLVED FIRST: a person says the SLUG, the row is keyed by
+  # an opaque id. An unknown handle falls through to registry_load so the
+  # refusal is the registry's own sentence, not a second one from here.
+  local key; key="$(registry_resolve_session "$session")" || key="$session"
+  registry_load "$key" || return 78
 
   local viewer="${STEWARD_VIEWER:-}"
   [ -n "$viewer" ] || viewer="$(id -un 2>/dev/null)"
@@ -3930,9 +3935,22 @@ cmd_login() {
     return 77
   fi
 
-  if ! _resolve_hub_local; then
-    local hub; hub="$(registry_hub_host 2>/dev/null)"
-    printf 'steward: login runs on the hub (%s) — this machine is not it\n' "${hub:-the hub}" >&2
+  # THE LOGIN WRITES IN A HOME, AND THE HOME STANDS ON THE SESSION'S HOST.
+  # Until 2026-09-05 the gate was "this machine is the hub", which was the
+  # same machine for every session the estate had — and became wrong the day
+  # a session lived on a host the hub only deploys to: run on the hub, the
+  # flow would have written credentials into the hub's copy of the home, and
+  # the session on the real host would have kept asking for /login. Same
+  # hostname seam as _resolve_hub_local, compared against the row's HOST.
+  local here_host
+  if [ -n "${STEWARD_HOSTNAME_CMD:-}" ]; then
+    here_host="$("$STEWARD_HOSTNAME_CMD" 2>/dev/null)"
+  else
+    here_host="$(hostname -s 2>/dev/null)"
+  fi
+  if [ -z "$here_host" ] || [ "$here_host" != "$HOST" ]; then
+    printf 'steward: %s lives on %s — login runs there, and this machine (%s) is not it\n' \
+      "$session" "$HOST" "${here_host:-unknown}" >&2
     return 69
   fi
 

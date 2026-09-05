@@ -299,6 +299,40 @@ run_login ghostlogin >/dev/null
 is "an unresolvable login is rc 78" "$?" "78"
 is "the stub never ran" "$(cat "$FX/stublog")" ""
 
+# THE HANDLE PEOPLE SAY IS THE SLUG. After the naming model a row's filename
+# is an opaque id; every other verb that takes a session from a person
+# (attach, peek, the bus) resolves the slug first. Measured 2026-09-05 on the
+# first machine-steward login: `steward login basement` answered "unknown
+# project basement" because the row is s-<hex>.conf with SLUG="basement".
+echo "== login: a SLUG resolves to its row =="
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="s-0000000000000001"\nSLUG="byslug"\n' \
+  > "$FX/sessions.d/s-0000000000000001.conf"
+clear_markers
+out="$(run "$hub_host" "$claude_stub" "$opencode_stub" 1 byslug)"; rc=$?
+present "claude stub ran for the slug"          "$FX/claude.ran"
+has     "announce line names the slug"          "$out" "byslug"
+is      "exit code is the stub's own rc"        "$rc" "42"
+
+# THE LOGIN WRITES IN A HOME, AND THE HOME STANDS ON THE SESSION'S HOST — not
+# on the hub's. A session that lives on another machine than the hub (a
+# federation peer, or a host the hub deploys to) cannot be logged in from the
+# hub at all: the credentials would land in the wrong home. So the gate is
+# "this machine is the session's HOST", not "this machine is the hub".
+echo "== login: a session on ANOTHER host logs in ON that host =="
+printf 'HOST="h2"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="elsewhere"\n' \
+  > "$FX/sessions.d/elsewhere.conf"
+clear_markers
+out="$(run "$other_host" "$claude_stub" "$opencode_stub" 1 elsewhere)"; rc=$?
+present "claude stub ran on the session's host (not the hub)" "$FX/claude.ran"
+is      "exit code is the stub's own rc"                      "$rc" "42"
+
+echo "== login: ...and is refused on the hub, naming the session's host =="
+clear_markers
+out="$(run "$hub_host" "$claude_stub" "$opencode_stub" 1 elsewhere)"; rc=$?
+is      "rc 69"                                 "$rc" "69"
+has     "refusal names the session's host"      "$out" "h2"
+absent  "claude stub did not run"               "$FX/claude.ran"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

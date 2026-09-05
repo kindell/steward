@@ -1950,6 +1950,32 @@ _registry_row_principal() {
   printf '%s' "$p"
 }
 
+# registry_resolve_session <handle> — the row KEY (conf basename) for what a
+# person says. Exact filename first (old-shape rows and migrated ids alike),
+# then a SLUG scan; ambiguity refuses rather than guesses. The product-side
+# twin of linux/estate-status.sh's _resolve_session_key, which runs over ssh
+# where this library is not loaded — same rule, same order, so a handle
+# means the same thing on both sides of the wire.
+#
+# NON-EXECUTING like every read in this file: sed over the row, never source.
+registry_resolve_session() { # <handle> -> key on stdout; rc 1 unknown/ambiguous
+  local q="${1:-}" d hit="" f n
+  registry_valid_name "$q" || return 1
+  d="$(registry_dir)"
+  [ -f "$d/$q.conf" ] && { printf '%s' "$q"; return 0; }
+  for f in "$d"/*.conf; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .conf)"
+    registry_valid_name "$n" || continue
+    if [ "$(sed -n 's/^SLUG="\([a-z0-9-]*\)"$/\1/p' "$f" | head -1)" = "$q" ]; then
+      [ -n "$hit" ] && { echo "registry: '$q' is ambiguous: $hit and $n" >&2; return 1; }
+      hit="$n"
+    fi
+  done
+  [ -n "$hit" ] || return 1
+  printf '%s' "$hit"
+}
+
 registry_load() {
   # THE SCHEMA GATE, WIRED. Until 2026-08-25 registry_schema_check existed and
   # nothing called it: the estate declared a version, the library knew how to
