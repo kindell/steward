@@ -115,6 +115,26 @@ in_fixture registry_session_display legacy-noline
 is "1b: rc 0"          "$RC"  "0"
 is "1b: prefix+name"   "$OUT" "$expected_fallback"
 
+echo "== 1c. NO PREFIX — an empty or absent RC_LABEL_PREFIX means the bare name =="
+# The label standard is Team or Team->Project, never "org: name". The prefix
+# is optional: an estate that sets it empty, or does not set it at all, gets
+# the bare slug as the fallback for a row without a label. Both shapes are
+# tried against a COPY of the estate so the cases below keep their prefix.
+ESTATE_KEEP="$(cat "$FX/estate/steward.conf")"
+printf '%s\n' "$ESTATE_KEEP" | sed 's/^RC_LABEL_PREFIX=.*$/RC_LABEL_PREFIX=""/' > "$FX/estate/steward.conf"
+in_fixture registry_rc_label_prefix
+is "1c: empty prefix is a value, rc 0"   "$RC"  "0"
+is "1c: empty prefix reads as empty"     "$OUT" ""
+in_fixture registry_session_display legacy-noline
+is "1c: rc 0 with empty prefix"          "$RC"  "0"
+is "1c: fallback is the bare name"       "$OUT" "legacy-noline"
+printf '%s\n' "$ESTATE_KEEP" | grep -v '^RC_LABEL_PREFIX=' > "$FX/estate/steward.conf"
+in_fixture registry_rc_label_prefix
+is "1c: absent prefix is not a broken estate, rc 0" "$RC" "0"
+in_fixture registry_session_display legacy-noline
+is "1c: absent prefix -> bare name too"  "$OUT" "legacy-noline"
+printf '%s\n' "$ESTATE_KEEP" > "$FX/estate/steward.conf"
+
 echo "== 2. NEW SHAPE — the display is DERIVED from the target reference =="
 
 printf 'OWNER="a"\nDOMAIN="acme"\nREPO_PATH="/tmp/x"\nTARGET_PROJECT="site"\n' \

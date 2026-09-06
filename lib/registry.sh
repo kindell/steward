@@ -1604,11 +1604,17 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
   printf '%s\n' "$_varde"
 }
 
-# RC_LABEL_PREFIX forms the session's identity in the process table. THE FORM ALLOWS
+# RC_LABEL_PREFIX is OPTIONAL and normally empty. The label standard is the
+# target's display -- Team, or Team->Project -- never "org: name". The prefix
+# only reaches a label as the FALLBACK for a row that carries no label and
+# no target (prefix + bare slug), so an empty or absent key means the bare
+# slug. It stayed required until 2026-09-06 out of caution for the
+# supervisor's liveness pattern; that pattern measures each session's
+# resolved RC_LABEL, so the prefix no longer touches a labeled process.
 # A TRAILING SPACE IS ALLOWED deliberately: the space belongs to the label. A
 # form that trimmed it would silently change the pattern supervision matches
 # against, which is exactly the damage this key exists to prevent.
-registry_rc_label_prefix() { _registry_estate_value RC_LABEL_PREFIX '^[A-Za-z0-9][A-Za-z0-9 :._-]*$'; }
+registry_rc_label_prefix() { _registry_estate_value RC_LABEL_PREFIX '^([A-Za-z0-9][A-Za-z0-9 :._-]*)?$'; }
 
 # ── THE HUB ADDRESS IS PER HOST, NOT PER ESTATE ────────────────────────────
 #
@@ -1874,9 +1880,10 @@ registry_ping_msg() {
 
 # registry_liveness_cmd — the estate's own liveness shim, or the empty string.
 #
-# THE ONE OPTIONAL FIELD IN THIS FILE, AND THAT IS WHY IT IS NOT A CASE IN
-# _registry_estate_value. Every key that function serves is REQUIRED: a
-# missing RC_LABEL_PREFIX or HUB_HOST is a broken estate and rc 78 says so.
+# AN OPTIONAL FIELD, AND THAT IS WHY IT IS NOT A CASE IN
+# _registry_estate_value. The keys that function serves are REQUIRED unless
+# their form says otherwise (RC_LABEL_PREFIX and JOB_TIMEZONE accept the
+# empty string): a missing HUB_HOST is a broken estate and rc 78 says so.
 # LIVENESS_CMD is different — it started life outside the estate file
 # entirely, as the operator's own STEWARD_LIVENESS_CMD, and an estate that
 # has not declared one yet is not broken, it simply has not opted in. Folding

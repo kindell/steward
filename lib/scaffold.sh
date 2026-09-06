@@ -62,14 +62,15 @@ estate_scaffold() {
   mkdir -p "$dir"/{estate,sessions.d,entities.d,projects.d,mcp.d,jobs.d,services.d,browsers.d,hosts.d,accounts.d,logins.d} 2>/dev/null \
     || { echo "scaffold: could not create $dir" >&2; return 70; }
 
-  # SIXTEEN FIELDS. The 14 the installer already wrote, plus ESTATE_NAME and
+  # FIFTEEN FIELDS. The 13 the installer already wrote, plus ESTATE_NAME and
   # SCHEMA_VERSION — without which registry_estate_name refuses (measured
-  # 2026-08-27: today's installer produces an unreadable estate).
+  # 2026-08-27: today's installer produces an unreadable estate). No
+  # RC_LABEL_PREFIX: labels are Team or Team->Project, and a row without a
+  # target falls back to its bare name (2026-09-06).
   {
     printf 'ESTATE_NAME="%s"\n'          "$org"
     printf 'SCHEMA_VERSION="3"\n'
     printf 'LABEL_PREFIX="com.%s.claude"\n'      "$org"
-    printf 'RC_LABEL_PREFIX="%s: "\n'            "$org"
     printf 'HUB_SESSION="%s-hub"\n'              "$org"
     printf 'HUB_HOST="%s"\n'                     "$(hostname -s)"
     printf 'HUB_SSH="%s@%s"\n'                   "$(id -un)" "$(hostname -s)"
