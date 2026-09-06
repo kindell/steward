@@ -654,6 +654,11 @@ run; rc11=$?
 log11="$(cat "$TMUX_LOG")"
 is  "11a rc 0"                                    "$rc11" "0"
 has "11b the rig's own port is in the session environment" "$log11" "-e STEWARD_BROWSER_CDP=9327"
+# THE WHOLE RIG, NOT HALF OF IT. A session that knows its CDP port but has to
+# open its own conf for the VNC port and the display knows its rig by two
+# routes; a tool that reads the environment then answers half the question.
+has "11c the VNC port too"                        "$log11" "-e STEWARD_BROWSER_VNC=5924"
+has "11d and the display"                         "$log11" "-e STEWARD_BROWSER_DISPLAY=24"
 
 echo "== 12. a session with no rig exports no port =="
 # The variable must not appear EMPTY either: an empty value reads as "there is a
@@ -671,6 +676,8 @@ rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
 run; rc12=$?
 is    "12a rc 0"                                  "$rc12" "0"
 hasnt "12b no STEWARD_BROWSER_CDP is exported"    "$(cat "$TMUX_LOG")" "STEWARD_BROWSER_CDP"
+hasnt "12c nor STEWARD_BROWSER_VNC"                "$(cat "$TMUX_LOG")" "STEWARD_BROWSER_VNC"
+hasnt "12d nor STEWARD_BROWSER_DISPLAY"            "$(cat "$TMUX_LOG")" "STEWARD_BROWSER_DISPLAY"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

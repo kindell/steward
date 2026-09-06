@@ -879,6 +879,17 @@ CRED_ENV_ARGS=(
 if [ -n "${BROWSER_CDP:-}" ]; then
   CRED_ENV_ARGS+=( -e "STEWARD_BROWSER_CDP=$BROWSER_CDP" )
 fi
+# THE WHOLE RIG TRAVELS, not half of it. The VNC port and the display follow
+# the same rule as the CDP port: exported only when declared, so a session
+# knows every number of its own rig from its environment and never opens its
+# conf, or computes, to find the other two. Measured 2026-09-06: a session
+# knew its CDP port this way and its VNC port only by reading its row.
+if [ -n "${BROWSER_VNC:-}" ]; then
+  CRED_ENV_ARGS+=( -e "STEWARD_BROWSER_VNC=$BROWSER_VNC" )
+fi
+if [ -n "${BROWSER_DISPLAY:-}" ]; then
+  CRED_ENV_ARGS+=( -e "STEWARD_BROWSER_DISPLAY=$BROWSER_DISPLAY" )
+fi
 # (The send-keys variant of this environment is gone WITH the send-keys
 # repair: every start path below creates a fresh pane via new-session -e, so
 # the array above is the whole story.)
