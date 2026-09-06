@@ -708,6 +708,136 @@ bus_recipient_owner() {
   printf '%s' "$o"
 }
 
+# ------------------------------------------------------ the hub peer link
+#
+# A PEER IS A NEIGHBOURING HUB, and a LINK to it has an OWNER. Nothing crosses a
+# link unless the sending session is owned by the link's owner, measured in OUR
+# registry; the receiving hub runs the mirrored gate against ITS registry and
+# stamps every arriving letter with the owner named by the key it came in on.
+# Two gates, one per hub, each against its own data — neither hub trusts the
+# other's claim about who wrote what.
+#
+# WHY AN OWNER AT ALL. Two estates that merely knew each other's addresses would
+# let ANY session in one reach ANY session in the other: one person's sessions
+# would be addressable by another person's, which is exactly the boundary the
+# 750 homes and the FRAGA gate exist to keep. An owned link reopens it for one
+# person across their own machines and for nobody else.
+#
+# bus_peers_dir — where the estate keeps its links. The estate's DATA, not the
+# product's, so it sits under the estate root like sessions.d and entities.d do,
+# and the product's manifest does not carry it. STEWARD_BUS_PEERS_DIR is the
+# fixture override, the same shape as STEWARD_REGISTRY_DIR.
+bus_peers_dir() {
+  if [ -n "${STEWARD_BUS_PEERS_DIR:-}" ]; then
+    printf '%s\n' "$STEWARD_BUS_PEERS_DIR"
+  else
+    # The registry library is a hard dependency of this file (it refuses to load
+    # without it), so its root resolution is available here — ONE resolution for
+    # the whole estate, never a second one that can disagree with it.
+    printf '%s\n' "$(_registry_estate_root)/peers.d"
+  fi
+}
+
+BUS_PEER_SSH=""; BUS_PEER_OWNER=""
+
+# bus_peer_load <peer> — read peers.d/<peer>.conf into BUS_PEER_SSH and
+# BUS_PEER_OWNER. rc 0 = loaded · rc 1 = no such peer · rc 78 = the row exists
+# but cannot be trusted, explained on stderr.
+#
+# READ WITH sed, NEVER SOURCED. A conf is data from disk; sourcing it would run
+# whatever it contains in this shell, and the registry rows next door are read
+# the same way for the same reason.
+#
+# A BROKEN ROW REFUSES, IT NEVER FALLS BACK. A link is a person's name in
+# ANOTHER estate: guessing an owner would hand a neighbouring hub a letter it
+# stores as somebody's, and guessing a target would send it to the wrong
+# machine entirely. Both mistakes look like a delivery from here.
+bus_peer_load() {
+  BUS_PEER_SSH=""; BUS_PEER_OWNER=""
+  local peer="${1:-}"
+  # THE NAME BECOMES A PATH. Enumeration, never a range — in a UTF-8 collation
+  # `[a-z]` lets upper case through, and '*' would glob the whole directory. A
+  # name of the wrong form can never denote a row, so it is simply unknown.
+  case "$peer" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;; esac
+  local conf; conf="$(bus_peers_dir)/$peer.conf"
+  [ -f "$conf" ] || return 1
+  local target owner
+  target="$(sed -n 's/^HUB_SSH="\(.*\)"$/\1/p' "$conf" | head -1)"
+  owner="$(sed -n 's/^OWNER="\(.*\)"$/\1/p' "$conf" | head -1)"
+  # user@host, with exactly one '@'. A second one is a peer address in a place
+  # that takes a machine, i.e. somebody trying to spell a chain into a row.
+  local u h
+  case "$target" in
+    *@*) u="${target%%@*}"; h="${target#*@}" ;;
+    *)   u=""; h="" ;;
+  esac
+  case "$h" in *@*) u=""; h="" ;; esac
+  case "$u" in ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) u="" ;; esac
+  case "$h" in ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) h="" ;; esac
+  if [ -z "$u" ] || [ -z "$h" ]; then
+    echo "bus: $conf has no usable HUB_SSH — expected user@host, got '$target'." >&2
+    echo "     A link is never guessed: the wrong target hands another estate our letter." >&2
+    return 78
+  fi
+  # The owner is an account name in OUR registry, so it carries the registry's
+  # own form: a lowercase letter first, then [a-z0-9-].
+  case "$owner" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) owner="" ;; esac
+  case "$owner" in [abcdefghijklmnopqrstuvwxyz]*) : ;; *) owner="" ;; esac
+  if [ -z "$owner" ]; then
+    echo "bus: $conf has no usable OWNER — a link without an owner is a link" >&2
+    echo "     anybody's session could use, and the owner gate is the whole rule." >&2
+    return 78
+  fi
+  BUS_PEER_SSH="$u@$h"
+  BUS_PEER_OWNER="$owner"
+  return 0
+}
+
+# bus_peer_candidates <owner> — the peers <owner> owns, one per line, sorted.
+# An empty list is rc 0: having no link is an ordinary state, not an error, and
+# the caller turns it into the same "unknown recipient" it gave before links
+# existed.
+#
+# A ROW THAT DOES NOT LOAD IS NOBODY'S CANDIDATE. Refusal-as-default, as in the
+# FRAGA gate: an unreadable row must never become a permit to send somewhere.
+#
+# THE LOOP RUNS IN A PIPELINE, hence in a subshell, so the BUS_PEER_* globals it
+# sets on the way do not leak into a caller that is mid-decision about a
+# different peer. The caller loads the peer it chose, afterwards, itself.
+bus_peer_candidates() {
+  local owner="${1:-}"
+  [ -n "$owner" ] || return 0
+  local dir; dir="$(bus_peers_dir)"
+  [ -d "$dir" ] || return 0
+  {
+    local f b
+    for f in "$dir"/*.conf; do
+      [ -e "$f" ] || continue
+      b="$(basename "$f" .conf)"
+      case "$b" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
+      bus_peer_load "$b" >/dev/null 2>&1 || continue
+      [ "$BUS_PEER_OWNER" = "$owner" ] && printf '%s\n' "$b"
+    done
+  } | sort
+  return 0
+}
+
+# bus_peer_key <peer> — the private key bound to the link, in the hub's own
+# home. One key per link, because the key IS the identity on the other side:
+# the receiving hub reads the owner off the authorized_keys row the key matches
+# and off nothing else. rc 65, naming the path, when it is missing — a link
+# without its key is a refusal here rather than an ssh error nobody reads.
+bus_peer_key() {
+  local peer="${1:-}"
+  case "$peer" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 65 ;; esac
+  local key="$HOME/.ssh/id_buspeer_$peer"
+  if [ ! -f "$key" ]; then
+    echo "bus: no key for the link to '$peer' — expected $key" >&2
+    return 65
+  fi
+  printf '%s' "$key"
+}
+
 # bus_remote_deliver <host> <to> <from> <text> — the same guarantee as locally,
 # but over ssh: a durable queue AT THE RECIPIENT, an atomic name via ln, and a
 # contentless ping gated on the recipient not being busy. The message is built as
