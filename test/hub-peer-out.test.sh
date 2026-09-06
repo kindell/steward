@@ -90,6 +90,150 @@ err="$(bus_peer_key east 2>&1)"; rc=$?
 is  "a link without a key: rc 65" "$rc" "65"
 has "...naming the path we looked for" "$err" "id_buspeer_east"
 
+# ------------------------------------------------------------------ part 2
+#
+# THE BRANCH IN bus_send. A name we do not have is not automatically somebody
+# else's: it is forwarded only over a link the SENDER'S OWNER owns, and only
+# when exactly one such link exists. Everything else refuses and says why.
+#
+# The ssh stub records argv and stdin and answers STUB_RC, so "what left the
+# machine" is an assertion about bytes; and every refusal below also asserts
+# that the stub was NEVER called, because a gate that refuses after the letter
+# has gone is not a gate.
+
+mkdir -p "$FX/peers2.d" "$FX/reg" "$FX/bus-home"
+export STEWARD_BUS_PEERS_DIR="$FX/peers2.d"
+export STEWARD_REGISTRY_DIR="$FX/reg"
+export STEWARD_BUS_HOME="$FX/bus-home"
+export STEWARD_BUS_LOCAL_HOST=host-one
+export STEWARD_BUS_SELF_USER=alice
+cat > "$FX/estate2.conf" <<'EOF'
+HUB_SESSION="hub-one"
+HUB_HOST="host-one"
+TMUX_SOCKET="hub-one.sock"
+PING_MSG="[bus] you have mail"
+EOF
+export STEWARD_ESTATE="$FX/estate2.conf"
+
+# One link for alice, one for bob, and one row too broken to use.
+printf 'HUB_SSH="operator@north.example"\nOWNER="alice"\n' > "$FX/peers2.d/north.conf"
+printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers2.d/west.conf"
+printf 'HUB_SSH="operator@bent.example"\n'                 > "$FX/peers2.d/bent.conf"
+: > "$FX/hh/.ssh/id_buspeer_west"   # so a refusal below is the OWNER gate, not a missing key
+
+# A migrated row (ID + SLUG) for alice, legacy rows for the others.
+printf 'ID="s-000000000000a001"\nSLUG="scout"\nACCOUNT="alice-hub"\nOWNER="alice"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a001.conf"
+printf 'OWNER="bob"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'   > "$FX/reg/bobsession.conf"
+printf 'OWNER="carol"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/carolsession.conf"
+printf 'OWNER="alice"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/local-friend.conf"
+
+cat > "$FX/bin/ssh" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "${SSH_ARGV:?}"
+cat >> "${SSH_STDIN:?}"
+exit "${STUB_RC:-0}"
+STUB
+chmod 755 "$FX/bin/ssh"
+export STEWARD_BUS_SSH_BIN="$FX/bin/ssh" SSH_ARGV="$FX/ssh-argv" SSH_STDIN="$FX/ssh-stdin"
+arm() { : > "$SSH_ARGV"; : > "$SSH_STDIN"; }
+untouched() { is "$1" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"; }
+noop_ping() { :; }
+sent_count() { find "$FX/bus-home/s-000000000000a001/sent" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
+
+echo "6. an explicit peer address goes over that link, and nowhere else"
+arm
+bus_send far@north s-000000000000a001 "DRIFT topic: hello" noop_ping >/dev/null 2>&1; rc=$?
+is  "rc 0 (the stub's)" "$rc" "0"
+has "the link's key"    "$(cat "$SSH_ARGV")" "-i $FX/hh/.ssh/id_buspeer_north"
+has "the peer's target" "$(cat "$SSH_ARGV")" "operator@north.example"
+has "batch mode"        "$(cat "$SSH_ARGV")" "-o BatchMode=yes"
+has "a connect timeout" "$(cat "$SSH_ARGV")" "-o ConnectTimeout=8"
+has "a server-alive interval" "$(cat "$SSH_ARGV")" "-o ServerAliveInterval=5"
+# THE WIRE: recipient, sender, text — and the sender is OUR name for it. The
+# letter was addressed by ID; what crosses is the SLUG, because that is the
+# name a human on the other side can answer.
+exp="$(printf '%s\n%s\n%s' far scout "DRIFT topic: hello")"
+is "the three parts, in order, the sender as its slug" "$(cat "$SSH_STDIN")" "$exp"
+is "...and not a byte more" "$(wc -c < "$SSH_STDIN" | tr -d ' ')" "${#exp}"
+is "a forwarded letter is archived as sent" "$(sent_count)" "1"
+
+echo "7. a bare name we do not have: forwarded over the sender's ONE link"
+arm
+bus_send nowhere scout "DRIFT topic: bare" noop_ping >/dev/null 2>&1; rc=$?
+is  "rc 0" "$rc" "0"
+has "over alice's link" "$(cat "$SSH_ARGV")" "operator@north.example"
+is  "the name travels as typed" "$(printf '%s' "$(cat "$SSH_STDIN")" | sed -n 1p)" "nowhere"
+
+echo "8. two links, one owner: ambiguous, and NOTHING is sent"
+printf 'HUB_SSH="operator@east.example"\nOWNER="alice"\n' > "$FX/peers2.d/east.conf"
+arm
+err="$(bus_send nowhere scout "DRIFT topic: bare" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "rc 65" "$rc" "65"
+has "...naming one link"  "$err" "north"
+has "...and the other"    "$err" "east"
+has "...and how to choose" "$err" "nowhere@"
+untouched "the letter never left the machine"
+rm -f "$FX/peers2.d/east.conf"
+
+echo "9. no link at all: the unknown recipient it was before links existed"
+arm
+err="$(bus_send nowhere carolsession "DRIFT topic: bare" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "rc 1" "$rc" "1"
+has "...and it says unknown recipient" "$err" "unknown recipient"
+untouched "nothing left the machine"
+
+echo "10. the owner gate: a session never leaves over a link it does not own"
+arm
+err="$(bus_send far@north bobsession "DRIFT topic: not yours" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "rc 65" "$rc" "65"
+has "...naming the sender's owner" "$err" "bob"
+has "...and the link's owner"      "$err" "alice"
+untouched "nothing left the machine"
+arm
+bus_send far@north nosuchsender "DRIFT topic: who" noop_ping >/dev/null 2>&1; rc=$?
+is "a sender with no row of its own cannot prove ownership: rc 65" "$rc" "65"
+untouched "...and nothing left the machine"
+
+echo "11. a name we DO have is local, links or no links"
+arm
+bus_send local-friend scout "DRIFT topic: at home" noop_ping >/dev/null 2>&1; rc=$?
+is  "rc 0" "$rc" "0"
+is  "the letter is in the local queue" \
+    "$(find "$FX/bus-home/local-friend/inbox" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
+untouched "...and no link was used"
+
+echo "12. a failed link is a failed send, and archives nothing"
+before="$(sent_count)"
+arm
+STUB_RC=255 bus_send far@north s-000000000000a001 "DRIFT topic: lost" noop_ping >/dev/null 2>&1; rc=$?
+is "the ssh return code is the send's"      "$rc" "255"
+is "...and nothing is archived for it"      "$(sent_count)" "$before"
+
+echo "13. the refusals that come BEFORE the link"
+mkdir -p "$FX/bus-home"; printf 'hush\n' > "$FX/bus-home/parkerade"
+arm
+bus_send far@north scout "FYND hush: parked" noop_ping >/dev/null 2>&1; rc=$?
+is "a parked subject: rc 65 — the parking list is the SENDING estate's" "$rc" "65"
+untouched "...and nothing left the machine"
+rm -f "$FX/bus-home/parkerade"
+arm
+err="$(bus_send far@south scout "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "an unknown peer: rc 65" "$rc" "65"
+has "...and it says so"      "$err" "unknown peer"
+untouched "...and nothing left the machine"
+arm
+bus_send far@bent scout "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
+is "a broken peer row: rc 78, the reader's code" "$rc" "78"
+untouched "...and nothing left the machine"
+arm
+bus_send far@north@east scout "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
+is "an address with two hops: rc 65 — one hop, never a chain" "$rc" "65"
+untouched "...and nothing left the machine"
+arm
+bus_send "Far@north" scout "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
+is "a recipient name of the wrong form: rc 65" "$rc" "65"
+untouched "...and nothing left the machine"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

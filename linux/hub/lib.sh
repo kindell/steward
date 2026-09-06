@@ -838,6 +838,67 @@ bus_peer_key() {
   printf '%s' "$key"
 }
 
+# _bus_peer_owner_gate <from> <peer-owner> <peer> — may this sender use this
+# link? 0 iff the sender's OWNER, read from OUR registry, is the link's owner.
+# Anything else refuses (rc 65) and names both.
+#
+# THE SENDER'S OWNER IS MEASURED, NEVER CLAIMED. It comes from the row the send
+# path resolved, so a session cannot widen its own reach by what it writes. A
+# sender with no row at all — a relay, a word — cannot prove ownership of
+# anything and is refused for that reason, not for its spelling.
+_bus_peer_owner_gate() {
+  local from="${1:-}" powner="${2:-}" peer="${3:-}" sowner
+  sowner="$(bus_recipient_owner "$from" 2>/dev/null)" || sowner=""
+  if [ -z "$sowner" ]; then
+    echo "bus: NOTHING IS SENT over the link to '$peer' — no row for the sender '$from'," >&2
+    echo "     so its owner cannot be measured, and a link is used by its owner alone." >&2
+    return 65
+  fi
+  if [ "$sowner" != "$powner" ]; then
+    echo "bus: '$from' (owner: $sowner) may not send over the link to '$peer' (owner: $powner)." >&2
+    echo "     A link between two hubs belongs to ONE person: it carries that person's" >&2
+    echo "     letters between their own machines, and nobody else's out of the estate." >&2
+    return 65
+  fi
+  return 0
+}
+
+# bus_peer_forward <peer> <to> <from> <text> — hand one letter to a neighbouring
+# hub. Three parts on stdin, exactly as the receiving forced command reads them:
+# the recipient as the PEER knows it, the sender as WE know it, then the text to
+# EOF with its envelope on the first line.
+#
+# THE SENDER'S NAME IS OURS TO SAY, and it is the SLUG where the row has one:
+# the letter may have been addressed by ID, but the name a person on the other
+# side can answer is the slug. The receiving hub does not trust this name for
+# authorisation — it stamps the owner from the key — so it is a label, not a
+# credential.
+#
+# THE ARCHIVE IS WRITTEN ONLY AFTER rc 0, the same rule as every other delivery:
+# an archive written before the send holds letters that never arrived, and the
+# archive is the half that gets examined afterwards. It records the recipient as
+# <to>@<peer>, because "where it went" is the peer, not a name we do not have.
+bus_peer_forward() {
+  local peer="${1:-}" to="${2:-}" from="${3:-}" text="${4:-}"
+  local _lrc=0
+  bus_peer_load "$peer" || _lrc=$?
+  [ "$_lrc" -eq 0 ] || return "$_lrc"
+  local key; key="$(bus_peer_key "$peer")" || return 65
+  local wire_from="$from"
+  if bus_resolve_recipient "$from" 2>/dev/null; then
+    local slug; slug="$(sed -n 's/^SLUG="\(.*\)"$/\1/p' "$BUS_RES_CONF" | head -1)"
+    if [ -n "$slug" ]; then wire_from="$slug"; else wire_from="$BUS_RES_ID"; fi
+  fi
+  # ServerAlive tears a dead link down from this side; the receiving forced
+  # command has read timeouts of its own for the other half of the same gap.
+  local rc=0
+  printf '%s\n%s\n%s' "$to" "$wire_from" "$text" \
+    | "${STEWARD_BUS_SSH_BIN:-ssh}" -i "$key" -o BatchMode=yes -o ConnectTimeout=8 \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "$BUS_PEER_SSH" || rc=$?
+  [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to@$peer" "$text"
+  return "$rc"
+}
+
 # bus_remote_deliver <host> <to> <from> <text> — the same guarantee as locally,
 # but over ssh: a durable queue AT THE RECIPIENT, an atomic name via ln, and a
 # contentless ping gated on the recipient not being busy. The message is built as
@@ -981,6 +1042,52 @@ bus_send() {
     70) echo "bus: NOTHING IS SENT — the parking guard could not read its list (the reason is above). Repair the list, or remove it if nothing should be parked." >&2
         return 70 ;;
   esac
+  # AN EXPLICIT PEER ADDRESS, <name>@<peer>, IS NEVER RESOLVED LOCALLY. The name
+  # is a session as the PEER knows it; a local row spelled the same way is a
+  # different session in a different estate, and reading it here would deliver
+  # the letter to the wrong person under a receipt saying otherwise. The split
+  # happens BEFORE bus_resolve_recipient, which knows only local names and would
+  # refuse the '@' on form.
+  #
+  # THE ORDER IS UNCHANGED: envelope, parking, and only then the address. The
+  # parking list is the SENDING estate's, and a parked subject is parked for
+  # letters leaving the estate too.
+  case "$to" in
+    *@*)
+      local _peer _pto _lrc=0
+      _pto="${to%%@*}"; _peer="${to#*@}"
+      # ONE HOP, NEVER A CHAIN. A second '@' asks this hub to ask the next hub to
+      # forward again; two hubs pointing at each other would then loop until a
+      # disk fills. The receiving side refuses the same shape, from its side.
+      case "$_peer" in
+        *@*)
+          echo "bus: '$to' names more than one hop. A letter crosses ONE link: <name>@<peer>." >&2
+          return 65 ;;
+      esac
+      # The recipient name goes on a wire and becomes a path on the other side.
+      # Enumeration, never a range — the same guard the local resolver applies.
+      case "$_pto" in
+        ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+          echo "bus: '$_pto' is not a session name ([a-z0-9-]+) — nothing is sent to '$_peer'." >&2
+          return 65 ;;
+      esac
+      bus_peer_load "$_peer" || _lrc=$?
+      # A ROW THAT EXISTS BUT CANNOT BE TRUSTED HAS ALREADY EXPLAINED ITSELF and
+      # keeps its own code: a broken configuration is not the same finding as an
+      # address for a neighbour we do not have.
+      [ "$_lrc" -eq 78 ] && return 78
+      if [ "$_lrc" -ne 0 ]; then
+        echo "bus: unknown peer '$_peer' — no row for it in $(bus_peers_dir)." >&2
+        return 65
+      fi
+      _bus_peer_owner_gate "$from" "$BUS_PEER_OWNER" "$_peer" || return 65
+      # NO FRAGA GATE ON THIS SIDE. This hub cannot see the recipient's row — it
+      # is in the other estate's registry — so it has nothing to measure. The
+      # receiving hub runs the gate, against the owner the key names.
+      bus_peer_forward "$_peer" "$_pto" "$from" "$text"
+      return $?
+      ;;
+  esac
   # ONE RESOLUTION, ONCE. The row and the queue key come out of the same answer,
   # and the FRAGA gate below reads the same row through the same function. For
   # every legacy row ID == name, so the queue lies exactly where it lay before.
@@ -989,6 +1096,39 @@ bus_send() {
   # A refusal (ambiguous slug, broken ID) has already explained itself on stderr.
   [ "$_rrc" -eq 65 ] && return 65
   if [ "$_rrc" -ne 0 ]; then
+    # A NAME WE DO NOT HAVE MAY BE A NAME THE NEIGHBOUR HAS. There is no lookup
+    # protocol and deliberately none: the letter is forwarded on the strength of
+    # the OWNER match alone, and the peer answers for itself if it has no such
+    # session. "Who exists over there" stays over there.
+    #
+    # THE CANDIDATES ARE THE SENDER'S OWN LINKS, so the owner gate is this
+    # filter — a session can never be forwarded over somebody else's link by
+    # leaving the peer out of the address.
+    local _sowner _cands _count=0 _one="" _names="" _p
+    _sowner="$(bus_recipient_owner "$from" 2>/dev/null)" || _sowner=""
+    if [ -n "$_sowner" ]; then
+      _cands="$(bus_peer_candidates "$_sowner")"
+      # A `while read` over a here-document, not an array: bash 3.2 has no
+      # mapfile, and an empty array under `set -u` is an error in that shell.
+      while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _count=$((_count+1)); _one="$_p"; _names="$_names $_p"
+      done <<EOF
+$_cands
+EOF
+      # SEVERAL LINKS, NO GUESS. Picking one would send a person's letter to
+      # whichever of their machines sorted first, and the sender would hold a
+      # receipt saying it was delivered.
+      if [ "$_count" -gt 1 ]; then
+        echo "bus: '$to' is no name in this estate, and '$_sowner' has SEVERAL links:$_names" >&2
+        echo "     Ambiguous across peers — address it as <name>@<peer>, e.g. '$to@$_one'." >&2
+        return 65
+      fi
+      if [ "$_count" -eq 1 ]; then
+        bus_peer_forward "$_one" "$to" "$from" "$text"
+        return $?
+      fi
+    fi
     echo "bus: unknown recipient '$to'" >&2
     return 1
   fi
