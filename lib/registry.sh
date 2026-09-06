@@ -1567,7 +1567,8 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
   # file and look like an answer.
   local RC_LABEL_PREFIX="" HUB_SESSION="" JOB_LOG_DIR="" HUB_SSH="" TMUX_SOCKET="" PING_MSG="" HUB_HOST="" \
         JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" \
-        STATE_DIR_NAME="" PAUSED_DIR_NAME="" MAIL_ACCOUNT_FILE="" ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD=""
+        STATE_DIR_NAME="" PAUSED_DIR_NAME="" MAIL_ACCOUNT_FILE="" ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" \
+        JOB_TIMEZONE=""
   # shellcheck source=/dev/null
   if ! source "$_estate"; then
     echo "registry: REFUSING — the estate file could not be read: $_estate" >&2
@@ -1592,6 +1593,7 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
     ALERT_TO)          _varde="$ALERT_TO" ;;
     JOB_STATUS_CMD)    _varde="$JOB_STATUS_CMD" ;;
     HOST_STATUS_CMD)   _varde="$HOST_STATUS_CMD" ;;
+    JOB_TIMEZONE)      _varde="$JOB_TIMEZONE" ;;
     *) echo "registry: unknown estate key '$_nyckel'" >&2; return 70 ;;
   esac
   if ! [[ "$_varde" =~ $_form ]]; then
@@ -1831,6 +1833,15 @@ registry_alert_to()          { _registry_estate_value ALERT_TO '^[A-Za-z0-9._%+-
 # is a command line: a full path first, no newline.
 registry_job_status_cmd()    { _registry_estate_value JOB_STATUS_CMD  '^/[^[:cntrl:]]+$'; }
 registry_host_status_cmd()   { _registry_estate_value HOST_STATUS_CMD '^/[^[:cntrl:]]+$'; }
+
+# JOB_TIMEZONE IS OPTIONAL and belongs to the estate, not the host. A job's
+# SCHEDULE_HOUR means an hour on the estate's clock: the hub's launchd fires it
+# in the hub's local time, and a Linux host that keeps UTC would fire the same
+# conf two hours off. The value is an IANA zone name and becomes the OnCalendar
+# suffix of every rendered timer; absent means the host's own local time, which
+# is exactly what launchd does. Measured 2026-09-04: a hand-written timer on a
+# UTC host ran at 09:00 local until the zone was written in.
+registry_job_timezone()      { _registry_estate_value JOB_TIMEZONE '^([A-Za-z_]+(/[A-Za-z0-9_+-]+)*)?$'; }
 
 # PING_MSG is free text and therefore has the widest form in this file. A
 # narrower one would reject the estate's own string (it carries an em dash and

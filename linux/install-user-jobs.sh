@@ -28,13 +28,68 @@ for a in "$@"; do
   case "$a" in
     --enable)        ENABLE=1 ;;
     --accept-drift)  ACCEPT_DRIFT=1 ;;
-    *) echo "anvandning: install-user-jobs.sh [--enable] [--accept-drift]" >&2; exit 64 ;;
+    *) echo "usage: install-user-jobs.sh [--enable] [--accept-drift]" >&2; exit 64 ;;
   esac
 done
 
 HOME_SCRIPTS="${STEWARD_HOME_SCRIPTS:-$HOME/scripts}"
 SOURCES="$HOME_SCRIPTS/jobs-sources.conf"
 SNAPDIR="$HOME_SCRIPTS/jobs.d"
+UNITDIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+RENDERED_MARK="# rendered by install-user-jobs.sh"
+
+# --- the timer renderer -------------------------------------------------------
+# A CONF IS NOT A TIMER. agent-job@.service is a template and can be shared; the
+# timer cannot, because OnCalendar differs per job. For a year the unit was
+# written by hand from SCHEDULE_* and "the job is deployed" and "the job runs"
+# were two states that looked identical on disk. The timer is rendered here from
+# the same three keys the hub turns into launchd's StartCalendarInterval, as the
+# same cartesian product: weekday x hour x minute. Empty hour = every hour,
+# empty weekday = every day. Weekdays are launchd-numbered in the registry
+# (0 and 7 = Sunday, 1 = Monday .. 6 = Saturday).
+#
+# A UNIT WITHOUT THE RENDERED-BY HEADER IS HAND-WRITTEN AND NEVER TOUCHED. It is
+# named, so nobody mistakes it for a rendered one, and it keeps running as it is.
+_weekday_name() { case "$1" in 0|7) echo Sun ;; 1) echo Mon ;; 2) echo Tue ;; 3) echo Wed ;; 4) echo Thu ;; 5) echo Fri ;; 6) echo Sat ;; esac; }
+_padded_list() { # <comma list of numbers> -> zero-padded comma list
+  local out="" x
+  for x in $(printf '%s' "$1" | tr ',' ' '); do out="$out,$(printf '%02d' "$((10#$x))")"; done
+  printf '%s' "${out#,}"
+}
+_render_calendar() { # SCHEDULE_* + JOB_ZONE -> the OnCalendar value
+  local days="" x n hours minutes
+  for x in $(printf '%s' "${SCHEDULE_WEEKDAY:-}" | tr ',' ' '); do
+    n="$(_weekday_name "$x")"
+    case ",$days," in *",$n,"*) ;; *) days="$days,$n" ;; esac
+  done
+  days="${days#,}"
+  if [ -n "${SCHEDULE_HOUR:-}" ]; then hours="$(_padded_list "$SCHEDULE_HOUR")"; else hours='*'; fi
+  minutes="$(_padded_list "$SCHEDULE_MINUTE")"
+  printf '%s*-*-* %s:%s:00%s' "${days:+$days }" "$hours" "$minutes" "${JOB_ZONE:+ $JOB_ZONE}"
+}
+_render_timer() { # <conf path> -> the unit on stdout; SCHEDULE_*, DOMAIN, JOB_NAME loaded
+  cat <<UNIT
+$RENDERED_MARK from $1
+# DO NOT EDIT: the next install run rewrites this unit from that conf. A unit
+# without the header above is treated as hand-written and left alone.
+[Unit]
+Description=agent-job $DOMAIN-$JOB_NAME schedule
+
+[Timer]
+# SCHEDULE_MINUTE="$SCHEDULE_MINUTE" SCHEDULE_HOUR="${SCHEDULE_HOUR:-}" SCHEDULE_WEEKDAY="${SCHEDULE_WEEKDAY:-}"
+# The calendar is the product the hub renders for launchd: weekday x hour x
+# minute. The zone suffix is the estate's JOB_TIMEZONE; without it the host's
+# local time applies, as it does under launchd.
+# Persistent=true DIFFERS FROM LAUNCHD: a run missed while the host was down is
+# caught up at boot, where launchd skips it. A job that fires right after a
+# reboot is this line, not a bug.
+OnCalendar=$(_render_calendar)
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+}
 
 _reg_lib() {
   local c
@@ -59,8 +114,11 @@ if [ ! -f "$SOURCES" ]; then
   exit 78
 fi
 mkdir -p "$SNAPDIR" || exit 78
+mkdir -p "$UNITDIR" || exit 78
+JOB_ZONE="$(registry_job_timezone)" || { echo "install-user-jobs: REFUSING - the estate JOB_TIMEZONE could not be read (the registry says why above)" >echo "install-user-jobs: REFUSING - JOB_TIMEZONE in the estate is not a zone name" >&2; exit 78; }2; exit 78; }
 
 fel=0; skrivna=0; oforandrade=0; seen=""
+timers_written=""; timers_hand=""; timers_rendered=0
 while IFS= read -r srcrepo; do
   case "$srcrepo" in ''|\#*) continue ;; esac
   if [ ! -d "$srcrepo/jobs.d" ]; then
@@ -130,8 +188,37 @@ while IFS= read -r srcrepo; do
         "$(date -u +%FT%TZ)" >> "$SNAPDIR/.provenance" 2>/dev/null || true
       skrivna=$((skrivna+1))
     fi
+    # THE TIMER, rendered to a temp and compared: an unchanged unit is not
+    # rewritten, so an unchanged run moves no file and reloads nothing.
+    unit="agent-job@${snapname%.conf}.timer"
+    if [ -f "$UNITDIR/$unit" ] && ! grep -q "^$RENDERED_MARK" "$UNITDIR/$unit"; then
+      timers_hand="$timers_hand $unit"
+    else
+      _tmp="$(mktemp "$UNITDIR/.$unit.XXXXXX")" || { echo "install-user-jobs: could not write $unit" >&2; fel=1; continue; }
+      _render_timer "$conf" > "$_tmp"
+      if cmp -s "$_tmp" "$UNITDIR/$unit"; then
+        rm -f "$_tmp"
+      else
+        mv "$_tmp" "$UNITDIR/$unit" && chmod 644 "$UNITDIR/$unit"
+        echo "  timer rendered: $unit"
+        timers_written="$timers_written $unit"; timers_rendered=$((timers_rendered+1))
+      fi
+    fi
   done
 done < "$SOURCES"
+
+# A WRITTEN UNIT IS READ BY NOBODY UNTIL systemd IS TOLD. One reload for the
+# run, then a restart of every rewritten timer that is already enabled, so the
+# new calendar is what schedules the next run and not the old one in memory.
+if [ -n "$timers_written" ]; then
+  systemctl --user daemon-reload || { echo "install-user-jobs: daemon-reload failed" >&2; fel=1; }
+  for u in $timers_written; do
+    if systemctl --user is-enabled "$u" >/dev/null 2>&1; then
+      systemctl --user restart "$u" || { echo "install-user-jobs: could not restart $u" >&2; fel=1; }
+    fi
+  done
+fi
+for u in $timers_hand; do echo "  hand-written timer left alone: $u"; done
 
 # --- orphaned snapshots -------------------------------------------------------
 # A conf whose source has disappeared RUNS ANYWAY until somebody removes it. It is
@@ -156,12 +243,12 @@ for snapname in $seen; do
   saknade="$saknade $unit"
 done
 
-echo "install-user-jobs: $skrivna uppdaterade, $oforandrade oforandrade, $(printf '%s' "$seen" | wc -w | tr -d ' ') jobb totalt."
+echo "install-user-jobs: $skrivna updated, $oforandrade unchanged, $(printf '%s' "$seen" | wc -w | tr -d ' ') jobs in all, $timers_rendered timers rendered."
 [ -n "$foraldralosa" ] && { echo "  FORALDRALOSA (kalla borta, kors anda):$foraldralosa"; fel=1; }
 if [ -n "$saknade" ]; then
   if [ -n "$ENABLE" ]; then
     for u in $saknade; do
-      if systemctl --user enable --now "$u" >/dev/null 2>&1; then echo "  timer aktiverad: $u"
+      if systemctl --user enable --now "$u" >/dev/null 2>&1; then echo "  timer enabled: $u"
       else echo "  COULD NOT enable: $u" >&2; fel=1; fi
     done
   else
