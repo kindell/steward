@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "_doc": "Rules for the pane signals the watch does NOT derive in code. busy, fresh and stuckText stay in lib.mjs - they carry three measured incidents and that logic is not touched. Only the newer signals live here, as DATA, for one reason: the patterns for the permission dialog are second-hand and their positive half is unverified. A pattern nobody has seen live must cost one line to correct.",
+  "regions": {
+    "_doc": "whole = the whole pane. bottom(N) = the last N lines WITHOUT the footer line (the one carrying the double arrow). The footer is excluded for the same reason as in paneBusy: a client release moved permanent text into it and made every upgraded session eternally busy."
+  },
+  "rules": [
+    {
+      "id": "resume-summary-dialog",
+      "state": "unreadable",
+      "region": "whole",
+      "contains": ["❯ 1. Resume from summary"],
+      "_doc": "Under the resume dialog the pane does not mirror the session's state, and the line looks like the input box's text. Verified string - resumeStep recognises the same screen."
+    },
+    {
+      "id": "resume-picker",
+      "state": "unreadable",
+      "region": "whole",
+      "contains": ["Ctrl+A to show all projects"],
+      "_doc": "The resume picker, same reason. Verified string from resumeStep."
+    },
+    {
+      "id": "permission-dialog",
+      "state": "blocked",
+      "region": "bottom(8)",
+      "contains": ["esc to cancel"],
+      "any": [["enter to confirm"], ["enter to select"]],
+      "_doc": "UNVERIFIED POSITIVE HALF. The pattern comes from another implementation's rule file, not from a pane seen blocked here. The negative half IS measured: zero hits in six live panes. If you see a blocked session whose text does not match - correct this line, not the code."
+    }
+  ]
+}

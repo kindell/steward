@@ -135,7 +135,7 @@ done
 
 echo
 echo "== node suites =="
-for d in fleet watchdog; do
+for d in fleet watchdog watch; do
   [ -d "$d" ] || continue
   if run_with_timeout bash -c "cd '$d' && node --test" >/dev/null 2>&1; then
     printf '  ok     %-34s\n' "$d"
