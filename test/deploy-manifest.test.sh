@@ -134,6 +134,10 @@ dupes="$(grep -v '^#' "$M" | awk 'NF>=4 {print $2}' | sort | uniq -d)"
 # names a credential file points at a program that is not there.
 REQUIRED_TARGETS="bin/bus-send scripts/session-supervisor-linux.sh scripts/runtime/opencode-session.sh scripts/lib/registry.sh .config/systemd/user/agent-session@.timer"
 REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/lib/mcprender.sh scripts/lib/mcpspawn.sh bin/mcp-env"
+# The job installer joins for the same reason: without scripts/install-user-jobs.sh
+# a home has a job runner and no way to turn the estate's job rows into timers,
+# so every scheduled job on that host is silently never scheduled.
+REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/install-user-jobs.sh"
 [ -n "$ESTATE_MANIFEST" ] && REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/docs/tysta-fel.md"
 for required in $REQUIRED_TARGETS; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"
