@@ -1567,7 +1567,7 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
   # file and look like an answer.
   local RC_LABEL_PREFIX="" HUB_SESSION="" JOB_LOG_DIR="" HUB_SSH="" TMUX_SOCKET="" PING_MSG="" HUB_HOST="" \
         JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" \
-        STATE_DIR_NAME="" PAUSED_DIR_NAME=""
+        STATE_DIR_NAME="" PAUSED_DIR_NAME="" MAIL_ACCOUNT_FILE="" ALERT_TO=""
   # shellcheck source=/dev/null
   if ! source "$_estate"; then
     echo "registry: REFUSING — the estate file could not be read: $_estate" >&2
@@ -1588,6 +1588,8 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
     OP_TOKEN_FILE_NAME)   _varde="$OP_TOKEN_FILE_NAME" ;;
     STATE_DIR_NAME)       _varde="$STATE_DIR_NAME" ;;
     PAUSED_DIR_NAME)      _varde="$PAUSED_DIR_NAME" ;;
+    MAIL_ACCOUNT_FILE) _varde="$MAIL_ACCOUNT_FILE" ;;
+    ALERT_TO)          _varde="$ALERT_TO" ;;
     *) echo "registry: unknown estate key '$_nyckel'" >&2; return 70 ;;
   esac
   if ! [[ "$_varde" =~ $_form ]]; then
@@ -1806,6 +1808,17 @@ registry_hub_ssh()        { _registry_hub_value HUB_SSH '^[A-Za-z0-9._-]+@[A-Za-
 # TMUX_SOCKET is ONE FILE NAME under ~/.tmux, never a path — the same reason as
 # JOB_LOG_DIR: a slash would name another server's socket.
 registry_tmux_socket()    { _registry_estate_value TMUX_SOCKET '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
+
+# THE WATCH'S ALARM CHANNEL IS THE ESTATE'S DATA. MAIL_ACCOUNT_FILE is ONE FILE
+# NAME under ~/.config/mail-accounts/ - never a path, never the content: the row
+# names the file that holds the service account's key file and the address to
+# send as, and what is in that file goes nowhere but into a signed request. The
+# estate's watch once carried the file's path as a literal in the mechanism -
+# one person's mailbox in the product. ALERT_TO is the address the alarms go to.
+# Both are read the way every estate value is: absent is a refusal (rc 78), not
+# a default - a watch without an alarm channel must say so, not fall silent.
+registry_mail_account_file() { _registry_estate_value MAIL_ACCOUNT_FILE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
+registry_alert_to()          { _registry_estate_value ALERT_TO '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; }
 
 # PING_MSG is free text and therefore has the widest form in this file. A
 # narrower one would reject the estate's own string (it carries an em dash and
