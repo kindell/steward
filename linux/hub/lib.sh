@@ -876,7 +876,7 @@ bus_peer_load() {
   # THE WHOLE VALUE MUST BEGIN WITH AN ALPHANUMERIC. ssh reads its destination as
   # a word on a command line: a value starting with '-' is parsed as an OPTION,
   # not as a target, and "-F@host" would hand ssh a config file of somebody's
-  # choosing while the letter goes wherever that file points. The form is
+  # choosing while the letter goes wherever that file says. The form is
   # ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9._-]+$, and the leading character is
   # the half a per-character enumeration cannot express.
   case "$u" in [ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*) : ;; *) u="" ;; esac
@@ -1051,7 +1051,7 @@ bus_peer_forward() {
   # first, and the letter would then arrive on the other hub under a DIFFERENT
   # authorized_keys row — another forced command, another owner stamped on it.
   # IdentitiesOnly restricts the offer to the file, IdentityAgent=none takes the
-  # agent out of the question even when the environment points at one, and
+  # agent out of the question even when the environment names one, and
   # ClearAllForwardings drops anything a config file would otherwise tunnel along
   # beside the letter.
   #
@@ -1341,8 +1341,8 @@ bus_send() {
       return 78
     fi
     # The explicit route answers 65 for a sender it cannot resolve; so does
-    # this one, and it names the SENDER — "unknown recipient" would point
-    # the reader at the wrong name.
+    # this one, and it names the SENDER — "unknown recipient" would send
+    # the reader to the wrong name.
     if [ "$_prc" -eq 65 ]; then
       echo "bus: NOTHING IS SENT to '$to' — the sender '$from' cannot be resolved (above)." >&2
       return 65
