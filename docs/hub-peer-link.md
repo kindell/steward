@@ -10,20 +10,48 @@ across several estates.*
 
 ## The one rule
 
-**A link between two hubs has an owner.** Two gates, one per hub, each
-against its own registry, and they answer different questions:
+**A link between two hubs has an owner, and the owner is a PERSON — its
+principal.** Two gates, one per hub, each against its own registry, and they
+answer different questions:
 
-- **The sending gate decides who may USE the link.** Only a session owned by
-  the link's owner, measured in the sender's own registry.
-- **The receiving gate decides whom the link may REACH.** The link owner's
+- **The sending gate decides who may USE the link.** Only a session whose
+  person is the link's principal, measured in the sender's own registry.
+- **The receiving gate decides whom the link may REACH.** The principal's
   own sessions in that estate, and nobody else's — for **every** class, not
-  only for FRAGA. The recipient's `OWNER` is read from the receiving
-  registry and compared with the owner the *key* names; a mismatch refuses
-  (rc 65) before anything is delivered.
+  only for FRAGA. The recipient's person is read from the receiving
+  registry and compared with the principal the *key* names; a mismatch
+  refuses (rc 65) before anything is delivered, and a recipient row that
+  cannot be vouched for (its account missing or contradicting it) refuses
+  with rc 78 rather than being guessed at.
 
 Neither hub can run the other's gate, and neither trusts the other's claim
 about who wrote what. The wire carries a sender's name; the key carries the
-owner.
+principal.
+
+### The person is not the unix account
+
+A session row's `OWNER` is the unix account the session runs as: it builds
+the home its queue is written in, the `-l` of the other-home hop, the seat
+the watch measures. Delivery reads it and keeps reading it. But a person may
+run a session under an account that does not carry their name — a hub run
+by the machine's steward account is the case in hand — and gating the link
+on `OWNER` made "reach that hub over my link" require `OWNER=<person>`,
+which moves the hub's queue into a home nobody reads. Measured; that is why
+the link's field is `PRINCIPAL` and never `OWNER`.
+
+The person is read through the row's `ACCOUNT` (`accounts.d/<slug>.conf`,
+field `PRINCIPAL`) by `bus_recipient_principal`, and it is **strict, never a
+fallback**: when a row names an account, the account must load, its
+`USERNAME` must be the row's `OWNER` and its `HOST` the row's `HOST` (which
+defaults to the hub's host when the row has none, exactly as delivery reads
+it), else rc 78 naming the row and the account; a row whose `OWNER` cannot
+be read is rc 78 the same way — a row that pointed at somebody else's
+account would otherwise borrow that person's link, and be delivered, by
+`OWNER`, into a home the link's owner does not share. Only a row with no
+`ACCOUNT` at all (the old shape) keeps `OWNER` as its principal, because it
+has nothing else and the old rule was exactly that. Nothing but the three
+link gates reads the principal; every delivery, deploy and visibility path
+still reads `OWNER`.
 
 **A FRAGA does not cross a link.** Refused on the sending side (rc 65,
 nothing leaves) and again on arrival (rc 65, nothing queued), whoever it is
@@ -41,7 +69,7 @@ refusal. A lookup-and-answer protocol across a link is a later addition.
   `north` the other may call `south`.
   **One estate, one name per neighbour, in both files.** The name in
   `peers.d/<peer>.conf` MUST be the name written in the `authorized_keys` row
-  for that peer's key on the same hub (`bus-relay-peer <peer> <owner>`). A
+  for that peer's key on the same hub (`bus-relay-peer <peer> <principal>`). A
   letter arriving over that row is stamped `<name>@<peer>`, and a reply to
   `<name>@<peer>` is routed through `peers.d/<peer>.conf` — so two spellings
   of one neighbour means every reply meets "unknown peer". The two ESTATES
@@ -57,18 +85,18 @@ refusal. A lookup-and-answer protocol across a link is a later addition.
 
 ```
 HUB_SSH="operator@hub.example"   # ssh target of the peer hub, user@host
-OWNER="alice"                    # the link owner: a unix account name in OUR registry
+PRINCIPAL="alice"                # the link's person: a PRINCIPAL in OUR registry
 ```
 
 Read with `sed`, never sourced. Both keys required; `HUB_SSH` matches
 `^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9._-]+$` — the whole value begins with
 an alphanumeric, because ssh reads its destination as a word on a command
-line and `-F@host` is a flag, not a target. `OWNER` matches `^[a-z][a-z0-9-]*$`.
+line and `-F@host` is a flag, not a target. `PRINCIPAL` matches `^[a-z][a-z0-9-]*$`.
 A malformed row refuses (rc 78); it never falls back, and it is never
 skipped: bare-name discovery reads `peers.d` as a whole set and refuses
 (rc 78) while any row in it is broken, rather than routing on the rows that
-happened to parse. That is estate-wide, not per owner: one owner's broken
-row also stops another owner's bare-name sending until it is fixed, and the
+happened to parse. That is estate-wide, not per person: one person's broken
+row also stops another person's bare-name sending until it is fixed, and the
 refusal names the file, so the fix is a minute's work. An explicitly
 addressed peer names its own row and gets that row's own answer.
 
@@ -81,12 +109,13 @@ install; the product's manifest does not carry estate data).
 ### Receiving side: one row in the hub's `authorized_keys`
 
 ```
-restrict,command="STEWARD_ESTATE_ROOT=<root> /bin/bash <root>/bus/bin/bus-relay-peer <peer> <owner>" ssh-ed25519 AAAA… buspeer-<peer>
+restrict,command="STEWARD_ESTATE_ROOT=<root> /bin/bash <root>/bus/bin/bus-relay-peer <peer> <principal>" ssh-ed25519 AAAA… buspeer-<peer>
 ```
 
-`<peer>` is what the receiving estate calls the sender; `<owner>` is the
-link owner as a unix account name **in the receiving registry**. The key
-says both; the wire says neither. Written by hand today, like the first
+`<peer>` is what the receiving estate calls the sender; `<principal>` is the
+link's person, as a `PRINCIPAL` **in the receiving registry** (the person,
+not the unix account the hub runs as). The key says both; the wire says
+neither. Written by hand today, like the first
 session keys were; an enrol verb is a later addition.
 
 ## Wire protocol (sending hub → receiving hub)
@@ -123,14 +152,17 @@ gate, resolve — and grows one branch where it today returns
 1. **Explicit peer address** `<name>@<peer>`: the peer must exist in
    `peers.d` (else rc 65, "unknown peer"). Never resolved locally.
 2. **Bare name that does not resolve locally**: candidates are the peers
-   whose `OWNER` equals the sender's `OWNER` (sender's own row, via
-   `bus_recipient_owner`). Exactly one candidate → forward there. None →
+   whose `PRINCIPAL` equals the sender's principal (sender's own row, via
+   `bus_recipient_principal`). Exactly one candidate → forward there. None →
    rc 1, `unknown recipient`, as today. Several → rc 65 naming them:
    "ambiguous across peers, address as <name>@<peer>". A malformed row
-   anywhere in `peers.d` → rc 78, nothing sent.
-3. **Owner gate**: the sender's `OWNER` must equal the chosen peer's
-   `OWNER`, else rc 65 with both names on stderr. A session of another
-   owner never leaves the estate over a link it does not own.
+   anywhere in `peers.d` → rc 78, nothing sent; a sender row this hub cannot
+   vouch for (broken `ACCOUNT`) → rc 78, nothing sent.
+3. **Principal gate**: the sender's principal must equal the chosen peer's
+   `PRINCIPAL`, else rc 65 with both names on stderr. A session of another
+   person never leaves the estate over a link it does not own. A sender row
+   with a broken `ACCOUNT` is rc 78 here too, never 65: wrong configuration
+   and wrong person are different findings.
 4. **Forward**: pipe `to`, `from` (sender's SLUG, else ID), `text` over the
    link. ssh rc propagates. On rc 0 the sender's `sent/` copy is archived
    as for any delivery; on failure nothing is archived by the hub (the
@@ -144,7 +176,7 @@ gate, resolve — and grows one branch where it today returns
 `STEWARD_BUS_SSH_BIN` stubs the transport in tests, as for
 `bus_remote_deliver`.
 
-## Receiving: `linux/hub/bin/bus-relay-peer <peer> <owner>`
+## Receiving: `linux/hub/bin/bus-relay-peer <peer> <principal>`
 
 Lands beside `bus-relay-in` (`scripts/bus/bin/`), same manifest section.
 
@@ -155,11 +187,11 @@ Lands beside `bus-relay-in` (`scripts/bus/bin/`), same manifest section.
    never a chain** — two hubs pointing at each other would otherwise loop
    until a disk is full.
 3. Calls `bus_send "$to" "$from@$peer" "$text"` with
-   `STEWARD_BUS_PEER_OWNER=<owner>` exported.
+   `STEWARD_BUS_PEER_PRINCIPAL=<principal>` exported.
 4. Exit codes: 64 for malformed input, otherwise `bus_send`'s.
 
 `bus_send` learns one thing: a `from` of the form `<name>@<peer>` is
-accepted **only** when `STEWARD_BUS_PEER_OWNER` is set (else rc 65 — a
+accepted **only** when `STEWARD_BUS_PEER_PRINCIPAL` is set (else rc 65 — a
 local sender can never write that shape), and then:
 
 - the letter is stored with `from` exactly `<name>@<peer>`; `bus-read`
@@ -168,12 +200,14 @@ local sender can never write that shape), and then:
   guard, structural, and it needs no lookup.
 - a **FRAGA is refused on arrival**, rc 65, nothing queued — whoever it is
   addressed to. The refusal runs before the recipient is resolved.
-- **every other class is owner-gated**: the recipient's `OWNER`, read from
-  the receiving registry, must equal `STEWARD_BUS_PEER_OWNER`, else rc 65
-  naming both owners and nothing is delivered. The gate runs before the
+- **every other class is principal-gated**: the recipient's person, read
+  from the receiving registry via `bus_recipient_principal`, must equal
+  `STEWARD_BUS_PEER_PRINCIPAL`, else rc 65 naming both and nothing is
+  delivered; a recipient row with a broken `ACCOUNT` is rc 78, nothing
+  delivered. The gate runs before the
   local inbox and before `bus_remote_deliver`, so it covers all three
   delivery paths (this home, another home on this machine, another machine
-  in this estate). Only the owner rule applies across a link — no domain,
+  in this estate). Only the principal rule applies across a link — no domain,
   group, or same-machine carve-out. A domain shared across estates is a new
   link with its own owner, additively, later.
 - no `sent/` archive is written on the receiving hub (the sending hub
@@ -185,7 +219,7 @@ local sender can never write that shape), and then:
 ### What the account is trusted with
 
 The gates are enforced by the hub account and its home permissions, not by
-anything structural. `STEWARD_BUS_PEER_OWNER` is an environment variable set
+anything structural. `STEWARD_BUS_PEER_PRINCIPAL` is an environment variable set
 by the forced command; `peers.d` and `~/.ssh/id_buspeer_<peer>` are files in
 the hub's home. Anyone who can run code as the hub account, or write those
 files, can set the variable themselves, point a link elsewhere, or use the
@@ -196,7 +230,7 @@ owner owns here, through one forced command, and nothing more.
 What *is* structural: the `@` in a stored sender (a local session's name can
 never contain one), and where each fact comes from. The `from` on the wire is
 a **display claim** by the sending hub — a label a reader sees, never a
-credential. The `@<peer>` suffix and the owner are what the key
+credential. The `@<peer>` suffix and the principal are what the key
 authenticates, and every gate measures those.
 
 ## Known, and shared with `bus-relay-in`
@@ -219,13 +253,13 @@ relays at once:
 ## What this deliberately does not do
 
 - No lookup protocol. A bare name is forwarded on the strength of the
-  owner match; the peer answers rc 1 if it has no such session. Cheap,
+  principal match; the peer answers rc 1 if it has no such session. Cheap,
   and it keeps "who exists on the other side" inside the other side.
   **The cost: a mistyped recipient's full text reaches the peer hub.** A
   name this estate does not have is not a refusal, it is a forward — the
   letter crosses, the peer bounces it, and the body has been on the other
   machine by then. The peer hub is owned by the same person (that is the
-  owner match), so this stays inside one person's own machines; it is a
+  principal match), so this stays inside one person's own machines; it is a
   real leak of a slip of the finger, not of another person's mail.
 - No peer enrol verb, no key rotation verb. Two `authorized_keys` rows and
   two `peers.d` files, by hand, with backups.
@@ -237,7 +271,7 @@ relays at once:
 - `test/hub-peer-out.test.sh`: `peers.d` parsing and refusals (including a
   `HUB_SSH` that starts as an ssh flag, and a malformed row refusing the
   whole candidate set); explicit address; bare-name forwarding with 0/1/many
-  candidates; owner gate; FRAGA refused both ways with the stub untouched;
+  candidates; principal gate; FRAGA refused both ways with the stub untouched;
   wire bytes and argv seen by the ssh stub (`to`, `from`, text, key path,
   target, the three pinning options, the trailing `false`); sent archive on
   rc 0 only; parking applies; local resolution still wins over peers when the
@@ -245,10 +279,11 @@ relays at once:
 - `test/hub-peer-in.test.sh`: drives `bus-relay-peer` as a subprocess
   with a fixture estate: protocol timeouts/caps, `@` in `to` refused,
   from stored as `<name>@<peer>` and rendered by `bus_read`, FRAGA refused
-  both to the link owner's session and to another owner's, every class
-  owner-gated on arrival (an ordinary letter to another owner: rc 65, no
-  inbox file, no ssh), no `sent/` on the receiver, `bus_send` refuses
-  `<name>@<peer>` without `STEWARD_BUS_PEER_OWNER`.
+  both to the link owner's session and to another person's, every class
+  principal-gated on arrival (an ordinary letter to another person's
+  session: rc 65, no inbox file, no ssh; a recipient row whose account
+  cannot vouch for it: rc 78), no `sent/` on the receiver, `bus_send` refuses
+  `<name>@<peer>` without `STEWARD_BUS_PEER_PRINCIPAL`.
 - `test/deploy-manifest.test.sh` (existing): the new script is in the
   manifest, executable, beside `bus-relay-in`.
 
@@ -256,6 +291,18 @@ relays at once:
 
 Decided while building, or in the fix round after two reviews, and measured
 by the suites.
+
+**The link's owner is a person, not a unix account (2026-09-06, same
+evening).** The first rollout gated both sides on the session row's `OWNER`
+and it broke on the first hub that runs under the machine's own account:
+its row said `OWNER=<steward-account>`, the link said the person, and the
+hub was refused on arrival. Rewriting the row to the person (the first fix
+proposed) moved the hub's queue into the person's home — a home the hub's
+process does not read — so delivery broke instead. The field is `PRINCIPAL`
+now, on both the peers.d row and the `authorized_keys` argument, resolved
+through `accounts.d` strictly (see "The person is not the unix account").
+Rows without `ACCOUNT` are unchanged; the `authorized_keys` rows already
+named the person and need no edit.
 
 **Reversed after review (2026-09-06).** The first shipped version got the
 boundary wrong in both directions, and both are now the opposite:
@@ -281,19 +328,22 @@ a fixed remote command `false`.
 
 **Decided while building:**
 
-- **Every link refusal is rc 65, not the local FRAGA gate's rc 1.** The local
+- **A link refusal is rc 65, not the local FRAGA gate's rc 1.** The local
   gate answers 1 because it is one of several reasons a send can fail
   ordinarily; a link refusal is a refusal WITH an explanation, and the link's
-  other refusals already carry 65. The arrival owner gate's message names
-  both owners.
+  other refusals already carry 65. The arrival gate's message names both
+  principals. Broken configuration on either side — a row whose account
+  cannot vouch for it, a malformed `peers.d` file, a malformed
+  `authorized_keys` row — is rc 78, never folded into 65: a refusal says
+  "not yours", 78 says "cannot tell".
 - **`bus-relay-peer` form-checks its own argv and answers rc 78.** A `<peer>`
-  or `<owner>` outside `[a-z0-9-]+` is a broken `authorized_keys` row on THIS
+  or `<principal>` outside `[a-z0-9-]+` is a broken `authorized_keys` row on THIS
   machine — configuration, not input — so it is not folded into the 64 that
   describes what arrived.
 - **`bus_send` re-checks the sender's shape, not only the forced command.** The
   stored `from` is what a reader sees and what an archive is searched by, so
   `<name>@<peer>` is split and both halves checked there too (rc 65), together
-  with the owner it was handed.
+  with the principal it was handed.
 - **The manifest assertion covers all three forced commands.** Rather than a
   row named on its own, `test/deploy-manifest.test.sh` requires
   `bus-relay-in`, `bus-relay-deliver` and `bus-relay-peer` to be 755 manifest
@@ -320,7 +370,7 @@ Two findings worth keeping, both about bash rather than about links:
    `authorized_keys` row for that peer's key — or replies meet "unknown
    peer". The two estates need not agree with each other.
 1. Each hub: `ssh-keygen -t ed25519 -f ~/.ssh/id_buspeer_<peer> -N ''`.
-2. Each hub: the other's public key as the `bus-relay-peer <peer> <owner>`
+2. Each hub: the other's public key as the `bus-relay-peer <peer> <principal>`
    row, backup first.
 3. Each estate: `peers.d/<peer>.conf`, install.
 4. **Each hub: learn the other's host key first.** `BatchMode=yes` never
@@ -330,8 +380,8 @@ Two findings worth keeping, both about bash rather than about links:
    `ssh-keyscan -t ed25519 <host> >> ~/.ssh/known_hosts` and check the
    fingerprint against the other machine.
 5. Measure both directions: a letter each way lands rc 0, `bus-read`
-   shows `from=<name>@<peer>`; a letter from a session of another owner
+   shows `from=<name>@<peer>`; a letter from a session of another person
    is refused rc 65 on the sending side; a letter of ANY class to another
-   owner's session is refused rc 65 on the receiving side and leaves no
+   person's session is refused rc 65 on the receiving side and leaves no
    inbox file; a FRAGA is refused rc 65 on the sending side, and nothing
    leaves the machine.

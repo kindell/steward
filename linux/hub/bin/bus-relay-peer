@@ -1,27 +1,32 @@
 #!/bin/bash
-# bus-relay-peer <peer> <owner> - the receiving side of a HUB PEER LINK.
+# bus-relay-peer <peer> <principal> - the receiving side of a HUB PEER LINK.
 #
 # NEVER run directly: it is the forced command for a NEIGHBOURING HUB's key in
-# ~/.ssh/authorized_keys (restrict,command="... bus-relay-peer <peer> <owner>").
+# ~/.ssh/authorized_keys (restrict,command="... bus-relay-peer <peer> <principal>").
 # Its sibling bus-relay-in receives from a session host inside our own estate;
 # this one receives from a hub in ANOTHER estate, whose registry we cannot read
 # and whose word about who wrote what we therefore do not take.
 #
 # THE TWO GATES OF A LINK STAND ON DIFFERENT MACHINES AND ANSWER DIFFERENT
-# QUESTIONS. The SENDING hub decides who may USE the link: only a session owned
-# by the link's owner, measured in ITS registry. This side decides whom the link
-# may REACH: the link owner's own sessions in THIS estate, and nobody else's.
-# Neither hub can run the other's gate, and neither trusts the other's word.
+# QUESTIONS. The SENDING hub decides who may USE the link: only a session whose
+# PERSON is the link's principal, measured in ITS registry. This side decides
+# whom the link may REACH: the principal's own sessions in THIS estate, and
+# nobody else's. Neither hub can run the other's gate, and neither trusts the
+# other's word.
 #
-#   1. THE OWNER COMES FROM THE KEY, AND GATES EVERY CLASS. <owner> is a unix
-#      account name in OUR registry, pinned in the authorized_keys line beside
-#      the key it belongs to. The wire carries a sender's NAME, never a claim
-#      about who owns it. Before anything is delivered, bus_send measures the
-#      RECIPIENT's owner in our registry against this one and refuses (rc 65) on
-#      a mismatch — for a BESLUT exactly as for anything else. The class was
-#      never the boundary: an ordinary letter to another owner's session is
-#      written into that person's home, over ssh as them, on the word of a hub
-#      we cannot read. A FRAGA, meanwhile, does not cross a link at all: it is
+#   1. THE PRINCIPAL COMES FROM THE KEY, AND GATES EVERY CLASS. <principal> is
+#      a PERSON's name as OUR registry spells it (an account's PRINCIPAL), NOT
+#      the unix account the session runs as - a hub that runs under the
+#      machine's own account still belongs to the person who owns the link.
+#      It is pinned in the authorized_keys line beside the key it belongs to.
+#      The wire carries a sender's NAME, never a claim about who owns it.
+#      Before anything is delivered, bus_send measures the RECIPIENT's person
+#      in our registry (bus_recipient_principal: through its ACCOUNT, strictly)
+#      against this one and refuses (rc 65) on a mismatch - for a BESLUT
+#      exactly as for anything else; a recipient row it cannot vouch for is
+#      rc 78. The class was never the boundary: an ordinary letter to another
+#      person's session is written into that person's home, over ssh as them,
+#      on the word of a hub we cannot read. A FRAGA, meanwhile, does not cross a link at all: it is
 #      answered from a catalogue and the answer has no return route over a link.
 #
 #   2. ONE HOP, NEVER A CHAIN. A recipient carrying an '@' asks this hub to
@@ -41,10 +46,10 @@ set -euo pipefail
 # NO APOSTROPHE IN EITHER MESSAGE. Inside ${var:?word} bash parses a single
 # quote as a quote even within double quotes, so a word containing one swallows
 # everything up to the next apostrophe - HERE, the whole assignment on the line
-# below. Measured: with "the peer's name" above, OWNER was silently never
-# assigned and the second gate died on an unbound variable.
+# below. Measured: with "the peer's name" above, the second argument was
+# silently never assigned and the second gate died on an unbound variable.
 PEER="${1:?bus-relay-peer requires the name of the peer (set in authorized_keys)}"
-OWNER="${2:?bus-relay-peer requires the owner of the link (set in authorized_keys)}"
+PRINCIPAL="${2:?bus-relay-peer requires the principal (the person) of the link (set in authorized_keys)}"
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib.sh
 source "$here/lib.sh"
@@ -56,9 +61,9 @@ case "$PEER" in
   ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
     echo "relay-peer: '$PEER' is not a peer name ([a-z0-9-]+) — repair the authorized_keys row." >&2; exit 78 ;;
 esac
-case "$OWNER" in
+case "$PRINCIPAL" in
   ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
-    echo "relay-peer: '$OWNER' is not an account name ([a-z0-9-]+) — the link's owner is the whole rule, so it is never guessed." >&2; exit 78 ;;
+    echo "relay-peer: '$PRINCIPAL' is not a person's name ([a-z0-9-]+) — the link's principal is the whole rule, so it is never guessed." >&2; exit 78 ;;
 esac
 
 # READ TIMEOUTS ON EVERYTHING FROM OUTSIDE, exactly as in bus-relay-in: a
@@ -87,8 +92,8 @@ case "$from" in
     echo "relay-peer: '$from' is not a session name ([a-z0-9-]+) — the sender is named by the peer, and the peer is named by the key." >&2; exit 64 ;;
 esac
 
-# The link's owner travels in the environment, never in the letter: bus_send
+# The link's principal travels in the environment, never in the letter: bus_send
 # refuses an '@' sender without it, so this variable is the only thing that can
 # turn a peer's word into a stored sender. Exit code is bus_send's, unchanged.
-export STEWARD_BUS_PEER_OWNER="$OWNER"
+export STEWARD_BUS_PEER_PRINCIPAL="$PRINCIPAL"
 bus_send "$to" "$from@$PEER" "$text"

@@ -31,6 +31,9 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 FX="$(mktemp -d)"; trap 'chmod -R u+rwX "$FX" 2>/dev/null; rm -rf "$FX"' EXIT
 mkdir -p "$FX/reg" "$FX/hh"
 export STEWARD_REGISTRY_DIR="$FX/reg" HOME="$FX/hh"
+
+# No links: this suite never routes over the machine's real peers.d.
+mkdir -p "$FX/peers.d"; export STEWARD_BUS_PEERS_DIR="$FX/peers.d"
 export STEWARD_BUS_LOCAL_HOST=host-one STEWARD_BUS_SELF_USER=operator-a
 cat > "$FX/estate.conf" <<'EOF'
 HUB_SESSION="hub-one"

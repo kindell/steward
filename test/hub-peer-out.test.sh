@@ -3,9 +3,10 @@
 # reader and its refusals, and the branch in bus_send that hands a letter to a
 # neighbouring hub.
 #
-# WHAT THE LINK IS. A link between two hubs has an OWNER. Nothing crosses it
-# unless the sending session is owned by the link's owner, measured in the
-# sender's own registry. The receiving hub runs the mirrored gate against its
+# WHAT THE LINK IS. A link between two hubs has a PRINCIPAL — a person, not a
+# unix account. Nothing crosses it unless the sending session's person is the
+# link's principal, measured in the sender's own registry (through the row's
+# account when it names one; a row that cannot be vouched for is rc 78). The receiving hub runs the mirrored gate against its
 # own registry. Neither hub trusts the other's claim about who wrote what, so
 # the sending side is tested here on its own terms: what leaves the machine,
 # over which key, to which target, and what is refused before anything leaves.
@@ -34,23 +35,23 @@ export STEWARD_BUS_PEERS_DIR="$FX/peers.d"
 
 # Two links owned by one person, one owned by another. The names are LOCAL to
 # this side: what we call north may call us south.
-printf 'HUB_SSH="operator@north.example"\nOWNER="alice"\n' > "$FX/peers.d/north.conf"
-printf 'HUB_SSH="operator@east.example"\nOWNER="alice"\n'  > "$FX/peers.d/east.conf"
-printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers.d/west.conf"
+printf 'HUB_SSH="operator@north.example"\nPRINCIPAL="alice"\n' > "$FX/peers.d/north.conf"
+printf 'HUB_SSH="operator@east.example"\nPRINCIPAL="alice"\n'  > "$FX/peers.d/east.conf"
+printf 'HUB_SSH="operator@west.example"\nPRINCIPAL="bob"\n'    > "$FX/peers.d/west.conf"
 # Two broken rows: one without an owner, one whose target is not user@host.
 printf 'HUB_SSH="operator@south.example"\n'                > "$FX/peers.d/south.conf"
-printf 'HUB_SSH="northexample"\nOWNER="alice"\n'           > "$FX/peers.d/inner.conf"
+printf 'HUB_SSH="northexample"\nPRINCIPAL="alice"\n'           > "$FX/peers.d/inner.conf"
 # A target that reads as an ssh OPTION rather than as a user: the whole value
 # must begin with an alphanumeric, or the first word of the command line stops
 # being a destination and starts being a flag.
-printf 'HUB_SSH="-F@north.example"\nOWNER="alice"\n'       > "$FX/peers.d/flagged.conf"
+printf 'HUB_SSH="-F@north.example"\nPRINCIPAL="alice"\n'       > "$FX/peers.d/flagged.conf"
 
 # A directory with nothing broken in it, for the candidate set: a malformed row
 # is not skipped there any more, it refuses the whole set (part 4).
 mkdir -p "$FX/peers-ok.d"
-printf 'HUB_SSH="operator@north.example"\nOWNER="alice"\n' > "$FX/peers-ok.d/north.conf"
-printf 'HUB_SSH="operator@east.example"\nOWNER="alice"\n'  > "$FX/peers-ok.d/east.conf"
-printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers-ok.d/west.conf"
+printf 'HUB_SSH="operator@north.example"\nPRINCIPAL="alice"\n' > "$FX/peers-ok.d/north.conf"
+printf 'HUB_SSH="operator@east.example"\nPRINCIPAL="alice"\n'  > "$FX/peers-ok.d/east.conf"
+printf 'HUB_SSH="operator@west.example"\nPRINCIPAL="bob"\n'    > "$FX/peers-ok.d/west.conf"
 
 # shellcheck source=/dev/null
 . "$here/linux/hub/lib.sh"
@@ -60,22 +61,22 @@ is "STEWARD_BUS_PEERS_DIR wins" "$(bus_peers_dir)" "$FX/peers.d"
 is "otherwise it sits in the estate root" \
    "$(STEWARD_BUS_PEERS_DIR= STEWARD_ESTATE_ROOT="$FX/root" bus_peers_dir)" "$FX/root/peers.d"
 
-echo "2. a good row: the ssh target and the owner, read with sed, never sourced"
-BUS_PEER_SSH=""; BUS_PEER_OWNER=""
+echo "2. a good row: the ssh target and the principal, read with sed, never sourced"
+BUS_PEER_SSH=""; BUS_PEER_PRINCIPAL=""
 bus_peer_load north; rc=$?
 is "rc 0" "$rc" "0"
 is "HUB_SSH"  "$BUS_PEER_SSH"   "operator@north.example"
-is "OWNER"    "$BUS_PEER_OWNER" "alice"
+is "PRINCIPAL" "$BUS_PEER_PRINCIPAL" "alice"
 bus_peer_load west >/dev/null 2>&1
-is "a second row overwrites both fields" "$BUS_PEER_OWNER" "bob"
+is "a second row overwrites both fields" "$BUS_PEER_PRINCIPAL" "bob"
 
 echo "3. refusals: a row we cannot trust never degrades into a guess"
 bus_peer_load nowhere >/dev/null 2>&1; rc=$?
 is "an unknown peer: rc 1" "$rc" "1"
 err="$(bus_peer_load south 2>&1)"; rc=$?
-is  "a row without OWNER: rc 78" "$rc" "78"
+is  "a row without PRINCIPAL: rc 78" "$rc" "78"
 has "...naming the file" "$err" "south.conf"
-has "...naming the key"  "$err" "OWNER"
+has "...naming the key"  "$err" "PRINCIPAL"
 err="$(bus_peer_load inner 2>&1)"; rc=$?
 is  "a target that is not user@host: rc 78" "$rc" "78"
 has "...naming the key" "$err" "HUB_SSH"
@@ -143,11 +144,15 @@ export STEWARD_ESTATE="$FX/estate2.conf"
 # One link for alice, one for bob. NOTHING BROKEN HERE: a malformed row refuses
 # the whole candidate set now, so the broken row is written later, by the two
 # tests that are about it.
-printf 'HUB_SSH="operator@north.example"\nOWNER="alice"\n' > "$FX/peers2.d/north.conf"
-printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers2.d/west.conf"
+printf 'HUB_SSH="operator@north.example"\nPRINCIPAL="alice"\n' > "$FX/peers2.d/north.conf"
+printf 'HUB_SSH="operator@west.example"\nPRINCIPAL="bob"\n'    > "$FX/peers2.d/west.conf"
 : > "$FX/hh/.ssh/id_buspeer_west"   # so a refusal below is the OWNER gate, not a missing key
 
-# A migrated row (ID + SLUG) for alice, legacy rows for the others.
+# A migrated row (ID + SLUG) for alice, legacy rows for the others. The migrated
+# row names an ACCOUNT, and the peer gate resolves that account STRICTLY (below,
+# part 3), so the account exists and is bound to the row.
+mkdir -p "$FX/accounts.d"; export STEWARD_ACCOUNT_DIR="$FX/accounts.d"
+printf 'PRINCIPAL="alice"\nHOST="host-one"\nUSERNAME="alice"\n' > "$FX/accounts.d/alice-hub.conf"
 printf 'ID="s-000000000000a001"\nSLUG="scout"\nACCOUNT="alice-hub"\nOWNER="alice"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a001.conf"
 printf 'OWNER="bob"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'   > "$FX/reg/bobsession.conf"
 printf 'OWNER="carol"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/carolsession.conf"
@@ -203,7 +208,7 @@ has "over alice's link" "$(cat "$SSH_ARGV")" "operator@north.example"
 is  "the name travels as typed" "$(printf '%s' "$(cat "$SSH_STDIN")" | sed -n 1p)" "nowhere"
 
 echo "8. two links, one owner: ambiguous, and NOTHING is sent"
-printf 'HUB_SSH="operator@east.example"\nOWNER="alice"\n' > "$FX/peers2.d/east.conf"
+printf 'HUB_SSH="operator@east.example"\nPRINCIPAL="alice"\n' > "$FX/peers2.d/east.conf"
 arm
 err="$(bus_send nowhere scout "DRIFT topic: bare" noop_ping 2>&1 >/dev/null)"; rc=$?
 is  "rc 65" "$rc" "65"
@@ -297,6 +302,125 @@ arm
 bus_send "Far@north" scout "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
 is "a recipient name of the wrong form: rc 65" "$rc" "65"
 untouched "...and nothing left the machine"
+
+# ------------------------------------------------------------------ part 3
+#
+# THE LINK IS A PERSON'S, AND THE PERSON IS THE PRINCIPAL. A session's OWNER is
+# the unix account it runs as; a person may run a session under an account that
+# does not carry their name (a machine's steward account). The sending gate
+# therefore measures the sender's ACCOUNT's PRINCIPAL — strictly: the account
+# must exist, run as the row's OWNER and sit on the row's HOST, or a row could
+# name somebody else's account and send over their link. A row with no ACCOUNT
+# at all (old shape) keeps OWNER as its principal.
+echo "16. a session that runs as the machine's account sends over its PERSON's link"
+# Section 14 left its malformed row in place; a bare name is routed from the
+# whole set or not at all, so the set has to be whole again here.
+rm -f "$FX/peers2.d/bent.conf"
+printf 'PRINCIPAL="alice"\nHOST="host-one"\nUSERNAME="oper"\n'  > "$FX/accounts.d/oper-host-one.conf"
+printf 'PRINCIPAL="alice"\nHOST="host-two"\nUSERNAME="oper"\n'  > "$FX/accounts.d/oper-host-two.conf"
+printf 'ID="s-000000000000a002"\nSLUG="machine-hub"\nACCOUNT="oper-host-one"\nOWNER="oper"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a002.conf"
+arm
+bus_send far@north machine-hub "DRIFT topic: from the machine account" noop_ping >/dev/null 2>&1; rc=$?
+is  "explicit address, principal alice, OWNER oper: rc 0" "$rc" "0"
+has "over alice's link" "$(cat "$SSH_ARGV")" "operator@north.example"
+is  "the sender crosses as its slug" "$(printf '%s' "$(cat "$SSH_STDIN")" | sed -n 2p)" "machine-hub"
+arm
+bus_send nowhere machine-hub "DRIFT topic: bare, from the machine account" noop_ping >/dev/null 2>&1; rc=$?
+is  "bare name: routed over the PERSON's one link: rc 0" "$rc" "0"
+has "over alice's link" "$(cat "$SSH_ARGV")" "operator@north.example"
+
+echo "17. an ACCOUNT that is not really the row's refuses before anything leaves (rc 78)"
+printf 'OWNER="carol"\nACCOUNT="oper-host-one"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/borrower.conf"
+printf 'OWNER="oper"\nACCOUNT="oper-host-two"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'  > "$FX/reg/wronghost.conf"
+printf 'OWNER="oper"\nACCOUNT="ghost"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'          > "$FX/reg/ghosted.conf"
+for _row in borrower wronghost ghosted; do
+  arm
+  err="$(bus_send far@north "$_row" "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+  is  "$_row, explicit address: rc 78" "$rc" "78"
+  untouched "...and nothing left the machine"
+  arm
+  bus_send nowhere "$_row" "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
+  is  "$_row, bare name: rc 78" "$rc" "78"
+  untouched "...and nothing left the machine"
+done
+err="$(bus_send far@north borrower "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"
+has "the refusal names the account" "$err" "oper-host-one"
+has "...and the row's owner"        "$err" "carol"
+rm -f "$FX/reg/borrower.conf" "$FX/reg/wronghost.conf" "$FX/reg/ghosted.conf"
+
+echo "18. the person, not the unix name: a legacy row OWNER=oper has no link of its own"
+printf 'OWNER="oper"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/oper-legacy.conf"
+arm
+err="$(bus_send far@north oper-legacy "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "rc 65" "$rc" "65"
+has "...naming the sender's principal" "$err" "oper"
+untouched "...and nothing left the machine"
+rm -f "$FX/reg/oper-legacy.conf" "$FX/reg/s-000000000000a002.conf"
+
+# HOST IS OPTIONAL ON A ROW — it defaults to the hub's host, and delivery
+# (bus_recipient_host) reads it that way. The strict account check must read
+# it the same way, or a HOST-less row with an account is refused on every
+# link forever. Measured by review before this section existed.
+echo "19. a row without HOST sits on the hub's host — the account check agrees"
+printf 'ID="s-000000000000a003"\nSLUG="hostless"\nACCOUNT="oper-host-one"\nOWNER="oper"\nDOMAIN="entity-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a003.conf"
+arm
+err="$(bus_send far@north hostless "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "explicit address: rc 0" "$rc" "0"
+has "over alice's link" "$(cat "$SSH_ARGV")" "operator@north.example"
+rm -f "$FX/reg/s-000000000000a003.conf"
+
+# ONE GRAMMAR FOR ONE ROW. bus_recipient_owner accepts OWNER=oper unquoted;
+# the person resolver must read the same row the same way, or delivery and
+# the link disagree about whose a row is.
+echo "20. the row's fields are read with delivery's grammar: unquoted values count"
+printf 'ID="s-000000000000a004"\nSLUG="unquoted"\nACCOUNT=oper-host-one\nOWNER=oper\nDOMAIN="entity-one"\nHOST=host-one\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a004.conf"
+arm
+bus_send far@north unquoted "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
+is  "explicit address: rc 0" "$rc" "0"
+rm -f "$FX/reg/s-000000000000a004.conf"
+
+# BROKEN CONFIGURATION IS 78, NOT "NO ROW". A row whose OWNER cannot be read
+# is not a typo in the address; it says so, with the file's name, on both the
+# explicit and the bare-name route, and nothing leaves.
+echo "21. a malformed OWNER is a broken row: rc 78 on both routes, and it names the file"
+printf 'ID="s-000000000000a005"\nSLUG="noowner"\nACCOUNT="oper-host-one"\nOWNER="Oper!"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a005.conf"
+arm
+err="$(bus_send far@north noowner "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "explicit address: rc 78" "$rc" "78"
+has "...naming the row" "$err" "s-000000000000a005.conf"
+untouched "...and nothing left the machine"
+arm
+err="$(bus_send nowhere noowner "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "bare name: rc 78, not 'unknown recipient'" "$rc" "78"
+has "...naming the row" "$err" "s-000000000000a005.conf"
+untouched "...and nothing left the machine"
+rm -f "$FX/reg/s-000000000000a005.conf"
+
+# THE ACCOUNT FILE IS SOURCED, AND BASH SCOPES DYNAMICALLY: an assignment in
+# it lands in the caller's locals unless the caller's names are its own. A
+# row pointing at an account that also sets the checker's variables must be
+# refused exactly like any other borrowed account. Measured by review.
+echo "22. an account file cannot rewrite the check that reads it"
+printf 'PRINCIPAL="mallory"\nHOST="host-two"\nUSERNAME="mallory"\no="mallory"\nh="host-two"\n' > "$FX/accounts.d/mal2.conf"
+printf 'ID="s-000000000000a006"\nSLUG="borrower2"\nACCOUNT="mal2"\nOWNER="oper"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a006.conf"
+arm
+bus_send far@north borrower2 "DRIFT topic: x" noop_ping >/dev/null 2>&1; rc=$?
+is  "explicit address: rc 78" "$rc" "78"
+untouched "...and nothing left the machine"
+rm -f "$FX/reg/s-000000000000a006.conf" "$FX/accounts.d/mal2.conf"
+
+# AN AMBIGUOUS SENDER IS REFUSED ON BOTH ROUTES, and the refusal names the
+# sender, not the recipient: the explicit route says 65, so the bare-name
+# route says 65, and neither says "unknown recipient" about the wrong name.
+echo "23. an ambiguous sender slug: rc 65 on the bare-name route too, naming the sender"
+printf 'ID="s-000000000000a007"\nSLUG="dup"\nOWNER="alice"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a007.conf"
+printf 'ID="s-000000000000a008"\nSLUG="dup"\nOWNER="alice"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-000000000000a008.conf"
+arm
+err="$(bus_send nowhere dup "DRIFT topic: x" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "rc 65" "$rc" "65"
+has "...naming the sender" "$err" "'dup'"
+untouched "...and nothing left the machine"
+rm -f "$FX/reg/s-000000000000a007.conf" "$FX/reg/s-000000000000a008.conf"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"

@@ -36,6 +36,9 @@ FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/hh" "$FX/bin" "$FX/reg" "$FX/bus-home"
 export HOME="$FX/hh"
 export STEWARD_REGISTRY_DIR="$FX/reg"
+
+# No links: this suite never routes over the machine's real peers.d.
+mkdir -p "$FX/peers.d"; export STEWARD_BUS_PEERS_DIR="$FX/peers.d"
 export STEWARD_BUS_HOME="$FX/bus-home"
 export STEWARD_BUS_LOCAL_HOST=host-one
 # The receiving hub runs as alice's account, so alice's sessions are delivered
@@ -152,22 +155,76 @@ echo "    own sessions here and nobody else's"
 # of a hub in another estate. The class was never the boundary; the owner is.
 err="$(relay other sender "BESLUT topic: an ordinary letter" 2>&1 >/dev/null)"; rc=$?
 is  "an ordinary message to another owner's session: rc 65" "$rc" "65"
-has "...naming the link's owner"   "$err" "alice"
-has "...and the recipient's owner" "$err" "bob"
+has "...naming the link's principal"   "$err" "alice"
+has "...and the recipient's principal" "$err" "bob"
 is  "...and nothing was queued"        "$(inbox_count other)" "0"
 is  "...and nothing left this machine" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"
-# A row with no OWNER is owned by nobody we can read; the gate compares two
-# names and an empty one matches none. Refuse, never pass.
+# A row with no OWNER is a row this hub cannot vouch for: broken
+# configuration (rc 78, naming the file), not the wrong person (65). Refuse,
+# never pass, and never deliver by a guessed home.
 printf 'DOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/noowner.conf"
 err="$(relay noowner sender "BESLUT topic: to a row without an owner" 2>&1 >/dev/null)"; rc=$?
-is  "a recipient row without OWNER: rc 65" "$rc" "65"
-has "...and it says so" "$err" "nobody we can read"
+is  "a recipient row without OWNER: rc 78, the broken-row code" "$rc" "78"
+has "...and it names the row" "$err" "noowner.conf"
 is  "...and nothing was queued" "$(inbox_count noowner)" "0"
 rm -f "$FX/reg/noowner.conf"
 relay svc sender "BESLUT topic: for the owner" >/dev/null 2>&1; rc=$?
 is  "...while the link owner's own session still receives: rc 0" "$rc" "0"
 is  "...and it was queued" "$(inbox_count svc)" "1"
 is  "...and STILL no sent/ archive on this side" "$(sent_any)" "0"
+
+echo "6c. THE LINK'S OWNER IS A PERSON, MEASURED AS THE PRINCIPAL — the unix account stays where it is"
+# OWNER on a session row is the UNIX account: it builds the home the queue is
+# written in and the -l the other-home hop logs in as. A link is owned by a
+# PERSON, and a person can run under an account that is not their own name (a
+# machine's steward account, say). Comparing the link's owner with OWNER made
+# "reach the hub over the link" require OWNER=<person> — which moves the hub's
+# queue into a home nobody reads. So the gate resolves the row's ACCOUNT to its
+# PRINCIPAL, and only after checking that the account really is the row's
+# account: USERNAME must be the row's OWNER and HOST the row's HOST, or a row
+# could point at somebody else's account and borrow their link.
+mkdir -p "$FX/accounts.d"; export STEWARD_ACCOUNT_DIR="$FX/accounts.d"
+printf 'PRINCIPAL="ann"\nHOST="host-one"\nUSERNAME="alice"\n' > "$FX/accounts.d/alice-machine.conf"
+printf 'PRINCIPAL="ann"\nHOST="host-one"\nUSERNAME="bob"\n'   > "$FX/accounts.d/bob-for-ann.conf"
+printf 'PRINCIPAL="ann"\nHOST="host-two"\nUSERNAME="alice"\n' > "$FX/accounts.d/alice-elsewhere.conf"
+# the hub's own row: runs as alice (this hub's account), belongs to ann
+printf 'OWNER="alice"\nACCOUNT="alice-machine"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/hubrow.conf"
+printf 'OWNER="bob"\nACCOUNT="bob-for-ann"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'     > "$FX/reg/annsbob.conf"
+printf 'OWNER="bob"\nACCOUNT="alice-machine"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'  > "$FX/reg/borrowed.conf"
+printf 'OWNER="alice"\nACCOUNT="alice-elsewhere"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/elsewhere.conf"
+printf 'OWNER="alice"\nACCOUNT="ghost"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n'          > "$FX/reg/ghostacct.conf"
+relay_as() { # <principal> <to> <from> <text>
+  local who="$1"; shift; wire "$1" "$2" "$3" | bash "$RELAY" north "$who"
+}
+: > "$SSH_ARGV"
+relay_as ann hubrow sender "BESLUT topic: to the hub over ann's link" >/dev/null 2>&1; rc=$?
+is  "ann's link reaches the hub that runs as alice: rc 0" "$rc" "0"
+is  "...queued LOCALLY, under the unix account, where it is read" "$(inbox_count hubrow)" "1"
+is  "...and nothing left this machine" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"
+relay_as ann annsbob sender "BESLUT topic: to ann's session in bob's home" >/dev/null 2>&1; rc=$?
+is  "ann's session that runs as bob: rc 0" "$rc" "0"
+has "...delivered into bob's home, as bob" "$(cat "$SSH_ARGV")" "-l bob"
+: > "$SSH_ARGV"
+err="$(relay_as ann borrowed sender "BESLUT topic: borrowed" 2>&1 >/dev/null)"; rc=$?
+is  "a row whose ACCOUNT runs as somebody else (USERNAME != OWNER): rc 78" "$rc" "78"
+has "...naming the account" "$err" "alice-machine"
+is  "...nothing queued" "$(inbox_count borrowed)" "0"
+is  "...nothing sent" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"
+err="$(relay_as ann elsewhere sender "BESLUT topic: elsewhere" 2>&1 >/dev/null)"; rc=$?
+is  "a row whose ACCOUNT lives on another host: rc 78" "$rc" "78"
+is  "...nothing queued" "$(inbox_count elsewhere)" "0"
+err="$(relay_as ann ghostacct sender "BESLUT topic: ghost" 2>&1 >/dev/null)"; rc=$?
+is  "a row whose ACCOUNT does not exist: rc 78, never a fallback to OWNER" "$rc" "78"
+has "...naming the account" "$err" "ghost"
+is  "...nothing queued" "$(inbox_count ghostacct)" "0"
+err="$(relay_as alice hubrow sender "DRIFT topic: alice is the unix name, not the person" 2>&1 >/dev/null)"; rc=$?
+is  "the unix account's name is NOT the person: alice's link does not reach ann's hub: rc 65" "$rc" "65"
+has "...naming the link's principal" "$err" "alice"
+has "...and the recipient's"         "$err" "ann"
+is  "...nothing queued" "$(inbox_count hubrow)" "1"
+relay_as ann svc sender "DRIFT topic: legacy" >/dev/null 2>&1; rc=$?
+is  "a legacy row without ACCOUNT keeps OWNER as its principal: ann's link does not reach alice's: rc 65" "$rc" "65"
+rm -f "$FX/reg/hubrow.conf" "$FX/reg/annsbob.conf" "$FX/reg/borrowed.conf" "$FX/reg/elsewhere.conf" "$FX/reg/ghostacct.conf"
 
 echo "7. a name this estate does not have bounces — it is never forwarded onwards"
 : > "$SSH_ARGV"
@@ -181,12 +238,12 @@ relay svc sender "no envelope here" >/dev/null 2>&1; rc=$?
 is "a letter without an envelope: rc 65" "$rc" "65"
 
 echo "9. bus_send refuses a peer sender that no key vouched for"
-# Only the forced command can set STEWARD_BUS_PEER_OWNER, and it takes it from
+# Only the forced command can set STEWARD_BUS_PEER_PRINCIPAL, and it takes it from
 # the authorized_keys row. Without it the '@' shape is unattributable, and an
 # unattributable sender must never be stored as if a link had carried it.
 err="$(bus_send svc "sender@north" "DRIFT topic: unvouched" : 2>&1 >/dev/null)"; rc=$?
 is  "rc 65" "$rc" "65"
-has "...and it says a peer sender needs a link owner" "$err" "link owner"
+has "...and it says a peer sender needs a link principal" "$err" "link principal"
 is  "...and nothing was queued" "$(inbox_count svc)" "1"
 
 echo "10. a silent sender cannot hang the forced command"

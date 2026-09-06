@@ -708,12 +708,111 @@ bus_recipient_owner() {
   printf '%s' "$o"
 }
 
+# bus_recipient_principal <session> — which PERSON does this row belong to?
+# The answer the hub peer link is gated on, and NOTHING ELSE reads it.
+#
+# OWNER IS THE UNIX ACCOUNT, THE PRINCIPAL IS THE PERSON. OWNER builds the home
+# the queue is written in and the -l the other-home hop logs in as; it must stay
+# the account the process runs as. A link between hubs is owned by a person,
+# and a person may run a session under an account that does not carry their
+# name — the machine's steward account is the case in hand. Gating the link on
+# OWNER made "reach the hub over my link" require OWNER=<person>, which moves
+# the hub's queue into a home nobody reads. The person is on the ACCOUNT row
+# (accounts.d), as PRINCIPAL.
+#
+# STRICT, NEVER A FALLBACK, when the row names an account: the account must
+# load, its USERNAME must be the row's OWNER and its HOST the row's HOST. A row
+# that pointed at somebody else's account would otherwise borrow that person's
+# link — and be delivered, by OWNER, into a home the link's owner does not
+# share. Present-but-broken is rc 78: a configuration this hub cannot vouch for
+# is refused with its name, not smoothed over. Only a row with NO ACCOUNT at
+# all (the old shape) keeps OWNER as its principal, because it has nothing else
+# and the old rule was exactly that.
+#
+# NOT _registry_row_principal: that helper is written for the schema gate and
+# falls back to OWNER when the account does not resolve — the one thing this
+# gate must never do.
+#
+# rc: 1 no such row; 65 the resolver's refusal (ambiguous slug), explained on
+# stderr; 78 a row this hub cannot vouch for — malformed OWNER, or an ACCOUNT
+# that does not load or does not agree with the row. 78 is never folded into
+# the others: wrong configuration and wrong person are different findings.
+#
+# SIDE EFFECTS: resolves through bus_resolve_recipient (BUS_RES_*) and loads
+# the account (ACCOUNT_*), so it overwrites both sets of globals. Every caller
+# takes its answer through "$( )" for that reason; a direct call in the middle
+# of a decision would reset the recipient that decision is about.
+#
+# THE ROW IS READ WITH DELIVERY'S GRAMMAR (grep|tr|cut, quoted or not) and
+# HOST defaults the way bus_recipient_host defaults it — to the hub's host.
+# Two readers of one row must agree on whose it is, or the link refuses a
+# session that delivery would happily serve.
+#
+# THE LOCALS CARRY A PREFIX NOBODY ELSE USES. registry_account_load SOURCES
+# the account file, and bash scopes dynamically: an assignment in that file
+# lands in whatever local of ours shares its name, BEFORE the comparison that
+# is supposed to distrust the file. Measured: an account row with o=... h=...
+# walked straight through the check. The ACCOUNT_* globals are set after the
+# source and are immune; these are not, unless their names are our own.
+bus_recipient_principal() {
+  local _bpr_who="${1:-}" _bpr_rrc=0
+  bus_resolve_recipient "$_bpr_who" || _bpr_rrc=$?
+  case "$_bpr_rrc" in
+    0) ;;
+    65|78) return "$_bpr_rrc" ;;
+    *) echo "bus: no row for '$_bpr_who' — cannot tell whose the recipient is" >&2; return 1 ;;
+  esac
+  local _bpr_conf="$BUS_RES_CONF" _bpr_o _bpr_h _bpr_a
+  _bpr_o="$(grep -m1 '^OWNER=' "$_bpr_conf" | tr -d '"' | cut -d= -f2)"
+  _bpr_h="$(grep -m1 '^HOST=' "$_bpr_conf" | tr -d '"' | cut -d= -f2)"
+  _bpr_a="$(grep -m1 '^ACCOUNT=' "$_bpr_conf" | tr -d '"' | cut -d= -f2)"
+  case "$_bpr_o" in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+      echo "bus: OWNER missing or malformed in $_bpr_conf — a row nobody runs is nobody's, and the row cannot be vouched for." >&2
+      return 78 ;;
+  esac
+  if [ -z "$_bpr_a" ]; then
+    printf '%s' "$_bpr_o"
+    return 0
+  fi
+  case "$_bpr_h" in *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) _bpr_h='' ;; esac
+  [ -n "$_bpr_h" ] || _bpr_h="$(registry_hub_host 2>/dev/null)"
+  if [ -z "$_bpr_h" ]; then
+    echo "bus: $_bpr_conf has no HOST and the estate no HUB_HOST — the row cannot be vouched for." >&2
+    return 78
+  fi
+  case "$_bpr_a" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+      echo "bus: $_bpr_conf names an ACCOUNT of the wrong form ('$_bpr_a') — the row cannot be vouched for." >&2
+      return 78 ;;
+  esac
+  if ! registry_account_load "$_bpr_a" >/dev/null 2>&1; then
+    echo "bus: $_bpr_conf names the account '$_bpr_a', which this registry cannot read —" >&2
+    echo "     the row's person cannot be measured. Repair the row." >&2
+    return 78
+  fi
+  if [ "$ACCOUNT_USERNAME" != "$_bpr_o" ]; then
+    echo "bus: $_bpr_conf runs as '$_bpr_o' but names the account '$_bpr_a', which runs as '$ACCOUNT_USERNAME' —" >&2
+    echo "     a row does not borrow another account's person. Repair the row." >&2
+    return 78
+  fi
+  if [ "$ACCOUNT_HOST" != "$_bpr_h" ]; then
+    echo "bus: $_bpr_conf sits on '$_bpr_h' but names the account '$_bpr_a', which sits on '$ACCOUNT_HOST' —" >&2
+    echo "     a row does not borrow another host's account. Repair the row." >&2
+    return 78
+  fi
+  printf '%s' "$ACCOUNT_PRINCIPAL"
+}
+
 # ------------------------------------------------------ the hub peer link
 #
-# A PEER IS A NEIGHBOURING HUB, and a LINK to it has an OWNER. Nothing crosses a
-# link unless the sending session is owned by the link's owner, measured in OUR
-# registry; the receiving hub runs the mirrored gate against ITS registry and
-# stamps every arriving letter with the owner named by the key it came in on.
+# A PEER IS A NEIGHBOURING HUB, and a LINK to it has a PRINCIPAL: the PERSON it
+# belongs to. Nothing crosses a link unless the sending session's person — its
+# account's PRINCIPAL, measured in OUR registry (bus_recipient_principal) — is
+# the link's; the receiving hub runs the mirrored gate against ITS registry and
+# stamps every arriving letter with the principal named by the key it came in
+# on. It is the PERSON, not the unix OWNER: delivery keeps reading OWNER (whose
+# home), the link reads PRINCIPAL (whose link). The two are never mixed back.
 # Two gates, one per hub, each against its own data — neither hub trusts the
 # other's claim about who wrote what.
 #
@@ -738,10 +837,10 @@ bus_peers_dir() {
   fi
 }
 
-BUS_PEER_SSH=""; BUS_PEER_OWNER=""
+BUS_PEER_SSH=""; BUS_PEER_PRINCIPAL=""
 
 # bus_peer_load <peer> — read peers.d/<peer>.conf into BUS_PEER_SSH and
-# BUS_PEER_OWNER. rc 0 = loaded · rc 1 = no such peer · rc 78 = the row exists
+# BUS_PEER_PRINCIPAL. rc 0 = loaded · rc 1 = no such peer · rc 78 = the row exists
 # but cannot be trusted, explained on stderr.
 #
 # READ WITH sed, NEVER SOURCED. A conf is data from disk; sourcing it would run
@@ -753,7 +852,7 @@ BUS_PEER_SSH=""; BUS_PEER_OWNER=""
 # stores as somebody's, and guessing a target would send it to the wrong
 # machine entirely. Both mistakes look like a delivery from here.
 bus_peer_load() {
-  BUS_PEER_SSH=""; BUS_PEER_OWNER=""
+  BUS_PEER_SSH=""; BUS_PEER_PRINCIPAL=""
   local peer="${1:-}"
   # THE NAME BECOMES A PATH. Enumeration, never a range — in a UTF-8 collation
   # `[a-z]` lets upper case through, and '*' would glob the whole directory. A
@@ -761,9 +860,9 @@ bus_peer_load() {
   case "$peer" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;; esac
   local conf; conf="$(bus_peers_dir)/$peer.conf"
   [ -f "$conf" ] || return 1
-  local target owner
+  local target principal
   target="$(sed -n 's/^HUB_SSH="\(.*\)"$/\1/p' "$conf" | head -1)"
-  owner="$(sed -n 's/^OWNER="\(.*\)"$/\1/p' "$conf" | head -1)"
+  principal="$(sed -n 's/^PRINCIPAL="\(.*\)"$/\1/p' "$conf" | head -1)"
   # user@host, with exactly one '@'. A second one is a peer address in a place
   # that takes a machine, i.e. somebody trying to spell a chain into a row.
   local u h
@@ -786,21 +885,22 @@ bus_peer_load() {
     echo "     A link is never guessed: the wrong target hands another estate our letter." >&2
     return 78
   fi
-  # The owner is an account name in OUR registry, so it carries the registry's
-  # own form: a lowercase letter first, then [a-z0-9-].
-  case "$owner" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) owner="" ;; esac
-  case "$owner" in [abcdefghijklmnopqrstuvwxyz]*) : ;; *) owner="" ;; esac
-  if [ -z "$owner" ]; then
-    echo "bus: $conf has no usable OWNER — a link without an owner is a link" >&2
-    echo "     anybody's session could use, and the owner gate is the whole rule." >&2
+  # The principal is a person's name in OUR registry (an account's PRINCIPAL),
+  # so it carries the registry's own form: a lowercase letter first, then
+  # [a-z0-9-].
+  case "$principal" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) principal="" ;; esac
+  case "$principal" in [abcdefghijklmnopqrstuvwxyz]*) : ;; *) principal="" ;; esac
+  if [ -z "$principal" ]; then
+    echo "bus: $conf has no usable PRINCIPAL — a link without a person is a link" >&2
+    echo "     anybody's session could use, and the principal gate is the whole rule." >&2
     return 78
   fi
   BUS_PEER_SSH="$u@$h"
-  BUS_PEER_OWNER="$owner"
+  BUS_PEER_PRINCIPAL="$principal"
   return 0
 }
 
-# bus_peer_candidates <owner> — the peers <owner> owns, one per line, sorted.
+# bus_peer_candidates <principal> — the peers this person owns, one per line, sorted.
 # An empty list is rc 0: having no link is an ordinary state, not an error, and
 # the caller turns it into the same "unknown recipient" it gave before links
 # existed.
@@ -825,11 +925,11 @@ bus_peer_load() {
 # closes a case pattern as the end of the substitution, and the file stops
 # parsing. Measured on the first version of this function.
 bus_peer_candidates() {
-  local owner="${1:-}"
-  [ -n "$owner" ] || return 0
+  local principal="${1:-}"
+  [ -n "$principal" ] || return 0
   local dir; dir="$(bus_peers_dir)"
   [ -d "$dir" ] || return 0
-  local ssh_was="${BUS_PEER_SSH:-}" own_was="${BUS_PEER_OWNER:-}"
+  local ssh_was="${BUS_PEER_SSH:-}" prin_was="${BUS_PEER_PRINCIPAL:-}"
   local f b acc="" lrc rc=0
   for f in "$dir"/*.conf; do
     [ -e "$f" ] || continue
@@ -841,10 +941,10 @@ bus_peer_candidates() {
       rc=78; break
     fi
     [ "$lrc" -eq 0 ] || continue
-    [ "$BUS_PEER_OWNER" = "$owner" ] && acc="$acc$b
+    [ "$BUS_PEER_PRINCIPAL" = "$principal" ] && acc="$acc$b
 "
   done
-  BUS_PEER_SSH="$ssh_was"; BUS_PEER_OWNER="$own_was"
+  BUS_PEER_SSH="$ssh_was"; BUS_PEER_PRINCIPAL="$prin_was"
   [ "$rc" -eq 0 ] || return "$rc"
   [ -n "$acc" ] && printf '%s' "$acc" | sort
   return 0
@@ -852,7 +952,7 @@ bus_peer_candidates() {
 
 # bus_peer_key <peer> — the private key bound to the link, in the hub's own
 # home. One key per link, because the key IS the identity on the other side:
-# the receiving hub reads the owner off the authorized_keys row the key matches
+# the receiving hub reads the principal off the authorized_keys row the key matches
 # and off nothing else. rc 65, naming the path, when it is missing — a link
 # without its key is a refusal here rather than an ssh error nobody reads.
 bus_peer_key() {
@@ -888,24 +988,28 @@ _bus_peer_no_fraga() {
   return 65
 }
 
-# _bus_peer_owner_gate <from> <peer-owner> <peer> — may this sender use this
-# link? 0 iff the sender's OWNER, read from OUR registry, is the link's owner.
-# Anything else refuses (rc 65) and names both.
+# _bus_peer_principal_gate <from> <peer-principal> <peer> — may this sender use
+# this link? 0 iff the sender's PRINCIPAL, read from OUR registry, is the link's.
+# A different person refuses (rc 65) and names both; a row this hub cannot
+# vouch for (rc 78 from bus_recipient_principal) keeps that code — broken
+# configuration is not the same finding as the wrong person.
 #
-# THE SENDER'S OWNER IS MEASURED, NEVER CLAIMED. It comes from the row the send
-# path resolved, so a session cannot widen its own reach by what it writes. A
-# sender with no row at all — a relay, a word — cannot prove ownership of
-# anything and is refused for that reason, not for its spelling.
-_bus_peer_owner_gate() {
-  local from="${1:-}" powner="${2:-}" peer="${3:-}" sowner
-  sowner="$(bus_recipient_owner "$from" 2>/dev/null)" || sowner=""
-  if [ -z "$sowner" ]; then
-    echo "bus: NOTHING IS SENT over the link to '$peer' — no row for the sender '$from'," >&2
-    echo "     so its owner cannot be measured, and a link is used by its owner alone." >&2
+# THE SENDER'S PERSON IS MEASURED, NEVER CLAIMED. It comes from the row the send
+# path resolved and the account that row is bound to, so a session cannot widen
+# its own reach by what it writes. A sender with no row at all — a relay, a
+# word — cannot prove ownership of anything and is refused for that reason, not
+# for its spelling.
+_bus_peer_principal_gate() {
+  local from="${1:-}" pprin="${2:-}" peer="${3:-}" sprin _prc=0
+  sprin="$(bus_recipient_principal "$from")" || _prc=$?
+  [ "$_prc" -eq 78 ] && { echo "bus: NOTHING IS SENT over the link to '$peer' — the sender's row cannot be vouched for (above)." >&2; return 78; }
+  if [ -z "$sprin" ]; then
+    echo "bus: NOTHING IS SENT over the link to '$peer' — no usable row for the sender '$from'," >&2
+    echo "     so its person cannot be measured, and a link is used by its owner alone." >&2
     return 65
   fi
-  if [ "$sowner" != "$powner" ]; then
-    echo "bus: '$from' (owner: $sowner) may not send over the link to '$peer' (owner: $powner)." >&2
+  if [ "$sprin" != "$pprin" ]; then
+    echo "bus: '$from' (principal: $sprin) may not send over the link to '$peer' (principal: $pprin)." >&2
     echo "     A link between two hubs belongs to ONE person: it carries that person's" >&2
     echo "     letters between their own machines, and nobody else's out of the estate." >&2
     return 65
@@ -1110,18 +1214,18 @@ bus_send() {
         return 70 ;;
   esac
   # A SENDER WITH AN '@' ARRIVED OVER A LINK, and only the forced command on the
-  # receiving side can say so. STEWARD_BUS_PEER_OWNER carries the link's owner as
-  # the authorized_keys row names it — from the KEY, never from the letter — and
+  # receiving side can say so. STEWARD_BUS_PEER_PRINCIPAL carries the link's
+  # person as the authorized_keys row names it — from the KEY, never from the letter — and
   # without it this shape is unattributable: a local session's name can never
   # contain an '@' (the registry's own form), so an '@' sender that no key
   # vouched for is somebody spelling a peer letter by hand. It is refused rather
   # than stored, because the shape itself is what the reader trusts afterwards.
-  local _peer_in="" _peer_owner=""
+  local _peer_in="" _peer_principal=""
   case "$from" in
     *@*)
-      _peer_owner="${STEWARD_BUS_PEER_OWNER:-}"
-      if [ -z "$_peer_owner" ]; then
-        echo "bus: '$from' looks like a peer sender, and a peer sender needs a link owner." >&2
+      _peer_principal="${STEWARD_BUS_PEER_PRINCIPAL:-}"
+      if [ -z "$_peer_principal" ]; then
+        echo "bus: '$from' looks like a peer sender, and a peer sender needs a link principal." >&2
         echo "     Only the link's forced command can name one (it reads it off the key)," >&2
         echo "     so this shape is never written on a sender's own say-so." >&2
         return 65
@@ -1139,9 +1243,9 @@ bus_send() {
         echo "bus: the sender '$from' is not <name>@<peer>, both [a-z0-9-]+ — nothing is stored under a name nobody can answer." >&2
         return 65
       fi
-      case "$_peer_owner" in
+      case "$_peer_principal" in
         ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
-          echo "bus: the link owner '$_peer_owner' is not an account name ([a-z0-9-]+) — the owner gate cannot" >&2
+          echo "bus: the link principal '$_peer_principal' is not a name ([a-z0-9-]+) — the principal gate cannot" >&2
           echo "     be run against it, and a gate that cannot run is a refusal." >&2
           return 65 ;;
       esac
@@ -1191,10 +1295,10 @@ bus_send() {
         echo "bus: unknown peer '$_peer' — no row for it in $(bus_peers_dir)." >&2
         return 65
       fi
-      _bus_peer_owner_gate "$from" "$BUS_PEER_OWNER" "$_peer" || return 65
+      _bus_peer_principal_gate "$from" "$BUS_PEER_PRINCIPAL" "$_peer" || return $?
       # NO FRAGA GATE ON THIS SIDE. This hub cannot see the recipient's row — it
       # is in the other estate's registry — so it has nothing to measure. The
-      # receiving hub runs the gate, against the owner the key names.
+      # receiving hub runs the gate, against the principal the key names.
       bus_peer_forward "$_peer" "$_pto" "$from" "$text"
       return $?
       ;;
@@ -1209,21 +1313,47 @@ bus_send() {
   if [ "$_rrc" -ne 0 ]; then
     # A NAME WE DO NOT HAVE MAY BE A NAME THE NEIGHBOUR HAS. There is no lookup
     # protocol and deliberately none: the letter is forwarded on the strength of
-    # the OWNER match alone, and the peer answers for itself if it has no such
+    # the principal match alone, and the peer answers for itself if it has no such
     # session. "Who exists over there" stays over there.
     #
-    # THE CANDIDATES ARE THE SENDER'S OWN LINKS, so the owner gate is this
-    # filter — a session can never be forwarded over somebody else's link by
-    # leaving the peer out of the address.
-    local _sowner _cands _count=0 _one="" _names="" _p _crc=0
-    _sowner="$(bus_recipient_owner "$from" 2>/dev/null)" || _sowner=""
-    if [ -n "$_sowner" ]; then
+    # THE CANDIDATES ARE THE SENDER'S OWN LINKS — the links of its PERSON, the
+    # principal — so the principal gate is this filter: a session can never be
+    # forwarded over somebody else's link by leaving the peer out of the address.
+    # A row this hub cannot vouch for refuses here as it would for an explicit
+    # address (rc 78): it is not "no links", it is "cannot tell".
+    local _sprin _cands _count=0 _one="" _names="" _p _crc=0 _prc=0
+    # The resolver's own stderr stays whenever it found something wrong (78,
+    # or a refusal); only the plain no-row case (rc 1) is quiet here — a
+    # sender without a row is not an error yet, it simply has no links.
+    # The quiet is a convenience, so it is dropped rather than relied on:
+    # with no temp file to hold the text, everything is printed and the
+    # codes stand.
+    local _ef; _ef="$(mktemp 2>/dev/null)" || _ef=""
+    if [ -n "$_ef" ]; then
+      _sprin="$(bus_recipient_principal "$from" 2>"$_ef")" || _prc=$?
+      [ "$_prc" -eq 0 ] || [ "$_prc" -eq 1 ] || cat "$_ef" >&2
+      rm -f "$_ef"
+    else
+      _sprin="$(bus_recipient_principal "$from")" || _prc=$?
+    fi
+    if [ "$_prc" -eq 78 ]; then
+      echo "bus: NOTHING IS SENT to '$to' — the sender's row cannot be vouched for (above)." >&2
+      return 78
+    fi
+    # The explicit route answers 65 for a sender it cannot resolve; so does
+    # this one, and it names the SENDER — "unknown recipient" would point
+    # the reader at the wrong name.
+    if [ "$_prc" -eq 65 ]; then
+      echo "bus: NOTHING IS SENT to '$to' — the sender '$from' cannot be resolved (above)." >&2
+      return 65
+    fi
+    if [ -n "$_sprin" ]; then
       # A BROKEN ROW REFUSES DISCOVERY. bus_peer_candidates answers 78 rather
       # than handing back the rows it could read: routing on part of a set sends
       # the letter over whichever link happened to parse.
-      _cands="$(bus_peer_candidates "$_sowner")" || _crc=$?
+      _cands="$(bus_peer_candidates "$_sprin")" || _crc=$?
       if [ "$_crc" -ne 0 ]; then
-        echo "bus: NOTHING IS SENT to '$to' — the links of '$_sowner' could not be read as a" >&2
+        echo "bus: NOTHING IS SENT to '$to' — the links of '$_sprin' could not be read as a" >&2
         echo "     set (the reason is above), and a bare name is routed from the whole set" >&2
         echo "     or not at all. Repair the row, or address the peer explicitly." >&2
         return "$_crc"
@@ -1247,7 +1377,7 @@ EOF
         return 65
       fi
       if [ "$_count" -gt 1 ]; then
-        echo "bus: '$to' is no name in this estate, and '$_sowner' has SEVERAL links:$_names" >&2
+        echo "bus: '$to' is no name in this estate, and '$_sprin' has SEVERAL links:$_names" >&2
         echo "     Ambiguous across peers — address it as <name>@<peer>, e.g. '$to@$_one'." >&2
         return 65
       fi
@@ -1261,7 +1391,7 @@ EOF
   fi
   to_id="$BUS_RES_ID"
   # THE ARRIVAL GATE: EVERY CLASS, NOT JUST FRAGA. The two gates of a link divide
-  # the question in two — the SENDING hub decides who may USE the link (the owner
+  # the question in two — the SENDING hub decides who may USE the link (the principal
   # gate above, against ITS registry), and this one decides whom the link may
   # REACH here: the link owner's own sessions, and nobody else's, whatever class
   # the letter carries.
@@ -1274,8 +1404,10 @@ EOF
   # what it reaches here is that person's own sessions, and reaching anyone
   # else's is the neighbour writing in a home they were never given.
   #
-  # THE OWNER COMES FROM THE KEY (STEWARD_BUS_PEER_OWNER, set only by the forced
-  # command) and the recipient's from OUR registry. No domain, no group grant, no
+  # THE PRINCIPAL COMES FROM THE KEY (STEWARD_BUS_PEER_PRINCIPAL, set only by the
+  # forced command) and the recipient's from OUR registry — its account's
+  # PRINCIPAL, the person, strictly bound to the row (bus_recipient_principal);
+  # the unix OWNER stays what delivery below reads. No domain, no group grant, no
   # same-machine carve-out: all three rest on rows in ONE registry, and the
   # sender's row is in the other estate. A domain shared across estates is a link
   # of its own with its own owner, added deliberately and later.
@@ -1283,10 +1415,14 @@ EOF
   # IT RUNS BEFORE EVERY DELIVERY PATH — the local queue, the hop to another
   # machine, and the hop into another home on this one all lie below.
   if [ -n "$_peer_in" ]; then
-    local _towner; _towner="$(bus_recipient_owner "$to" 2>/dev/null)" || _towner=""
-    if [ -z "$_towner" ] || [ "$_towner" != "$_peer_owner" ]; then
+    local _tprin _trc=0; _tprin="$(bus_recipient_principal "$to")" || _trc=$?
+    if [ "$_trc" -eq 78 ]; then
+      echo "bus: NOTHING IS DELIVERED to '$to' — its row cannot be vouched for (above). Repair the row." >&2
+      return 78
+    fi
+    if [ -z "$_tprin" ] || [ "$_tprin" != "$_peer_principal" ]; then
       echo "bus: NOTHING IS DELIVERED to '$to' — the letter came over the link owned by" >&2
-      echo "     '$_peer_owner', and '$to' is owned by '${_towner:-nobody we can read}'." >&2
+      echo "     '$_peer_principal', and '$to' belongs to '${_tprin:-nobody we can read}'." >&2
       echo "     A link reaches its owner's own sessions in this estate and no one else's." >&2
       return 65
     fi

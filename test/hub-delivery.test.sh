@@ -54,6 +54,17 @@ export STEWARD_ESTATE="$FX/estate.conf"
 # The "remote" home's estate - read by the remote-side script for its socket name.
 printf 'TMUX_SOCKET="hub-one.sock"\n' > "$FX/hh/scripts/estate/steward.conf"
 
+# The rows below name accounts, and a row that names an account the registry
+# cannot read is refused (rc 78) wherever the row's PERSON is asked for — the
+# peer link's bare-name route asks. So the accounts exist, and agree with the
+# rows: same unix name, same host.
+mkdir -p "$FX/accounts.d"; export STEWARD_ACCOUNT_DIR="$FX/accounts.d"
+printf 'PRINCIPAL="operator-a"\nHOST="host-one"\n' > "$FX/accounts.d/operator-a-hub.conf"
+printf 'PRINCIPAL="operator-b"\nHOST="host-one"\n' > "$FX/accounts.d/operator-b-hub.conf"
+# NO LINKS: an unknown name must bounce here, not be routed over whatever
+# peers.d the machine running this test happens to have. Measured: without the
+# pin the suite read the real estate's peers.d and failed on ITS rows.
+mkdir -p "$FX/peers.d"; export STEWARD_BUS_PEERS_DIR="$FX/peers.d"
 printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/legacy.conf"
 printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000aa.conf"
 printf 'ID="s-00000000000000bb"\nSLUG="beta"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000bb.conf"
