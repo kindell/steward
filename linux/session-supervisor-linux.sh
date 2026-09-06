@@ -751,7 +751,12 @@ MCP_ERR="$(mktemp 2>/dev/null || printf '%s' "$STATE_DIR/$NAME.mcp-err")"
 # alive branch alone has several -- and a temp file per supervision round is
 # four an hour per session, forever.
 trap 'rm -f "$MCP_ERR"' EXIT
-if [ -n "$_mcp_lib_missing" ]; then
+# THE ADAPTER CARRIES ITS OWN CONFIGURATION. An OpenCode row has no MCP
+# document to prepare and no claude command line to build: neither library is
+# needed to start it, so neither may refuse it.
+if [ "${RUNTIME:-claude-code}" = "opencode" ]; then
+  :
+elif [ -n "$_mcp_lib_missing" ]; then
   MCP_REFUSAL="lib"
 else
   MCP_ARG="$(mcp_spawn_prepare "$NAME" "$STATE_DIR/$NAME.mcp.json" 2>"$MCP_ERR")"
@@ -769,7 +774,7 @@ fi
 # library that may be the very thing missing, so it is not called at all; the
 # empty string that results is refused on the spawn path below, never spawned.
 CLAUDE_CMD=""
-if [ -z "$MCP_REFUSAL" ]; then
+if [ -z "$MCP_REFUSAL" ] && [ "${RUNTIME:-claude-code}" != "opencode" ]; then
   CLAUDE_CMD="$(mcp_claude_cmd_fragment "$CONT" "$MCP_ARG" "$NAME_ARG" "$RC_LABEL")"
 fi
 
@@ -813,7 +818,14 @@ if ! declare -F registry_login_exec_prefix >/dev/null 2>&1; then
   echo "session-supervisor: $NAME — REFUSING to start: $REG_LIB does not define registry_login_exec_prefix — deploy the product first." >&2
   exit 78
 fi
-if ! LOGIN_PREFIX="$(registry_login_exec_prefix "${LOGIN:-}" "$(id -un)")"; then
+# AN OPENCODE ROW NEVER GOES THROUGH THE CLAUDE LOGIN RECIPE. The adapter
+# (runtime/opencode-session.sh) owns its own login - OpenCode's auth store in
+# this account - and reads none of this prefix. Resolving LOGIN here would
+# refuse every OpenCode row whose provider has no claude isolation recipe,
+# which is all of them. Ported from the macOS twin, which measured it.
+if [ "${RUNTIME:-claude-code}" = "opencode" ]; then
+  LOGIN_PREFIX=""
+elif ! LOGIN_PREFIX="$(registry_login_exec_prefix "${LOGIN:-}" "$(id -un)")"; then
   echo "session-supervisor: $NAME — REFUSING to start: LOGIN=\"${LOGIN:-}\" does not resolve (see above)." >&2
   exit 78
 fi
@@ -907,7 +919,13 @@ fi
 # pattern widens to "any claude", and the pane-descendant check below — which
 # has carried identity since 2026-08-12 — does ALL the disambiguation. The
 # label was only ever a finder of candidates.
-if [ -n "$RC_LABEL" ]; then
+# AN OPENCODE SESSION IS FOUND BY ITS PORT. It carries no --remote-control
+# label; what its process line does carry is the loopback port the registry
+# gave this row and no other, as measured on the first live advisor:
+# "opencode <repo> --session ... --port N".
+if [ "${RUNTIME:-claude-code}" = "opencode" ]; then
+  CLAUDE_PAT="^[^ ]*opencode .*[-]-port $OPENCODE_PORT( |\$)"
+elif [ -n "$RC_LABEL" ]; then
   RC_LBL_PAT="$(printf '%s' "$RC_LABEL" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
   CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_LBL_PAT\"?\$"
 else
@@ -1501,16 +1519,28 @@ fi
 # guard would wave through a spawn of "$HOME/.local/bin/; exec bash". The
 # declare -F check above is what should make this unreachable; this is the
 # assertion that it stays unreachable.
-if [ -z "$CLAUDE_CMD" ]; then
+ADAPTER=""
+if [ "${RUNTIME:-claude-code}" = "opencode" ]; then
+  # THE ADAPTER IS THE COMMAND. A missing adapter is refused here, before tmux,
+  # for the same reason an empty claude command is: a spawn on a missing
+  # program is a bare shell wearing this session's name.
+  ADAPTER="$HOME/scripts/runtime/opencode-session.sh"
+  if [ ! -x "$ADAPTER" ]; then
+    echo "session-supervisor: $NAME — REFUSING to spawn: the OpenCode adapter is missing: $ADAPTER" >&2
+    echo "session-supervisor: $NAME — deploy the product's runtime/ to this home; nothing is started until then." >&2
+    exit 78
+  fi
+elif [ -z "$CLAUDE_CMD" ]; then
   echo "session-supervisor: $NAME — REFUSING to spawn: the claude command line came out empty." >&2
   echo "session-supervisor: $NAME — a spawn on an empty command starts a bare shell wearing this session's" >&2
   echo "session-supervisor: $NAME — name, which is the zombie pane this supervisor exists to repair." >&2
   exit 78
-fi
-CLAUDE_BIN="$HOME/.local/bin/${CLAUDE_CMD%% *}"
-if [ ! -x "$CLAUDE_BIN" ]; then
-  echo "session-supervisor: $NAME not started — $CLAUDE_BIN is missing (the owner has not installed/logged in to Claude Code yet)" >&2
-  exit 78
+else
+  CLAUDE_BIN="$HOME/.local/bin/${CLAUDE_CMD%% *}"
+  if [ ! -x "$CLAUDE_BIN" ]; then
+    echo "session-supervisor: $NAME not started — $CLAUDE_BIN is missing (the owner has not installed/logged in to Claude Code yet)" >&2
+    exit 78
+  fi
 fi
 
 # From here on we start something. ONE start path for both branches below:
@@ -1532,11 +1562,18 @@ spawn_session() {
   # must end with the tile carrying the resolved label — driven by the alive
   # rounds, verified on the receipt line. Only a labeled session: an RC-free
   # one (empty label) has, by definition, no name to drive in.
-  if [ -n "$RC_LABEL" ]; then
+  # NO RENAME CYCLE FOR OPENCODE: it has no /rename, and a keystroke typed into
+  # a runtime that does not expect it is free text into a conversation.
+  if [ -n "$RC_LABEL" ] && [ -z "$ADAPTER" ]; then
     printf '%s %s\n' 0 "$RC_LABEL" > "$RENAME_PENDING"
   fi
-  tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
-    "${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+  if [ -n "$ADAPTER" ]; then
+    tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
+      "exec \"$ADAPTER\" \"$NAME\""
+  else
+    tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
+      "${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+  fi
   # THE ALARM IS ON THE SPAWN PATH, AND ONLY THERE. A degraded or refused set
   # is a property of the session that was just STARTED, so it is signalled once
   # per start. Putting it on the every-round path instead would send the same
