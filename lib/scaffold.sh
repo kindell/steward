@@ -71,7 +71,11 @@ estate_scaffold() {
     printf 'ESTATE_NAME="%s"\n'          "$org"
     printf 'SCHEMA_VERSION="3"\n'
     printf 'LABEL_PREFIX="com.%s.claude"\n'      "$org"
-    printf 'HUB_SESSION="%s-hub"\n'              "$org"
+    # ONE HUB PER MACHINE, NAMED AFTER THE MACHINE. The hub session's slug is
+    # the hostname -- the same value as HUB_HOST -- never "<org>-hub": the
+    # first session is the house, and its label follows the Team form like
+    # every other session (rule of 2026-08-29, restated 2026-09-05).
+    printf 'HUB_SESSION="%s"\n'                  "$(hostname -s)"
     printf 'HUB_HOST="%s"\n'                     "$(hostname -s)"
     printf 'HUB_SSH="%s@%s"\n'                   "$(id -un)" "$(hostname -s)"
     printf 'JOB_LOG_DIR="%s-jobs"\n'             "$org"

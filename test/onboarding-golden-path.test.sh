@@ -36,7 +36,16 @@ check "estate file is mode 600" \
 nm="$( export STEWARD_ESTATE_ROOT="$FX/e"; . "$here/lib/registry.sh"; registry_estate_name 2>/dev/null )"
 check "ESTATE_NAME resolves to org" [ "$nm" = "acme" ]
 
-# ALL 16 FIELDS RESOLVE. A refusal from any reader means a missing field.
+# THE HUB SESSION IS NAMED AFTER THE MACHINE, not "<org>-hub". One hub per
+# machine; its slug is the hostname, the same value HUB_HOST carries, and
+# its label follows the Team form like every other session.
+hub="$( export STEWARD_ESTATE_ROOT="$FX/e"; . "$here/lib/registry.sh"; registry_hub_session 2>/dev/null )"
+hh="$( export STEWARD_ESTATE_ROOT="$FX/e"; . "$here/lib/registry.sh"; registry_hub_host 2>/dev/null )"
+check "HUB_SESSION is the hostname" [ "$hub" = "$(hostname -s)" ]
+check "HUB_SESSION equals HUB_HOST"  [ "$hub" = "$hh" ]
+case "$hub" in *-hub) check "HUB_SESSION is not <org>-hub" false ;; *) check "HUB_SESSION is not <org>-hub" true ;; esac
+
+# ALL FIELDS RESOLVE. A refusal from any reader means a missing field.
 allok=1
 for fn in registry_hub_session registry_hub_host registry_hub_ssh \
           registry_rc_label_prefix registry_job_log_dir registry_tmux_socket \
