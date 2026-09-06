@@ -63,9 +63,20 @@ export function findProcessByPanePid(psText, panePid) {
   for (const line of psText.split('\n')) {
     const m = line.match(/^\s*(\d+)\s+(\w{3} \w{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+/)
     if (!m || m[1] !== pid) continue
-    return { pid: Number(m[1]), startEpoch: Date.parse(m[2]) }
+    return { pid: Number(m[1]), startEpoch: Date.parse(m[2]), resumed: startedResumed(line) }
   }
   return null
+}
+
+// A PROCESS STARTED WITH --resume IS ALREADY RESUMED, and the watch reads that
+// off the process line, never off the pane. The supervisor respawns a dead
+// session with `--resume <sid>`; the watch then sees a new startEpoch and, if
+// the pane rules do not recognise the client's current glyphs, a "fresh" pane -
+// and types /resume into a session that is already resumed. The picker opens
+// on an empty list and the modal eats every message until a human presses Esc.
+// The process line is the one fact that does not move with client releases.
+function startedResumed(psLine) {
+  return /\s--resume(\s|$)/.test(psLine)
 }
 
 export function findProcess(psText, rcLabel) {
@@ -80,7 +91,7 @@ export function findProcess(psText, rcLabel) {
     // a shell prompt.
     const m = line.match(/^\s*(\d+)\s+(\w{3} \w{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+\S*claude /)
     if (!m) continue
-    return { pid: Number(m[1]), startEpoch: Date.parse(m[2]) }
+    return { pid: Number(m[1]), startEpoch: Date.parse(m[2]), resumed: startedResumed(line) }
   }
   return null
 }
@@ -207,7 +218,7 @@ export function paneState(paneText, rules = undefined) {
 // resumeStep: a pure step machine for the /resume procedure. Given a fresh
 // capture-pane text, return the next step the orchestrator should take. The
 // orchestrator loops: fresh capture -> resumeStep -> act -> fresh capture ...
-// (at most six iterations, then abort).
+// (at most six iterations, then abort). 'escape' closes a modal and aborts.
 export function resumeStep(paneText) {
   if (paneText == null || paneText.trim() === '') return { action: 'abort', reason: 'empty or unknown pane' }
   // THE SAME FOOTER TRAP as in paneState: with the permanent status line a
@@ -216,6 +227,10 @@ export function resumeStep(paneText) {
   // were restarted: all three refused a resume on an empty start screen.
   if (paneBusy(paneText)) return { action: 'abort', reason: 'the session is busy' }
   if (/^\s*❯ 1\. Resume from summary/m.test(paneText)) return { action: 'press-enter', reason: 'summary dialog visible' }
+  // AN EMPTY PICKER IS CLOSED, NOT ENTERED: Enter on "No conversations found"
+  // does nothing, and an abort that leaves the modal open leaves the session
+  // deaf. Measured on a hub session: an hour without input until a human's Esc.
+  if (paneText.includes('No conversations found')) return { action: 'escape', reason: 'the resume picker is empty - nothing to resume' }
   if (paneText.includes('Ctrl+A to show all projects')) return { action: 'press-enter', reason: 'resume picker visible' }
   if (paneText.includes('⏺')) return { action: 'done', reason: 'conversation visible - resumed' }
   if (paneText.includes('/remote-control is active')) return { action: 'type-resume', reason: 'start screen (fresh)' }
@@ -281,7 +296,10 @@ export function decide(prev = {}, obs, nowIso, opts = {}) {
   }
 
   if (prev.startEpoch && obs.proc.startEpoch !== prev.startEpoch) {
-    if (obs.pane.fresh) {
+    // A RESPAWN WITH --resume IS THE SUPERVISOR'S RESUME, DONE. Whatever the
+    // pane looks like, typing /resume on top of it is the failure described at
+    // startedResumed: bless it and leave the keyboard alone.
+    if (obs.pane.fresh && !obs.proc.resumed) {
       // respawned and standing on the start screen: let the orchestrator
       // auto-resume - at most one attempt per process incarnation, even if the
       // attempt aborts.

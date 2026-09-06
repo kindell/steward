@@ -38,6 +38,12 @@ export async function runResume(sock, session) {
     const { action, reason } = resumeStep(lastPane)
     if (action === 'done') return { ok: true, paneText: lastPane }
     if (action === 'abort') return { ok: false, reason, paneText: lastPane }
+    if (action === 'escape') {
+      // close the modal FIRST - an abort with the picker open leaves the
+      // session deaf to every message (the keystroke is a bare Escape, never text)
+      await exec('tmux', ['-S', sock, 'send-keys', '-t', session, 'Escape'])
+      return { ok: false, reason, paneText: lastPane }
+    }
     if (action === 'type-resume') {
       await tmuxSendLiteral(sock, session, '/resume')
       await sleep(1500)

@@ -57,6 +57,30 @@ test('findProcessByPanePid: finds the process by pid, not by label', () => {
   assert.equal(p.startEpoch, Date.parse('Mon Aug 25 08:00:00 2026'))
 })
 
+// A PROCESS THE SUPERVISOR STARTED WITH --resume IS ALREADY RESUMED. The watch
+// must know that from the process line itself, not from the pane: a client
+// release changed the transcript glyphs and the footer text, the resumed pane
+// looked "fresh" to the pane rules, and the watch typed /resume INTO a session
+// that was already resumed. The picker opened on an empty list, the procedure
+// gave up with the modal still open, and the session took no input for an hour.
+test('findProcessByPanePid: a process started with --resume says so', () => {
+  const ps = [
+    '  123 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --permission-mode bypassPermissions --resume 340eda36-1111-2222-3333-444444444444',
+    '  124 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --permission-mode bypassPermissions',
+  ].join('\n')
+  assert.equal(findProcessByPanePid(ps, '123').resumed, true)
+  assert.equal(findProcessByPanePid(ps, '124').resumed, false)
+})
+
+test('findProcess: a process started with --resume says so', () => {
+  const ps = [
+    '  123 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --resume 340eda36-1111-2222-3333-444444444444 --remote-control Alpha',
+    '  124 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --remote-control Beta',
+  ].join('\n')
+  assert.equal(findProcess(ps, 'Alpha').resumed, true)
+  assert.equal(findProcess(ps, 'Beta').resumed, false)
+})
+
 test('findProcessByPanePid: an empty or unknown pid gives null, never a guess', () => {
   const ps = '  123 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --name "Machine"'
   // A pid absent from ps => the process is gone. Null, not the nearest line.
@@ -117,6 +141,16 @@ test('decide: respawn+fresh gives a resume action ONCE per incarnation; a resume
   assert.equal(resumed.alerts.length, 0)
   assert.equal(resumed.actions.length, 0)
   assert.equal(resumed.next.startEpoch, 2000)
+})
+
+test('decide: a respawn the supervisor already resumed (--resume) is blessed, never /resume-d again', () => {
+  // the pane LOOKS fresh (the rules did not recognise the new client's glyphs)
+  const obs = { name: 'alpha', proc: { pid: 9, startEpoch: 2000, resumed: true }, pane: { busy: false, fresh: true, stuckText: null } }
+  const r = decide({ startEpoch: 1000 }, obs, '2026-07-22T09:00:00Z', OPTS)
+  assert.equal(r.alerts.length, 0)
+  assert.equal(r.actions.length, 0)
+  assert.equal(r.next.startEpoch, 2000)
+  assert.equal(r.next.autoResumedFor, undefined)
 })
 
 test('decide: pane=null at a respawn postpones the decision and does NOT bless the new startEpoch', () => {
@@ -243,6 +277,14 @@ test('resumeStep: start screen (fresh) -> type-resume', () => {
 test('resumeStep: resume picker -> press-enter', () => {
   const pane = `   Resume session (1 of 25)\n     some project\n   ❯ Check whether the agent is active\n     9 hours ago · main · 13MB\n     Ctrl+A to show all projects · Ctrl+B to only show current branch · Space to preview · Ctrl+R to rename · Type to search · Esc to cancel\n`
   assert.equal(resumeStep(pane).action, 'press-enter')
+})
+
+// AN EMPTY PICKER IS CLOSED, NOT ENTERED. Pressing Enter on "No conversations
+// found" does nothing, the loop runs out, and the abort leaves the modal open
+// with the session deaf to every message until a human presses Esc.
+test('resumeStep: an empty resume picker -> escape (closes the modal, then abort)', () => {
+  const pane = `   Resume session\n\n   No conversations found in this project\n\n   Ctrl+A to show all projects · Esc to cancel\n`
+  assert.equal(resumeStep(pane).action, 'escape')
 })
 
 test('resumeStep: summary dialog -> press-enter', () => {
