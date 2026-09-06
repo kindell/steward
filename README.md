@@ -21,7 +21,10 @@ already use — it starts it, watches it, addresses it, and updates it.
   rolls out to itself from its own checkout; the hub is not required to be
   reachable for a machine to update.
 - **Bus** — durable, acknowledged messages between sessions, delivered to the
-  recipient's own queue rather than typed into a terminal.
+  recipient's own queue rather than typed into a terminal. Two estates can be
+  linked, one owned link at a time, so that one person's sessions reach each
+  other across machines and nobody else's do:
+  [docs/hub-peer-link.md](docs/hub-peer-link.md).
 - **Selectable runtimes** — a session declares which agent runtime it runs on.
   The default is Claude Code, and a conf that says nothing about runtime keeps
   behaving exactly as before: every conf written before runtimes existed is a

@@ -1,6 +1,8 @@
 # Hub peer link — letters between two estates
 
-Status: design, 2026-09-06. Implements the "owned hub link" the estates asked
+Status: shipped, 2026-09-06 (`linux/hub/lib.sh`, `linux/hub/bin/bus-relay-peer`,
+`test/hub-peer-out.test.sh`, `test/hub-peer-in.test.sh`). Rollout below is per
+estate and still by hand. Implements the "owned hub link" the estates asked
 for: *another person in a neighbouring estate must never reach my sessions
 in my private estate, but my own sessions must be able to find each other
 across several estates.*
@@ -154,6 +156,34 @@ local sender can never write that shape), and then:
   `STEWARD_BUS_PEER_OWNER`.
 - `test/deploy-manifest.test.sh` (existing): the new script is in the
   manifest, executable, beside `bus-relay-in`.
+
+## What shipped differently from the design above
+
+Four things the design left open, decided while building and measured by the
+suites:
+
+- **A FRAGA refused across a link is rc 65, not the local gate's rc 1.** The
+  local gate answers 1 because it is one of several reasons a send can fail
+  ordinarily; a link refusal is a refusal WITH an explanation, and the link's
+  other refusals already carry 65. The message names both owners.
+- **`bus-relay-peer` form-checks its own argv and answers rc 78.** A `<peer>`
+  or `<owner>` outside `[a-z0-9-]+` is a broken `authorized_keys` row on THIS
+  machine — configuration, not input — so it is not folded into the 64 that
+  describes what arrived.
+- **`bus_send` re-checks the sender's shape, not only the forced command.** The
+  stored `from` is what a reader sees and what an archive is searched by, so
+  `<name>@<peer>` is split and both halves checked there too (rc 65), together
+  with the owner it was handed.
+- **The manifest assertion covers all three forced commands.** Rather than a
+  row named on its own, `test/deploy-manifest.test.sh` requires
+  `bus-relay-in`, `bus-relay-deliver` and `bus-relay-peer` to be 755 manifest
+  rows: each is the whole vocabulary of a key that is already installed
+  somewhere else, and losing one breaks that key rather than the deploy.
+
+One finding worth keeping: an apostrophe inside `${1:?word}` is parsed as a
+quote even within double quotes. `"the peer's name"` in the first argument
+guard swallowed the entire `OWNER=` assignment on the following line, and the
+script ran with an unset owner until the suite caught it.
 
 ## Rollout (per estate, after the product ships)
 
