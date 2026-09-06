@@ -156,6 +156,14 @@ has "...naming the link's owner"   "$err" "alice"
 has "...and the recipient's owner" "$err" "bob"
 is  "...and nothing was queued"        "$(inbox_count other)" "0"
 is  "...and nothing left this machine" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"
+# A row with no OWNER is owned by nobody we can read; the gate compares two
+# names and an empty one matches none. Refuse, never pass.
+printf 'DOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/noowner.conf"
+err="$(relay noowner sender "BESLUT topic: to a row without an owner" 2>&1 >/dev/null)"; rc=$?
+is  "a recipient row without OWNER: rc 65" "$rc" "65"
+has "...and it says so" "$err" "nobody we can read"
+is  "...and nothing was queued" "$(inbox_count noowner)" "0"
+rm -f "$FX/reg/noowner.conf"
 relay svc sender "BESLUT topic: for the owner" >/dev/null 2>&1; rc=$?
 is  "...while the link owner's own session still receives: rc 0" "$rc" "0"
 is  "...and it was queued" "$(inbox_count svc)" "1"

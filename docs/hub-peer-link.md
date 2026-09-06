@@ -67,8 +67,10 @@ line and `-F@host` is a flag, not a target. `OWNER` matches `^[a-z][a-z0-9-]*$`.
 A malformed row refuses (rc 78); it never falls back, and it is never
 skipped: bare-name discovery reads `peers.d` as a whole set and refuses
 (rc 78) while any row in it is broken, rather than routing on the rows that
-happened to parse. An explicitly addressed peer names its own row and gets
-that row's own answer.
+happened to parse. That is estate-wide, not per owner: one owner's broken
+row also stops another owner's bare-name sending until it is fixed, and the
+refusal names the file, so the fix is a minute's work. An explicitly
+addressed peer names its own row and gets that row's own answer.
 
 The private key for the link is `$HOME/.ssh/id_buspeer_<peer>` in the hub's
 own home. Missing key → rc 65, named on stderr.
