@@ -143,6 +143,20 @@ for required in $REQUIRED_TARGETS; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"
 done
 
+# 8b. THE HUB'S RECEIVING SIDE TRAVELS TOGETHER, and executable.
+#
+# Each of these is the forced command behind a key in somebody's
+# authorized_keys: a row that goes missing, or lands 644, does not break a
+# deploy — it breaks a key that is already installed on the other side, and the
+# failure is an ssh error in a log nobody reads. bus-relay-peer joined them when
+# the hub peer link shipped, so the list names all three rather than the two it
+# was written for.
+for relay in bus-relay-in bus-relay-deliver bus-relay-peer; do
+  row="$(grep -v '^#' "$M" | awk -v t="scripts/bus/bin/$relay" '$2 == t {print $3}')"
+  is_mode="$(printf '%s' "$row")"
+  [ "$is_mode" = "755" ] && ok || bad "the hub's receiving side: scripts/bus/bin/$relay is not a 755 manifest row (got '${is_mode:-no row}')"
+done
+
 # 9. THE TOOLS ARE NEVER PART OF WHAT THEY WRITE.
 #
 # The hub's same-machine check protects the hub from becoming a victim of its own

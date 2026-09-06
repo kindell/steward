@@ -1,0 +1,87 @@
+#!/bin/bash
+# bus-relay-peer <peer> <owner> - the receiving side of a HUB PEER LINK.
+#
+# NEVER run directly: it is the forced command for a NEIGHBOURING HUB's key in
+# ~/.ssh/authorized_keys (restrict,command="... bus-relay-peer <peer> <owner>").
+# Its sibling bus-relay-in receives from a session host inside our own estate;
+# this one receives from a hub in ANOTHER estate, whose registry we cannot read
+# and whose word about who wrote what we therefore do not take.
+#
+# TWO GATES, AND BOTH OF THEM ARE HERE BECAUSE THE OTHER SIDE IS NOT US:
+#
+#   1. THE OWNER COMES FROM THE KEY. <owner> is a unix account name in OUR
+#      registry, pinned in the authorized_keys line beside the key it belongs
+#      to. The wire carries a sender's NAME, never a claim about who owns it,
+#      and every gate on this side measures the key's owner instead. A link
+#      between two hubs belongs to ONE person: it reaches that person's own
+#      sessions here and nobody else's (bus_send's FRAGA gate for a peer
+#      sender), whatever the other hub writes.
+#
+#   2. ONE HOP, NEVER A CHAIN. A recipient carrying an '@' asks this hub to
+#      forward the letter on to a third hub. Two hubs pointing at each other
+#      would then pass the same letter back and forth until a disk fills, and
+#      no gate downstream can tell the second lap from the first. The form
+#      check below is that refusal, and it runs before anything is written.
+#
+# The sender is stamped <name>@<peer> - <peer> being OUR name for the link, not
+# the neighbour's name for itself. A local session's name can never contain an
+# '@', so a stored sender with one can only have come through this path; that
+# is the forgery guard, and it is structural rather than a lookup.
+#
+# Protocol on stdin: line 1 = recipient as the PEER knows it, line 2 = sender as
+# the PEER knows it, the rest to EOF = text with its envelope on the first line.
+set -euo pipefail
+# NO APOSTROPHE IN EITHER MESSAGE. Inside ${var:?word} bash parses a single
+# quote as a quote even within double quotes, so a word containing one swallows
+# everything up to the next apostrophe - HERE, the whole assignment on the line
+# below. Measured: with "the peer's name" above, OWNER was silently never
+# assigned and the second gate died on an unbound variable.
+PEER="${1:?bus-relay-peer requires the name of the peer (set in authorized_keys)}"
+OWNER="${2:?bus-relay-peer requires the owner of the link (set in authorized_keys)}"
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib.sh
+source "$here/lib.sh"
+
+# THE KEY'S OWN ROW IS CONFIGURATION, so a malformed one is 78 and not 64: the
+# fault is in this machine's authorized_keys, not in what arrived. Enumeration
+# rather than a range, as everywhere else the name becomes a path or an account.
+case "$PEER" in
+  ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+    echo "relay-peer: '$PEER' is not a peer name ([a-z0-9-]+) — repair the authorized_keys row." >&2; exit 78 ;;
+esac
+case "$OWNER" in
+  ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+    echo "relay-peer: '$OWNER' is not an account name ([a-z0-9-]+) — the link's owner is the whole rule, so it is never guessed." >&2; exit 78 ;;
+esac
+
+# READ TIMEOUTS ON EVERYTHING FROM OUTSIDE, exactly as in bus-relay-in: a
+# half-open connection must not leave this forced command in pipe_read forever.
+# The body cap is coreutils timeout when present, gtimeout when present,
+# otherwise plain - the sending side's ServerAlive is the guard where neither
+# exists.
+RT="${BUS_RELAY_READ_TIMEOUT:-15}"
+IFS= read -r -t "$RT" to   || { echo "relay-peer: empty stdin, or nothing within ${RT}s" >&2; exit 64; }
+IFS= read -r -t "$RT" from || { echo "relay-peer: no sender line within ${RT}s" >&2; exit 64; }
+_cap=""; command -v timeout >/dev/null 2>&1 && _cap="timeout $RT"
+[ -n "$_cap" ] || { command -v gtimeout >/dev/null 2>&1 && _cap="gtimeout $RT"; }
+text="$($_cap head -c 65536)" || { echo "relay-peer: timeout reading the text" >&2; exit 64; }   # cap: 64 kB - a bus message is a short notice, not a file
+[ -n "$text" ] || { echo "relay-peer: empty text" >&2; exit 64; }
+
+# BOTH NAMES ARE FORM-CHECKED, and an '@' is what neither may contain: in the
+# recipient it is the chain refused above, in the sender it is a hop this hub
+# would then re-stamp as its own neighbour's. Everything outside the
+# enumeration is malformed input, rc 64.
+case "$to" in
+  ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+    echo "relay-peer: '$to' is not a session name ([a-z0-9-]+) — a letter crosses ONE link, and a name is not a route." >&2; exit 64 ;;
+esac
+case "$from" in
+  ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+    echo "relay-peer: '$from' is not a session name ([a-z0-9-]+) — the sender is named by the peer, and the peer is named by the key." >&2; exit 64 ;;
+esac
+
+# The link's owner travels in the environment, never in the letter: bus_send
+# refuses an '@' sender without it, so this variable is the only thing that can
+# turn a peer's word into a stored sender. Exit code is bus_send's, unchanged.
+export STEWARD_BUS_PEER_OWNER="$OWNER"
+bus_send "$to" "$from@$PEER" "$text"

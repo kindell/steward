@@ -1042,6 +1042,44 @@ bus_send() {
     70) echo "bus: NOTHING IS SENT — the parking guard could not read its list (the reason is above). Repair the list, or remove it if nothing should be parked." >&2
         return 70 ;;
   esac
+  # A SENDER WITH AN '@' ARRIVED OVER A LINK, and only the forced command on the
+  # receiving side can say so. STEWARD_BUS_PEER_OWNER carries the link's owner as
+  # the authorized_keys row names it — from the KEY, never from the letter — and
+  # without it this shape is unattributable: a local session's name can never
+  # contain an '@' (the registry's own form), so an '@' sender that no key
+  # vouched for is somebody spelling a peer letter by hand. It is refused rather
+  # than stored, because the shape itself is what the reader trusts afterwards.
+  local _peer_in="" _peer_owner=""
+  case "$from" in
+    *@*)
+      _peer_owner="${STEWARD_BUS_PEER_OWNER:-}"
+      if [ -z "$_peer_owner" ]; then
+        echo "bus: '$from' looks like a peer sender, and a peer sender needs a link owner." >&2
+        echo "     Only the link's forced command can name one (it reads it off the key)," >&2
+        echo "     so this shape is never written on a sender's own say-so." >&2
+        return 65
+      fi
+      # THE PARTS ARE CHECKED HERE TOO, not only in the forced command: the
+      # stored sender is what a reader sees and what an archive is searched by,
+      # and a second hop or a stray path segment must never reach either.
+      local _fname="${from%%@*}" _fpeer="${from#*@}"
+      case "$_fpeer" in
+        *@*) echo "bus: the sender '$from' names more than one hop — a letter crosses ONE link." >&2; return 65 ;;
+      esac
+      case "$_fname" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) _fname="" ;; esac
+      case "$_fpeer" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) _fpeer="" ;; esac
+      if [ -z "$_fname" ] || [ -z "$_fpeer" ]; then
+        echo "bus: the sender '$from' is not <name>@<peer>, both [a-z0-9-]+ — nothing is stored under a name nobody can answer." >&2
+        return 65
+      fi
+      case "$_peer_owner" in
+        ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+          echo "bus: the link owner '$_peer_owner' is not an account name ([a-z0-9-]+) — the owner gate cannot" >&2
+          echo "     be run against it, and a gate that cannot run is a refusal." >&2
+          return 65 ;;
+      esac
+      _peer_in=1 ;;
+  esac
   # AN EXPLICIT PEER ADDRESS, <name>@<peer>, IS NEVER RESOLVED LOCALLY. The name
   # is a session as the PEER knows it; a local row spelled the same way is a
   # different session in a different estate, and reading it here would deliver
@@ -1140,7 +1178,24 @@ EOF
   #
   # THE REFUSAL IS LOUD AND EXPLAINS THE RULE. A gate that only says no teaches
   # nothing, and the next attempt is identical.
-  if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
+  #
+  # ACROSS A LINK THE OWNER RULE IS THE WHOLE RULE. A letter that arrived over a
+  # link is measured against the owner the KEY names, and against nothing else:
+  # no domain, no group grant, no same-machine carve-out. Those three all rest on
+  # rows in ONE registry — two sessions in one estate sharing an entity, a host,
+  # a group — and the sender's row is in the other estate, where we cannot read
+  # it. A domain shared across estates is a link of its own with its own owner,
+  # added deliberately and later, never inferred from a name that matches.
+  if [ "${BUS_KLASS:-}" = "FRAGA" ] && [ -n "$_peer_in" ]; then
+    local _towner; _towner="$(bus_recipient_owner "$to" 2>/dev/null)" || _towner=""
+    if [ -z "$_towner" ] || [ "$_towner" != "$_peer_owner" ]; then
+      echo "bus: '$from' may not put a FRAGA to '$to'." >&2
+      echo "     The letter came over the link owned by '$_peer_owner'; '$to' is owned by" >&2
+      echo "     '${_towner:-nobody we can read}'. A link reaches its owner's own sessions here" >&2
+      echo "     and no one else's — ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected." >&2
+      return 65
+    fi
+  elif [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
     echo "bus: '$from' may not put a FRAGA to '$to'." >&2
     echo "     The rule: same OWNER, or same DOMAIN (the entity being worked on)." >&2
     echo "     Ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected." >&2
@@ -1175,7 +1230,7 @@ EOF
     fi
     local rc=0
     bus_remote_deliver "$rhost" "$to_id" "$from" "$text" "$rowner" || rc=$?
-    [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to" "$text"
+    [ "$rc" -eq 0 ] && [ -z "$_peer_in" ] && bus_archive_sent "$from" "$to" "$text"
     return "$rc"
   fi
   # SAME MACHINE, OTHER HOME. A hub on a shared host has neighbours in the house:
@@ -1186,7 +1241,7 @@ EOF
   if [ -n "$rowner" ] && [ "$rowner" != "${STEWARD_BUS_SELF_USER:-$(id -un)}" ]; then
     local rc=0
     bus_remote_deliver "$rhost" "$to_id" "$from" "$text" "$rowner" || rc=$?
-    [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to" "$text"
+    [ "$rc" -eq 0 ] && [ -z "$_peer_in" ] && bus_archive_sent "$from" "$to" "$text"
     return "$rc"
   fi
   # THE QUEUE IS KEYED ON THE ID, not on the name the sender typed — otherwise a
@@ -1230,7 +1285,13 @@ EOF
   done
   rm -f "$tmp"
 
-  bus_archive_sent "$from" "$to" "$text"
+  # THE RECEIVING HUB ARCHIVES NOTHING FOR A PEER SENDER. sent/ is a record of
+  # what a session on THIS machine sent, keyed on that session's own inbox; a
+  # letter that arrived over a link was sent by a session in another estate, and
+  # its own hub already archived it there. A copy here would put outgoing mail in
+  # the archive of a session that never wrote it — a trail that reads wrong in
+  # exactly the direction a review trusts it.
+  [ -n "$_peer_in" ] || bus_archive_sent "$from" "$to" "$text"
   printf '%s\n' "$fname"
   # The ping goes to the tmux session, which is named by the ID (supervision keys
   # on the ID). The hub's word goes through the wake alias — see bus_wake_target.

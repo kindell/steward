@@ -74,6 +74,12 @@ linux/hub/enroll               scripts/bus/enroll                   755  scripts
 # host. Both belong to the hub library above and land beside it, under bin/.
 linux/hub/bin/bus-relay-in       scripts/bus/bin/bus-relay-in         755  scripts
 linux/hub/bin/bus-relay-deliver  scripts/bus/bin/bus-relay-deliver    755  scripts
+# The third forced command receives from a NEIGHBOURING HUB, over a link that has
+# an owner: the authorized_keys row names the peer and the link's owner, and this
+# script takes both from its argv. It lands beside the other two because it is the
+# same kind of thing — a key's whole vocabulary — and because an estate that
+# writes such a row needs the command it names to be there already.
+linux/hub/bin/bus-relay-peer     scripts/bus/bin/bus-relay-peer       755  scripts
 # The mechanical answerer for FRAGA. Its catalogue is the ESTATE'S file, delivered
 # by the estate's own deploy beside the library; this file only runs what the
 # catalogue's allow line permits.
