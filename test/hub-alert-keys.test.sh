@@ -34,6 +34,12 @@ is "a climbing file name is refused, rc 78" "$(rc_of "$FX/bad.conf" registry_mai
 is "a non-address is refused, rc 78"        "$(rc_of "$FX/bad.conf" registry_alert_to)" "78"
 case "$(ask "$FX/bad.conf" registry_mail_account_file)" in *"expected the form"*) ok "the refusal names the form" ;; *) bad "the refusal names the form" ;; esac
 
+echo "4. the two probe hooks: optional, a command line beginning with a path"
+printf 'JOB_STATUS_CMD="/opt/probe/jobs --json"\nHOST_STATUS_CMD="relative/cmd"\n' > "$FX/hooks.conf"
+is "JOB_STATUS_CMD read"                       "$(ask "$FX/hooks.conf" registry_job_status_cmd)" "/opt/probe/jobs --json"
+is "a relative HOST_STATUS_CMD is refused, rc 78" "$(rc_of "$FX/hooks.conf" registry_host_status_cmd)" "78"
+is "absent hook: rc 78 for the reader (the bridge turns it into unset)" "$(rc_of "$FX/bare.conf" registry_job_status_cmd)" "78"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

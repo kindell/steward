@@ -77,3 +77,17 @@ linux/hub/bin/bus-relay-deliver  scripts/bus/bin/bus-relay-deliver    755  scrip
 # by the estate's own deploy beside the library; this file only runs what the
 # catalogue's allow line permits.
 linux/hub/bin/bus-fraga-svar     scripts/bus/bin/bus-fraga-svar       755  scripts
+# The session watch: the hub's five-minute cycle over every session it operates.
+# Pure decisions in lib.mjs, the estate read through registry-dump (the one
+# reader), alarms through send-mail.mjs. Lands beside the bus and the library.
+watch/lib.mjs                    scripts/watch/lib.mjs                644  scripts
+watch/pane-rules.json            scripts/watch/pane-rules.json        644  scripts
+watch/estate.mjs                 scripts/watch/estate.mjs             644  scripts
+watch/send-mail.mjs              scripts/watch/send-mail.mjs          644  scripts
+watch/resume.mjs                 scripts/watch/resume.mjs             644  scripts
+watch/session-watch.mjs          scripts/watch/session-watch.mjs      644  scripts
+watch/restart-session.mjs        scripts/watch/restart-session.mjs    644  scripts
+watch/package.json               scripts/watch/package.json           644  scripts
+watch/bin/registry-dump          scripts/watch/bin/registry-dump      755  scripts
+watch/bin/session-watch.sh       scripts/watch/bin/session-watch.sh   755  scripts
+watch/bin/restart-session.sh     scripts/watch/bin/restart-session.sh 755  scripts

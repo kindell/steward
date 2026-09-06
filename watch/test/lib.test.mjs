@@ -6,7 +6,7 @@
 // are passed in as the estate's data rather than assumed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sessionScope, parseHostOperators, parseSessionConfs, findProcess, findProcessByPanePid, paneState, decide, resumeStep, busAlert, malformedAlert, parseBusDump, fleetHttp, browserActivity, claudePin, unpinnedSessions, brandedBrowsers, jobAlerts, groupJobAlerts, hostAlerts, authExpired, authAlerts, browserSleep, restartIntentFresh } from '../lib.mjs'
+import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, resumeStep, busAlert, malformedAlert, parseBusDump, fleetHttp, browserActivity, claudePin, unpinnedSessions, brandedBrowsers, jobAlerts, groupJobAlerts, hostAlerts, authExpired, authAlerts, browserSleep, restartIntentFresh } from '../lib.mjs'
 
 const PING = '[bus] you have mail - read your inbox (the command is in your instructions)'
 const OPTS = { pingText: PING, subjectPrefix: 'hub-one watch', attachHint: 'tmux -S ~/.tmux/hub-one.sock attach -t <session>' }
@@ -32,102 +32,10 @@ test('fleetHttp: unreachable => respawn first, mail only if the respawn did not 
 const PS = `  123 Tue Jul 22 09:00:00 2026 /opt/agent/.local/bin/claude --remote-control Hub: alpha --permission-mode bypassPermissions
   456 Mon Jul 21 23:52:19 2026 /opt/agent/.local/bin/claude --remote-control Hub: beta --permission-mode bypassPermissions`
 
-test('parseSessionConfs reads name + RC_LABEL', () => {
-  const confs = parseSessionConfs({ 'alpha.conf': 'REPO_PATH="/x"\nRC_LABEL="Hub: alpha"\n', 'beta.conf': 'RC_LABEL="Hub: beta"\n' })
-  assert.deepEqual(confs.map(c => c.name).sort(), ['alpha', 'beta'])
-  assert.equal(confs.find(c => c.name === 'alpha').rcLabel, 'Hub: alpha')
-})
 
-// AN RC-FREE SESSION IS UNCONTROLLABLE, NOT INVISIBLE.
-//
-// The regex demanded RC_LABEL="([^"]+)" - AT LEAST one character - and dropped
-// everything else with `return null`. A session with RC_LABEL="" is RC-free ON
-// PURPOSE (the machine session; a runtime without the flag at all), and it
-// therefore fell out of supervision ENTIRELY: no liveness check, no alarm for
-// unacknowledged mail, no line in the report.
-//
-// MEASURED: nineteen rows in the registry, seventeen checked every round. The
-// two missing were exactly the RC-free ones, and nobody had noticed - a session
-// that is never checked never alarms, so the silence looked like health.
-//
-// THE DIFFERENCE THAT MUST BE KEPT: an EMPTY line is a choice, a MISSING line is
-// a forgotten label the registry refuses to load. Empty => in, rcLabel ''.
-// Missing => still out, because then there is no row to trust.
-test('parseSessionConfs: an RC-free session is in, a missing RC_LABEL line is not', () => {
-  const confs = parseSessionConfs({
-    'alpha.conf':   'RC_LABEL="Hub: alpha"\n',
-    'machine.conf': 'HOST="host-two"\nOWNER="operator-m"\nRC_LABEL=""\n',
-    'runtime.conf': 'RC_LABEL=""\nOWNER="operator-a"\n',
-    'forgot.conf':  'REPO_PATH="/x"\nOWNER="operator-a"\n',
-  })
-  const names = confs.map(c => c.name).sort()
-  assert.deepEqual(names, ['alpha', 'machine', 'runtime'])
-  assert.equal(confs.find(c => c.name === 'machine').rcLabel, '')
-  // Owner and host must survive - they are what supervision measures an RC-free
-  // session with, since it has no label to look for.
-  assert.equal(confs.find(c => c.name === 'machine').owner, 'operator-m')
-  assert.equal(confs.find(c => c.name === 'machine').host, 'host-two')
-})
 
-// A NEW-FORM ROW MUST NOT FALL OUT OF SUPERVISION.
-//
-// The name model's migrated row (file name = opaque ID, SLUG= + target) carries
-// NO RC_LABEL line at all: its display is a REFERENCE (TARGET_ENTITY /
-// TARGET_PROJECT) the registry derives - not a stored label that can be
-// forgotten. The registry loads it without objection; the parser here still
-// returned null, so the FIRST migrated session would silently have lost ALL
-// supervision - the same silent-health class as the RC-free rows, but for every
-// migrated row.
-//
-// MIRRORS the registry's ladder: a missing RC_LABEL line is legitimate IF AND
-// ONLY IF the row carries TARGET_ENTITY or TARGET_PROJECT. An old row without a
-// label line AND without a target is still a FORGOTTEN one and is excluded as
-// before - the registry already refuses it loudly.
-//
-// THE LABEL IS UNKNOWN WITHOUT THE DISPLAY PROJECTION, and it is NOT derived
-// again in JS (a second implementation would be a second truth). Liveness binds
-// to the PANE instead - rcLabel '' routes into the same pane-pid branch as the
-// RC-free rows. The row carries an INFORMATIVE label: the slug, else the file name.
-test('parseSessionConfs: a new-form row (target instead of label) is IN', () => {
-  const confs = parseSessionConfs({
-    's-00000000000000aa.conf': 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nTARGET_PROJECT="p-0000000000000001"\nOWNER="operator-a"\n',
-    's-00000000000000bb.conf': 'ID="s-00000000000000bb"\nTARGET_ENTITY="e-0000000000000001"\nOWNER="operator-a"\n',
-    'forgot.conf':             'REPO_PATH="/x"\nOWNER="operator-a"\n',
-  })
-  assert.deepEqual(confs.map(c => c.name).sort(), ['s-00000000000000aa', 's-00000000000000bb'])
-  const a = confs.find(c => c.name === 's-00000000000000aa')
-  assert.equal(a.rcLabel, '', 'no label to search a process for - the pane is the binding')
-  assert.equal(a.label, 'alpha', 'label falls back on the slug')
-  assert.equal(confs.find(c => c.name === 's-00000000000000bb').label, 's-00000000000000bb', 'without a slug the file name is the label')
-})
 
-test('parseSessionConfs: an old-form row without an RC_LABEL line is STILL excluded', () => {
-  // A FORGOTTEN label must stay loud: the registry refuses to load the row, and
-  // supervision must not invent a row the registry did not approve.
-  const confs = parseSessionConfs({
-    'forgot.conf': 'REPO_PATH="/x"\nOWNER="operator-a"\nDOMAIN="d"\n',
-    'fine.conf':   'RC_LABEL="Hub: fine"\n',
-  })
-  assert.deepEqual(confs.map(c => c.name), ['fine'])
-  // And an existing row carries its label as the label - informative, unchanged.
-  assert.equal(confs[0].label, 'Hub: fine')
-})
 
-// HOST AND OWNER ARE READ, NEVER DEFAULTED. The estate's copy defaulted a
-// missing HOST to its own hub and a missing OWNER to one person - the hub's
-// name in the mechanism, and a guessed owner reading the wrong user's tmux,
-// which shows nothing and looks like health. Empty is the honest answer; the
-// caller resolves it against the estate.
-test('parseSessionConfs: HOST and OWNER are read as written, empty when absent', () => {
-  const r = parseSessionConfs({
-    'far.conf':  'HOST="host-two"\nOWNER="operator-b"\nRC_LABEL="Hub: far"',
-    'near.conf': 'RC_LABEL="Hub: near"',
-  })
-  assert.equal(r.find(s => s.name === 'far').host, 'host-two')
-  assert.equal(r.find(s => s.name === 'far').owner, 'operator-b')
-  assert.equal(r.find(s => s.name === 'near').host, '')
-  assert.equal(r.find(s => s.name === 'near').owner, '')
-})
 
 // AN RC-FREE SESSION IS FOUND ON THE PANE, NOT ON THE LABEL.
 //
@@ -1245,11 +1153,3 @@ test('sessionScope: a host operated by ANOTHER hub => foreign (neither read nor 
   assert.equal(sessionScope({ host: 'hub-one' }, { localHub: 'host-two', operators }), 'foreign')
 })
 
-test('parseHostOperators: hosts.d => {host: OPERATOR}, the file name is the host name', () => {
-  const ops = parseHostOperators({
-    'host-two.conf': 'OWNER="operator-a"\nOPERATOR="hub-one"\nSSH_ALIAS="host-two"\n',
-    'hub-one.conf': '# a comment\nOPERATOR="hub-one"\n',
-    'other.conf': 'LEGAL_OWNER="x"\n',
-  })
-  assert.deepEqual(ops, { 'host-two': 'hub-one', 'hub-one': 'hub-one' })
-})

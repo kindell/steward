@@ -12,55 +12,11 @@
 // product's mechanism.
 import { readFileSync } from 'node:fs'
 
-// parseSessionConfs - the registry rows the watch will look after.
-//
-// AN EMPTY LABEL IS A CHOICE; A MISSING LINE IS A FORGOTTEN ONE.
-//
-// The pattern used to demand AT LEAST one character ([^"]+) and dropped
-// everything else with `return null`. A session without remote control -
-// RC_LABEL="" - therefore fell out of supervision ENTIRELY: no liveness check,
-// no alarm for unacknowledged mail, no line in the report. The machine session
-// and a non-Claude runtime session are RC-free on purpose.
-//
-// Measured: nineteen rows, seventeen checked every round, for weeks. A session
-// that is never checked never alarms, so the silence looked like health. The
-// same family as a label helper fixed the day before - empty treated as unset,
-// in one of two places.
-//
-// The distinction is kept: an empty line gives rcLabel '' and the session is
-// IN. A MISSING line still gives null, because then there is no row to trust
-// and the registry refuses to load it anyway.
-//
-// A NEW-FORM ROW IS NOT A FORGOTTEN ONE. The migrated row of the name model
-// carries no RC_LABEL line at all: its display is a REFERENCE (TARGET_ENTITY /
-// TARGET_PROJECT) that the registry's display projection derives, not a stored
-// label. The same ladder as registry_load: a missing label line is legitimate
-// IF AND ONLY IF the row carries a target field. Without this mirror the FIRST
-// migrated session would silently have lost ALL supervision - the same
-// silent-health class the RC-free rows fell into, but for every migrated row.
-//
-// THE LABEL IS NOT DERIVED AGAIN IN JS - the display projection has ONE owner,
-// and a second implementation would be a second truth. rcLabel '' routes into
-// the same pane-pid branch as the RC-free rows: the pane is the binding, not
-// the label. `label` is purely INFORMATIVE: the label when there is one, else
-// the slug, else the file name.
-//
-// HOST and OWNER are read as written and left EMPTY when absent - the caller
-// resolves an absent host against the estate, and an absent owner is never
-// guessed: a queue read as the wrong user shows nothing, which looks like health.
-export function parseSessionConfs(files) {
-  return Object.entries(files).map(([fname, text]) => {
-    const m = text.match(/^RC_LABEL="([^"]*)"/m)
-    const newForm = /^TARGET_(ENTITY|PROJECT)="/m.test(text)
-    if (!m && !newForm) return null
-    const rcLabel = m ? m[1] : ''
-    const slug = text.match(/^SLUG="([^"]*)"/m)
-    const name = fname.replace(/\.conf$/, '')
-    const h = text.match(/^HOST="([a-z][a-z0-9-]*)"/m)
-    const o = text.match(/^OWNER="([a-z][a-z0-9-]*)"/m)
-    return { name, rcLabel, label: rcLabel || (slug && slug[1]) || name, host: h ? h[1] : '', owner: o ? o[1] : '' }
-  }).filter(Boolean)
-}
+// THE REGISTRY IS NOT PARSED HERE. The estate's copy carried its own reader of
+// the session rows and the host rows - a second reader of one truth, with its
+// own defaults. The watch reads through watch/bin/registry-dump, which sources
+// lib/registry.sh and prints what it says (see estate.mjs). What remains here
+// is the decision over what the registry answered.
 
 // sessionScope - WHERE A SESSION STANDS RELATIVE TO THE WATCH THAT IS RUNNING.
 //
@@ -83,17 +39,6 @@ export function sessionScope(session, { localHub, operators = {} } = {}) {
   const op = operators[host]
   if (op && op !== localHub) return 'foreign'
   return 'remote'
-}
-
-// parseHostOperators - hosts.d => { host: OPERATOR }. The file name IS the host
-// name; rows without OPERATOR are left out, so sessionScope falls to 'remote'.
-export function parseHostOperators(files) {
-  const out = {}
-  for (const [fname, text] of Object.entries(files)) {
-    const m = text.match(/^OPERATOR="([a-z][a-z0-9-]*)"/m)
-    if (m) out[fname.replace(/\.conf$/, '')] = m[1]
-  }
-  return out
 }
 
 // findProcessByPanePid - LIVENESS FOR AN RC-FREE SESSION.

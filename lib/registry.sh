@@ -1567,7 +1567,7 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
   # file and look like an answer.
   local RC_LABEL_PREFIX="" HUB_SESSION="" JOB_LOG_DIR="" HUB_SSH="" TMUX_SOCKET="" PING_MSG="" HUB_HOST="" \
         JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" \
-        STATE_DIR_NAME="" PAUSED_DIR_NAME="" MAIL_ACCOUNT_FILE="" ALERT_TO=""
+        STATE_DIR_NAME="" PAUSED_DIR_NAME="" MAIL_ACCOUNT_FILE="" ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD=""
   # shellcheck source=/dev/null
   if ! source "$_estate"; then
     echo "registry: REFUSING — the estate file could not be read: $_estate" >&2
@@ -1590,6 +1590,8 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
     PAUSED_DIR_NAME)      _varde="$PAUSED_DIR_NAME" ;;
     MAIL_ACCOUNT_FILE) _varde="$MAIL_ACCOUNT_FILE" ;;
     ALERT_TO)          _varde="$ALERT_TO" ;;
+    JOB_STATUS_CMD)    _varde="$JOB_STATUS_CMD" ;;
+    HOST_STATUS_CMD)   _varde="$HOST_STATUS_CMD" ;;
     *) echo "registry: unknown estate key '$_nyckel'" >&2; return 70 ;;
   esac
   if ! [[ "$_varde" =~ $_form ]]; then
@@ -1819,6 +1821,16 @@ registry_tmux_socket()    { _registry_estate_value TMUX_SOCKET '^[A-Za-z0-9][A-Z
 # a default - a watch without an alarm channel must say so, not fall silent.
 registry_mail_account_file() { _registry_estate_value MAIL_ACCOUNT_FILE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
 registry_alert_to()          { _registry_estate_value ALERT_TO '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; }
+
+# THE WATCH'S TWO PROBE HOOKS ARE OPTIONAL. JOB_STATUS_CMD and HOST_STATUS_CMD
+# name a command that prints the probe's JSON on stdout (the job and host
+# probes are the estate's own tools; the product carries the alarm logic, not
+# the probe). Absent means the watch SKIPS that alarm - a hub without a job
+# probe has nothing to alarm about - so these two readers answer rc 78 like
+# every estate value, and the watch's bridge turns that into "unset". The form
+# is a command line: a full path first, no newline.
+registry_job_status_cmd()    { _registry_estate_value JOB_STATUS_CMD  '^/[^[:cntrl:]]+$'; }
+registry_host_status_cmd()   { _registry_estate_value HOST_STATUS_CMD '^/[^[:cntrl:]]+$'; }
 
 # PING_MSG is free text and therefore has the widest form in this file. A
 # narrower one would reject the estate's own string (it carries an em dash and

@@ -1,0 +1,90 @@
+#!/bin/bash
+# watch/bin/registry-dump <sessions|hosts|estate> - the watch's ONE window into
+# the registry.
+#
+# THE WATCH READS THE REGISTRY THROUGH THE REGISTRY LIBRARY, NEVER WITH A PARSER
+# OF ITS OWN. The estate's watch had one - a second reader of the same rows,
+# with its own defaults (a missing HOST became the hub's name, a missing OWNER
+# became one person) - and two readers of one truth diverge at the first
+# change. Node cannot source a bash library, so this script is the bridge: it
+# sources lib/registry.sh, asks it, and prints JSON. One reader, two languages.
+#
+# THE LIBRARY IS TWO HOPS UP IN BOTH LAYOUTS: watch/bin/ beside lib/ at the
+# repo root, and scripts/watch/bin/ beside scripts/lib/ in a deployed home.
+# STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
+#
+#   sessions  one JSON object per line: {name, id, slug, rcLabel, label, host, owner}
+#             rcLabel is '' for an RC-free row AND for a migrated row without a
+#             label line - both are supervised on the PANE, not the label.
+#   hosts     one JSON object: {<host>: <OPERATOR>} for every hosts.d row that
+#             names an operator.
+#   estate    one JSON object with the keys the watch needs. Required keys
+#             refuse (rc 78) when absent; the alarm channel and the two probe
+#             hooks are printed empty when absent - the watch decides what an
+#             empty value means (dry run, or a skipped probe).
+set -uo pipefail
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
+  # shellcheck source=/dev/null
+  . "$STEWARD_REGISTRY_LIB" || exit 78
+elif [ -f "$here/../../lib/registry.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$here/../../lib/registry.sh" || exit 78
+else
+  echo "registry-dump: the registry library was found in neither layout (from $here)" >&2
+  exit 78
+fi
+command -v jq >/dev/null 2>&1 || { echo "registry-dump: jq is required" >&2; exit 78; }
+
+optional() { # <reader> -> the value, or '' when the estate does not name it
+  local v
+  if v="$("$1" 2>/dev/null)"; then printf '%s' "$v"; else printf ''; fi
+}
+
+case "${1:-}" in
+  sessions)
+    names="$(registry_list)" || exit $?
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      # EACH ROW IN ITS OWN SUBSHELL: registry_load sets globals, and a row that
+      # fails to load must not leave the previous row's values behind. A row the
+      # registry refuses is skipped and named on stderr - the registry's refusal
+      # is the reason, and the watch must not invent supervision for a row the
+      # registry did not approve.
+      (
+        registry_load "$n" >/dev/null 2>&1 || { echo "registry-dump: $n: the registry refuses the row - skipped" >&2; exit 0; }
+        label="$(registry_session_display "$n" 2>/dev/null || printf '%s' "$n")"
+        jq -cn --arg name "$n" --arg id "${ID:-$n}" --arg slug "${SLUG:-}" --arg rcLabel "${RC_LABEL:-}" \
+               --arg label "$label" --arg host "${HOST:-}" --arg owner "${OWNER:-}" \
+               '{name:$name,id:$id,slug:$slug,rcLabel:$rcLabel,label:$label,host:$host,owner:$owner}'
+      )
+    done <<< "$names"
+    ;;
+  hosts)
+    dir="$(registry_host_dir)"
+    out='{}'
+    if [ -d "$dir" ]; then
+      for f in "$dir"/*.conf; do
+        [ -e "$f" ] || continue
+        op="$( registry_host_load "$f" >/dev/null 2>&1 && printf '%s' "$OPERATOR" )"
+        [ -n "$op" ] || continue
+        out="$(printf '%s' "$out" | jq -c --arg h "$(basename "$f" .conf)" --arg o "$op" '. + {($h): $o}')"
+      done
+    fi
+    printf '%s\n' "$out"
+    ;;
+  estate)
+    hub="$(registry_hub_session)" || exit 78
+    hubHost="$(registry_hub_host)" || exit 78
+    sock="$(registry_tmux_socket)" || exit 78
+    ping="$(registry_ping_msg)" || exit 78
+    state="$(registry_state_dir_name)" || exit 78
+    paused="$(registry_paused_dir_name)" || exit 78
+    jq -cn --arg hubSession "$hub" --arg hubHost "$hubHost" --arg tmuxSocket "$sock" --arg pingMsg "$ping" \
+           --arg stateDirName "$state" --arg pausedDirName "$paused" \
+           --arg mailAccountFile "$(optional registry_mail_account_file)" --arg alertTo "$(optional registry_alert_to)" \
+           --arg jobStatusCmd "$(optional registry_job_status_cmd)" --arg hostStatusCmd "$(optional registry_host_status_cmd)" \
+           '{hubSession:$hubSession,hubHost:$hubHost,tmuxSocket:$tmuxSocket,pingMsg:$pingMsg,stateDirName:$stateDirName,pausedDirName:$pausedDirName,mailAccountFile:$mailAccountFile,alertTo:$alertTo,jobStatusCmd:$jobStatusCmd,hostStatusCmd:$hostStatusCmd}'
+    ;;
+  *) echo "usage: registry-dump sessions|hosts|estate" >&2; exit 64 ;;
+esac
