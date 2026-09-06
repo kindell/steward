@@ -127,24 +127,39 @@ out="$(bus_read svc 2>&1)"
 has "from=sender@north" "$out" "from=sender@north"
 has "...with the text inside the fence" "$out" "hello from afar"
 
-echo "6. FRAGA over a link: the link's owner, and nothing else"
-# A FRAGA is answered mechanically out of the registry, so it hands the asker
-# something the homes' 750 otherwise hides. Across a link only the OWNER rule
-# applies — no domain, no group, no same-machine carve-out.
-relay svc sender "FRAGA topic: sessioner" >/dev/null 2>&1; rc=$?
-is "a FRAGA to the link owner's session: rc 0" "$rc" "0"
-is "...and it was queued"  "$(inbox_count svc)" "1"
+echo "6. a FRAGA does not cross a link — not even to the link owner's own session"
+# A FRAGA is answered by MACHINERY out of a catalogue, and the answer goes back
+# to the asker as a DRIFT letter. Across a link there is no return route: the
+# answering side would have to address <asker>@<us>, a shape no sending hub
+# writes and no gate here accepts. The question is therefore refused on arrival
+# rather than queued for an answer nobody can deliver. A lookup-and-answer
+# protocol across a link is a later addition, deliberately.
+err="$(relay svc sender "FRAGA topic: sessioner" 2>&1 >/dev/null)"; rc=$?
+is  "to the link owner's own session: rc 65" "$rc" "65"
+has "...and it says a FRAGA is answered from a catalogue" "$err" "catalogue"
+has "...and that the return route is what is missing"     "$err" "return route"
+is  "...and nothing was queued" "$(inbox_count svc)" "0"
 err="$(relay other sender "FRAGA topic: sessioner" 2>&1 >/dev/null)"; rc=$?
-is  "a FRAGA to ANOTHER owner's session: rc 65" "$rc" "65"
-has "...naming the link's owner" "$err" "alice"
-has "...and the recipient"       "$err" "other"
+is  "to another owner's session: rc 65 too" "$rc" "65"
+is  "...and nothing was queued"        "$(inbox_count other)" "0"
 is  "...and nothing left this machine" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"
-# The gate is on the CLASS, not on the link: an ordinary message to another
-# owner's session is delivered as it always was.
-relay other sender "BESLUT topic: an ordinary letter" >/dev/null 2>&1; rc=$?
-is  "an ordinary message to another owner's session: rc 0" "$rc" "0"
-has "...delivered as that owner" "$(cat "$SSH_ARGV")" "-l bob"
-is  "...and STILL no sent/ archive, on either delivery path" "$(sent_any)" "0"
+
+echo "6b. EVERY class is owner-gated on arrival: the link reaches its owner's"
+echo "    own sessions here and nobody else's"
+# The sending gate decides who may USE the link; this one decides whom it may
+# REACH. Without it a link owned by alice carried a BESLUT into bob's queue —
+# over ssh as bob, into a home this hub cannot otherwise write in — on the word
+# of a hub in another estate. The class was never the boundary; the owner is.
+err="$(relay other sender "BESLUT topic: an ordinary letter" 2>&1 >/dev/null)"; rc=$?
+is  "an ordinary message to another owner's session: rc 65" "$rc" "65"
+has "...naming the link's owner"   "$err" "alice"
+has "...and the recipient's owner" "$err" "bob"
+is  "...and nothing was queued"        "$(inbox_count other)" "0"
+is  "...and nothing left this machine" "$(wc -c < "$SSH_ARGV" | tr -d ' ')" "0"
+relay svc sender "BESLUT topic: for the owner" >/dev/null 2>&1; rc=$?
+is  "...while the link owner's own session still receives: rc 0" "$rc" "0"
+is  "...and it was queued" "$(inbox_count svc)" "1"
+is  "...and STILL no sent/ archive on this side" "$(sent_any)" "0"
 
 echo "7. a name this estate does not have bounces — it is never forwarded onwards"
 : > "$SSH_ARGV"

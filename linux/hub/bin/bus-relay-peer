@@ -7,15 +7,22 @@
 # this one receives from a hub in ANOTHER estate, whose registry we cannot read
 # and whose word about who wrote what we therefore do not take.
 #
-# TWO GATES, AND BOTH OF THEM ARE HERE BECAUSE THE OTHER SIDE IS NOT US:
+# THE TWO GATES OF A LINK STAND ON DIFFERENT MACHINES AND ANSWER DIFFERENT
+# QUESTIONS. The SENDING hub decides who may USE the link: only a session owned
+# by the link's owner, measured in ITS registry. This side decides whom the link
+# may REACH: the link owner's own sessions in THIS estate, and nobody else's.
+# Neither hub can run the other's gate, and neither trusts the other's word.
 #
-#   1. THE OWNER COMES FROM THE KEY. <owner> is a unix account name in OUR
-#      registry, pinned in the authorized_keys line beside the key it belongs
-#      to. The wire carries a sender's NAME, never a claim about who owns it,
-#      and every gate on this side measures the key's owner instead. A link
-#      between two hubs belongs to ONE person: it reaches that person's own
-#      sessions here and nobody else's (bus_send's FRAGA gate for a peer
-#      sender), whatever the other hub writes.
+#   1. THE OWNER COMES FROM THE KEY, AND GATES EVERY CLASS. <owner> is a unix
+#      account name in OUR registry, pinned in the authorized_keys line beside
+#      the key it belongs to. The wire carries a sender's NAME, never a claim
+#      about who owns it. Before anything is delivered, bus_send measures the
+#      RECIPIENT's owner in our registry against this one and refuses (rc 65) on
+#      a mismatch — for a BESLUT exactly as for anything else. The class was
+#      never the boundary: an ordinary letter to another owner's session is
+#      written into that person's home, over ssh as them, on the word of a hub
+#      we cannot read. A FRAGA, meanwhile, does not cross a link at all: it is
+#      answered from a catalogue and the answer has no return route over a link.
 #
 #   2. ONE HOP, NEVER A CHAIN. A recipient carrying an '@' asks this hub to
 #      forward the letter on to a third hub. Two hubs pointing at each other

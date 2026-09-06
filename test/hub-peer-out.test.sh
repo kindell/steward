@@ -40,6 +40,17 @@ printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers.d/west.c
 # Two broken rows: one without an owner, one whose target is not user@host.
 printf 'HUB_SSH="operator@south.example"\n'                > "$FX/peers.d/south.conf"
 printf 'HUB_SSH="northexample"\nOWNER="alice"\n'           > "$FX/peers.d/inner.conf"
+# A target that reads as an ssh OPTION rather than as a user: the whole value
+# must begin with an alphanumeric, or the first word of the command line stops
+# being a destination and starts being a flag.
+printf 'HUB_SSH="-F@north.example"\nOWNER="alice"\n'       > "$FX/peers.d/flagged.conf"
+
+# A directory with nothing broken in it, for the candidate set: a malformed row
+# is not skipped there any more, it refuses the whole set (part 4).
+mkdir -p "$FX/peers-ok.d"
+printf 'HUB_SSH="operator@north.example"\nOWNER="alice"\n' > "$FX/peers-ok.d/north.conf"
+printf 'HUB_SSH="operator@east.example"\nOWNER="alice"\n'  > "$FX/peers-ok.d/east.conf"
+printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers-ok.d/west.conf"
 
 # shellcheck source=/dev/null
 . "$here/linux/hub/lib.sh"
@@ -68,20 +79,34 @@ has "...naming the key"  "$err" "OWNER"
 err="$(bus_peer_load inner 2>&1)"; rc=$?
 is  "a target that is not user@host: rc 78" "$rc" "78"
 has "...naming the key" "$err" "HUB_SSH"
+# A TARGET THAT IS AN OPTION IS NOT A TARGET. ssh reads its destination as a
+# word on the command line, so a value starting with '-' is parsed as a flag and
+# the letter goes wherever that flag points instead.
+err="$(bus_peer_load flagged 2>&1)"; rc=$?
+is  "a target that starts as an ssh flag: rc 78" "$rc" "78"
+has "...naming the key" "$err" "HUB_SSH"
 # THE NAME BECOMES A PATH. A peer name outside [a-z0-9-] can never name a row,
 # and must not reach the file system: '*' would otherwise glob the directory.
 bus_peer_load "../../etc/passwd" >/dev/null 2>&1; rc=$?
 is "a peer name that is not [a-z0-9-]+: rc 1, no file is opened" "$rc" "1"
 
 echo "4. candidates: the links one person owns, sorted, never another person's"
+export STEWARD_BUS_PEERS_DIR="$FX/peers-ok.d"
 is "alice owns two"          "$(bus_peer_candidates alice | tr '\n' ' ')" "east north "
 is "bob owns one"            "$(bus_peer_candidates bob | tr '\n' ' ')"   "west "
 is "carol owns none"         "$(bus_peer_candidates carol)" ""
 bus_peer_candidates carol >/dev/null 2>&1; rc=$?
 is "...and an empty list is rc 0, not an error" "$rc" "0"
-is "a broken row is nobody's candidate" "$(bus_peer_candidates alice | grep -c inner)" "0"
 is "a missing directory is an empty list" \
    "$(STEWARD_BUS_PEERS_DIR="$FX/nothing" bus_peer_candidates alice)" ""
+# A BROKEN ROW IS NOT SKIPPED. Skipping it answers the question "which links
+# does this person have" from an incomplete set: the one link that failed to
+# parse is silently not a candidate, so a set of two reads as a set of one and
+# the letter is forwarded without the ambiguity that should have stopped it.
+export STEWARD_BUS_PEERS_DIR="$FX/peers.d"
+out="$(bus_peer_candidates alice 2>/dev/null)"; rc=$?
+is "one malformed row refuses the whole set: rc 78" "$rc" "78"
+is "...and it names no candidates at all"           "$out" ""
 
 echo "5. the key: one per link, in the hub's own home, never guessed"
 : > "$FX/hh/.ssh/id_buspeer_north"
@@ -115,10 +140,11 @@ PING_MSG="[bus] you have mail"
 EOF
 export STEWARD_ESTATE="$FX/estate2.conf"
 
-# One link for alice, one for bob, and one row too broken to use.
+# One link for alice, one for bob. NOTHING BROKEN HERE: a malformed row refuses
+# the whole candidate set now, so the broken row is written later, by the two
+# tests that are about it.
 printf 'HUB_SSH="operator@north.example"\nOWNER="alice"\n' > "$FX/peers2.d/north.conf"
 printf 'HUB_SSH="operator@west.example"\nOWNER="bob"\n'    > "$FX/peers2.d/west.conf"
-printf 'HUB_SSH="operator@bent.example"\n'                 > "$FX/peers2.d/bent.conf"
 : > "$FX/hh/.ssh/id_buspeer_west"   # so a refusal below is the OWNER gate, not a missing key
 
 # A migrated row (ID + SLUG) for alice, legacy rows for the others.
@@ -149,6 +175,18 @@ has "the peer's target" "$(cat "$SSH_ARGV")" "operator@north.example"
 has "batch mode"        "$(cat "$SSH_ARGV")" "-o BatchMode=yes"
 has "a connect timeout" "$(cat "$SSH_ARGV")" "-o ConnectTimeout=8"
 has "a server-alive interval" "$(cat "$SSH_ARGV")" "-o ServerAliveInterval=5"
+# THE LINK KEY, AND NO OTHER. Without IdentitiesOnly a running agent offers its
+# own keys first and the letter can arrive under a DIFFERENT authorized_keys row
+# — another forced command, another owner. IdentityAgent=none takes the agent
+# out of the question entirely, and ClearAllForwardings drops anything a config
+# file would otherwise tunnel along.
+has "only the key we named"   "$(cat "$SSH_ARGV")" "-o IdentitiesOnly=yes"
+has "no agent"                "$(cat "$SSH_ARGV")" "-o IdentityAgent=none"
+has "no forwardings"          "$(cat "$SSH_ARGV")" "-o ClearAllForwardings=yes"
+# A FIXED REMOTE COMMAND AFTER THE TARGET. The intended key carries a forced
+# command, which overrides it; if any other key ever authenticated, the remote
+# runs 'false' and the text is discarded — never an interactive shell.
+has "a fixed remote command, last" "$(cat "$SSH_ARGV")" "operator@north.example false"
 # THE WIRE: recipient, sender, text — and the sender is OUR name for it. The
 # letter was addressed by ID; what crosses is the SLUG, because that is the
 # name a human on the other side can answer.
@@ -209,7 +247,33 @@ STUB_RC=255 bus_send far@north s-000000000000a001 "DRIFT topic: lost" noop_ping 
 is "the ssh return code is the send's"      "$rc" "255"
 is "...and nothing is archived for it"      "$(sent_count)" "$before"
 
-echo "13. the refusals that come BEFORE the link"
+echo "13. a FRAGA does not cross a link, addressed either way"
+# A FRAGA is answered by MACHINERY out of a catalogue, and the answer travels
+# back as a DRIFT letter to the asker. Across a link there is no return route:
+# the answering side would have to address <asker>@<us>, which is a shape no
+# sending hub writes and no gate here would accept. So the question is refused
+# where it is asked, rather than crossing and dying silently over there.
+arm
+err="$(bus_send far@north scout "FRAGA topic: sessioner" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "an explicit peer address: rc 65" "$rc" "65"
+has "...and it says a FRAGA is answered from a catalogue" "$err" "catalogue"
+has "...and that the return route is what is missing"     "$err" "return route"
+untouched "...and nothing left the machine"
+arm
+err="$(bus_send nowhere scout "FRAGA topic: sessioner" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "a bare name that would be forwarded: rc 65" "$rc" "65"
+has "...same explanation" "$err" "return route"
+untouched "...and nothing left the machine"
+
+echo "14. a malformed row refuses discovery: never a route from an incomplete set"
+printf 'HUB_SSH="operator@bent.example"\n' > "$FX/peers2.d/bent.conf"
+arm
+err="$(bus_send nowhere scout "DRIFT topic: bare" noop_ping 2>&1 >/dev/null)"; rc=$?
+is  "rc 78, the reader's code" "$rc" "78"
+has "...naming the broken row" "$err" "bent"
+untouched "...and nothing left the machine"
+
+echo "15. the refusals that come BEFORE the link"
 mkdir -p "$FX/bus-home"; printf 'hush\n' > "$FX/bus-home/parkerade"
 arm
 bus_send far@north scout "FYND hush: parked" noop_ping >/dev/null 2>&1; rc=$?

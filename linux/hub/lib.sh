@@ -774,6 +774,13 @@ bus_peer_load() {
   case "$h" in *@*) u=""; h="" ;; esac
   case "$u" in ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) u="" ;; esac
   case "$h" in ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) h="" ;; esac
+  # THE WHOLE VALUE MUST BEGIN WITH AN ALPHANUMERIC. ssh reads its destination as
+  # a word on a command line: a value starting with '-' is parsed as an OPTION,
+  # not as a target, and "-F@host" would hand ssh a config file of somebody's
+  # choosing while the letter goes wherever that file points. The form is
+  # ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9._-]+$, and the leading character is
+  # the half a per-character enumeration cannot express.
+  case "$u" in [ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*) : ;; *) u="" ;; esac
   if [ -z "$u" ] || [ -z "$h" ]; then
     echo "bus: $conf has no usable HUB_SSH — expected user@host, got '$target'." >&2
     echo "     A link is never guessed: the wrong target hands another estate our letter." >&2
@@ -798,27 +805,48 @@ bus_peer_load() {
 # the caller turns it into the same "unknown recipient" it gave before links
 # existed.
 #
-# A ROW THAT DOES NOT LOAD IS NOBODY'S CANDIDATE. Refusal-as-default, as in the
-# FRAGA gate: an unreadable row must never become a permit to send somewhere.
+# A ROW THAT CANNOT BE READ REFUSES THE WHOLE SET (rc 78), it is not skipped.
+# The question here is "which links does this person have", and it is answered
+# from the directory as a WHOLE: skipping the row that failed to parse turns a
+# set of two into a set of one, and a set of one is forwarded WITHOUT the
+# ambiguity that should have stopped it. The broken row is then not a link that
+# went missing, it is a letter that went somewhere. So discovery by bare name
+# refuses until the row is repaired; an explicitly addressed peer is unaffected,
+# because it names its own row and gets that row's own answer.
 #
-# THE LOOP RUNS IN A PIPELINE, hence in a subshell, so the BUS_PEER_* globals it
-# sets on the way do not leak into a caller that is mid-decision about a
-# different peer. The caller loads the peer it chose, afterwards, itself.
+# THE LOOP RUNS IN THIS SHELL, NOT IN A SUBSHELL, because a refusal has to come
+# back out as a return code and a subshell's would be swallowed by the pipeline
+# it used to sort through. It therefore overwrites the BUS_PEER_* globals on
+# every row, so they are saved and put back: a caller mid-decision about a
+# different peer must find them as it left them, and it loads the peer it chose
+# afterwards, itself.
+#
+# NO `case` INSIDE `$( )` HERE, deliberately: bash 3.2 misreads the `)` that
+# closes a case pattern as the end of the substitution, and the file stops
+# parsing. Measured on the first version of this function.
 bus_peer_candidates() {
   local owner="${1:-}"
   [ -n "$owner" ] || return 0
   local dir; dir="$(bus_peers_dir)"
   [ -d "$dir" ] || return 0
-  {
-    local f b
-    for f in "$dir"/*.conf; do
-      [ -e "$f" ] || continue
-      b="$(basename "$f" .conf)"
-      case "$b" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
-      bus_peer_load "$b" >/dev/null 2>&1 || continue
-      [ "$BUS_PEER_OWNER" = "$owner" ] && printf '%s\n' "$b"
-    done
-  } | sort
+  local ssh_was="${BUS_PEER_SSH:-}" own_was="${BUS_PEER_OWNER:-}"
+  local f b acc="" lrc rc=0
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || continue
+    b="$(basename "$f" .conf)"
+    case "$b" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) continue ;; esac
+    lrc=0; bus_peer_load "$b" >/dev/null || lrc=$?
+    if [ "$lrc" -eq 78 ]; then
+      echo "bus: the links cannot be read as a set — the row for '$b' is broken, above." >&2
+      rc=78; break
+    fi
+    [ "$lrc" -eq 0 ] || continue
+    [ "$BUS_PEER_OWNER" = "$owner" ] && acc="$acc$b
+"
+  done
+  BUS_PEER_SSH="$ssh_was"; BUS_PEER_OWNER="$own_was"
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$acc" ] && printf '%s' "$acc" | sort
   return 0
 }
 
@@ -836,6 +864,28 @@ bus_peer_key() {
     return 65
   fi
   printf '%s' "$key"
+}
+
+# _bus_peer_no_fraga <to> <what> — the refusal a FRAGA meets at a link, in both
+# directions. Always rc 65 (see below); the caller returns it.
+#
+# WHY A FRAGA STOPS AT THE LINK. It is the one class answered by MACHINERY: a
+# catalogue lookup runs, and the answer goes back to the ASKER as a DRIFT letter.
+# Across a link there is no return route — the answering hub would have to
+# address <asker>@<us>, a shape no hub writes and no gate on the other side
+# accepts — so a FRAGA that crossed would be a question queued for an answer
+# nobody can deliver. That is worse than a refusal: the asker waits, the answer
+# never comes, and a human is eventually woken to do by hand the very thing the
+# class exists to avoid. Refused where it is asked, and refused on arrival too,
+# because a hub in another estate may be older than this rule.
+#
+# A lookup-and-answer protocol across a link is a later addition, deliberately.
+_bus_peer_no_fraga() {
+  echo "bus: a FRAGA does not cross a link — ${2:-nothing is sent to} '${1:-}'." >&2
+  echo "     A FRAGA is answered from a catalogue, and the answer needs a return route" >&2
+  echo "     back to the asker; none exists across a link yet. Ask in another class, or" >&2
+  echo "     put the question to a session in this estate." >&2
+  return 65
 }
 
 # _bus_peer_owner_gate <from> <peer-owner> <peer> — may this sender use this
@@ -891,10 +941,27 @@ bus_peer_forward() {
   fi
   # ServerAlive tears a dead link down from this side; the receiving forced
   # command has read timeouts of its own for the other half of the same gap.
+  #
+  # THE LINK KEY, AND NOTHING ELSE, MAY AUTHENTICATE. -i names a key but does not
+  # make it the only one: with an agent running, ssh offers the agent's keys
+  # first, and the letter would then arrive on the other hub under a DIFFERENT
+  # authorized_keys row — another forced command, another owner stamped on it.
+  # IdentitiesOnly restricts the offer to the file, IdentityAgent=none takes the
+  # agent out of the question even when the environment points at one, and
+  # ClearAllForwardings drops anything a config file would otherwise tunnel along
+  # beside the letter.
+  #
+  # AND A FIXED REMOTE COMMAND, LAST. The intended key carries a forced command
+  # in authorized_keys, which overrides whatever we ask for — so 'false' is never
+  # what runs on the happy path. It is what runs if any OTHER key ever
+  # authenticates: the remote exits non-zero, our text is discarded with its
+  # stdin, and nothing has opened a login shell on a machine in another estate.
   local rc=0
   printf '%s\n%s\n%s' "$to" "$wire_from" "$text" \
     | "${STEWARD_BUS_SSH_BIN:-ssh}" -i "$key" -o BatchMode=yes -o ConnectTimeout=8 \
-        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "$BUS_PEER_SSH" || rc=$?
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+        -o IdentitiesOnly=yes -o IdentityAgent=none -o ClearAllForwardings=yes \
+        "$BUS_PEER_SSH" false || rc=$?
   [ "$rc" -eq 0 ] && bus_archive_sent "$from" "$to@$peer" "$text"
   return "$rc"
 }
@@ -1078,6 +1145,9 @@ bus_send() {
           echo "     be run against it, and a gate that cannot run is a refusal." >&2
           return 65 ;;
       esac
+      # A FRAGA does not cross a link, in either direction — and on this side the
+      # refusal runs before the recipient is even resolved, so nothing is queued.
+      [ "${BUS_KLASS:-}" = "FRAGA" ] && { _bus_peer_no_fraga "$to" "nothing is queued for"; return 65; }
       _peer_in=1 ;;
   esac
   # AN EXPLICIT PEER ADDRESS, <name>@<peer>, IS NEVER RESOLVED LOCALLY. The name
@@ -1109,6 +1179,9 @@ bus_send() {
           echo "bus: '$_pto' is not a session name ([a-z0-9-]+) — nothing is sent to '$_peer'." >&2
           return 65 ;;
       esac
+      # A FRAGA STOPS HERE, before the row is even read: the address names a
+      # peer, and no answer can come back over a link.
+      [ "${BUS_KLASS:-}" = "FRAGA" ] && { _bus_peer_no_fraga "$to" "nothing is sent to"; return 65; }
       bus_peer_load "$_peer" || _lrc=$?
       # A ROW THAT EXISTS BUT CANNOT BE TRUSTED HAS ALREADY EXPLAINED ITSELF and
       # keeps its own code: a broken configuration is not the same finding as an
@@ -1142,10 +1215,19 @@ bus_send() {
     # THE CANDIDATES ARE THE SENDER'S OWN LINKS, so the owner gate is this
     # filter — a session can never be forwarded over somebody else's link by
     # leaving the peer out of the address.
-    local _sowner _cands _count=0 _one="" _names="" _p
+    local _sowner _cands _count=0 _one="" _names="" _p _crc=0
     _sowner="$(bus_recipient_owner "$from" 2>/dev/null)" || _sowner=""
     if [ -n "$_sowner" ]; then
-      _cands="$(bus_peer_candidates "$_sowner")"
+      # A BROKEN ROW REFUSES DISCOVERY. bus_peer_candidates answers 78 rather
+      # than handing back the rows it could read: routing on part of a set sends
+      # the letter over whichever link happened to parse.
+      _cands="$(bus_peer_candidates "$_sowner")" || _crc=$?
+      if [ "$_crc" -ne 0 ]; then
+        echo "bus: NOTHING IS SENT to '$to' — the links of '$_sowner' could not be read as a" >&2
+        echo "     set (the reason is above), and a bare name is routed from the whole set" >&2
+        echo "     or not at all. Repair the row, or address the peer explicitly." >&2
+        return "$_crc"
+      fi
       # A `while read` over a here-document, not an array: bash 3.2 has no
       # mapfile, and an empty array under `set -u` is an error in that shell.
       while IFS= read -r _p; do
@@ -1157,6 +1239,13 @@ EOF
       # SEVERAL LINKS, NO GUESS. Picking one would send a person's letter to
       # whichever of their machines sorted first, and the sender would hold a
       # receipt saying it was delivered.
+      # A FRAGA THAT WOULD BE FORWARDED IS REFUSED, and it is refused before the
+      # ambiguity is reported: with a link in reach the class is the answer, and
+      # naming the links would only invite the same question addressed by hand.
+      if [ "$_count" -ge 1 ] && [ "${BUS_KLASS:-}" = "FRAGA" ]; then
+        _bus_peer_no_fraga "$to" "nothing is sent to"
+        return 65
+      fi
       if [ "$_count" -gt 1 ]; then
         echo "bus: '$to' is no name in this estate, and '$_sowner' has SEVERAL links:$_names" >&2
         echo "     Ambiguous across peers — address it as <name>@<peer>, e.g. '$to@$_one'." >&2
@@ -1171,31 +1260,49 @@ EOF
     return 1
   fi
   to_id="$BUS_RES_ID"
-  # THE FRAGA GATE. Only this class is restricted — ordinary messages are
-  # unchanged. The reason: a FRAGA is answered MECHANICALLY out of a registry, so
-  # it hands the asker something they could not otherwise see (homes are 750). An
-  # ordinary message conveys only what the sender writes themselves.
+  # THE ARRIVAL GATE: EVERY CLASS, NOT JUST FRAGA. The two gates of a link divide
+  # the question in two — the SENDING hub decides who may USE the link (the owner
+  # gate above, against ITS registry), and this one decides whom the link may
+  # REACH here: the link owner's own sessions, and nobody else's, whatever class
+  # the letter carries.
+  #
+  # WHY THE CLASS WAS NEVER THE BOUNDARY. The first version gated FRAGA alone,
+  # reasoning that only a FRAGA hands the asker something the 750 homes hide. But
+  # an ordinary letter to another owner's session is delivered INTO THAT PERSON'S
+  # HOME — over ssh as them, past the boundary the homes exist to draw — on the
+  # word of a hub in another estate we cannot read. A link belongs to one person;
+  # what it reaches here is that person's own sessions, and reaching anyone
+  # else's is the neighbour writing in a home they were never given.
+  #
+  # THE OWNER COMES FROM THE KEY (STEWARD_BUS_PEER_OWNER, set only by the forced
+  # command) and the recipient's from OUR registry. No domain, no group grant, no
+  # same-machine carve-out: all three rest on rows in ONE registry, and the
+  # sender's row is in the other estate. A domain shared across estates is a link
+  # of its own with its own owner, added deliberately and later.
+  #
+  # IT RUNS BEFORE EVERY DELIVERY PATH — the local queue, the hop to another
+  # machine, and the hop into another home on this one all lie below.
+  if [ -n "$_peer_in" ]; then
+    local _towner; _towner="$(bus_recipient_owner "$to" 2>/dev/null)" || _towner=""
+    if [ -z "$_towner" ] || [ "$_towner" != "$_peer_owner" ]; then
+      echo "bus: NOTHING IS DELIVERED to '$to' — the letter came over the link owned by" >&2
+      echo "     '$_peer_owner', and '$to' is owned by '${_towner:-nobody we can read}'." >&2
+      echo "     A link reaches its owner's own sessions in this estate and no one else's." >&2
+      return 65
+    fi
+  fi
+  # THE FRAGA GATE, for letters written in this estate. Only this class is
+  # restricted — ordinary messages are unchanged. The reason: a FRAGA is answered
+  # MECHANICALLY out of a registry, so it hands the asker something they could not
+  # otherwise see (homes are 750). An ordinary message conveys only what the
+  # sender writes themselves.
   #
   # THE REFUSAL IS LOUD AND EXPLAINS THE RULE. A gate that only says no teaches
   # nothing, and the next attempt is identical.
   #
-  # ACROSS A LINK THE OWNER RULE IS THE WHOLE RULE. A letter that arrived over a
-  # link is measured against the owner the KEY names, and against nothing else:
-  # no domain, no group grant, no same-machine carve-out. Those three all rest on
-  # rows in ONE registry — two sessions in one estate sharing an entity, a host,
-  # a group — and the sender's row is in the other estate, where we cannot read
-  # it. A domain shared across estates is a link of its own with its own owner,
-  # added deliberately and later, never inferred from a name that matches.
-  if [ "${BUS_KLASS:-}" = "FRAGA" ] && [ -n "$_peer_in" ]; then
-    local _towner; _towner="$(bus_recipient_owner "$to" 2>/dev/null)" || _towner=""
-    if [ -z "$_towner" ] || [ "$_towner" != "$_peer_owner" ]; then
-      echo "bus: '$from' may not put a FRAGA to '$to'." >&2
-      echo "     The letter came over the link owned by '$_peer_owner'; '$to' is owned by" >&2
-      echo "     '${_towner:-nobody we can read}'. A link reaches its owner's own sessions here" >&2
-      echo "     and no one else's — ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected." >&2
-      return 65
-    fi
-  elif [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
+  # A LETTER FROM A LINK NEVER REACHES THIS GATE: a FRAGA is refused on arrival,
+  # up in the peer-sender branch, before the recipient is resolved.
+  if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
     echo "bus: '$from' may not put a FRAGA to '$to'." >&2
     echo "     The rule: same OWNER, or same DOMAIN (the entity being worked on)." >&2
     echo "     Ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected." >&2
