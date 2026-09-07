@@ -17,6 +17,11 @@
 #      starts a second thread.
 #   7. A letter that was answered is never answered again, even when the
 #      acknowledgement failed and the file is still sitting in the inbox.
+#   8. Every send names the sender: without BUS_FROM the bus refuses a headless
+#      send rather than stamp it as another session.
+#   9. A class this session does not answer is read, never answered.
+#  10. A letter that is itself a reply is never answered - two sessions
+#      answering each other's answers is a loop no ledger can stop.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTER="$here/runtime/codex-session.sh"
@@ -63,9 +68,9 @@ sed 's/RUNTIME="codex"/RUNTIME="claude-code"/; s/'"$CODEX_ID"'/'"$CLAUDE_ID"'/' 
   "$ROOT/sessions.d/$CODEX_ID.conf" > "$ROOT/sessions.d/$CLAUDE_ID.conf"
 
 INBOX="$T/bus/$CODEX_ID/inbox"; mkdir -p "$INBOX"
-letter() { # <name> <from> <subject> <headline> <body>
+letter() { # <name> <from> <subject> <headline> <body> [class]
   cat > "$INBOX/$1.json" <<EOF
-{"from":"$2","to":"$CODEX_ID","ts":"1700000000","klass":"SAMORDNING","amne":"$3","rubrik":"$4","text":"$5"}
+{"from":"$2","to":"$CODEX_ID","ts":"1700000000","klass":"${6:-SAMORDNING}","amne":"$3","rubrik":"$4","text":"$5"}
 EOF
 }
 
@@ -81,7 +86,7 @@ exit 0
 EOF
 cat > "$BIN/bus-send" <<'EOF'
 #!/bin/sh
-printf '%s\n---\n%s\n===\n' "$1" "$2" >> "$BUS_SEND_LOG"
+printf 'BUS_FROM=%s\n%s\n---\n%s\n===\n' "${BUS_FROM:-<unset>}" "$1" "$2" >> "$BUS_SEND_LOG"
 [ -f "$SEND_FAILS" ] && exit 65
 exit 0
 EOF
@@ -171,6 +176,25 @@ has "the new letter is answered once" "$(cat "$T/bus-send.log")" "s-sender-four"
 rc="$(run "$CODEX_ID")"
 is  "the same letter is not answered again" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
 has "the ledger remembers it" "$(cat "$T/state/$CODEX_ID.codex-answered")" "1700000003-d.json"
+
+# 8. the sender is named on every send
+: > "$T/bus-send.log"
+letter 1700000006-g "s-sender-seven" "pier" "one more" "One more, please."
+rc="$(run "$CODEX_ID")"
+has "the send names the sender" "$(cat "$T/bus-send.log")" "BUS_FROM=$CODEX_ID"
+
+# 9. a class this session does not answer
+: > "$T/bus-send.log"
+letter 1700000004-e "s-sender-five" "weather" "the wind picked up" "Just so you know." DRIFT
+rc="$(run "$CODEX_ID")"
+is  "a DRIFT letter is not answered" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
+is  "and it is not left staged either" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "0"
+
+# 10. a reply is never answered
+: > "$T/bus-send.log"
+letter 1700000005-f "s-sender-six" "quay" "reply to the bollard" "Thanks, noted."
+rc="$(run "$CODEX_ID")"
+is  "a reply is not answered" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

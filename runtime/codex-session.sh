@@ -83,6 +83,19 @@ LEDGER="$STATE_DIR/$SESSION_NAME.codex-answered"
 mkdir -p "$PENDING_DIR" "$ANSWER_DIR" || refuse 70 "could not create the working directories under $STATE_DIR"
 [ -f "$LEDGER" ] || : > "$LEDGER"
 
+# WHICH LETTERS DESERVE A TURN. A runtime that answers everything answers
+# DRIFT alarms and FYND reports that never asked for anything - and two Codex
+# rows pointed at each other answer each other's answers forever. The ledger
+# stops a letter being answered twice; it does not stop a chain of new letters.
+# So: a closed list, and never an answer to something that is itself a reply.
+# The list is a FIELD, not a rule in this script: which classes a session should
+# take is an estate decision, and the estate is the place decisions live.
+# Read from the session's row when it carries the field (registry_load sources
+# the conf, and the register tolerates the key), otherwise the safe default.
+ANSWER_CLASSES="${CODEX_ANSWER_CLASSES:-FRAGA SAMORDNING}"
+ANSWER_CLASS="${CODEX_REPLY_CLASS:-SAMORDNING}"
+REPLY_MARK="reply to "
+
 LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 [ -n "$LABEL" ] || LABEL="$SESSION_NAME"
 
@@ -117,6 +130,15 @@ for letter in "$INBOX"/*.json; do
   rubrik="$(json_field "$letter" rubrik)"
   text="$(json_field "$letter" text)"
   [ -n "$from" ] || { note "skipping a letter without a sender: $base"; continue; }
+  case " $ANSWER_CLASSES " in
+    *" ${klass:-} "*) ;;
+    *) note "not answering $klass in $base (this session answers: $ANSWER_CLASSES)"; continue ;;
+  esac
+  # A letter whose headline is already an answer gets read, never answered:
+  # otherwise two sessions reply to each other's replies without end.
+  case "$rubrik" in
+    "$REPLY_MARK"*|*"$REPLY_MARK"*) note "not answering a reply: $base"; continue ;;
+  esac
   tmp="$request.partial"
   {
     printf 'from\t%s\n' "$from"
@@ -173,7 +195,13 @@ for request in "$PENDING_DIR"/*.json; do
   reply="$(cat "$answer_file")"
   [ -n "$reply" ] || { note "empty answer for $(basename "$request"); leaving it staged"; continue; }
   if [ -x "$BUS_SEND" ]; then
-    if "$BUS_SEND" "$from" "SAMORDNING $subject: reply to ${headline:-your letter}
+    # BUS_FROM IS NOT OPTIONAL HERE. Outside tmux the bus cannot derive who is
+    # sending, and it refuses rather than fall back on a generic key that would
+    # be stamped as ANOTHER session. This runtime has no pane, so every send it
+    # makes is headless. Measured by the product's integrator 2026-09-07: the
+    # first version answered every letter into a refusal, and the unit test
+    # could not see it because bus-send was a stub.
+    if BUS_FROM="$ID" "$BUS_SEND" "$from" "$ANSWER_CLASS $subject: reply to ${headline:-your letter}
 $reply" >/dev/null 2>&1; then
       # The ledger is written BEFORE the request is removed: a crash between the
       # two costs a stale line, never a second answer.
