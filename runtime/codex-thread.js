@@ -8,18 +8,39 @@
 // in the operator's Codex app, so the human loses the conversation the machine
 // is having. `codex queue` only adds to the queue of a thread the daemon is
 // already holding. The app-server does appear, and it is the whole contract:
-// thread/start, thread/resume, turn/start, and the item/turn notifications.
-// Measured 2026-09-07 against 0.153.4.
+// thread/start, thread/resume, thread/queue/add, and the item/turn
+// notifications. Measured 2026-09-07 against 0.153.4.
 //
-// The transport is `--listen stdio://`: line-delimited JSON-RPC on a child
-// process, no websocket, no daemon, no port. The daemon's control socket works
-// too, but it speaks websocket over a unix socket and needs an extra library -
-// and it holds a write lock, so a thread it owns cannot be resumed by anyone
-// else. A short-lived stdio child takes the lock only while the turn runs.
+// THE TRANSPORT IS THE OWNER'S DAEMON. The Codex app keeps one app-server
+// daemon per account (`codex app-server daemon`, a websocket on a unix socket
+// under ~/.codex/app-server-control/), and that daemon holds the WRITE LOCK on
+// every thread the app has open - for as long as the project is open, not just
+// while the human types. A second process that resumes the same thread over
+// `--listen stdio://` forks the rollout or is refused. Measured 2026-09-07:
+// two retries ten minutes apart hit the same lock. So this client is a second
+// CLIENT of the same daemon, never a second writer: it appends the letter to
+// the thread's queue (`thread/queue/add`) and the daemon runs it - at once if
+// the thread is idle, after the human's turn otherwise. The app shows the turn
+// as it happens.
+//
+// There is NO automatic fallback to a stdio child when the daemon is not
+// running: a fallback on the same thread recreates two writers the moment the
+// app comes back between the check and the write. Without the daemon the
+// letter stays where it is and the exit code (69) says what to start.
+// `--transport stdio` remains as an EXPLICIT choice for a host that has no
+// daemon at all; it is never chosen for you.
 //
 //   codex-thread.js turn --cwd DIR --message-file FILE --thread-file PATH
-//                        [--name NAME] [--instructions FILE] [--sandbox MODE]
-//                        [--model MODEL] [--mcp-config FILE] [--timeout SECONDS]
+//                        --client-id ID [--name NAME] [--instructions FILE]
+//                        [--sandbox MODE] [--model MODEL] [--mcp-config FILE]
+//                        [--timeout SECONDS] [--transport daemon|stdio]
+//
+// --client-id is the letter's own id. It travels as `clientUserMessageId`, comes
+// back on the userMessage item as `clientId`, is persisted in the rollout, and
+// is readable afterwards through `thread/read`. That makes every letter
+// idempotent WITHOUT local state: a client that died after queueing asks the
+// thread "was this letter answered?" and prints the answer it finds, or waits
+// for the turn already running, or queues. Measured 2026-09-07, all five.
 //
 // One verb, because a thread cannot exist without a turn: `thread/start` alone
 // leaves nothing on disk, and resuming it fails with "no rollout found for
@@ -31,7 +52,9 @@
 // capture it directly.
 'use strict';
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 
@@ -86,55 +109,166 @@ function codexBin() {
   return candidates[0];
 }
 
-// One JSON-RPC conversation over one short-lived app-server child.
-class Client {
-  constructor(timeoutMs) {
-    const bin = codexBin();
-    if (!fs.existsSync(bin)) refuse(EX_UNAVAILABLE, 'codex binary is missing: ' + bin);
-    this.child = spawn(bin, ['app-server', '--listen', 'stdio://'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
+// Where the owner's daemon listens. CODEX_HOME is Codex's own override for
+// ~/.codex; the product's own name wins over both so a test can point at a
+// fake daemon without a home directory.
+function daemonSocket() {
+  if (process.env.STEWARD_CODEX_DAEMON_SOCK) return process.env.STEWARD_CODEX_DAEMON_SOCK;
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  return path.join(home, 'app-server-control', 'app-server-control.sock');
+}
+
+// --- transports ---------------------------------------------------------------
+// Both deliver newline-free JSON documents one at a time to onMessage(text),
+// accept write(text), and report onClose(). Whatever else they are is theirs.
+
+// A websocket client small enough to live here. The daemon speaks RFC 6455
+// over a unix socket, which Node's built-in WebSocket cannot open and the
+// product does not want a dependency for: every home on every host would need
+// a node_modules. Client frames are masked (the RFC requires it), server
+// frames are not; text frames may be fragmented; pings are answered.
+class DaemonTransport {
+  constructor(sockPath, onMessage, onClose, onError) {
+    this.onMessage = onMessage; this.onClose = onClose; this.onError = onError;
+    this.ready = false; this.buf = Buffer.alloc(0); this.fragments = []; this.http = '';
+    this.sock = net.connect(sockPath);
+    this.sock.on('error', (err) => onError(err));
+    this.sock.on('close', () => onClose());
+    this.sock.on('data', (d) => this.feed(d));
+    this.key = crypto.randomBytes(16).toString('base64');
+    this.sock.on('connect', () => {
+      this.sock.write('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+        'Sec-WebSocket-Key: ' + this.key + '\r\nSec-WebSocket-Version: 13\r\n\r\n');
     });
-    this.child.on('error', (err) => refuse(EX_UNAVAILABLE, 'codex could not start: ' + err.message));
+    this.opened = new Promise((resolve, reject) => { this.resolveOpen = resolve; this.rejectOpen = reject; });
+  }
+  feed(chunk) {
+    if (!this.ready) {
+      this.http += chunk.toString('latin1');
+      const end = this.http.indexOf('\r\n\r\n');
+      if (end < 0) return;
+      const head = this.http.slice(0, end);
+      if (!/^HTTP\/1\.1 101/.test(head)) { this.rejectOpen(new Error('daemon refused the websocket upgrade: ' + head.split('\r\n')[0])); return; }
+      const want = crypto.createHash('sha1').update(this.key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+      if (!new RegExp('Sec-WebSocket-Accept: ' + want.replace(/[+/=]/g, '\\$&'), 'i').test(head)) {
+        this.rejectOpen(new Error('daemon answered the websocket upgrade with a wrong accept key')); return;
+      }
+      this.ready = true;
+      const rest = Buffer.from(this.http.slice(end + 4), 'latin1');
+      this.http = '';
+      this.resolveOpen();
+      chunk = rest;
+    }
+    this.buf = Buffer.concat([this.buf, chunk]);
+    for (;;) {
+      if (this.buf.length < 2) return;
+      const b0 = this.buf[0], b1 = this.buf[1];
+      const fin = (b0 & 0x80) !== 0, op = b0 & 0x0f, masked = (b1 & 0x80) !== 0;
+      let len = b1 & 0x7f, off = 2;
+      if (len === 126) { if (this.buf.length < 4) return; len = this.buf.readUInt16BE(2); off = 4; }
+      else if (len === 127) { if (this.buf.length < 10) return; len = Number(this.buf.readBigUInt64BE(2)); off = 10; }
+      if (masked) off += 4;
+      if (this.buf.length < off + len) return;
+      let payload = this.buf.slice(off, off + len);
+      if (masked) { const m = this.buf.slice(off - 4, off); payload = Buffer.from(payload.map((b, i) => b ^ m[i % 4])); }
+      this.buf = this.buf.slice(off + len);
+      if (op === 0x9) { this.frame(0xA, payload); continue; }    // ping -> pong
+      if (op === 0x8) { this.sock.end(); continue; }             // close
+      if (op === 0xA) continue;                                  // pong
+      if (op === 0x1 || op === 0x2 || op === 0x0) {
+        this.fragments.push(payload);
+        if (!fin) continue;
+        const text = Buffer.concat(this.fragments).toString('utf8');
+        this.fragments = [];
+        for (const line of text.split('\n')) if (line.trim()) this.onMessage(line);
+      }
+    }
+  }
+  frame(op, payload) {
+    const mask = crypto.randomBytes(4);
+    const len = payload.length;
+    const head = len < 126 ? Buffer.from([0x80 | op, 0x80 | len])
+      : len < 65536 ? Buffer.concat([Buffer.from([0x80 | op, 0x80 | 126]), (() => { const b = Buffer.alloc(2); b.writeUInt16BE(len); return b; })()])
+      : Buffer.concat([Buffer.from([0x80 | op, 0x80 | 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(len)); return b; })()]);
+    const body = Buffer.from(payload.map((b, i) => b ^ mask[i % 4]));
+    this.sock.write(Buffer.concat([head, mask, body]));
+  }
+  write(text) { this.frame(0x1, Buffer.from(text, 'utf8')); }
+  end() { try { this.frame(0x8, Buffer.alloc(0)); this.sock.end(); } catch { /* already gone */ } }
+  said() { return ''; }
+}
+
+// A short-lived app-server child on stdio. Kept for hosts without a daemon,
+// chosen only by an explicit --transport stdio.
+class StdioTransport {
+  constructor(bin, onMessage, onClose, onError) {
+    if (!fs.existsSync(bin)) refuse(EX_UNAVAILABLE, 'codex binary is missing: ' + bin);
+    this.child = spawn(bin, ['app-server', '--listen', 'stdio://'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child.on('error', (err) => onError(new Error('codex could not start: ' + err.message)));
     this.stderr = '';
     this.child.stderr.on('data', (d) => { this.stderr += d.toString(); });
     this.buf = '';
+    this.child.stdout.on('data', (d) => {
+      this.buf += d.toString();
+      let nl;
+      while ((nl = this.buf.indexOf('\n')) >= 0) {
+        const line = this.buf.slice(0, nl).trim();
+        this.buf = this.buf.slice(nl + 1);
+        if (line) onMessage(line);
+      }
+    });
+    this.child.on('close', () => onClose());
+    this.opened = Promise.resolve();
+  }
+  write(text) { this.child.stdin.write(text + '\n'); }
+  end() { try { this.child.stdin.end(); } catch { /* already gone */ } }
+  said() { return this.stderr; }
+}
+
+// One JSON-RPC conversation over one transport.
+class Client {
+  constructor(transport, timeoutMs) {
+    this.transportName = transport;
     this.id = 0;
     this.pending = new Map();
     this.listeners = [];
     this.closed = false;
-    this.child.stdout.on('data', (d) => this.feed(d.toString()));
-    this.child.on('close', () => {
+    this.timeoutMs = timeoutMs;
+    const onMessage = (line) => this.take(line);
+    const onClose = () => {
       this.closed = true;
       for (const p of this.pending.values()) p.reject(new Error('app-server closed the connection'));
       this.pending.clear();
-    });
-    this.timeoutMs = timeoutMs;
+    };
+    const onError = (err) => {
+      this.closed = true;
+      this.connectError = err;
+      if (this.t && this.t.rejectOpen) this.t.rejectOpen(err);
+      for (const p of this.pending.values()) p.reject(err);
+      this.pending.clear();
+    };
+    this.t = transport === 'stdio'
+      ? new StdioTransport(codexBin(), onMessage, onClose, onError)
+      : new DaemonTransport(daemonSocket(), onMessage, onClose, onError);
   }
-  feed(chunk) {
-    this.buf += chunk;
-    let nl;
-    while ((nl = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, nl).trim();
-      this.buf = this.buf.slice(nl + 1);
-      if (!line) continue;
-      let msg;
-      try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.id !== undefined && this.pending.has(msg.id)) {
-        const p = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
-        else p.resolve(msg.result);
-        continue;
-      }
-      // A REQUEST FROM THE SERVER, not a notification: it has both a method
-      // and an id, and it is WAITING for an answer. Ignoring one hangs the turn
-      // until the timeout - measured 2026-09-07: a turn that only wanted to run
-      // an MCP tool sat silent for 460 seconds. There is no human at this pane,
-      // so the policy is answered here, once, in the open: tool calls the
-      // registry already granted are approved; anything else is declined.
-      if (msg.method && msg.id !== undefined) { this.answerRequest(msg); continue; }
-      if (msg.method) for (const fn of this.listeners) fn(msg);
+  take(line) {
+    let msg;
+    try { msg = JSON.parse(line); } catch { return; }
+    if (msg.id !== undefined && this.pending.has(msg.id)) {
+      const p = this.pending.get(msg.id);
+      this.pending.delete(msg.id);
+      if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+      else p.resolve(msg.result);
+      return;
     }
+    // A REQUEST FROM THE SERVER, not a notification: it has both a method
+    // and an id, and it is WAITING for an answer. Ignoring one hangs the turn
+    // until the timeout - measured 2026-09-07: a turn that only wanted to run
+    // an MCP tool sat silent for 460 seconds. There is no human at this pane,
+    // so the policy is answered here, once, in the open: tool calls the
+    // registry already granted are approved; anything else is declined.
+    if (msg.method && msg.id !== undefined) { this.answerRequest(msg); return; }
+    if (msg.method) for (const fn of this.listeners) fn(msg);
   }
   on(fn) { this.listeners.push(fn); }
   answerRequest(msg) {
@@ -156,9 +290,6 @@ class Client {
     const kind = (params._meta && params._meta.codex_approval_kind) || '';
     const approve = TOOL_CALL_APPROVALS.indexOf(m) !== -1 &&
                     (kind === '' || kind === 'mcp_tool_call');
-    // The decision word is the server's, not ours. Log the exact request the
-    // first time each method is seen, so a wrong word shows up as a rejection
-    // WITH its cause instead of a silent no.
     if (!this.seenRequests) this.seenRequests = {};
     if (!this.seenRequests[m]) {
       this.seenRequests[m] = 1;
@@ -175,19 +306,19 @@ class Client {
       process.stderr.write('codex-thread: declined ' + m + (kind ? ' [' + kind + ']' : '') +
         ' - only a tool the register granted is approved without a human\n');
     }
-    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+    this.t.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
   }
   notify(method, params) {
     const m = { jsonrpc: '2.0', method };
     if (params) m.params = params;
-    this.child.stdin.write(JSON.stringify(m) + '\n');
+    this.t.write(JSON.stringify(m));
   }
   request(method, params) {
     const id = ++this.id;
     const m = { jsonrpc: '2.0', id, method };
     if (params) m.params = params;
     return new Promise((resolve, reject) => {
-      if (this.closed) return reject(new Error('app-server is gone'));
+      if (this.closed) return reject(this.connectError || new Error('app-server is gone'));
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(method + ' timed out'));
@@ -196,21 +327,24 @@ class Client {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
       });
-      this.child.stdin.write(JSON.stringify(m) + '\n');
+      this.t.write(JSON.stringify(m));
     });
   }
   async handshake() {
-    // experimentalApi is what unlocks the granular approval form. Without it
-    // the server answers "askForApproval.granular requires experimentalApi
-    // capability" - and the only other choice, `never`, REFUSES every MCP tool
-    // rather than allowing it. Measured 2026-09-07 against 0.153.4.
+    await this.t.opened;
+    // experimentalApi is what unlocks the granular approval form AND the
+    // thread/queue methods. Without it the server answers
+    // "askForApproval.granular requires experimentalApi capability" - and the
+    // only other choice, `never`, REFUSES every MCP tool rather than allowing
+    // it. Measured 2026-09-07 against 0.153.4.
     await this.request('initialize', {
       clientInfo: { name: 'steward', title: 'Steward session', version: '1' },
       capabilities: { experimentalApi: true },
     });
     this.notify('initialized');
   }
-  end() { try { this.child.stdin.end(); } catch { /* already gone */ } }
+  end() { this.t.end(); }
+  said() { return this.t.said(); }
 }
 
 // MCP: the estate renders one file per session in the shape Claude Code reads
@@ -254,16 +388,36 @@ function threadParams(args, cwd) {
   return p;
 }
 
+function lastAgentText(items) {
+  let text = null;
+  for (const it of items || []) if (it && it.type === 'agentMessage' && it.text) text = it.text;
+  return text;
+}
+
 async function cmdTurn(args) {
   const cwd = args.cwd;
   const file = args['message-file'];
   const threadFile = args['thread-file'];
+  const clientId = args['client-id'];
+  const transport = args.transport && args.transport !== true ? String(args.transport) : 'daemon';
   if (!cwd || cwd === true) refuse(EX_USAGE, 'turn needs --cwd');
   if (!file || file === true) refuse(EX_USAGE, 'turn needs --message-file');
+  if (!clientId || clientId === true) refuse(EX_USAGE, 'turn needs --client-id (the letter\'s own id; it is what makes a letter idempotent)');
+  if (transport !== 'daemon' && transport !== 'stdio') refuse(EX_USAGE, '--transport is daemon or stdio');
   if (!fs.existsSync(cwd)) refuse(EX_UNAVAILABLE, 'working directory is missing: ' + cwd);
   if (!fs.existsSync(file)) refuse(EX_UNAVAILABLE, 'message file is missing: ' + file);
   const text = fs.readFileSync(file, 'utf8');
   if (!text.trim()) refuse(EX_USAGE, 'the message file is empty');
+  if (transport === 'stdio') {
+    process.stderr.write('codex-thread: transport stdio was chosen explicitly - this takes the thread\'s write lock; ' +
+      'never use it on a thread the owner\'s app may have open\n');
+  } else if (!fs.existsSync(daemonSocket())) {
+    // NO FALLBACK. The letter stays staged, the round reports degraded, and the
+    // exit code says what to start. Falling back to a stdio child here would
+    // recreate two writers the moment the app comes back.
+    refuse(EX_UNAVAILABLE, 'the owner\'s Codex daemon is not running (no socket at ' + daemonSocket() + '). ' +
+      'Start it in the owner\'s account: codex app-server daemon start. The letter stays staged until then.');
+  }
 
   let threadId = null;
   if (args.thread && args.thread !== true) threadId = String(args.thread);
@@ -273,7 +427,11 @@ async function cmdTurn(args) {
   }
 
   const timeoutMs = Number(args.timeout || 600) * 1000;
-  const c = new Client(timeoutMs);
+  const c = new Client(transport, timeoutMs);
+  // The turn this letter belongs to, once known. Everything the daemon says
+  // about OTHER turns - the human's, an earlier letter's - is not ours to
+  // report: a shared daemon speaks about the whole thread.
+  let myTurn = null;
   const messages = [];
   let failure = null;
   // A FATAL failure is one the environment caused - an expired login, a
@@ -281,47 +439,94 @@ async function cmdTurn(args) {
   // and the exit code says which: 78 for "fix your environment", 75 for
   // "try again".
   let fatal = false;
-  const finished = new Promise((resolve) => {
-    c.on((msg) => {
-      const p = msg.params || {};
-      if (msg.method === 'item/completed') {
-        const item = p.item || {};
-        if (item.type === 'agentMessage' && item.text) messages.push(item.text);
-      } else if (msg.method === 'turn/completed') {
-        // A COMPLETED TURN IS NOT A SUCCESSFUL ONE. The notification carries a
-        // status, and a failed turn arrives here with its reason in
-        // turn.error.message. Treating the notification itself as success
-        // reported "the turn completed without an answer" for a login that had
-        // expired - the cause was in the message we threw away. Measured on
-        // macOS 2026-09-07 by the product's integrator.
-        const t = p.turn || {};
-        if (t.status && t.status !== 'completed') {
-          failure = (t.error && (t.error.message || t.error.code)) || ('turn status ' + t.status);
-          fatal = true;
-        }
-        resolve();
-      } else if (msg.method === 'error' || msg.method === 'thread/error' || msg.method === 'turn/failed') {
-        // AN ERROR NOTICE THAT WILL NOT BE RETRIED IS THE ANSWER. Ignoring it
-        // and waiting for a turn that never comes turns an unauthorized
-        // account into a silent model.
-        const info = p.codexErrorInfo || p.error || {};
-        failure = (typeof info === 'string' ? info : (info.message || info.code || JSON.stringify(info))) ||
-                  JSON.stringify(p).slice(0, 300);
-        if (p.codexErrorInfo) failure = String(p.codexErrorInfo) + (p.message ? ': ' + p.message : '');
-        if (p.willRetry === false || msg.method !== 'error') { fatal = true; resolve(); }
+  let resolveFinished;
+  const finished = new Promise((resolve) => { resolveFinished = resolve; });
+  c.on((msg) => {
+    const p = msg.params || {};
+    if (msg.method === 'item/completed') {
+      const item = p.item || {};
+      // The letter's id comes back on its own userMessage, in the same notice
+      // as the turn id. That is the correlation - not "the next turn that
+      // starts", which on a shared thread may be the human's.
+      if (item.type === 'userMessage' && item.clientId === clientId && p.turnId) myTurn = p.turnId;
+      if (item.type === 'agentMessage' && item.text && myTurn && p.turnId === myTurn) messages.push(item.text);
+    } else if (msg.method === 'turn/completed') {
+      // A COMPLETED TURN IS NOT A SUCCESSFUL ONE. The notification carries a
+      // status, and a failed turn arrives here with its reason in
+      // turn.error.message. Treating the notification itself as success
+      // reported "the turn completed without an answer" for a login that had
+      // expired - the cause was in the message we threw away. Measured on
+      // macOS 2026-09-07 by the product's integrator.
+      const t = p.turn || {};
+      if (!myTurn || t.id !== myTurn) return;
+      if (t.status && t.status !== 'completed') {
+        failure = (t.error && (t.error.message || t.error.code)) || ('turn status ' + t.status);
+        fatal = true;
       }
-    });
+      resolveFinished();
+    } else if (msg.method === 'error' || msg.method === 'thread/error' || msg.method === 'turn/failed') {
+      // AN ERROR NOTICE THAT WILL NOT BE RETRIED IS THE ANSWER. Ignoring it
+      // and waiting for a turn that never comes turns an unauthorized
+      // account into a silent model. On a shared daemon an error about
+      // another turn is not ours; one without a turn id is about the account.
+      if (p.turnId && myTurn && p.turnId !== myTurn) return;
+      const info = p.codexErrorInfo || p.error || {};
+      failure = (typeof info === 'string' ? info : (info.message || info.code || JSON.stringify(info))) ||
+                JSON.stringify(p).slice(0, 300);
+      if (p.codexErrorInfo) failure = String(p.codexErrorInfo) + (p.message ? ': ' + p.message : '');
+      if (p.willRetry === false || msg.method !== 'error') { fatal = true; resolveFinished(); }
+    }
   });
   const guard = new Promise((resolve) => setTimeout(() => {
-    failure = failure || 'the turn did not finish within ' + (timeoutMs / 1000) + 's';
+    failure = failure || 'the turn did not finish within ' + (timeoutMs / 1000) + 's' +
+      (myTurn ? '' : ' (the letter is queued behind another turn; the next round finds it by its id)');
     resolve();
   }, timeoutMs));
 
   let born = false;
+  let recovered = null;
   try {
     await c.handshake();
     if (threadId) {
-      await c.request('thread/resume', Object.assign(threadParams(args, cwd), { threadId }));
+      // RESUME WITH THE ID ALONE on the daemon. The thread is the app's as much
+      // as ours, and resume also accepts sandbox, approval and config - which
+      // would silently re-arm the human's open thread with this letter's
+      // settings. Those belong to the thread's birth, below. The stdio child
+      // is alone with the thread and keeps the full form.
+      const params = transport === 'daemon' ? { threadId } : Object.assign(threadParams(args, cwd), { threadId });
+      await c.request('thread/resume', params);
+      if (transport === 'daemon') {
+        // IDEMPOTENCE IS A READING, NOT A FILE. Was this letter already turned
+        // into a turn - by a client that died after queueing, or by the round
+        // before this one? The thread says so, by the letter's own id.
+        const read = await c.request('thread/read', { threadId, includeTurns: true });
+        const turns = (read && read.thread && read.thread.turns) || [];
+        const mine = turns.filter((t) => (t.items || []).some((it) => it && it.type === 'userMessage' && it.clientId === clientId));
+        const done = mine.find((t) => t.status === 'completed' || t.status === 'failed' || t.status === 'interrupted');
+        const running = done ? null : mine[0];
+        if (done) {
+          if (done.status !== 'completed') {
+            recovered = { failure: (done.error && (done.error.message || done.error.code)) || ('turn status ' + done.status) };
+          } else {
+            const answer = lastAgentText(done.items);
+            recovered = answer ? { answer } : { failure: 'the earlier turn for this letter completed without an answer' };
+          }
+          process.stderr.write('codex-thread: letter ' + clientId + ' already ran as turn ' + done.id + ' (' + done.status + '); nothing queued\n');
+        } else if (running) {
+          myTurn = running.id;
+          process.stderr.write('codex-thread: letter ' + clientId + ' is already running as turn ' + running.id + '; waiting for it\n');
+        } else {
+          // Queued but not yet a turn? Then it is in the queue by our id, and
+          // adding it again would answer the letter twice.
+          let queued = false;
+          try {
+            const q = await c.request('thread/queue/list', { threadId });
+            queued = ((q && q.data) || []).some((s) => s && s.clientUserMessageId === clientId);
+          } catch (err) { process.stderr.write('codex-thread: thread/queue/list: ' + err.message + '\n'); }
+          if (queued) process.stderr.write('codex-thread: letter ' + clientId + ' is already queued; waiting for its turn\n');
+          else await c.request('thread/queue/add', { threadId, input: [{ type: 'text', text }], clientUserMessageId: clientId });
+        }
+      }
     } else {
       const params = threadParams(args, cwd);
       if (args.instructions && args.instructions !== true) {
@@ -338,13 +543,22 @@ async function cmdTurn(args) {
         try { await c.request('thread/name/set', { threadId, name: String(args.name) }); }
         catch (err) { process.stderr.write('codex-thread: could not name the thread: ' + err.message + '\n'); }
       }
+      if (transport === 'daemon') await c.request('thread/queue/add', { threadId, input: [{ type: 'text', text }], clientUserMessageId: clientId });
     }
-    await c.request('turn/start', { threadId, input: [{ type: 'text', text }] });
-    await Promise.race([finished, guard]);
+    if (transport === 'stdio') {
+      const t = await c.request('turn/start', { threadId, input: [{ type: 'text', text }], clientUserMessageId: clientId });
+      if (t && t.turn && t.turn.id) myTurn = t.turn.id;
+    }
+    if (!recovered) await Promise.race([finished, guard]);
   } catch (err) {
-    refuse(EX_TEMPFAIL, err.message + (c.stderr ? '\n  app-server said: ' + lastLines(c.stderr) : ''));
+    const said = c.said();
+    const code = (err && (err.code === 'ECONNREFUSED' || err.code === 'ENOENT' || /ENOENT|ECONNREFUSED/.test(err.message || ''))) ? EX_UNAVAILABLE : EX_TEMPFAIL;
+    refuse(code, (code === EX_UNAVAILABLE ? 'the owner\'s Codex daemon did not answer at ' + daemonSocket() + ': ' : '') +
+      err.message + (said ? '\n  app-server said: ' + lastLines(said) : ''));
   } finally { c.end(); }
 
+  if (recovered && recovered.failure) { failure = recovered.failure; fatal = true; }
+  if (recovered && recovered.answer) messages.push(recovered.answer);
   if (failure) refuse(fatal ? EX_CONFIG : EX_TEMPFAIL, 'the turn did not complete: ' + failure);
   if (!messages.length) refuse(EX_TEMPFAIL, 'the turn completed without an answer');
   // The id is written only after a turn has actually run in the thread: a
@@ -379,6 +593,14 @@ function cmdPreflight(args) {
   process.stdout.write('code-mode host ok: ' + host + '\n');
 }
 
+// Is the owner's daemon there? A liveness question a supervisor or doctor can
+// ask without a letter: 0 and the socket path, or 69 and what to start.
+function cmdDaemon() {
+  const sock = daemonSocket();
+  if (!fs.existsSync(sock)) refuse(EX_UNAVAILABLE, 'no daemon socket at ' + sock + ' - start it in the owner\'s account: codex app-server daemon start');
+  process.stdout.write(sock + '\n');
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const verb = argv[0];
@@ -386,7 +608,8 @@ async function main() {
   if (verb === 'turn') await cmdTurn(args);
   else if (verb === 'which') process.stdout.write(codexBinReal() + '\n');
   else if (verb === 'preflight') cmdPreflight(args);
-  else refuse(EX_USAGE, 'usage: codex-thread.js turn|which|preflight ...');
+  else if (verb === 'daemon') cmdDaemon();
+  else refuse(EX_USAGE, 'usage: codex-thread.js turn|which|preflight|daemon ...');
   process.exit(0);
 }
 

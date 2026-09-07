@@ -9,6 +9,13 @@
 # it answers what is waiting, and it exits. The thread is the durable thing, and
 # it lives in the operator's Codex app where a human can read and join it.
 #
+# THE TURN RUNS IN THE OWNER'S DAEMON. The app holds the thread's write lock
+# for as long as the project is open, so the client is a second CLIENT of the
+# app's own daemon and appends the letter to the thread's queue; the app shows
+# the turn as it happens. When the daemon is not running the client exits 69,
+# the letter stays staged and this round says so - there is no fallback that
+# would take the lock behind the app's back. Measured 2026-09-07.
+#
 # ORDER OF OPERATIONS, and why. Mail is taken out of the inbox before the turn
 # runs, so a slow model cannot hold the 15-minute alarm hostage - but the text
 # is written to a durable request file FIRST, so an acknowledged letter is never
@@ -197,13 +204,27 @@ for request in "$PENDING_DIR"/*.json; do
   [ -n "$subject" ] || subject="reply"
 
   answer_file="$ANSWER_DIR/$(basename "$request").answer"
+  # WHAT THE THREAD SEES. In the app a queued letter is drawn exactly like a
+  # message the owner typed - same bubble, no sender. So the first line says
+  # where it came from, in the bus's own words, before the letter itself.
+  # Measured on the owner's phone 2026-09-07: without it the human cannot
+  # tell their own words from the bus's.
+  message_file="$ANSWER_DIR/$(basename "$request").message"
+  klass="$(awk -F'\t' 'NR==2 && $1=="class" {print $2; exit}' "$request")"
+  {
+    printf '[bus %s %s from %s]\n' "${klass:-letter}" "$subject" "$from"
+    [ -n "$headline" ] && printf '%s\n' "$headline"
+    printf '\n'
+    awk 'found {print} /^body$/ {found=1}' "$request"
+  } > "$message_file" || refuse 70 "could not write the message file for $(basename "$request")"
   if [ ! -s "$answer_file" ]; then
     # THE EXIT CODE IS CAPTURED ON ITS OWN LINE. Inside `if ! cmd; then`, $? is
     # the IF's own result, not the command's - the log then said "rc 0" about a
     # turn that had just refused with 78. Measured by this suite 2026-09-07.
     "$NODE_BIN" "$CLIENT" turn \
         --cwd "$REPO_PATH" \
-        --message-file "$request" \
+        --message-file "$message_file" \
+        --client-id "$(basename "$request")" \
         --thread-file "$THREAD_FILE" \
         --instructions "$INSTRUCTIONS_FILE" \
         --name "$LABEL" \
@@ -218,6 +239,13 @@ for request in "$PENDING_DIR"/*.json; do
       note "the turn failed (rc $_rc) for $(basename "$request"); the letter stays staged"
       sed 's/\x1b\[[0-9;]*m//g' "$answer_file.err" | tail -3 >&2
       [ "$_rc" = 78 ] && note "rc 78 is an ENVIRONMENT refusal - the login or the binary, not the model"
+      if [ "$_rc" = 69 ]; then
+        # DEGRADED, NOT BROKEN. The owner's daemon is not running; every letter
+        # this round would fail the same way, so say it once and stop trying.
+        note "rc 69: DEGRADED - the owner's Codex daemon is not running; letters stay staged until it is (codex app-server daemon start)"
+        rm -f "$answer_file.partial"
+        break
+      fi
       rm -f "$answer_file.partial"
       continue
     fi
@@ -243,7 +271,7 @@ $reply" >/dev/null 2>&1; then
       if [ "$(wc -l < "$LEDGER" | tr -d ' ')" -gt 1000 ]; then
         tail -n 500 "$LEDGER" > "$LEDGER.trimmed" && mv -f "$LEDGER.trimmed" "$LEDGER"
       fi
-      rm -f "$request" "$answer_file" "$answer_file.err"
+      rm -f "$request" "$answer_file" "$answer_file.err" "$message_file"
       answered=$((answered + 1))
     else
       # NAME THE LIKELIEST CAUSE. A row minted with `registry session add` gets

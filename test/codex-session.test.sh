@@ -28,6 +28,11 @@
 #      timer's log does not show a clean run over unanswered mail.
 #  13. A held shell-tool binary stops the round before a single letter is
 #      staged - the model must never be blamed for a tool that cannot run.
+#  14. The turn is given the letter's own id (--client-id), and the message
+#      the thread sees opens with where the letter came from - in the app a
+#      queued letter is drawn like the owner's own words.
+#  15. A missing daemon (rc 69) is named as DEGRADED, once, and the round
+#      stops trying instead of failing every letter the same way.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTER="$here/runtime/codex-session.sh"
@@ -107,6 +112,8 @@ if [ "$1" = "preflight" ]; then
   echo "code-mode host ok"; exit 0
 fi
 printf '%s\n' "$*" >> "$CLIENT_LOG"
+prev=""; for a in "$@"; do [ "$prev" = "--message-file" ] && cp "$a" "$MESSAGE_COPY"; prev="$a"; done
+[ -f "$DAEMON_DOWN" ] && { echo "codex-thread: REFUSING - the owner's Codex daemon is not running (no socket at /nowhere)" >&2; exit 69; }
 [ -f "$ENV_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete: unauthorized" >&2; exit 78; }
 [ -f "$TURN_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete" >&2; exit 75; }
 tf=""; prev=""
@@ -131,7 +138,7 @@ run() { # run the adapter against a session name
   BUS_READ_LOG="$T/bus-read.log" BUS_SEND_LOG="$T/bus-send.log" CLIENT_LOG="$T/client.log" \
   STAGE_DIR="$T/state/$1.codex-pending" STAGED_WHEN_READ="$T/staged-when-read" \
   INBOX_DIR="$INBOX" SEND_FAILS="$T/send-fails" TURN_FAILS="$T/turn-fails" ENV_FAILS="$T/env-fails" \
-  PREFLIGHT_FAILS="$T/preflight-fails" \
+  PREFLIGHT_FAILS="$T/preflight-fails" MESSAGE_COPY="$T/message-copy" DAEMON_DOWN="$T/daemon-down" \
   bash "$ADAPTER" "$1" 2>"$T/err"; echo "$?"
 }
 
@@ -151,6 +158,11 @@ has "the reply goes to the sender" "$(cat "$T/bus-send.log")" "s-sender-one"
 has "the reply keeps the subject" "$(cat "$T/bus-send.log")" "SAMORDNING harbour:"
 has "the reply carries the answer" "$(cat "$T/bus-send.log")" "the answer"
 has "the thread is named from the label" "$(cat "$T/client.log")" "--name Alpha"
+has "the turn carries the letter's id" "$(cat "$T/client.log")" "--client-id 1700000000-a.json"
+is  "the message opens with the letter's provenance" "$(head -1 "$T/message-copy")" "[bus SAMORDNING harbour from s-sender-one]"
+has "and carries the headline and body" "$(cat "$T/message-copy")" "the pier is loose"
+has "and carries the body" "$(cat "$T/message-copy")" "Please look at the pier."
+hasnt "the thread does not see the raw header" "$(cat "$T/message-copy")" "from	s-sender-one"
 is  "the thread id was remembered" "$(cat "$T/state/$CODEX_ID.codex-thread" 2>/dev/null)" "thread-aaa"
 is  "nothing is left staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "0"
 
@@ -232,6 +244,19 @@ is  "a held tool binary refuses the round" "$rc" "78"
 has "and the refusal carries the reason" "$err" "code-mode-host"
 is  "nothing was sent" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
 rm -f "$T/preflight-fails"
+
+# 15. a missing daemon is degraded, once, and the round stops
+touch "$T/daemon-down"; : > "$T/bus-send.log"; : > "$T/client.log"
+letter 1700000009-j "s-sender-ten" "slip" "first of two" "Please look."
+letter 1700000010-k "s-sender-eleven" "slip" "second of two" "Please look again."
+rc="$(run "$CODEX_ID")"; err="$(cat "$T/err")"
+is  "a round without a daemon exits 75" "$rc" "75"
+has "and names the state DEGRADED" "$err" "DEGRADED"
+has "and says what to start" "$err" "codex app-server daemon start"
+is  "only one turn was attempted" "$(grep -c -- '--client-id' "$T/client.log")" "1"
+is  "both letters stay staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | grep -c -e 1700000009-j -e 1700000010-k)" "2"
+is  "nothing was sent" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
+rm -f "$T/daemon-down"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
