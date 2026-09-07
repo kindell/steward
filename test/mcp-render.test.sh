@@ -72,6 +72,13 @@ cat > "$MCPD/star-tool.conf" <<'EOF'
 MCP_COMMAND="/opt/star/server"
 MCP_ARGS="* --flag"
 EOF
+# A ROW THAT MUST TALK TO **THIS** SESSION'S BROWSER. The port is not the
+# asset's to know: it belongs to the session's row, and a literal one points
+# at whichever owner's rig happens to answer on it.
+cat > "$MCPD/rig-tool.conf" <<'EOF'
+MCP_COMMAND="/opt/rig/server"
+MCP_ARGS="--browserUrl http://127.0.0.1:<browser-cdp>"
+EOF
 # A ROW BEARING A HOME-RELATIVE PATH IN EVERY ONE OF ITS THREE FIELDS, plus one
 # argument that LOOKS like the prefix and two that must NOT be touched: a
 # `~user/...` form (a passwd lookup, not this row's business) and a tilde
@@ -405,4 +412,30 @@ has "21c plain-tool is named on stderr" "$err21b" "plain-tool"
 has "21d and the actual reason — HOME is unset" "$err21b" "HOME is unset"
 
 echo "pass=$pass fail=$fail"
+[ "$fail" -eq 0 ]
+echo "== 22. <browser-cdp>: the session's own rig port, or the asset is omitted =="
+# WHY THIS EXISTS. mcp.d/chrome-devtools.conf carried a literal 9323 - one
+# estate's rig - so the asset could not be granted to a session whose browser
+# listens elsewhere, and granting it anyway would have pointed a session at
+# ANOTHER OWNER'S browser, which answers 200 just the same. Measured 2026-09-07.
+printf 'NAME="Rigged"\nMEMBERS="a"\nMCP_ASSETS="rig-tool"\n' > "$ENT/rigged.conf"
+sess s-rigged 'DOMAIN="rigged"
+RC_LABEL="R"
+BROWSER_RIG="yes"
+BROWSER_DISPLAY="24"
+BROWSER_CDP="9327"
+BROWSER_VNC="5924"
+BROWSER_PROFILE="p"'
+out="$(run mcp render s-rigged 2>/dev/null)"
+has "22a the session's own port is rendered" "$out" "http://127.0.0.1:9327"
+hasnt "22b no placeholder survives into the document" "$out" "<browser-cdp>"
+
+sess s-norig 'DOMAIN="rigged"
+RC_LABEL="R"'
+out="$(run mcp render s-norig 2>/dev/null)"; err="$(run mcp render s-norig 2>&1 >/dev/null)"
+hasnt "22c a session without a rig does not get the asset" "$out" "rig-tool"
+has  "22d the omission is named on stderr" "$err" "rig-tool"
+has  "22e and the actual reason - no rig" "$err" "no rig"
+
+printf 'pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

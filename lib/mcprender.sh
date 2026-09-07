@@ -125,6 +125,17 @@ mcp_render_document() {
   domain="$( registry_session_owning_entity "$sid" )"; domain_rc=$?
   [ "$domain_rc" -eq 0 ] || domain=""
 
+  # THE SESSION'S OWN RIG PORT, for assets that must talk to THIS session's
+  # browser. The row is the only place that knows it, and it differs per
+  # session: measured 2026-09-07, mcp.d/chrome-devtools.conf carried a literal
+  # 9323 - one estate's rig - so the asset could not be granted to a session
+  # whose browser listens anywhere else, and granting it anyway would have
+  # pointed a session at ANOTHER OWNER'S browser that answers 200 all the same.
+  # Empty when the session declares no rig; the template branch below refuses
+  # rather than render half.
+  local browser_cdp=""
+  if registry_load "$sid" >/dev/null 2>&1; then browser_cdp="${BROWSER_CDP:-}"; fi
+
   local objs=() slug total=0 rendered=0
   # A HERE-DOCUMENT, NOT A PIPELINE. `... | while read` runs the loop in a
   # subshell and every object it built would be discarded at the `done`.
@@ -208,6 +219,27 @@ mcp_render_document() {
       local _hi
       for _hi in "${!argv[@]}"; do
         case "${argv[$_hi]}" in "~/"*) argv[$_hi]="$HOME/${argv[$_hi]#"~/"}" ;; esac
+      done
+    fi
+
+    # <browser-cdp> IN THE ARGUMENTS, expanded from the session's own row.
+    # THE SAME RULE AS <domain>: a template whose value this session does not
+    # have is OMITTED and NAMED, never rendered with the placeholder left in.
+    # A literal "<browser-cdp>" reaching a server is a hostname that does not
+    # resolve, and the failure would name DNS instead of the missing rig.
+    local _needs_cdp="" _ai
+    case "$cmdpath" in *"<browser-cdp>"*) _needs_cdp=1 ;; esac
+    for _ai in "${argv[@]+"${argv[@]}"}"; do
+      case "$_ai" in *"<browser-cdp>"*) _needs_cdp=1 ;; esac
+    done
+    if [ -n "$_needs_cdp" ]; then
+      if [ -z "$browser_cdp" ]; then
+        echo "steward: mcp render: session '$sid': the asset '$(registry_printable "$slug")' names <browser-cdp> and this session declares no rig — omitted" >&2
+        continue
+      fi
+      cmdpath="${cmdpath//<browser-cdp>/$browser_cdp}"
+      for _ai in "${!argv[@]}"; do
+        argv[$_ai]="${argv[$_ai]//<browser-cdp>/$browser_cdp}"
       done
     fi
 
