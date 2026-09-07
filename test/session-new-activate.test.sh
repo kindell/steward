@@ -51,10 +51,14 @@ if [ "\$2" = "cat" ]; then
 fi
 exit 0
 EOF
+# `app-server daemon version` is the liveness question (rc 0 iff a daemon
+# answers on the socket); it is answered from the environment so both states
+# can be staged. Everything else exits as told.
 cat > "$FX/bin/codex" <<EOF
 #!/bin/bash
 printf '%s\n' "\$*" >> "$FX/codex.log"
 printf 'codex %s\n' "\$*" >> "$FX/trace.log"
+if [ "\$*" = "app-server daemon version" ]; then [ -n "\${FAKE_DAEMON_UP:-}" ]; exit \$?; fi
 exit "\${FAKE_CODEX_RC:-0}"
 EOF
 cat > "$FX/bin/tmux" <<EOF
@@ -131,7 +135,12 @@ is  "A2: the drop-in binds the estate root" "$(cat "$dropin" 2>/dev/null)" \
 [ ! -f "$UNITS/agent-session@$ID_CDX.service.d/50-estate.conf" ] \
   && ok "A2: no agent-session@ drop-in for a codex row" \
   || bad "A2: no agent-session@ drop-in for a codex row"
-has "A2: bootstraps the owner's app-server daemon" "$(cat "$FX/codex.log" 2>/dev/null)" "app-server daemon bootstrap"
+# THE DAEMON IS ABSENT IN A2 (the stub's default), so it is bootstrapped —
+# WITH remote control: that flag is how the owner reaches the thread from the
+# app, and a bootstrap without it restarts the daemon with RC off (measured
+# 2026-09-07: the owner's app lost the host until RC was re-enabled by hand).
+is  "A2: an absent daemon is bootstrapped, with --remote-control" \
+    "$(grep -c '^app-server daemon bootstrap --remote-control$' "$FX/codex.log" 2>/dev/null)" "1"
 [ ! -f "$FX/tmux.log" ] && ok "A2: tmux is never called" || bad "A2: tmux is never called" "$(cat "$FX/tmux.log")"
 [ -L "$FX/ssh/id_busrelay_$ID_CDX" ] && ok "A2: the key is linked under the id" \
   || bad "A2: the key is linked under the id"
@@ -146,6 +155,22 @@ bl="$(grep -n '^codex app-server daemon bootstrap' "$FX/trace.log" | head -1 | c
 el="$(grep -n '^systemctl --user enable --now agent-codex@' "$FX/trace.log" | head -1 | cut -d: -f1)"
 if [ -n "$bl" ] && [ -n "$el" ] && [ "$bl" -lt "$el" ]; then ok "A2: the daemon is bootstrapped BEFORE the units are enabled"
 else bad "A2: the daemon is bootstrapped BEFORE the units are enabled" "bootstrap at line '$bl', enable at line '$el'"; fi
+
+# ── A2b. THE DAEMON ALREADY RUNS: LEFT ALONE ────────────────────────────────
+# bootstrap on a running daemon is NOT idempotent — it restarts it (throwing
+# the human out mid-turn) and, without the flag, with remote control off.
+# A running daemon is the precondition already met; the activation asks and
+# then does not touch it.
+ID_UP="s-00000000000000dd"; SLUG_UP="acme-gizmo-someone"
+row "$ID_UP" "$SLUG_UP" 'RUNTIME="codex"'
+reset_logs
+out="$(FAKE_DAEMON_UP=1 activate "$ID_UP" "$SLUG_UP")"; rc=$?
+is  "A2b: rc 0 with a running daemon" "$rc" "0"
+has "A2b: the daemon is asked" "$(cat "$FX/codex.log" 2>/dev/null)" "app-server daemon version"
+hasnt "A2b: a running daemon is never bootstrapped" "$(cat "$FX/codex.log" 2>/dev/null)" "bootstrap"
+has "A2b: the units are still enabled" "$(cat "$FX/systemctl.log" 2>/dev/null)" \
+    "--user enable --now agent-codex@$ID_UP.path agent-codex@$ID_UP.timer"
+has "A2b: the receipt says the daemon was already running" "$out" "already running"
 
 # ── A3. CODEX ROW, TEMPLATE MISSING: refuse, enable nothing ─────────────────
 echo "session-new --activate — preconditions of a codex row"

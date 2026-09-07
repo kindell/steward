@@ -306,17 +306,31 @@ if [ "${1:-}" = "--activate" ]; then
   if [ "$_unit" = "agent-codex" ]; then
     # THE DAEMON BEFORE THE UNITS. The thread client is a second client of the
     # owner's managed app-server daemon and refuses (rc 69, letters kept
-    # staged) when the daemon is absent — so the daemon is bootstrapped first,
-    # and a bootstrap that fails leaves nothing enabled. `bootstrap` installs
-    # durable management for SSH-driven use: the daemon outlives this shell
-    # and comes back on its own, which a plain `start` does not promise.
-    codex app-server daemon bootstrap \
-      || fel "could not bootstrap the owner's codex app-server daemon (codex app-server daemon bootstrap) — nothing was enabled" 70
+    # staged) when the daemon is absent — so the daemon comes first, and a
+    # bootstrap that fails leaves nothing enabled.
+    #
+    # ASKED, THEN LEFT ALONE IF IT ANSWERS. `bootstrap` on a RUNNING daemon is
+    # not idempotent: it restarts it — the owner thrown out mid-turn — and,
+    # without the flag, with remote control OFF. Measured 2026-09-07 on the
+    # first live activation: the owner's app lost the host until RC was
+    # re-enabled by hand. So the daemon is only bootstrapped when nothing
+    # answers on the socket, and then WITH --remote-control: RC is how the
+    # owner reaches the thread from the app, a client function that must not
+    # disappear because a row was activated. `bootstrap` installs durable
+    # management for SSH-driven use — the daemon outlives this shell and comes
+    # back on its own, which a plain `start` does not promise.
+    if codex app-server daemon version >/dev/null 2>&1; then
+      _daemon="already running in this account — left untouched (a bootstrap would have restarted it)"
+    else
+      codex app-server daemon bootstrap --remote-control \
+        || fel "could not bootstrap the owner's codex app-server daemon (codex app-server daemon bootstrap --remote-control) — nothing was enabled" 70
+      _daemon="bootstrapped in this account with remote control on"
+    fi
     systemctl --user enable --now "agent-codex@$INSTANCE.path" "agent-codex@$INSTANCE.timer" \
       || fel "could not enable the path unit and the timer" 70
     echo "session-new: agent-codex@$INSTANCE.path and agent-codex@$INSTANCE.timer active for '$INSTANCE' — a letter in the inbox wakes the row; the timer retries staged ones."
     echo "  estate bound per instance: $_dropdir/50-estate.conf"
-    echo "  daemon: codex app-server daemon bootstrap ran in this account — 'codex-thread.js daemon' answers whether it is up."
+    echo "  daemon: $_daemon — 'codex-thread.js daemon' answers whether it is up."
     exit 0
   fi
   systemctl --user enable --now "agent-session@$INSTANCE.timer" \
