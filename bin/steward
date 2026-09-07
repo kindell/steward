@@ -2396,9 +2396,30 @@ cmd_registry_session_check() {
     fi
   fi
 
-  # THE HUB'S OWN FILE IS THE ONE THING THIS PROCESS CAN ALWAYS READ.
-  local hub_row="no" ak="$HOME/.ssh/authorized_keys"
-  if [ -r "$ak" ]; then
+  # THE HUB'S authorized_keys LIVES IN THE HUB'S HOME, and $HOME is whoever ran
+  # this. Run in a person's own account the file read was THEIRS, and a line
+  # that sits with the hub was reported as absent - the exact fault this verb
+  # exists to avoid, in the verb itself. Measured 2026-09-07 by running the
+  # check as its own subject.
+  local hub_row="no" ak="" hub_user="" hub_host="" hub_why=""
+  # THE ESTATE'S OWN ACCESSORS, not a name I guessed. My first attempt called a
+  # function that does not exist; it failed quietly through 2>/dev/null and the
+  # guard below never fired - the check then read the caller's own file again
+  # and would have gone on reporting the hub's line as absent. A guard that
+  # cannot fail loudly is not a guard.
+  hub_host="$(registry_hub_host 2>/dev/null)" || hub_host=""
+  hub_user="$(registry_hub_ssh 2>/dev/null)" || hub_user=""
+  hub_user="${hub_user%%@*}"
+  if [ -n "$hub_user" ] && [ "$hub_user" != "$(id -un)" ]; then
+    hub_row="unmeasured"
+    hub_why="the hub's authorized_keys is in ${hub_user}'s home${hub_host:+ on $hub_host}, which is not readable from here"
+  elif [ -n "$hub_host" ] && [ "$hub_host" != "$(hostname -s 2>/dev/null)" ]; then
+    hub_row="unmeasured"
+    hub_why="the hub is $hub_host, not this machine"
+  fi
+  ak="$HOME/.ssh/authorized_keys"
+  if [ "$hub_row" = "unmeasured" ]; then :
+  elif [ -r "$ak" ]; then
     # THE CLOSING QUOTE IS PART OF THE MATCH. Without it this is a prefix test,
     # and a prefix test on identifiers is how one row answers for another. Ids
     # are fixed-length hex today, so nothing could have collided - but a check
@@ -2439,12 +2460,16 @@ cmd_registry_session_check() {
   if [ -n "$want_json" ]; then
     jq -cn --arg id "$id" --arg conf "$conf_state" --arg owner "$owner" --arg slug "$slug" \
       --arg host "$host" --arg hub "$hub_row" --arg key "$key_state" --arg keyfile "$keyfile" \
-      --arg why "$key_why" --arg speaks "$speaks" \
-      '{ok:true,kind:"session-check",id:$id,conf:$conf,owner:$owner,slug:$slug,host:$host,hub_row:$hub,relay_key:$key,relay_key_path:$keyfile,relay_key_note:$why,can_send:$speaks}'
+      --arg why "$key_why" --arg hubwhy "$hub_why" --arg speaks "$speaks" \
+      '{ok:true,kind:"session-check",id:$id,conf:$conf,owner:$owner,slug:$slug,host:$host,hub_row:$hub,hub_row_note:$hubwhy,relay_key:$key,relay_key_path:$keyfile,relay_key_note:$why,can_send:$speaks}'
   else
     printf 'session %s%s\n' "$id" "$( [ -n "$slug" ] && printf ' (%s, owner %s, host %s)' "$slug" "$owner" "$host" )"
     printf '  row              %s\n' "$conf_state"
-    printf '  hub relay line   %s\n' "$hub_row"
+    if [ -n "$hub_why" ]; then
+      printf '  hub relay line   not measured - %s\n' "$hub_why"
+    else
+      printf '  hub relay line   %s\n' "$hub_row"
+    fi
     if [ -n "$key_why" ]; then
       printf '  relay key        not measured - %s\n' "$key_why"
       printf '                   run this check in %s'"'"'s own account to measure it\n' "${owner:-the owner}"
