@@ -56,7 +56,7 @@ printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="
 # be chosen silently.
 printf 'ID="s-00000000000000bb"\nSLUG="beta"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
   > "$FX/reg/s-00000000000000bb.conf"
-printf 'ID="s-00000000000000cc"\nSLUG="beta"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
+printf 'ID="s-00000000000000cc"\nSLUG="beta"\nRUNTIME="codex"\nACCOUNT="operator-b-hub"\nOWNER="operator-b"\nDOMAIN="entity-two"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
   > "$FX/reg/s-00000000000000cc.conf"
 # New-form row MISSING its ID — broken; an id is never guessed for it.
 printf 'SLUG="gamma"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
@@ -95,6 +95,13 @@ has "refusal names the first row"    "$err" "s-00000000000000bb"
 has "refusal names the second row"   "$err" "s-00000000000000cc"
 has "refusal names the first account"  "$err" "operator-a-hub"
 has "refusal names the second account" "$err" "operator-b-hub"
+# THE RUNTIME IS PART OF THE ANSWER. With one target running two rows - the same
+# work in claude-code and in codex - "there are two" is not enough to choose
+# between them; the runtime is the distinguishing fact, and a sender told only
+# the ids has to ask a second time. A row without the field reads as the
+# registry's own default rather than as blank.
+has "refusal names the declared runtime" "$err" "runtime: codex"
+has "a row without the field reads as the default" "$err" "runtime: claude-code"
 bus_resolve_recipient beta 2>/dev/null
 is "ambiguous slug: no conf chosen" "${BUS_RES_CONF:-}" ""
 

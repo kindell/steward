@@ -496,7 +496,12 @@ bus_resolve_recipient() {
     s="$(sed -n 's/^SLUG="\(.*\)"/\1/p' "$f" | head -1)"
     [ "$s" = "$name" ] || continue
     count=$((count+1)); hit="$f"
-    rows="$rows $(basename "$f" .conf) (account: $(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$f" | head -1))"
+    # THE CANDIDATE LINE CARRIES RUNTIME TOO. A sender who is told only that
+    # two rows exist has to ask again to learn which is which; with a target
+    # that runs both a claude-code and a codex row - the same work, two
+    # implementations - the runtime IS the distinguishing fact. Absent means
+    # the row predates the field, and the default is what the registry uses.
+    rows="$rows $(basename "$f" .conf) (account: $(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$f" | head -1), runtime: $(sed -n 's/^RUNTIME="\(.*\)"/\1/p' "$f" | head -1 | grep . || echo claude-code))"
   done
   [ "$count" -eq 0 ] && return 1
   if [ "$count" -gt 1 ]; then
