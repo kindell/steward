@@ -334,6 +334,26 @@ run_session_new --login other-team gizmo2 "$SNX/repo2"
 has "session-new: --login wins over the requester's own LOGIN" \
     "$(cat "$SNX/captured.txt" 2>/dev/null)" "login=other-team"
 
+# --runtime codex RIDES THE SAME WIRE: the hub is the sole writer of RUNTIME,
+# so the requester's choice has to travel in the request. Absent flag sends
+# no runtime= line at all (the first capture above is that request).
+mkdir -p "$SNX/repo3" "$SNX/repo4"; ( cd "$SNX/repo3" && git init -q ); ( cd "$SNX/repo4" && git init -q )
+rm -f "$SNX/captured.txt"
+run_session_new gizmo3 "$SNX/repo3"
+is "session-new: no --runtime sends no runtime= line" \
+   "$(grep -c '^runtime=' "$SNX/captured.txt" 2>/dev/null)" "0"
+rm -f "$SNX/captured.txt"
+run_session_new --runtime codex gizmo4 "$SNX/repo4"
+has "session-new: --runtime codex puts runtime=codex on the wire" \
+    "$(cat "$SNX/captured.txt" 2>/dev/null)" "runtime=codex"
+is "session-new: the key stays the LAST line of the request with runtime= present" \
+   "$(tail -1 "$SNX/captured.txt" 2>/dev/null | cut -c1-7)" "pubkey="
+rm -f "$SNX/captured.txt"
+run_session_new --runtime opencode gizmo5 "$SNX/repo4"; rc=$?
+is "session-new: --runtime other than codex refuses as a flag, rc 64" "$rc" "64"
+[ ! -f "$SNX/captured.txt" ] && ok "session-new: a refused runtime sends nothing" \
+  || bad "session-new: a refused runtime sends nothing"
+
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

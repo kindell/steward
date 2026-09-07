@@ -119,7 +119,7 @@ FROM="${STEWARD_ENROLL_FROM:-}"
 # file tried to draw was unmeasurable. Default stays 65 for every bare call.
 fel() { echo "nav-enroll: REFUSING — $1" >&2; exit "${2:-65}"; }
 
-NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""; LOGIN_S=""
+NAMN=""; DOMAN=""; PROJEKT=""; PERSON=""; VARD=""; REPO_S=""; PUBKEY=""; RC_ONSKAD=""; LOGIN_S=""; RUNTIME_S=""
 forsta=1; kuvertrad_provad=""
 # `|| [ -n "$rad" ]`: a final line WITHOUT a trailing newline is still a line.
 # read returns nonzero on EOF-without-delimiter but has already assigned — drop
@@ -161,6 +161,9 @@ while IFS= read -r rad || [ -n "$rad" ]; do
     # OPTIONAL. Which login the new session pays with — see the LOGIN gate
     # below, once the account (and so its principal) is resolved.
     login=*)   LOGIN_S="${rad#login=}" ;;
+    # OPTIONAL. Which units activation enables for the row — see the RUNTIME
+    # gate below. Absent means the default runtime, and no line is written.
+    runtime=*) RUNTIME_S="${rad#runtime=}" ;;
     from=*)    fel "the payload carries a from field — the identity comes from the envelope, never from the text" ;;
     "")        : ;;
     *)         fel "unknown line in the request: '$rad'" ;;
@@ -208,6 +211,15 @@ esac
 if [ -n "$LOGIN_S" ] && ! [[ "$LOGIN_S" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
   fel "field login has an invalid shape (allowed: a-z0-9-, must start a-z0-9): '$LOGIN_S'"
 fi
+# RUNTIME: ONLY WHAT AN ENROLMENT CAN FINISH. A codex row is complete with the
+# fields the request carries (the registry's codex gate wants nothing more,
+# lib/registry.sh); an opencode row needs MODEL, OPENCODE_VERSION and a port
+# the request does not carry, and would fail the registry gate on the first
+# read after being written. Refused here, at the sender, with the cause.
+case "$RUNTIME_S" in
+  ""|codex) : ;;
+  *) fel "field runtime: '$RUNTIME_S' cannot be enrolled — the only runtime this path can finish is codex (omit the field for the default runtime)" ;;
+esac
 # The convention is CONSTRUCTED from the fields and compared. The name is never parsed.
 [ "$NAMN" = "${DOMAN}-${PROJEKT}-${PERSON}" ] || \
   fel "the name '$NAMN' does not match the convention doman-projekt-person ('${DOMAN}-${PROJEKT}-${PERSON}')"
@@ -530,6 +542,13 @@ CONFEOF
 # already checked when the request was parsed.
 if [ -n "$LOGIN_S" ]; then
   printf 'LOGIN="%s"\n' "$LOGIN_S" >> "$tmpc"
+fi
+# RUNTIME follows the same rule, for the same reason: appended only when the
+# request named one, so a row of the default runtime is byte-identical to
+# before the field existed. The activation on the host reads it to choose
+# agent-codex@ over agent-session@ (linux/session-new.sh --activate).
+if [ -n "$RUNTIME_S" ]; then
+  printf 'RUNTIME="%s"\n' "$RUNTIME_S" >> "$tmpc"
 fi
 mv "$tmpc" "$conf" || exit 70
 

@@ -3,7 +3,7 @@
 # human's own account on a session host, from inside a REGISTERED tmux session:
 # the identity is DERIVED from the pane and never typed.
 #
-#   bash ~/scripts/session-new.sh <project> <repo-path>       create conf + key, send the request
+#   bash ~/scripts/session-new.sh [--runtime codex] <project> <repo-path>   create conf + key, send the request
 #   bash ~/scripts/session-new.sh --activate <id> <slug>      the command ENROLL-CONFIRM prints
 #
 # Always invoked with a full path — ~/scripts is not on PATH, and a tool shell
@@ -252,8 +252,35 @@ if [ "${1:-}" = "--activate" ]; then
     done
     INSTANCE="$NAMN"
   fi
-  systemctl --user cat agent-session@.timer >/dev/null 2>&1 \
-    || fel "supervision template agent-session@.timer missing — per-user supervision is a precondition" 65
+  # ── THE UNITS ARE CHOSEN ON THE ROW'S RUNTIME ─────────────────────────────
+  # A default row is a process: agent-session@ (a timer, a supervisor, tmux).
+  # A codex row is a thread: agent-codex@ — a path unit that fires on a letter
+  # in the inbox, a timer that retries staged ones — and the owner's app-server
+  # daemon that the thread client queues through. The supervisor refuses a
+  # codex row on sight, so enabling agent-session@ for it gave a timer that
+  # refused every period and no path unit at all (measured 2026-09-07, when
+  # the first codex row was born by hand: key, units and daemon all hand-made).
+  # Anything else refuses: guessing agent-session@ for a runtime the register
+  # would not load is a timer failing forever, announced at the wrong end.
+  _runtime="$(sed -n 's/^RUNTIME="\(.*\)"/\1/p' "$SESS_D/$INSTANCE.conf" 2>/dev/null | head -1)"
+  case "${_runtime:-claude-code}" in
+    claude-code) _unit="agent-session" ;;
+    codex)       _unit="agent-codex" ;;
+    *) fel "row '$INSTANCE' has RUNTIME=\"$_runtime\", which this activation cannot supervise (agent-session@ for the default runtime, agent-codex@ for codex) — nothing was enabled" 65 ;;
+  esac
+  if [ "$_unit" = "agent-codex" ]; then
+    systemctl --user cat agent-codex@.path >/dev/null 2>&1 \
+      || fel "unit template agent-codex@.path missing — the delivery trigger (agent-codex@.path/.service/.timer, deployed by the install) is a precondition of a codex row" 65
+    # THE BINARY BEFORE ANY ENABLE: an enabled path unit on a host without
+    # codex fires the runtime into rc 78 on the first letter, and refuses
+    # from then on until the burst limit — bounded, but a refusal that
+    # belongs here, at the operator's terminal, with the cause.
+    command -v codex >/dev/null 2>&1 \
+      || fel "codex is not on PATH in this account — a codex row needs the codex CLI (and its login) here before its units are enabled" 78
+  else
+    systemctl --user cat agent-session@.timer >/dev/null 2>&1 \
+      || fel "supervision template agent-session@.timer missing — per-user supervision is a precondition" 65
+  fi
   # THE ESTATE IS BOUND PER SESSION, NOT PER ACCOUNT. The template's environment
   # names ONE estate root for every instance on the account, which made a second
   # estate on the same account invisible to supervision — its sessions would
@@ -267,7 +294,7 @@ if [ "${1:-}" = "--activate" ]; then
   # the drop-in directory and (via authorized_keys, hub/enroll) the tmux
   # session all key off the same opaque id so a later account move or slug
   # rename never has to touch supervision.
-  _dropdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agent-session@$INSTANCE.service.d"
+  _dropdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$_unit@$INSTANCE.service.d"
   mkdir -p "$_dropdir" || fel "could not create $_dropdir" 70
   # Canonicalized: the resolver's default form carries a trailing /.. — correct
   # to cd through, wrong to burn into a unit file that outlives this call.
@@ -276,6 +303,22 @@ if [ "${1:-}" = "--activate" ]; then
   printf '[Service]\nEnvironment=STEWARD_ESTATE_ROOT=%s\n' "$_eroot" \
     > "$_dropdir/50-estate.conf" || fel "could not write the estate drop-in" 70
   systemctl --user daemon-reload
+  if [ "$_unit" = "agent-codex" ]; then
+    # THE DAEMON BEFORE THE UNITS. The thread client is a second client of the
+    # owner's managed app-server daemon and refuses (rc 69, letters kept
+    # staged) when the daemon is absent — so the daemon is bootstrapped first,
+    # and a bootstrap that fails leaves nothing enabled. `bootstrap` installs
+    # durable management for SSH-driven use: the daemon outlives this shell
+    # and comes back on its own, which a plain `start` does not promise.
+    codex app-server daemon bootstrap \
+      || fel "could not bootstrap the owner's codex app-server daemon (codex app-server daemon bootstrap) — nothing was enabled" 70
+    systemctl --user enable --now "agent-codex@$INSTANCE.path" "agent-codex@$INSTANCE.timer" \
+      || fel "could not enable the path unit and the timer" 70
+    echo "session-new: agent-codex@$INSTANCE.path and agent-codex@$INSTANCE.timer active for '$INSTANCE' — a letter in the inbox wakes the row; the timer retries staged ones."
+    echo "  estate bound per instance: $_dropdir/50-estate.conf"
+    echo "  daemon: codex app-server daemon bootstrap ran in this account — 'codex-thread.js daemon' answers whether it is up."
+    exit 0
+  fi
   systemctl --user enable --now "agent-session@$INSTANCE.timer" \
     || fel "could not enable the timer" 70
   echo "session-new: timer active for '$INSTANCE' — supervision will start the session within one period."
@@ -338,8 +381,25 @@ if [ "${1:-}" = "--login" ]; then
   shift 2
 fi
 
-PROJEKT="${1:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] <project> <repo-path>}"
-REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] <project> <repo-path>}"
+# --runtime codex: WHICH UNITS THE NEW ROW IS SUPERVISED BY, sent with the
+# request. The hub is the sole writer of the row, so the choice has to travel
+# on the wire; the host's --activate then reads RUNTIME off the row and enables
+# agent-codex@ (path + timer) instead of agent-session@. Only codex is
+# nameable here: the default runtime needs no flag, and opencode needs fields
+# the request does not carry. Absent flag sends no runtime= line at all.
+RUNTIME_FLAG=""
+if [ "${1:-}" = "--runtime" ]; then
+  RUNTIME_FLAG="${2:-}"
+  [ -n "$RUNTIME_FLAG" ] || fel "--runtime requires a runtime name" 64
+  case "$RUNTIME_FLAG" in
+    codex) ;;
+    *) fel "--runtime accepts only codex (the default runtime needs no flag): '$RUNTIME_FLAG'" 64 ;;
+  esac
+  shift 2
+fi
+
+PROJEKT="${1:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] [--runtime codex] <project> <repo-path>}"
+REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] [--runtime codex] <project> <repo-path>}"
 
 # AN UNKNOWN FLAG MUST REFUSE AS A FLAG, NOT PASS AS A NAME. The project
 # charset allows dashes, so '--anything' sailed through as a project name and
@@ -347,7 +407,7 @@ REPO="${2:?bash ~/scripts/session-new.sh [--domain <d>] [--login <slug>] <projec
 # naming the wrong cause, measured live 2026-08-21 when the flag's old
 # pre-rename spelling was used against the renamed script.
 case "$PROJEKT" in
-  -*) fel "unknown flag '$PROJEKT' — the flags are --activate <id> <slug>, --label <text>, --domain <d> and --login <slug>" 64 ;;
+  -*) fel "unknown flag '$PROJEKT' — the flags are --activate <id> <slug>, --label <text>, --domain <d>, --login <slug> and --runtime codex" 64 ;;
 esac
 case "$PROJEKT" in
   *[!abcdefghijklmnopqrstuvwxyz0123456789-]*|"") echo "session-new: project may contain only [a-z0-9-]" >&2; exit 64 ;;
@@ -446,6 +506,7 @@ bygg_begaran() {
   # registration hangs on (suite case 8b2).
   [ -n "$RC_ONSKAD" ] && printf 'rc_label=%s\n' "$RC_ONSKAD"
   [ -n "$LOGIN_ANV" ] && printf 'login=%s\n' "$LOGIN_ANV"
+  [ -n "$RUNTIME_FLAG" ] && printf 'runtime=%s\n' "$RUNTIME_FLAG"
   printf 'pubkey=%s\n' "$PUB"
 }
 

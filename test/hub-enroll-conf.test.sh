@@ -338,6 +338,46 @@ is "L4: no login at schema 6 refuses, rc 65" "$rc" "65"
 has "L4: the refusal names the missing field" "$out" "login"
 is "L4: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
 
+# ── THE RUNTIME FIELD ───────────────────────────────────────────────────────
+# A row's RUNTIME decides which units activation enables: agent-session@ for
+# the default, agent-codex@ (path + timer, no tmux, no supervisor) for a codex
+# row. The requester says which it wants with `--runtime codex`; enroll is the
+# sole conf writer, so the word has to reach the row through the request. The
+# same append-only rule as LOGIN: absent runtime= writes no RUNTIME line at
+# all — a request from an un-updated caller produces byte-identical output.
+echo "nav-enroll — the RUNTIME field"
+
+# R1. runtime=codex LANDS AS RUNTIME="codex", after LOGIN.
+lreq "$LFX/r1.txt" widgetr "login=acme-team
+runtime=codex
+"
+out="$(run_lreq "$LFX/r1.txt")"; rc=$?
+is "R1: runtime=codex registers, rc 0" "$rc" "0"
+idr="$(printf '%s' "$out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+bodyr="$(cat "$LFX/sessions.d/$idr.conf" 2>/dev/null)"
+has "R1: the row carries RUNTIME=\"codex\"" "$bodyr" 'RUNTIME="codex"'
+is "R1: RUNTIME is the last line, after LOGIN (append-only, like LOGIN)" \
+   "$(printf '%s\n' "$bodyr" | tail -2 | tr '\n' ' ')" 'LOGIN="acme-team" RUNTIME="codex" '
+
+# R2. NO runtime= WRITES NO RUNTIME LINE — byte for byte the row of an
+# un-updated caller (L1 is that row; count the line, do not trust memory).
+is "R2: no runtime= leaves no RUNTIME line (transition, byte for byte)" \
+   "$(grep -c '^RUNTIME=' "$LFX/sessions.d/$id1.conf")" "0"
+
+# R3. A RUNTIME THE ACTIVATION CANNOT SERVE IS REFUSED BEFORE ANY WRITE.
+# opencode rows need MODEL/PORT/VERSION the request does not carry, and an
+# unknown word would fail the registry's own gate on the first read — refusing
+# here names the cause at the sender instead of at every later reader.
+before="$(ls "$LFX/sessions.d" | sort)"
+lreq "$LFX/r3.txt" widgets "login=acme-team
+runtime=opencode
+"
+out="$(run_lreq "$LFX/r3.txt")"; rc=$?
+is "R3: runtime=opencode refuses, rc 65" "$rc" "65"
+has "R3: the refusal names the field and the accepted value" "$out" "runtime"
+has "R3: the refusal names codex as the accepted value" "$out" "codex"
+is "R3: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
+
 # ── LOGIN_REQUIRED_FOR SCOPES THE WRITE-TIME REFUSAL TOO (task 9B, fix round
 # 1, MAJOR-1) ────────────────────────────────────────────────────────────
 # The read gate (lib/registry.sh, registry_load) refuses a row without LOGIN
