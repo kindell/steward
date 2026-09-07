@@ -19,7 +19,7 @@
 //
 //   codex-thread.js turn --cwd DIR --message-file FILE --thread-file PATH
 //                        [--name NAME] [--instructions FILE] [--sandbox MODE]
-//                        [--model MODEL] [--timeout SECONDS]
+//                        [--model MODEL] [--mcp-config FILE] [--timeout SECONDS]
 //
 // One verb, because a thread cannot exist without a turn: `thread/start` alone
 // leaves nothing on disk, and resuming it fails with "no rollout found for
@@ -35,7 +35,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const EX_USAGE = 64, EX_UNAVAILABLE = 69, EX_SOFTWARE = 70, EX_TEMPFAIL = 75;
+const EX_USAGE = 64, EX_UNAVAILABLE = 69, EX_SOFTWARE = 70, EX_TEMPFAIL = 75, EX_CONFIG = 78;
 
 function refuse(code, message) {
   process.stderr.write('codex-thread: REFUSING - ' + message + '\n');
@@ -63,7 +63,19 @@ function lastLines(text) {
 function codexBin() {
   const explicit = process.env.STEWARD_CODEX_BIN;
   if (explicit) return explicit;
-  return path.join(os.homedir(), '.local', 'bin', 'codex');
+  // ONE NAME, SEVERAL HOMES. The Linux installer puts codex in ~/.local/bin;
+  // on macOS it arrives as a Homebrew cask in /opt/homebrew/bin, and a
+  // non-interactive ssh session has no Homebrew on PATH at all. Measured on
+  // minin 2026-09-07: the default found nothing and the refusal named a path
+  // that was never going to exist there.
+  const candidates = [
+    path.join(os.homedir(), '.local', 'bin', 'codex'),
+    path.join(os.homedir(), '.codex', 'packages', 'standalone', 'current', 'bin', 'codex'),
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+  ];
+  for (const c of candidates) { if (fs.existsSync(c)) return c; }
+  return candidates[0];
 }
 
 // One JSON-RPC conversation over one short-lived app-server child.
@@ -106,10 +118,42 @@ class Client {
         else p.resolve(msg.result);
         continue;
       }
+      // A REQUEST FROM THE SERVER, not a notification: it has both a method
+      // and an id, and it is WAITING for an answer. Ignoring one hangs the turn
+      // until the timeout - measured 2026-09-07: a turn that only wanted to run
+      // an MCP tool sat silent for 460 seconds. There is no human at this pane,
+      // so the policy is answered here, once, in the open: tool calls the
+      // registry already granted are approved; anything else is declined.
+      if (msg.method && msg.id !== undefined) { this.answerRequest(msg); continue; }
       if (msg.method) for (const fn of this.listeners) fn(msg);
     }
   }
   on(fn) { this.listeners.push(fn); }
+  answerRequest(msg) {
+    const m = msg.method || '';
+    // The estate's grant IS the approval: a server in this thread's config was
+    // put there by the register, and a second yes at call time adds nothing but
+    // a place to hang. Everything else - a sandbox escape, a command, a skill -
+    // is declined, because saying yes to those needs a human.
+    const approve = m.indexOf('mcp') !== -1 || m.indexOf('Mcp') !== -1 || m.indexOf('tool') !== -1 || m.indexOf('Tool') !== -1;
+    // The decision word is the server's, not ours. Log the exact request the
+    // first time each method is seen, so a wrong word shows up as a rejection
+    // WITH its cause instead of a silent no.
+    if (!this.seenRequests) this.seenRequests = {};
+    if (!this.seenRequests[m]) {
+      this.seenRequests[m] = 1;
+      process.stderr.write('codex-thread: server asked ' + m + ' -> ' + JSON.stringify(msg.params || {}).slice(0, 300) + '\n');
+    }
+    // Two different answer shapes, because the server asks two different
+    // questions. An MCP tool call arrives as an ELICITATION and wants
+    // {action: accept|decline}; an execution approval wants {decision}.
+    // Answering one in the other's words is a silent no.
+    const result = m.indexOf('elicitation') !== -1
+      ? (approve ? { action: 'accept', content: {} } : { action: 'decline' })
+      : (approve ? { decision: 'approved' } : { decision: 'denied' });
+    if (!approve) process.stderr.write('codex-thread: declined ' + m + ' (no human at this pane)\n');
+    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+  }
   notify(method, params) {
     const m = { jsonrpc: '2.0', method };
     if (params) m.params = params;
@@ -133,17 +177,57 @@ class Client {
     });
   }
   async handshake() {
+    // experimentalApi is what unlocks the granular approval form. Without it
+    // the server answers "askForApproval.granular requires experimentalApi
+    // capability" - and the only other choice, `never`, REFUSES every MCP tool
+    // rather than allowing it. Measured 2026-09-07 against 0.153.4.
     await this.request('initialize', {
       clientInfo: { name: 'steward', title: 'Steward session', version: '1' },
+      capabilities: { experimentalApi: true },
     });
     this.notify('initialized');
   }
   end() { try { this.child.stdin.end(); } catch { /* already gone */ } }
 }
 
+// MCP: the estate renders one file per session in the shape Claude Code reads
+// ({"mcpServers": {name: {command, args, env}}}). Codex takes the same servers
+// under a different key, so the adapter translates rather than the estate
+// keeping two documents that must agree. A server the estate does not grant is
+// a server the thread never sees.
+function mcpServers(file) {
+  if (!file || file === true) return null;
+  if (!fs.existsSync(file)) refuse(EX_UNAVAILABLE, 'mcp config is missing: ' + file);
+  let doc;
+  try { doc = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (err) { refuse(EX_UNAVAILABLE, 'mcp config is not JSON: ' + err.message); }
+  const src = doc.mcpServers || {};
+  const out = {};
+  for (const [name, v] of Object.entries(src)) {
+    if (!v || typeof v !== 'object') continue;
+    // Only stdio servers translate one to one. A remote server is declared
+    // differently and is skipped loudly rather than mistranslated.
+    if (!v.command) { process.stderr.write('codex-thread: skipping non-stdio mcp server ' + name + '\n'); continue; }
+    const entry = { command: v.command };
+    if (Array.isArray(v.args) && v.args.length) entry.args = v.args;
+    if (v.env && typeof v.env === 'object' && Object.keys(v.env).length) entry.env = v.env;
+    out[name] = entry;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function threadParams(args, cwd) {
-  const p = { cwd, sandbox: args.sandbox || 'read-only', approvalPolicy: 'never' };
+  // APPROVAL POLICY IS NOT ONE KNOB. `never` means "never ask" - and for an MCP
+  // tool call that resolves to a REFUSAL, not to a yes: measured 2026-09-07,
+  // the thread reported every history tool "blocked because the tools require
+  // approval and the policy is never". The granular form is what says yes on
+  // the session's behalf without a human at the pane.
+  const p = { cwd, sandbox: args.sandbox || 'read-only', approvalPolicy: args.approval === 'granular'
+    ? { granular: { mcp_elicitations: false, rules: false, sandbox_approval: false, request_permissions: false, skill_approval: false } }
+    : (args.approval && args.approval !== true ? String(args.approval) : 'never') };
   if (args.model && args.model !== true) p.model = String(args.model);
+  const servers = mcpServers(args['mcp-config']);
+  if (servers) p.config = Object.assign({}, p.config, { mcp_servers: servers });
   return p;
 }
 
@@ -169,16 +253,39 @@ async function cmdTurn(args) {
   const c = new Client(timeoutMs);
   const messages = [];
   let failure = null;
+  // A FATAL failure is one the environment caused - an expired login, a
+  // refused account. It is not the same as a turn that ran and said nothing,
+  // and the exit code says which: 78 for "fix your environment", 75 for
+  // "try again".
+  let fatal = false;
   const finished = new Promise((resolve) => {
     c.on((msg) => {
       const p = msg.params || {};
       if (msg.method === 'item/completed') {
         const item = p.item || {};
         if (item.type === 'agentMessage' && item.text) messages.push(item.text);
-      } else if (msg.method === 'turn/completed') resolve();
-      else if (msg.method === 'turn/failed' || msg.method === 'thread/error') {
-        failure = JSON.stringify(p).slice(0, 400);
+      } else if (msg.method === 'turn/completed') {
+        // A COMPLETED TURN IS NOT A SUCCESSFUL ONE. The notification carries a
+        // status, and a failed turn arrives here with its reason in
+        // turn.error.message. Treating the notification itself as success
+        // reported "the turn completed without an answer" for a login that had
+        // expired - the cause was in the message we threw away. Measured on
+        // macOS 2026-09-07 by the product's integrator.
+        const t = p.turn || {};
+        if (t.status && t.status !== 'completed') {
+          failure = (t.error && (t.error.message || t.error.code)) || ('turn status ' + t.status);
+          fatal = true;
+        }
         resolve();
+      } else if (msg.method === 'error' || msg.method === 'thread/error' || msg.method === 'turn/failed') {
+        // AN ERROR NOTICE THAT WILL NOT BE RETRIED IS THE ANSWER. Ignoring it
+        // and waiting for a turn that never comes turns an unauthorized
+        // account into a silent model.
+        const info = p.codexErrorInfo || p.error || {};
+        failure = (typeof info === 'string' ? info : (info.message || info.code || JSON.stringify(info))) ||
+                  JSON.stringify(p).slice(0, 300);
+        if (p.codexErrorInfo) failure = String(p.codexErrorInfo) + (p.message ? ': ' + p.message : '');
+        if (p.willRetry === false || msg.method !== 'error') { fatal = true; resolve(); }
       }
     });
   });
@@ -215,7 +322,7 @@ async function cmdTurn(args) {
     refuse(EX_TEMPFAIL, err.message + (c.stderr ? '\n  app-server said: ' + lastLines(c.stderr) : ''));
   } finally { c.end(); }
 
-  if (failure) refuse(EX_TEMPFAIL, 'the turn did not complete: ' + failure);
+  if (failure) refuse(fatal ? EX_CONFIG : EX_TEMPFAIL, 'the turn did not complete: ' + failure);
   if (!messages.length) refuse(EX_TEMPFAIL, 'the turn completed without an answer');
   // The id is written only after a turn has actually run in the thread: a
   // remembered id that cannot be resumed is worse than none.

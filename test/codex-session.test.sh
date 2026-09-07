@@ -22,6 +22,8 @@
 #   9. A class this session does not answer is read, never answered.
 #  10. A letter that is itself a reply is never answered - two sessions
 #      answering each other's answers is a loop no ledger can stop.
+#  11. A failing turn says WHY in the log, and an environment refusal (rc 78)
+#      is named as such - an expired login must never read as a silent model.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTER="$here/runtime/codex-session.sh"
@@ -95,6 +97,7 @@ EOF
 cat > "$BIN/thread-client" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$CLIENT_LOG"
+[ -f "$ENV_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete: unauthorized" >&2; exit 78; }
 [ -f "$TURN_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete" >&2; exit 75; }
 tf=""; prev=""
 for a in "$@"; do [ "$prev" = "--thread-file" ] && tf="$a"; prev="$a"; done
@@ -117,7 +120,7 @@ run() { # run the adapter against a session name
   STEWARD_BUS_ROOT="$T/bus" \
   BUS_READ_LOG="$T/bus-read.log" BUS_SEND_LOG="$T/bus-send.log" CLIENT_LOG="$T/client.log" \
   STAGE_DIR="$T/state/$1.codex-pending" STAGED_WHEN_READ="$T/staged-when-read" \
-  INBOX_DIR="$INBOX" SEND_FAILS="$T/send-fails" TURN_FAILS="$T/turn-fails" \
+  INBOX_DIR="$INBOX" SEND_FAILS="$T/send-fails" TURN_FAILS="$T/turn-fails" ENV_FAILS="$T/env-fails" \
   bash "$ADAPTER" "$1" 2>"$T/err"; echo "$?"
 }
 
@@ -195,6 +198,16 @@ is  "and it is not left staged either" "$(ls "$T/state/$CODEX_ID.codex-pending" 
 letter 1700000005-f "s-sender-six" "quay" "reply to the bollard" "Thanks, noted."
 rc="$(run "$CODEX_ID")"
 is  "a reply is not answered" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
+
+# 11. an environment refusal is named as one
+touch "$T/env-fails"; : > "$T/bus-send.log"
+letter 1700000007-h "s-sender-eight" "dock" "the gate is stuck" "Please look."
+rc="$(run "$CODEX_ID")"; err="$(cat "$T/err")"
+is  "an environment refusal is not an error exit" "$rc" "0"
+has "the log carries the client's reason" "$err" "unauthorized"
+has "and names rc 78 as the environment" "$err" "rc 78"
+is  "the letter stays staged for a retry" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "1"
+rm -f "$T/env-fails"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

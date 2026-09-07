@@ -56,8 +56,19 @@ registry_load "$NAME" >/dev/null || refuse 78 "registered session could not be l
 
 CLIENT="${STEWARD_CODEX_CLIENT:-$_runtime_dir/codex-thread.js}"
 [ -f "$CLIENT" ] || refuse 78 "thread client missing: $CLIENT"
-NODE_BIN="${STEWARD_NODE_BIN:-node}"
-command -v "$NODE_BIN" >/dev/null 2>&1 || refuse 78 "node is required for a Codex session and is not on PATH"
+# NODE, WHEREVER THIS HOST KEEPS IT. A non-interactive ssh session on macOS has
+# no Homebrew on PATH, so `node` is not found even though node 22 is installed -
+# measured on the estate's other host 2026-09-07. The row's host may name it;
+# otherwise look where the two platforms put it before refusing.
+NODE_BIN="${STEWARD_NODE_BIN:-}"
+if [ -z "$NODE_BIN" ]; then
+  for _n in node /opt/homebrew/opt/node@22/bin/node /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    command -v "$_n" >/dev/null 2>&1 && { NODE_BIN="$_n"; break; }
+    [ -x "$_n" ] && { NODE_BIN="$_n"; break; }
+  done
+fi
+[ -n "$NODE_BIN" ] || refuse 78 "node is required for a Codex session and was not found on PATH or in the usual places"
+command -v "$NODE_BIN" >/dev/null 2>&1 || [ -x "$NODE_BIN" ] || refuse 78 "node is required for a Codex session: $NODE_BIN is not executable"
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
 BUS_READ="${STEWARD_BUS_READ:-$HOME/bin/bus-read}"
 BUS_ROOT="${STEWARD_BUS_ROOT:-$HOME/.config/agent-bus}"
@@ -176,16 +187,25 @@ for request in "$PENDING_DIR"/*.json; do
 
   answer_file="$ANSWER_DIR/$(basename "$request").answer"
   if [ ! -s "$answer_file" ]; then
-    if ! "$NODE_BIN" "$CLIENT" turn \
+    # THE EXIT CODE IS CAPTURED ON ITS OWN LINE. Inside `if ! cmd; then`, $? is
+    # the IF's own result, not the command's - the log then said "rc 0" about a
+    # turn that had just refused with 78. Measured by this suite 2026-09-07.
+    "$NODE_BIN" "$CLIENT" turn \
         --cwd "$REPO_PATH" \
         --message-file "$request" \
         --thread-file "$THREAD_FILE" \
         --instructions "$INSTRUCTIONS_FILE" \
         --name "$LABEL" \
         ${MODEL:+--model "$MODEL"} \
-        > "$answer_file.partial" 2>"$answer_file.err"; then
-      note "the turn failed for $(basename "$request"); the letter stays staged"
+        > "$answer_file.partial" 2>"$answer_file.err"
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+      # THE REASON, NOT JUST THE FACT. A letter that stays staged with no cause
+      # in the log reads as a silent model; the client's stderr carries the
+      # real one - an expired login, a refused account, a turn that failed.
+      note "the turn failed (rc $_rc) for $(basename "$request"); the letter stays staged"
       sed 's/\x1b\[[0-9;]*m//g' "$answer_file.err" | tail -3 >&2
+      [ "$_rc" = 78 ] && note "rc 78 is an ENVIRONMENT refusal - the login or the binary, not the model"
       rm -f "$answer_file.partial"
       continue
     fi
