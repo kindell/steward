@@ -1,0 +1,176 @@
+#!/bin/bash
+# test/codex-session.test.sh - the Codex adapter turns waiting mail into turns
+# in one durable thread, and never loses an acknowledged letter.
+#
+# WHY. A Codex session has no process to supervise: the thread is the durable
+# thing and a turn runs only while a letter is being answered. That makes the
+# crash window the whole design. Mail must be written down BEFORE it is
+# acknowledged, and a letter whose turn failed must still be there afterwards.
+#
+# SIX CLAIMS:
+#   1. A row that is not RUNTIME="codex" is refused (78), by name.
+#   2. Waiting mail is staged to disk BEFORE bus-read acknowledges it.
+#   3. The answer goes back to the SENDER, in the letter's own subject.
+#   4. A failed turn sends nothing and leaves the letter staged.
+#   5. A letter staged by an earlier run is answered with no new mail at all.
+#   6. The thread id is remembered, so the second letter resumes and never
+#      starts a second thread.
+#   7. A letter that was answered is never answered again, even when the
+#      acknowledgement failed and the file is still sitting in the inbox.
+set -u
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ADAPTER="$here/runtime/codex-session.sh"
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
+is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
+has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+hasnt(){ case "$2" in *"$3"*) bad "$1" "unexpectedly present '$3' in: $2" ;; *) ok "$1" ;; esac; }
+
+T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+HOMEDIR="$T/home"; ROOT="$T/estate"; BIN="$T/bin"; LIBS="$T/libs"
+mkdir -p "$HOMEDIR/Projects/repo" "$BIN" "$LIBS" "$T/state" \
+         "$ROOT/estate" "$ROOT/sessions.d" "$ROOT/entities.d" "$ROOT/accounts.d" \
+         "$ROOT/projects.d" "$ROOT/mcp.d"
+cat > "$ROOT/estate/steward.conf" <<'EOF'
+ESTATE_NAME="fixture"
+LABEL_PREFIX="com.fixture.claude"
+JOB_LABEL_PREFIX="com.fixture.job"
+SERVICE_LABEL_PREFIX="com.fixture.svc"
+RC_LABEL_PREFIX=""
+HUB_SESSION="hub"
+HUB_HOST="h1"
+STATE_DIR_NAME="fixture-supervisor"
+PAUSED_DIR_NAME="fixture-paused"
+TMUX_SOCKET="fixture.sock"
+OP_TOKEN_FILE_NAME="fixture-token"
+PING_MSG="you have unread mail"
+EOF
+printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
+CODEX_ID="s-0000000000000011"
+cat > "$ROOT/sessions.d/$CODEX_ID.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="alpha"
+REPO_PATH="$HOMEDIR/Projects/repo"
+ID="$CODEX_ID"
+RC_LABEL="Alpha"
+KIND="work"
+RUNTIME="codex"
+EOF
+CLAUDE_ID="s-0000000000000012"
+sed 's/RUNTIME="codex"/RUNTIME="claude-code"/; s/'"$CODEX_ID"'/'"$CLAUDE_ID"'/' \
+  "$ROOT/sessions.d/$CODEX_ID.conf" > "$ROOT/sessions.d/$CLAUDE_ID.conf"
+
+INBOX="$T/bus/$CODEX_ID/inbox"; mkdir -p "$INBOX"
+letter() { # <name> <from> <subject> <headline> <body>
+  cat > "$INBOX/$1.json" <<EOF
+{"from":"$2","to":"$CODEX_ID","ts":"1700000000","klass":"SAMORDNING","amne":"$3","rubrik":"$4","text":"$5"}
+EOF
+}
+
+# --- stubs -------------------------------------------------------------------
+# bus-read only records that it ran, and empties the inbox the way the real one
+# does. The ORDER between staging and this call is claim 2.
+cat > "$BIN/bus-read" <<'EOF'
+#!/bin/sh
+printf 'read %s\n' "$1" >> "$BUS_READ_LOG"
+ls "$STAGE_DIR" > "$STAGED_WHEN_READ" 2>/dev/null
+rm -f "$INBOX_DIR"/*.json
+exit 0
+EOF
+cat > "$BIN/bus-send" <<'EOF'
+#!/bin/sh
+printf '%s\n---\n%s\n===\n' "$1" "$2" >> "$BUS_SEND_LOG"
+[ -f "$SEND_FAILS" ] && exit 65
+exit 0
+EOF
+# The thread client: prints an answer, and records the arguments it was given so
+# the test can see which thread the second letter used.
+cat > "$BIN/thread-client" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$CLIENT_LOG"
+[ -f "$TURN_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete" >&2; exit 75; }
+tf=""; prev=""
+for a in "$@"; do [ "$prev" = "--thread-file" ] && tf="$a"; prev="$a"; done
+[ -n "$tf" ] && [ ! -s "$tf" ] && printf 'thread-aaa\n' > "$tf"
+echo "the answer"
+exit 0
+EOF
+chmod 755 "$BIN"/bus-read "$BIN"/bus-send "$BIN"/thread-client
+cp "$here/lib/registry.sh" "$LIBS/registry.sh"
+
+run() { # run the adapter against a session name
+  HOME="$HOMEDIR" \
+  STEWARD_ESTATE_ROOT="$ROOT" \
+  STEWARD_REGISTRY_LIB="$LIBS/registry.sh" \
+  STEWARD_CODEX_STATE_DIR="$T/state" \
+  STEWARD_CODEX_CLIENT="$BIN/thread-client" \
+  STEWARD_NODE_BIN="/bin/sh" \
+  STEWARD_BUS_SEND="$BIN/bus-send" \
+  STEWARD_BUS_READ="$BIN/bus-read" \
+  STEWARD_BUS_ROOT="$T/bus" \
+  BUS_READ_LOG="$T/bus-read.log" BUS_SEND_LOG="$T/bus-send.log" CLIENT_LOG="$T/client.log" \
+  STAGE_DIR="$T/state/$1.codex-pending" STAGED_WHEN_READ="$T/staged-when-read" \
+  INBOX_DIR="$INBOX" SEND_FAILS="$T/send-fails" TURN_FAILS="$T/turn-fails" \
+  bash "$ADAPTER" "$1" 2>"$T/err"; echo "$?"
+}
+
+echo "codex-session"
+
+# 1. wrong runtime
+rc="$(run "$CLAUDE_ID")"
+is  "a claude-code row is refused" "$rc" "78"
+has "the refusal names the session" "$(cat "$T/err")" "$CLAUDE_ID is not a Codex session"
+
+# 2 + 3 + 6. one letter, answered
+letter 1700000000-a "s-sender-one" "harbour" "the pier is loose" "Please look at the pier."
+rc="$(run "$CODEX_ID")"
+is  "a letter is answered without error" "$rc" "0"
+has "mail was staged BEFORE bus-read ran" "$(cat "$T/staged-when-read" 2>/dev/null)" "1700000000-a.json"
+has "the reply goes to the sender" "$(cat "$T/bus-send.log")" "s-sender-one"
+has "the reply keeps the subject" "$(cat "$T/bus-send.log")" "SAMORDNING harbour:"
+has "the reply carries the answer" "$(cat "$T/bus-send.log")" "the answer"
+has "the thread is named from the label" "$(cat "$T/client.log")" "--name Alpha"
+is  "the thread id was remembered" "$(cat "$T/state/$CODEX_ID.codex-thread" 2>/dev/null)" "thread-aaa"
+is  "nothing is left staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "0"
+
+: > "$T/client.log"
+letter 1700000001-b "s-sender-two" "harbour" "and the rope" "The rope too."
+rc="$(run "$CODEX_ID")"
+has "the second letter reuses the thread file" "$(cat "$T/client.log")" "--thread-file"
+is  "no second thread was born" "$(cat "$T/state/$CODEX_ID.codex-thread")" "thread-aaa"
+
+# 4. a failing turn keeps the letter
+: > "$T/bus-send.log"; touch "$T/turn-fails"
+letter 1700000002-c "s-sender-three" "storm" "the light is out" "The light is out."
+rc="$(run "$CODEX_ID")"
+is    "a failed turn is not an error exit" "$rc" "0"
+is    "a failed turn sends nothing" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
+is    "the letter stays staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "1"
+
+# 5. the staged letter is answered on a later run, with an empty inbox
+rm -f "$T/turn-fails"; : > "$T/bus-read.log"
+rc="$(run "$CODEX_ID")"
+has "the staged letter is answered later" "$(cat "$T/bus-send.log")" "s-sender-three"
+is  "an empty inbox needs no bus-read" "$(cat "$T/bus-read.log" | wc -c | tr -d ' ')" "0"
+is  "and then nothing is staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "0"
+
+# 7. an answered letter is never answered twice, even if bus-read did nothing
+: > "$T/bus-send.log"
+cat > "$BIN/bus-read" <<'EOF'
+#!/bin/sh
+printf 'read %s\n' "$1" >> "$BUS_READ_LOG"
+exit 0
+EOF
+chmod 755 "$BIN/bus-read"
+letter 1700000003-d "s-sender-four" "quay" "the bollard" "The bollard is loose."
+rc="$(run "$CODEX_ID")"
+has "the new letter is answered once" "$(cat "$T/bus-send.log")" "s-sender-four"
+: > "$T/bus-send.log"
+rc="$(run "$CODEX_ID")"
+is  "the same letter is not answered again" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
+has "the ledger remembers it" "$(cat "$T/state/$CODEX_ID.codex-answered")" "1700000003-d.json"
+
+printf '\n  %d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

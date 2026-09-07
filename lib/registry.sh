@@ -2131,7 +2131,7 @@ registry_load() {
   source "$conf"
   : "${PERMISSION_MODE:=bypassPermissions}"
   : "${RUNTIME:=claude-code}"
-  case "$RUNTIME" in claude-code|opencode) ;; *) return 1 ;; esac
+  case "$RUNTIME" in claude-code|opencode|codex) ;; *) return 1 ;; esac
   case "$RUNTIME" in
     opencode)
       [[ "$MODEL" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$ ]] || return 1
@@ -2139,6 +2139,11 @@ registry_load() {
       [[ "$OPENCODE_PORT" =~ ^[0-9]+$ ]] && [ "$OPENCODE_PORT" -ge 1024 ] && [ "$OPENCODE_PORT" -le 65535 ] || return 1
       case "$AUTO_APPROVE" in true|false) ;; *) return 1 ;; esac
       [[ "$CLAUDE_MEMORY_ROOT" = /* ]] && [[ "$CLAUDE_MEMORY_ROOT" != *".."* ]] || return 1
+      ;;
+    codex)
+      # A Codex row owns a thread, not a process: no port, no version pin in the
+      # row. MODEL is optional and passed through to the thread when set.
+      [ -z "$OPENCODE_VERSION$OPENCODE_PORT" ] || return 1
       ;;
     claude-code)
       [ -z "$OPENCODE_VERSION$OPENCODE_PORT" ] || return 1
