@@ -133,8 +133,24 @@ mcp_render_document() {
   # pointed a session at ANOTHER OWNER'S browser that answers 200 all the same.
   # Empty when the session declares no rig; the template branch below refuses
   # rather than render half.
+  # A SHARED RIG'S PORT IS READ FROM ITS OWNER, never copied into the borrower's
+  # row: a copy goes stale the day the owner's rig moves, and a stale port
+  # answers 200 from somebody else's browser. The owner is named by slug, so the
+  # lookup follows a rename the way every other reference in the register does.
   local browser_cdp=""
-  if registry_load "$sid" >/dev/null 2>&1; then browser_cdp="${BROWSER_CDP:-}"; fi
+  if registry_load "$sid" >/dev/null 2>&1; then
+    browser_cdp="${BROWSER_CDP:-}"
+    if [ "${BROWSER_RIG:-}" = "shared" ] && [ -n "${BROWSER_RIG_OWNER:-}" ]; then
+      local _owner="$BROWSER_RIG_OWNER" _oid
+      browser_cdp=""
+      for _oid in $(registry_list 2>/dev/null); do
+        ( registry_load "$_oid" >/dev/null 2>&1 && [ "$SLUG" = "$_owner" ] ) || continue
+        browser_cdp="$( registry_load "$_oid" >/dev/null 2>&1 && printf '%s' "${BROWSER_CDP:-}" )"
+        break
+      done
+      [ -n "$browser_cdp" ] || echo "steward: mcp render: session '$sid': shares the rig of '$_owner', which has no rig port here" >&2
+    fi
+  fi
 
   local objs=() slug total=0 rendered=0
   # A HERE-DOCUMENT, NOT A PIPELINE. `... | while read` runs the loop in a

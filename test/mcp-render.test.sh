@@ -425,7 +425,8 @@ echo "== 22. <browser-cdp>: the session's own rig port, or the asset is omitted 
 # listens elsewhere, and granting it anyway would have pointed a session at
 # ANOTHER OWNER'S browser, which answers 200 just the same. Measured 2026-09-07.
 printf 'NAME="Rigged"\nMEMBERS="a"\nMCP_ASSETS="rig-tool"\n' > "$ENT/rigged.conf"
-sess s-rigged 'DOMAIN="rigged"
+sess s-rigged 'SLUG="s-rigged"
+DOMAIN="rigged"
 RC_LABEL="R"
 BROWSER_RIG="yes"
 BROWSER_DISPLAY="24"
@@ -442,6 +443,17 @@ RC_LABEL="S"'
 out="$(run mcp render s-self 2>/dev/null)"
 has  "22f a tool that acts as the session is given its id" "$out" "s-self"
 hasnt "22g and no placeholder survives" "$out" "<session-id>"
+
+# A SHARED RIG'S PORT COMES FROM ITS OWNER, never from a copy in the borrower's
+# row - a copy goes stale the day the owner's rig moves, and a stale port
+# answers 200 from somebody else's browser.
+sess s-shares 'DOMAIN="rigged"
+RC_LABEL="R2"
+BROWSER_RIG="shared"
+BROWSER_RIG_OWNER="s-rigged"'
+out="$(run mcp render s-shares 2>/dev/null)"
+has  "22h a borrower gets the owner's port" "$out" "http://127.0.0.1:9327"
+hasnt "22i and no placeholder survives" "$out" "<browser-cdp>"
 
 sess s-norig 'DOMAIN="rigged"
 RC_LABEL="R"'

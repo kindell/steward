@@ -333,6 +333,11 @@ for _conf in "$_rig_regdir"/*.conf; do
     echo "browser-stack: REFUSING — $_name.conf could not be read (see above)" >&2
     exit 78
   fi
+  # ONLY THE OWNER STARTS A RIG. A row with BROWSER_RIG="shared" names the row
+  # that owns one and carries no numbers of its own - it is a reader of that
+  # rig, not a second claim on the same screen. Two claims on one number is what
+  # made this command refuse a whole account, and a password change then left
+  # two rigs down while the tunnel kept listening. Measured 2026-09-07.
   [ "$BROWSER_RIG" = "yes" ] || continue
   [ "$HOST" = "$_rig_host" ] || continue
   [ "$OWNER" = "$_rig_me" ] || continue

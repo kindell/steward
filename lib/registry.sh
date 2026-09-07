@@ -2126,6 +2126,7 @@ registry_load() {
   VISIBILITY=""; VISIBLE_TO=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
+  BROWSER_RIG_OWNER=""
   RUNTIME=""; MODEL=""; OPENCODE_VERSION=""; OPENCODE_PORT=""; AUTO_APPROVE=""; CLAUDE_MEMORY_ROOT=""
   # shellcheck source=/dev/null
   source "$conf"
@@ -2422,11 +2423,38 @@ registry_load() {
   # which is how one host ended up with three rigs in one account's range and a
   # fourth wedged inside it. The block scheme lives with whoever holds the
   # registry; see the rig documentation for the ranges.
-  if [ -n "$BROWSER_RIG" ] && [ "$BROWSER_RIG" != "yes" ]; then
-    echo "registry: $project.conf BROWSER_RIG must be 'yes' or unset (got '$BROWSER_RIG')" >&2
+  if [ -n "$BROWSER_RIG" ] && [ "$BROWSER_RIG" != "yes" ] && [ "$BROWSER_RIG" != "shared" ]; then
+    echo "registry: $project.conf BROWSER_RIG must be 'yes', 'shared' or unset (got '$BROWSER_RIG')" >&2
     return 1
   fi
-  if [ -n "$BROWSER_RIG" ]; then
+
+  # SHARED IS ASYMMETRIC, AND THAT IS THE WHOLE POINT. Two rows that each said
+  # "I have a rig on screen 24" were not sharing one - they were two claims on
+  # one number, and browser-stack refused the whole account. After a VNC
+  # password change two rigs then failed to come back while Tailscale went on
+  # listening on the port with nothing behind it, so the outage looked like a
+  # network fault to the person. Measured 2026-09-07, found by the session whose
+  # rig it was.
+  #
+  # So exactly one row OWNS a rig and starts it; the others NAME that row and
+  # start nothing. The numbers are never repeated - a borrower that copied them
+  # would go stale the day the owner's rig moves, and a stale port answers 200
+  # from somebody else's browser.
+  if [ "$BROWSER_RIG" = "shared" ]; then
+    if ! registry_valid_name "$BROWSER_RIG_OWNER"; then
+      echo "registry: $project.conf BROWSER_RIG=shared needs BROWSER_RIG_OWNER, the slug of the row that owns the rig (got '$BROWSER_RIG_OWNER')" >&2
+      return 1
+    fi
+    if [ -n "$BROWSER_DISPLAY$BROWSER_CDP$BROWSER_VNC$BROWSER_PROFILE" ]; then
+      echo "registry: $project.conf BROWSER_RIG=shared must NOT repeat the rig's numbers or profile — they belong to '$BROWSER_RIG_OWNER' and are read from there" >&2
+      return 1
+    fi
+  elif [ -n "$BROWSER_RIG_OWNER" ]; then
+    echo "registry: $project.conf has BROWSER_RIG_OWNER but BROWSER_RIG is not 'shared' — a row either owns a rig or names the row that does" >&2
+    return 1
+  fi
+
+  if [ "$BROWSER_RIG" = "yes" ]; then
     # ALL THREE OR REFUSE. A rig with two numbers starts on a screen nobody can
     # see, or answers on a port nobody grants — and both look like a working rig
     # from the outside.
