@@ -131,11 +131,23 @@ class Client {
   on(fn) { this.listeners.push(fn); }
   answerRequest(msg) {
     const m = msg.method || '';
-    // The estate's grant IS the approval: a server in this thread's config was
-    // put there by the register, and a second yes at call time adds nothing but
-    // a place to hang. Everything else - a sandbox escape, a command, a skill -
-    // is declined, because saying yes to those needs a human.
-    const approve = m.indexOf('mcp') !== -1 || m.indexOf('Mcp') !== -1 || m.indexOf('tool') !== -1 || m.indexOf('Tool') !== -1;
+    const params = msg.params || {};
+    // AN EXACT LIST, AND WHAT IS BEING ASKED - not a substring of the name.
+    // The first version approved anything whose method contained "mcp" or
+    // "tool", which is a guess about names rather than a decision about
+    // questions: `item/tool/requestUserInput` asks the HUMAN for input and
+    // would have been answered with an empty accept. The product's integrator
+    // named this before it cost anything (2026-09-07).
+    //
+    // The estate's grant IS the approval for a tool the register put in this
+    // thread's config, and a second yes at call time adds nothing but a place
+    // to hang. Everything else - a sandbox escape, a command, a skill, a
+    // question meant for a person - is declined, because saying yes to those
+    // needs a human at the pane.
+    const TOOL_CALL_APPROVALS = ['mcpServer/elicitation/request'];
+    const kind = (params._meta && params._meta.codex_approval_kind) || '';
+    const approve = TOOL_CALL_APPROVALS.indexOf(m) !== -1 &&
+                    (kind === '' || kind === 'mcp_tool_call');
     // The decision word is the server's, not ours. Log the exact request the
     // first time each method is seen, so a wrong word shows up as a rejection
     // WITH its cause instead of a silent no.
@@ -151,7 +163,10 @@ class Client {
     const result = m.indexOf('elicitation') !== -1
       ? (approve ? { action: 'accept', content: {} } : { action: 'decline' })
       : (approve ? { decision: 'approved' } : { decision: 'denied' });
-    if (!approve) process.stderr.write('codex-thread: declined ' + m + ' (no human at this pane)\n');
+    if (!approve) {
+      process.stderr.write('codex-thread: declined ' + m + (kind ? ' [' + kind + ']' : '') +
+        ' - only a tool the register granted is approved without a human\n');
+    }
     this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
   }
   notify(method, params) {
