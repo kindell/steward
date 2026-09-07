@@ -2399,7 +2399,11 @@ cmd_registry_session_check() {
   # THE HUB'S OWN FILE IS THE ONE THING THIS PROCESS CAN ALWAYS READ.
   local hub_row="no" ak="$HOME/.ssh/authorized_keys"
   if [ -r "$ak" ]; then
-    grep -q "bus-relay-in $id" "$ak" 2>/dev/null && hub_row="yes"
+    # THE CLOSING QUOTE IS PART OF THE MATCH. Without it this is a prefix test,
+    # and a prefix test on identifiers is how one row answers for another. Ids
+    # are fixed-length hex today, so nothing could have collided - but a check
+    # that happens to be safe is not the same as one that is.
+    grep -q "bus-relay-in $id\"" "$ak" 2>/dev/null && hub_row="yes"
   elif [ -e "$ak" ]; then
     # THE FILE IS THERE AND THIS PROCESS MAY NOT READ IT - which is not the same
     # as "there is no line". Only the second is an answer.
@@ -2408,7 +2412,10 @@ cmd_registry_session_check() {
 
   # The key lives in the OWNER's home. Readable only when this process is that
   # owner - which it is when a person runs the check in their own account.
+  # WITHOUT A ROW THERE IS NO OWNER, and "the owner's home is not readable" is
+  # then the wrong reason for the wrong question - the row is what is missing.
   local key_state="unmeasured" key_why="the owner's home is not readable from here (homes are 0750)"
+  [ "$conf_state" = "ok" ] || key_why="there is no row, so there is no owner whose key to look for"
   local keyfile=""
   if [ -n "$owner" ]; then
     # THE CURRENT PROCESS'S OWN HOME when it IS the owner - not a lookup of the

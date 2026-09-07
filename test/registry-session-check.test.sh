@@ -77,6 +77,16 @@ has "json says whether it can send" "$out" '"can_send":"yes"'
 
 out="$(run s-0000000000000bad)"
 has "an unknown id is reported, not invented" "$out" "row              missing"
+# THE REASON MUST MATCH THE QUESTION. Without a row there is no owner, and
+# blaming an unreadable home for a key nobody declared sends the reader to the
+# wrong place. Raised in review by the product's integrator.
+has "and the missing row is the reason, not the home" "$out" "there is no row"
+
+# A PREFIX IS NOT A MATCH. The hub line is matched with its closing quote, so a
+# longer id that starts with a shorter one can never answer for it.
+printf 'restrict,command="bus-relay-in %s-extra" ssh-ed25519 AAAA busrelay x\n' "$ID" > "$HOMEDIR/.ssh/authorized_keys"
+out="$(run "$ID")"
+has "a longer id does not answer for a shorter one" "$out" "hub relay line   no"
 
 out="$(run 2>&1)"; rc=$?
 has "no id is a refusal that says so" "$out" "needs a session id"
