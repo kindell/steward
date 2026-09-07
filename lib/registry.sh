@@ -2428,7 +2428,7 @@ registry_load() {
     return 1
   fi
 
-  # SHARED IS ASYMMETRIC, AND THAT IS THE WHOLE POINT. Two rows that each said
+  # SHARED IS ASYMMETRIC, AND DELIBERATELY SO. Two rows that each said
   # "I have a rig on screen 24" were not sharing one - they were two claims on
   # one number, and browser-stack refused the whole account. After a VNC
   # password change two rigs then failed to come back while Tailscale went on
