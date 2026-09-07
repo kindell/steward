@@ -69,6 +69,23 @@ if [ -z "$NODE_BIN" ]; then
 fi
 [ -n "$NODE_BIN" ] || refuse 78 "node is required for a Codex session and was not found on PATH or in the usual places"
 command -v "$NODE_BIN" >/dev/null 2>&1 || [ -x "$NODE_BIN" ] || refuse 78 "node is required for a Codex session: $NODE_BIN is not executable"
+# THE SHELL TOOL HAS ITS OWN BINARY ON macOS, AND GATEKEEPER CAN HOLD IT.
+# Codex runs its shell tool through codex-code-mode-host; a copy that still
+# carries com.apple.quarantine hangs in the dynamic loader, every command times
+# out, and the model answers from guesswork - it looks exactly like a bad model.
+# Measured on the estate's other host 2026-09-07: five tool calls timed out, and
+# the same binary ran instantly from an unquarantined path. A brew upgrade
+# recreates it, so this is a check and not a one-time fix.
+codex_preflight() {
+  local host; host="$(dirname "${STEWARD_CODEX_BIN:-$HOME/.local/bin/codex}")/codex-code-mode-host"
+  [ -x "$host" ] || return 0
+  timeout 5 "$host" --help >/dev/null 2>&1 && return 0
+  case $? in
+    124) refuse 78 "codex-code-mode-host does not answer (it hangs). On macOS this is Gatekeeper: run 'xattr -d com.apple.quarantine $host'. Every shell tool call would time out and the model would answer from guesswork." ;;
+  esac
+  return 0
+}
+
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
 BUS_READ="${STEWARD_BUS_READ:-$HOME/bin/bus-read}"
 BUS_ROOT="${STEWARD_BUS_ROOT:-$HOME/.config/agent-bus}"
@@ -106,6 +123,8 @@ mkdir -p "$PENDING_DIR" "$ANSWER_DIR" || refuse 70 "could not create the working
 ANSWER_CLASSES="${CODEX_ANSWER_CLASSES:-FRAGA SAMORDNING}"
 ANSWER_CLASS="${CODEX_REPLY_CLASS:-SAMORDNING}"
 REPLY_MARK="reply to "
+
+command -v timeout >/dev/null 2>&1 && codex_preflight
 
 LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 [ -n "$LABEL" ] || LABEL="$SESSION_NAME"
@@ -175,6 +194,7 @@ fi
 
 # --- 3. answer everything staged, oldest first, one turn at a time -----------
 answered=0
+failed=0
 for request in "$PENDING_DIR"/*.json; do
   [ -e "$request" ] || break
   # awk, not sed: BSD sed reads \t as the letter t, so a tab-separated header
@@ -203,6 +223,7 @@ for request in "$PENDING_DIR"/*.json; do
       # THE REASON, NOT JUST THE FACT. A letter that stays staged with no cause
       # in the log reads as a silent model; the client's stderr carries the
       # real one - an expired login, a refused account, a turn that failed.
+      failed=$((failed + 1))
       note "the turn failed (rc $_rc) for $(basename "$request"); the letter stays staged"
       sed 's/\x1b\[[0-9;]*m//g' "$answer_file.err" | tail -3 >&2
       [ "$_rc" = 78 ] && note "rc 78 is an ENVIRONMENT refusal - the login or the binary, not the model"
@@ -234,6 +255,12 @@ $reply" >/dev/null 2>&1; then
       rm -f "$request" "$answer_file" "$answer_file.err"
       answered=$((answered + 1))
     else
+      # NAME THE LIKELIEST CAUSE. A row minted with `registry session add` gets
+      # no relay key and no row at the hub - only session-new/enroll do that -
+      # and the send then refuses for a reason the reader has to go looking for.
+      if [ ! -e "$HOME/.ssh/id_busrelay_$ID" ]; then
+        note "no relay key for $ID (~/.ssh/id_busrelay_$ID): this row was minted without one, and the hub has no row for it either"
+      fi
       note "could not send the reply to $from; the answer is kept at $answer_file"
     fi
   else
@@ -242,4 +269,14 @@ $reply" >/dev/null 2>&1; then
 done
 
 [ "$answered" -gt 0 ] && note "answered $answered letter(s) in thread $(cat "$THREAD_FILE" 2>/dev/null)"
+
+# THE EXIT CODE HAS TO CARRY THE ROUND'S OUTCOME. A run where every turn failed
+# exited 0, so a timer's log showed a clean run while the mail sat unanswered -
+# measured on the estate's other host 2026-09-07. A letter still waiting is not
+# an error (it is answered next round); a round where turns FAILED and nothing
+# was answered is, and rc 75 says "temporary, try again" rather than "broken".
+if [ "$failed" -gt 0 ] && [ "$answered" -eq 0 ]; then
+  note "$failed turn(s) failed and nothing was answered"
+  exit 75
+fi
 exit 0

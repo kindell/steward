@@ -24,6 +24,8 @@
 #      answering each other's answers is a loop no ledger can stop.
 #  11. A failing turn says WHY in the log, and an environment refusal (rc 78)
 #      is named as such - an expired login must never read as a silent model.
+#  12. A round where turns failed and nothing was answered exits 75, so a
+#      timer's log does not show a clean run over unanswered mail.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTER="$here/runtime/codex-session.sh"
@@ -153,7 +155,11 @@ is  "no second thread was born" "$(cat "$T/state/$CODEX_ID.codex-thread")" "thre
 : > "$T/bus-send.log"; touch "$T/turn-fails"
 letter 1700000002-c "s-sender-three" "storm" "the light is out" "The light is out."
 rc="$(run "$CODEX_ID")"
-is    "a failed turn is not an error exit" "$rc" "0"
+# THE ROUND'S OUTCOME IS IN THE EXIT CODE. A run where every turn failed used
+# to exit 0, so a timer's log showed a clean round while the mail sat
+# unanswered. rc 75 says "temporary, try again", which is what a staged letter
+# is. Asked for by the product's integrator after a real round on macOS.
+is    "a round where the only turn failed exits 75" "$rc" "75"
 is    "a failed turn sends nothing" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
 is    "the letter stays staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "1"
 
@@ -203,7 +209,7 @@ is  "a reply is not answered" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
 touch "$T/env-fails"; : > "$T/bus-send.log"
 letter 1700000007-h "s-sender-eight" "dock" "the gate is stuck" "Please look."
 rc="$(run "$CODEX_ID")"; err="$(cat "$T/err")"
-is  "an environment refusal is not an error exit" "$rc" "0"
+is  "an environment refusal exits 75 as well" "$rc" "75"
 has "the log carries the client's reason" "$err" "unauthorized"
 has "and names rc 78 as the environment" "$err" "rc 78"
 is  "the letter stays staged for a retry" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "1"
