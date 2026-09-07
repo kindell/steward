@@ -17,6 +17,10 @@
 #   4. A live OpenCode session is found by ITS PORT, and left alone: no spawn,
 #      no keystrokes (OpenCode has no /rename).
 #   5. No rename cycle is armed for it.
+#   6. A CODEX row is refused outright: no pane, no port, no process to start.
+#      Run against one, supervision built a claude command line and started a
+#      tmux session in the codex row's working copy - a claude-code session
+#      nobody registered, under the codex row's id (measured 2026-09-07).
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUP="$here/linux/session-supervisor-linux.sh"
@@ -153,6 +157,29 @@ run; rc5=$?
 is    "5a rc 0" "$rc5" "0"
 has   "5b the adapter again" "$(cat "$TMUX_LOG")" "$ADAPTER"
 hasnt "5c never claude" "$(cat "$TMUX_LOG")" "claude"
+
+echo "== 6. a codex row starts nothing - not the adapter, not claude =="
+CODEX="s-0000000000000003"
+cat > "$ROOT/sessions.d/$CODEX.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="alpha"
+REPO_PATH="$HOMEDIR/Projects/repo"
+ID="$CODEX"
+RC_LABEL=""
+RUNTIME="codex"
+CLAUDE_MEMORY_ROOT="$T/memory"
+EOF
+rm -f "$T_HAS_SESSION" "$T_ALIVE"
+: > "$TMUX_LOG"; : > "$PGREP_LOG"
+HOME="$HOMEDIR" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config" \
+  STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_TMUX_SOCKET="$T/fixture.sock" PATH="$BIN:$PATH" \
+  bash "$SUP" "$CODEX" >"$T/out6" 2>&1; rc6=$?
+is    "6a rc 0 - nothing to do is not a fault" "$rc6" "0"
+hasnt "6b no tmux session is created for a codex row" "$(cat "$TMUX_LOG")" "new-session"
+hasnt "6c and no claude command line is ever built" "$(cat "$TMUX_LOG")" "claude"
+has   "6d the refusal names the row and its runtime" "$(cat "$T/out6")" "$CODEX is a codex row"
+has   "6e and names what drives it instead" "$(cat "$T/out6")" "agent-codex@"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
