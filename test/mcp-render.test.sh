@@ -79,6 +79,12 @@ cat > "$MCPD/rig-tool.conf" <<'EOF'
 MCP_COMMAND="/opt/rig/server"
 MCP_ARGS="--browserUrl http://127.0.0.1:<browser-cdp>"
 EOF
+# A TOOL THAT ACTS AS THE SESSION. Which session it serves is the render's to
+# state and never the model's to choose.
+cat > "$MCPD/self-tool.conf" <<'EOF'
+MCP_COMMAND="/opt/self/server"
+MCP_ARGS="<session-id>"
+EOF
 # A ROW BEARING A HOME-RELATIVE PATH IN EVERY ONE OF ITS THREE FIELDS, plus one
 # argument that LOOKS like the prefix and two that must NOT be touched: a
 # `~user/...` form (a passwd lookup, not this row's business) and a tilde
@@ -429,6 +435,13 @@ BROWSER_PROFILE="p"'
 out="$(run mcp render s-rigged 2>/dev/null)"
 has "22a the session's own port is rendered" "$out" "http://127.0.0.1:9327"
 hasnt "22b no placeholder survives into the document" "$out" "<browser-cdp>"
+
+printf 'NAME="Selfed"\nMEMBERS="a"\nMCP_ASSETS="self-tool"\n' > "$ENT/selfed.conf"
+sess s-self 'DOMAIN="selfed"
+RC_LABEL="S"'
+out="$(run mcp render s-self 2>/dev/null)"
+has  "22f a tool that acts as the session is given its id" "$out" "s-self"
+hasnt "22g and no placeholder survives" "$out" "<session-id>"
 
 sess s-norig 'DOMAIN="rigged"
 RC_LABEL="R"'

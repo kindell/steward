@@ -222,6 +222,16 @@ mcp_render_document() {
       done
     fi
 
+    # <session-id> IN THE ARGUMENTS. A tool that acts AS the session - sending
+    # on the bus is the first - must be told which session it serves, and the
+    # answer can never be the model's to choose. The render puts it there, so
+    # the running tool has no way to claim another name.
+    local _ai2
+    case "$cmdpath" in *"<session-id>"*) cmdpath="${cmdpath//<session-id>/$sid}" ;; esac
+    for _ai2 in "${!argv[@]}"; do
+      argv[$_ai2]="${argv[$_ai2]//<session-id>/$sid}"
+    done
+
     # <browser-cdp> IN THE ARGUMENTS, expanded from the session's own row.
     # THE SAME RULE AS <domain>: a template whose value this session does not
     # have is OMITTED and NAMED, never rendered with the placeholder left in.

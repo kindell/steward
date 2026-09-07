@@ -1287,7 +1287,8 @@ cmd_registry() {
       shift
       case "${1:-}" in
         add) shift; cmd_registry_session_add "$@" ;;
-        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add)" 64 ;;
+        check) shift; cmd_registry_session_check "$@" ;;
+        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check)" 64 ;;
       esac ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
     *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, project, session, migrate-session)" 64 ;;
@@ -2355,6 +2356,101 @@ cmd_registry_session_add() {
       "$id" "$slug" "$account" "$tkind" "$tslug" "$host"
     printf 'steward: the row has no relay key — it cannot send on the bus until ~/.ssh/id_busrelay_%s exists in the owner'"'"'s home and the hub'"'"'s authorized_keys carries it; this verb never mints either (session-new.sh, run from a registered pane, mints conf and key together)\n' \
       "$id"
+  fi
+  return 0
+}
+
+# cmd_registry_session_check <id> [--json] — MEASURE a row's ability to speak,
+# and say plainly what could not be measured from here.
+#
+# WHY IT EXISTS. `registry session add` writes a row and mints nothing: no relay
+# key in the owner's home, no line in the hub's authorized_keys. Such a row
+# RECEIVES mail perfectly and cannot answer, which reads as a silent session
+# rather than as a missing key - measured twice in one day on this estate, once
+# on each of two hosts, and both times the cause was found only after somebody
+# waited for a reply that was never coming.
+#
+# WHAT IT REFUSES TO GUESS. Homes are 0750. Run as the hub, this verb CANNOT see
+# /home/<somebody>/.ssh, and an unreadable directory is not an absent key. So
+# every line says measured / not measured, and the second kind names why. A
+# check that reported "key missing" for a key it merely could not see would send
+# its reader to mint a second key over a working one.
+cmd_registry_session_check() {
+  local want_json="" args=() a
+  for a in "$@"; do
+    case "$a" in --json) want_json=1 ;; *) args+=("$a") ;; esac
+  done
+  local id="${args[0]:-}"
+  [ -n "$id" ] || { _reg_fail "$want_json" "steward registry session check: needs a session id"; return 64; }
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  local conf conf_state="missing" owner="" slug="" host=""
+  conf="$(registry_dir)/$id.conf"
+  if [ -f "$conf" ]; then
+    if registry_load "$id" >/dev/null 2>&1; then
+      conf_state="ok"; owner="$OWNER"; slug="$SLUG"; host="$HOST"
+    else
+      conf_state="unreadable"
+    fi
+  fi
+
+  # THE HUB'S OWN FILE IS THE ONE THING THIS PROCESS CAN ALWAYS READ.
+  local hub_row="no" ak="$HOME/.ssh/authorized_keys"
+  if [ -r "$ak" ]; then
+    grep -q "bus-relay-in $id" "$ak" 2>/dev/null && hub_row="yes"
+  elif [ -e "$ak" ]; then
+    # THE FILE IS THERE AND THIS PROCESS MAY NOT READ IT - which is not the same
+    # as "there is no line". Only the second is an answer.
+    hub_row="unmeasured"
+  fi
+
+  # The key lives in the OWNER's home. Readable only when this process is that
+  # owner - which it is when a person runs the check in their own account.
+  local key_state="unmeasured" key_why="the owner's home is not readable from here (homes are 0750)"
+  local keyfile=""
+  if [ -n "$owner" ]; then
+    # THE CURRENT PROCESS'S OWN HOME when it IS the owner - not a lookup of the
+    # name. `~name` answers what the passwd file says, which is right for
+    # somebody else and wrong for us: a person running this in their own account
+    # (the only way the key is measurable at all) should have their own HOME
+    # honoured, fixtures included.
+    local home_dir
+    if [ "$owner" = "$(id -un)" ]; then home_dir="$HOME"; else home_dir="$(eval echo "~$owner" 2>/dev/null)"; fi
+    keyfile="$home_dir/.ssh/id_busrelay_$id"
+    if [ -r "$home_dir/.ssh" ]; then
+      if [ -e "$keyfile" ]; then key_state="yes"; else key_state="no"; fi
+      key_why=""
+    fi
+  fi
+
+  local speaks="no"
+  [ "$conf_state" = "ok" ] && [ "$hub_row" = "yes" ] && [ "$key_state" = "yes" ] && speaks="yes"
+  [ "$key_state" = "unmeasured" ] || [ "$hub_row" = "unmeasured" ] && [ "$speaks" = "no" ] && speaks="unknown"
+
+  if [ -n "$want_json" ]; then
+    jq -cn --arg id "$id" --arg conf "$conf_state" --arg owner "$owner" --arg slug "$slug" \
+      --arg host "$host" --arg hub "$hub_row" --arg key "$key_state" --arg keyfile "$keyfile" \
+      --arg why "$key_why" --arg speaks "$speaks" \
+      '{ok:true,kind:"session-check",id:$id,conf:$conf,owner:$owner,slug:$slug,host:$host,hub_row:$hub,relay_key:$key,relay_key_path:$keyfile,relay_key_note:$why,can_send:$speaks}'
+  else
+    printf 'session %s%s\n' "$id" "$( [ -n "$slug" ] && printf ' (%s, owner %s, host %s)' "$slug" "$owner" "$host" )"
+    printf '  row              %s\n' "$conf_state"
+    printf '  hub relay line   %s\n' "$hub_row"
+    if [ -n "$key_why" ]; then
+      printf '  relay key        not measured - %s\n' "$key_why"
+      printf '                   run this check in %s'"'"'s own account to measure it\n' "${owner:-the owner}"
+    else
+      printf '  relay key        %s%s\n' "$key_state" "$( [ -n "$keyfile" ] && printf ' (%s)' "$keyfile" )"
+    fi
+    case "$speaks" in
+      yes) printf '  can send         yes\n' ;;
+      no)  printf '  can send         NO - this row receives mail and cannot answer\n'
+           printf '                   a sending session is made with session-new.sh from a registered pane;\n'
+           printf '                   registry session add never mints a key or a hub line\n' ;;
+      *)   printf '  can send         unknown - see the unmeasured lines above\n' ;;
+    esac
   fi
   return 0
 }
