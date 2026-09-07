@@ -1,0 +1,27 @@
+# linux/agent-codex@.service — one round of the Codex adapter for one registered
+# row on a Linux host. The instance name is the session id: agent-codex@s-…
+#
+# A CODEX ROW IS A THREAD, NOT A PROCESS. There is nothing to keep alive between
+# letters, so this is not supervision: it is one run of the adapter, which takes
+# what is waiting in the inbox, runs one turn per letter in the row's own thread
+# and sends each answer back on the bus. It exits when the inbox is empty.
+#
+# ONE ROUND AT A TIME, BY CONSTRUCTION. A systemd service instance never runs
+# twice concurrently, so two deliveries in the same second cannot start two
+# turns in one thread - the second waits for the first to finish. That is the
+# per-row lock the delivery trigger needs, and systemd already provides it.
+#
+# Requires linger (loginctl enable-linger <user>) so the user unit runs without
+# anyone logged in, and STEWARD_ESTATE_ROOT in a drop-in, exactly as
+# agent-session@.service is given it.
+[Unit]
+Description=agent-codex %i — one adapter round for a Codex row
+
+[Service]
+Type=oneshot
+# The adapter's children (the app-server child, node) must end with the round.
+# This is the opposite of agent-session@'s KillMode=process, and deliberately
+# so: nothing here hands work to a server that must outlive it.
+KillMode=control-group
+TimeoutStartSec=20min
+ExecStart=/bin/bash %h/scripts/runtime/codex-session.sh %i

@@ -58,6 +58,9 @@ linux/mcp-env                      bin/mcp-env                          755  bin
 # systemd templates (daemon-reload only; never enable/restart)
 linux/agent-session@.service      .config/systemd/user/agent-session@.service  644  systemd
 linux/agent-session@.timer        .config/systemd/user/agent-session@.timer    644  systemd
+linux/agent-codex@.service          .config/systemd/user/agent-codex@.service      644  systemd
+linux/agent-codex@.path          .config/systemd/user/agent-codex@.path      644  systemd
+linux/agent-codex@.timer          .config/systemd/user/agent-codex@.timer      644  systemd
 linux/agent-job@.service          .config/systemd/user/agent-job@.service      644  systemd
 linux/browser-stack.service        .config/systemd/user/browser-stack.service    644  systemd
 linux/browser-stack.timer          .config/systemd/user/browser-stack.timer      644  systemd

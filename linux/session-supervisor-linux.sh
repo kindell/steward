@@ -754,6 +754,18 @@ trap 'rm -f "$MCP_ERR"' EXIT
 # THE ADAPTER CARRIES ITS OWN CONFIGURATION. An OpenCode row has no MCP
 # document to prepare and no claude command line to build: neither library is
 # needed to start it, so neither may refuse it.
+# A CODEX ROW HAS NO PROCESS TO SUPERVISE, and this round must not invent one.
+# Run against such a row, the supervision below builds a claude command line
+# and starts a tmux session in the row's working copy - a claude-code session
+# nobody registered, in the codex row's own directory, with the codex row's id.
+# Measured 2026-09-07: "workspace pre-trusted" on a row whose runtime is codex.
+# The codex row is driven by its mail (linux/agent-codex@.path) and by nothing
+# else; supervision of it is a refusal that says so.
+if [ "${RUNTIME:-claude-code}" = "codex" ]; then
+  echo "session-supervisor: $NAME is a codex row - it has no pane or port to supervise. Its turns run from linux/agent-codex@.path when mail arrives; nothing to do here." >&2
+  exit 0
+fi
+
 if [ "${RUNTIME:-claude-code}" = "opencode" ]; then
   :
 elif [ -n "$_mcp_lib_missing" ]; then

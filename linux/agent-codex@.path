@@ -1,0 +1,24 @@
+# linux/agent-codex@.path — the DELIVERY TRIGGER for a Codex row. When a letter
+# lands in the row's inbox, the adapter round starts. No timer polls for it.
+#
+# WHY A PATH UNIT AND NOT THE HUB. The bus delivers a letter by writing a file
+# into ~/.config/agent-bus/<id>/inbox/ in the OWNER's home. The hub cannot start
+# a process in that home - homes are 0750 and nobody writes in another person's
+# home - but systemd's user manager already runs there as the owner, and a path
+# unit watching the inbox directory is exactly "when mail arrives, run this, as
+# me". The trigger is the arrival itself, in the account the mail belongs to.
+#
+# DirectoryNotEmpty, NOT PathChanged. A letter that arrived while a round was
+# running would be missed by an edge trigger; DirectoryNotEmpty re-fires as long
+# as anything is waiting, so the next round starts the moment the previous one
+# exits. Measured 2026-09-07: three letters sat unanswered for hours because
+# nothing at all ran the adapter.
+[Unit]
+Description=agent-codex %i — start a round when mail arrives
+
+[Path]
+DirectoryNotEmpty=%h/.config/agent-bus/%i/inbox
+Unit=agent-codex@%i.service
+
+[Install]
+WantedBy=default.target

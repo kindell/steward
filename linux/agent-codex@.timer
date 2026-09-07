@@ -1,0 +1,18 @@
+# linux/agent-codex@.timer — the SECOND LINE for a Codex row: a round every ten
+# minutes whether or not mail arrived.
+#
+# WHY IT EXISTS BESIDE THE PATH UNIT. A letter whose turn failed stays STAGED
+# (in the adapter's pending directory), not in the inbox - so the path unit,
+# which watches the inbox, will not fire for it again. The timer is what retries
+# a staged letter after a login came back or a lock was released. Ten minutes is
+# a compromise: short enough that a retry is not a surprise, long enough that a
+# broken login does not burn a turn every minute.
+[Unit]
+Description=agent-codex %i — retry round
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
