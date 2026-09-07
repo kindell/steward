@@ -375,5 +375,22 @@ is "7f: no LOGIN= line on disk" "$(grep -c '^LOGIN=' "$SESS/$IDN.conf")" "0"
 # 7g. --json LACKS the field when it was not given.
 is "7g: --json has no login key when --login was not given" "$(printf '%s' "$out" | jq -r 'has("login")')" "false"
 
+# ── 8. THE RECEIPT SAYS THE ROW IS MUTE ───────────────────────────────────
+# This verb writes the row and NOTHING ELSE: no relay key under the owner's
+# ~/.ssh, no line in the hub's authorized_keys. Until both exist the session
+# cannot send on the bus, and no verb mints them for an already written row
+# (session-new.sh mints conf and key together). A receipt that only says
+# "wrote" invites the operator to start the session and wait for mail that
+# can never be answered. The fact is constant — the id was minted this very
+# call — so the receipt STATES it rather than measuring anything.
+out="$(run add --account acme-mac --project site --slug mutetext --repo /tmp/fixture-repo)"; rc=$?
+is  "8a: rc 0" "$rc" "0"
+has "8a: the text receipt says the row has no relay key" "$out" "no relay key"
+has "8a: the text receipt names the key path"            "$out" "id_busrelay_"
+has "8a: the text receipt names the verb that mints one" "$out" "session-new.sh"
+out="$(run add --account acme-mac --project site --slug mutejson --repo /tmp/fixture-repo --json)"; rc=$?
+is  "8b: rc 0" "$rc" "0"
+is  "8b: --json carries relay_key:false" "$(printf '%s' "$out" | jq -r '.relay_key')" "false"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

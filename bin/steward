@@ -2327,6 +2327,13 @@ cmd_registry_session_add() {
   fi
 
   local file="$dir/$id.conf"
+  # THE RECEIPT SAYS THE ROW IS MUTE. This verb writes the row and nothing
+  # else: no relay key under the owner's ~/.ssh, no line in the hub's
+  # authorized_keys — and no verb mints those for an already written row
+  # (session-new.sh mints conf and key together, through enroll). A session
+  # started on this row alone reads its mail and can never answer it. The
+  # fact is constant — the id was minted this very call — so it is STATED,
+  # not measured: relay_key:false in --json, a second line in text.
   if [ -n "$want_json" ]; then
     # login IS PRESENT IN THE REPORT ONLY WHEN IT WAS GIVEN — same "no line
     # without --login" symmetry the row itself carries. A present-but-empty
@@ -2336,16 +2343,18 @@ cmd_registry_session_add() {
       jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
         --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
         --arg owner "$principal" --arg repo "$repo" --arg file "$file" --arg login "$login" \
-        '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file,login:$login}'
+        '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file,login:$login,relay_key:false}'
     else
       jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
         --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
         --arg owner "$principal" --arg repo "$repo" --arg file "$file" \
-        '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file}'
+        '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file,relay_key:false}'
     fi
   else
     printf 'steward: wrote %s.conf into the session register (slug %s in account %s, on %s %s, host %s)\n' \
       "$id" "$slug" "$account" "$tkind" "$tslug" "$host"
+    printf 'steward: the row has no relay key — it cannot send on the bus until ~/.ssh/id_busrelay_%s exists in the owner'"'"'s home and the hub'"'"'s authorized_keys carries it; this verb never mints either (session-new.sh, run from a registered pane, mints conf and key together)\n' \
+      "$id"
   fi
   return 0
 }
