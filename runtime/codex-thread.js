@@ -60,6 +60,14 @@ function lastLines(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, '').trim().split('\n').slice(-3).join('\n  ');
 }
 
+// THE RESOLVED BINARY, symlinks followed. On macOS /opt/homebrew/bin/codex is a
+// link and the shell tool's own binary sits beside the TARGET, not beside the
+// link - a check that looks next to the link finds nothing and passes silently.
+function codexBinReal() {
+  const b = codexBin();
+  try { return fs.realpathSync(b); } catch { return b; }
+}
+
 function codexBin() {
   const explicit = process.env.STEWARD_CODEX_BIN;
   if (explicit) return explicit;
@@ -349,12 +357,36 @@ async function cmdTurn(args) {
   process.stdout.write(messages[messages.length - 1].replace(/\s+$/, '') + '\n');
 }
 
+// PREFLIGHT LIVES HERE, WITH THE PATH LIST. The shell had its own copy of the
+// default path and its own timeout, and on the host this check was written for
+// it found neither the binary (the list is here, not there) nor a `timeout`
+// (macOS has none outside Homebrew, and launchd's PATH has no Homebrew). It
+// passed in silence. One list, one timer, one place. Measured by the product's
+// integrator 2026-09-07.
+function cmdPreflight(args) {
+  const host = path.join(path.dirname(codexBinReal()), 'codex-code-mode-host');
+  if (!fs.existsSync(host)) { process.stdout.write('no code-mode host beside ' + codexBinReal() + '\n'); return; }
+  const seconds = Number(args.timeout || 5);
+  const r = require('child_process').spawnSync(host, ['--help'], { timeout: seconds * 1000, stdio: 'ignore' });
+  if (r.error && r.error.code === 'ETIMEDOUT') {
+    refuse(EX_CONFIG, 'codex-code-mode-host hangs (' + host + '). On macOS this is Gatekeeper holding the binary:\n' +
+      '  xattr -d com.apple.quarantine ' + host + '\n' +
+      '  Every shell tool call would time out and the model would answer from guesswork.');
+  }
+  if (r.status !== 0 && !r.error) {
+    process.stderr.write('codex-thread: code-mode host answered rc ' + r.status + ' (not a hang; continuing)\n');
+  }
+  process.stdout.write('code-mode host ok: ' + host + '\n');
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const verb = argv[0];
   const args = parseArgs(argv.slice(1));
   if (verb === 'turn') await cmdTurn(args);
-  else refuse(EX_USAGE, 'usage: codex-thread.js turn --cwd DIR --message-file FILE --thread-file PATH');
+  else if (verb === 'which') process.stdout.write(codexBinReal() + '\n');
+  else if (verb === 'preflight') cmdPreflight(args);
+  else refuse(EX_USAGE, 'usage: codex-thread.js turn|which|preflight ...');
   process.exit(0);
 }
 

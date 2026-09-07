@@ -69,23 +69,6 @@ if [ -z "$NODE_BIN" ]; then
 fi
 [ -n "$NODE_BIN" ] || refuse 78 "node is required for a Codex session and was not found on PATH or in the usual places"
 command -v "$NODE_BIN" >/dev/null 2>&1 || [ -x "$NODE_BIN" ] || refuse 78 "node is required for a Codex session: $NODE_BIN is not executable"
-# THE SHELL TOOL HAS ITS OWN BINARY ON macOS, AND GATEKEEPER CAN HOLD IT.
-# Codex runs its shell tool through codex-code-mode-host; a copy that still
-# carries com.apple.quarantine hangs in the dynamic loader, every command times
-# out, and the model answers from guesswork - it looks exactly like a bad model.
-# Measured on the estate's other host 2026-09-07: five tool calls timed out, and
-# the same binary ran instantly from an unquarantined path. A brew upgrade
-# recreates it, so this is a check and not a one-time fix.
-codex_preflight() {
-  local host; host="$(dirname "${STEWARD_CODEX_BIN:-$HOME/.local/bin/codex}")/codex-code-mode-host"
-  [ -x "$host" ] || return 0
-  timeout 5 "$host" --help >/dev/null 2>&1 && return 0
-  case $? in
-    124) refuse 78 "codex-code-mode-host does not answer (it hangs). On macOS this is Gatekeeper: run 'xattr -d com.apple.quarantine $host'. Every shell tool call would time out and the model would answer from guesswork." ;;
-  esac
-  return 0
-}
-
 BUS_SEND="${STEWARD_BUS_SEND:-$HOME/bin/bus-send}"
 BUS_READ="${STEWARD_BUS_READ:-$HOME/bin/bus-read}"
 BUS_ROOT="${STEWARD_BUS_ROOT:-$HOME/.config/agent-bus}"
@@ -124,7 +107,15 @@ ANSWER_CLASSES="${CODEX_ANSWER_CLASSES:-FRAGA SAMORDNING}"
 ANSWER_CLASS="${CODEX_REPLY_CLASS:-SAMORDNING}"
 REPLY_MARK="reply to "
 
-command -v timeout >/dev/null 2>&1 && codex_preflight
+# THE PREFLIGHT IS THE CLIENT'S, not a second copy here. It knows where codex
+# lives on this platform and it has its own timer; the shell had neither - its
+# copy of the path missed a Homebrew install, and `timeout` is not on macOS
+# outside Homebrew, so the check skipped in silence on the very host it was
+# written for. Measured by the product's integrator 2026-09-07.
+if ! _pre="$("$NODE_BIN" "$CLIENT" preflight 2>&1)"; then
+  echo "codex-session: REFUSING - $_pre" >&2
+  exit 78
+fi
 
 LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 [ -n "$LABEL" ] || LABEL="$SESSION_NAME"

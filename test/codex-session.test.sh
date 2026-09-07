@@ -26,6 +26,8 @@
 #      is named as such - an expired login must never read as a silent model.
 #  12. A round where turns failed and nothing was answered exits 75, so a
 #      timer's log does not show a clean run over unanswered mail.
+#  13. A held shell-tool binary stops the round before a single letter is
+#      staged - the model must never be blamed for a tool that cannot run.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTER="$here/runtime/codex-session.sh"
@@ -98,6 +100,12 @@ EOF
 # the test can see which thread the second letter used.
 cat > "$BIN/thread-client" <<'EOF'
 #!/bin/sh
+# The preflight is a separate verb and is not part of the turn log: a claim that
+# reads the log is asking what the TURN was given.
+if [ "$1" = "preflight" ]; then
+  [ -f "$PREFLIGHT_FAILS" ] && { echo "codex-code-mode-host hangs"; exit 78; }
+  echo "code-mode host ok"; exit 0
+fi
 printf '%s\n' "$*" >> "$CLIENT_LOG"
 [ -f "$ENV_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete: unauthorized" >&2; exit 78; }
 [ -f "$TURN_FAILS" ] && { echo "codex-thread: REFUSING - the turn did not complete" >&2; exit 75; }
@@ -123,6 +131,7 @@ run() { # run the adapter against a session name
   BUS_READ_LOG="$T/bus-read.log" BUS_SEND_LOG="$T/bus-send.log" CLIENT_LOG="$T/client.log" \
   STAGE_DIR="$T/state/$1.codex-pending" STAGED_WHEN_READ="$T/staged-when-read" \
   INBOX_DIR="$INBOX" SEND_FAILS="$T/send-fails" TURN_FAILS="$T/turn-fails" ENV_FAILS="$T/env-fails" \
+  PREFLIGHT_FAILS="$T/preflight-fails" \
   bash "$ADAPTER" "$1" 2>"$T/err"; echo "$?"
 }
 
@@ -214,6 +223,15 @@ has "the log carries the client's reason" "$err" "unauthorized"
 has "and names rc 78 as the environment" "$err" "rc 78"
 is  "the letter stays staged for a retry" "$(ls "$T/state/$CODEX_ID.codex-pending" | wc -l | tr -d ' ')" "1"
 rm -f "$T/env-fails"
+
+# 13. a failing preflight refuses the whole round, loudly
+touch "$T/preflight-fails"; : > "$T/bus-send.log"
+letter 1700000008-i "s-sender-nine" "yard" "the crane" "Please look."
+rc="$(run "$CODEX_ID")"; err="$(cat "$T/err")"
+is  "a held tool binary refuses the round" "$rc" "78"
+has "and the refusal carries the reason" "$err" "code-mode-host"
+is  "nothing was sent" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
+rm -f "$T/preflight-fails"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
