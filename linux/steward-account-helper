@@ -60,6 +60,13 @@ USAGE
 
 fail() { echo "helper: REFUSING - $1" >&2; exit "${2:-70}"; }
 
+# receipt <what> - one line of evidence, ON STDERR. Receipts are diagnostics,
+# and the caller reads this helper's output to find out what was done; stdout is
+# where a caller that parses would look for DATA, and this helper produces none.
+# Keeping them apart also means a caller can capture the receipts without
+# capturing anything else, which is what the redeem verb does.
+receipt() { echo "helper: $1" >&2; }
+
 ACTION="${1:-}"; USERNAME="${2:-}"; shift 2 2>/dev/null || true
 ARCHIVE=""
 while [ $# -gt 0 ]; do
@@ -112,20 +119,64 @@ read_account() {
 # - the recovery account an operator reaches for - or move /dev, /bin or
 # /usr/sbin out of the filesystem under the name of an archive.
 #
+# AND IT IS NOT ENOUGH TO ASK WHETHER AN ACCOUNT IS ORDINARY. On the hosts this
+# product targets, the account an operator reaches for when everything else is
+# broken is not root: root ships with a locked password and no remote login. It
+# is an ordinary account - uid 1000 or above, home /home/<name> - that happens
+# to be in a sudo-capable group. Every such account passed the four tests above,
+# so an account holding nothing but the one sudoers line could expire, lock and
+# archive every human on the machine one call at a time and keep its own way in.
+# Locking every person out of a host is not reversible from the host.
+#
+# Two more refusals close it, and neither is visible in a passwd row:
+#
+#   THE CALLING ACCOUNT. SUDO_USER is one of the few variables sudo SETS rather
+#   than passes through, so it survives env_reset and names the account the hub
+#   runs as - the account that holds the sudoers line. Managing it is the
+#   self-destruct: it locks the caller out and archives its own home, registry
+#   and keys, from a process whose working directory is inside that tree. On the
+#   paths where there is no sudo - a root shell, a root crontab - SUDO_USER is
+#   unset and the test is vacuous, which is the right answer there: nobody
+#   reaches root THROUGH this file on those paths.
+#
+#   AN ACCOUNT THAT CAN BECOME ROOT. Group membership is the one place that is
+#   written down, so it is the one place this can be measured. An account a
+#   human put in sudo, wheel, admin or adm is an account with a way to root that
+#   does not go through here, and this helper has no business managing it. The
+#   cost if that is the wrong call is small and visible: a member who was
+#   hand-placed in one of those groups cannot be offboarded by the helper, the
+#   receipt says exactly why, and the operator does it by hand.
+#
 # So the helper manages only what it could have created itself: an ordinary
-# uid, never root, with its home exactly at /home/<name>, which is the account
-# layout this product's own 'add' produces. Anything else is a usage error: the
-# caller named something that is not this helper's business.
+# uid, never root, never the caller, never sudo-capable, with its home exactly
+# at /home/<name>, which is the account layout this product's own 'add'
+# produces. Anything else is a usage error: the caller named something that is
+# not this helper's business.
 #
 # The judgement is split in two: account_fails_floor names the reason without
 # deciding what to do about it, because the create path below has already run a
 # privileged command by the time it asks and owes a different answer than a
 # caller who named the wrong account.
+#
+# account_is_sudo_capable READS THE GROUP LIST WITHOUT A PIPELINE, deliberately.
+# `id -nG | grep -q` under `set -o pipefail` can return the status of a writer
+# killed by grep's early exit, which would turn "not sudo-capable" into an error
+# on timing alone. A loop over the words has no such reading.
+account_is_sudo_capable() {
+  local groups g
+  groups="$(id -nG -- "$1" 2>/dev/null)" || return 1
+  for g in $groups; do
+    case "$g" in sudo|wheel|admin|adm) return 0 ;; esac
+  done
+  return 1
+}
 FLOOR_REASON=""
 account_fails_floor() {
   FLOOR_REASON=""
   if [ "$USERNAME" = "root" ]; then
     FLOOR_REASON="'$USERNAME' is the root account - this helper never manages it"
+  elif [ "$USERNAME" = "${SUDO_USER:-}" ]; then
+    FLOOR_REASON="'$USERNAME' is the calling account - this helper never manages the account it was invoked on behalf of"
   else
     case "$ACCT_UID" in
       ''|*[!0-9]*)
@@ -135,6 +186,8 @@ account_fails_floor() {
           FLOOR_REASON="'$USERNAME' is a system account (uid $ACCT_UID) - this helper manages ordinary accounts only"
         elif [ "$HOME_DIR" != "/home/$USERNAME" ]; then
           FLOOR_REASON="'$USERNAME' has home '$HOME_DIR', not /home/$USERNAME - this helper manages only the account layout it creates"
+        elif account_is_sudo_capable "$USERNAME"; then
+          FLOOR_REASON="'$USERNAME' is in a sudo-capable group; this helper never manages it - an account with its own way to root is the operator's to offboard by hand"
         fi ;;
     esac
   fi
@@ -146,11 +199,22 @@ require_ordinary_account() {
 
 if [ "$ACTION" = "add" ]; then
   CREATED=""
+  # WHAT A LATE FAILURE LEFT STANDING, NAMED. The last two steps of add can only
+  # fail once the account exists and is configured, and "could not write the
+  # fragment" tells the operator nothing about the account now on their host.
+  # The belt refusal on the create path already names what it left behind; these
+  # owe the same, so each step records itself as it succeeds.
+  ADD_LEFT=""
+  add_left() { ADD_LEFT="$ADD_LEFT, $1"; }
+  add_left_summary() {
+    if [ -n "$ADD_LEFT" ]; then printf '%s' "${ADD_LEFT#, }"
+    else printf '%s' "as this run found it - nothing here configured it"; fi
+  }
   # A row for another account is not a row for this one: the create path is the
   # honest answer, and useradd will refuse for real if the name is taken.
   if read_account "$USERNAME"; then
     require_ordinary_account
-    echo "helper: account $USERNAME already exists"
+    receipt "account $USERNAME already exists"
   else
     # THE HOST'S ANSWER IS MEASURED BEFORE ANYTHING IS CREATED. The floor below
     # judges the row useradd produced - but by then the account exists, and on a
@@ -165,7 +229,16 @@ if [ "$ACTION" = "add" ]; then
     done <<<"$UA_DEFAULTS"
     [ "$UA_HOME" = "/home" ] \
       || fail "useradd default HOME is '$UA_HOME', expected /home - nothing was created" 64
-    useradd --create-home --shell /bin/bash "$USERNAME" \
+    # --user-group IS WHAT MAKES THE 750 BELOW MEAN ANYTHING. Without it the new
+    # account's primary group is whatever USERGROUPS_ENAB in the host's
+    # /etc/login.defs says - a setting in someone else's file, which is the same
+    # category of assumption the PATH and LC_ALL lines above refuse to make. On
+    # a host where that setting is 'no' every member lands in one shared group,
+    # and a 750 home is then r-x to every other member: each person's model
+    # credentials under ~/.claude-logins readable by all of them, which is the
+    # one property the per-account design exists to provide. The flag forces a
+    # group of one regardless of the host's setting.
+    useradd --create-home --user-group --shell /bin/bash "$USERNAME" \
       || fail "useradd failed for '$USERNAME'"
     read_account "$USERNAME" \
       || fail "the account database has no row for '$USERNAME' after useradd"
@@ -178,39 +251,64 @@ if [ "$ACTION" = "add" ]; then
     ! account_fails_floor \
       || fail "account $USERNAME was created by useradd but fails the floor ($FLOOR_REASON); left as is, not configured - remove it by hand if that is not what you wanted" 70
     CREATED=1
-    echo "helper: account $USERNAME created"
+    add_left "created"
+    receipt "account $USERNAME created"
   fi
-  # 750 IS THE MODE THIS PRODUCT GIVES A HOME IT CREATED. It is the contract,
-  # not a deduction: the owner works in the home and the rest of the machine
-  # does not read it. It says nothing about WHO the group is - useradd on a
-  # host with USERGROUPS_ENAB gives the account its own group, so the group
-  # bits usually reach nobody, and on a host with a shared default group they
-  # would reach that group. Which is also why the mode is set ONLY on the path
-  # that created the home: applying it to a home this helper did not make can
+  # AN ACCOUNT THIS HELPER DID NOT CREATE IS NOT ITS ACCOUNT TO CONFIGURE.
+  # Everything from here to the fragment is guarded on CREATED, and each of them
+  # is destructive on a person's existing account: a password lock takes that
+  # person's sudo away, a group add hands them a device nobody granted them, and
+  # lingering starts a user manager nobody asked for. `add` on an existing
+  # account used to do all three and return 0 under the receipt "already
+  # exists", which says the helper looked and did nothing.
+  #
+  # THE MODE IS THE ORIGINAL CASE OF THIS RULE: 750 is the contract for a home
+  # this product created, and applying it to a home this helper did not make can
   # only loosen a 0700 that somebody chose on purpose.
+  #
+  # THE FRAGMENT IS THE ONE EXCEPTION, at the bottom, and it is the one thing
+  # here that is genuinely idempotent: it is this helper's OWN file, its bytes
+  # are fixed, and re-writing it changes nothing about the person.
   if [ -n "$CREATED" ]; then
+    # chmod FOLLOWS SYMLINKS, and useradd --create-home does not create a home
+    # that already exists: it short-circuits on a path that is already there,
+    # symlink included, and writes the passwd row anyway. So a link pre-placed
+    # at /home/<name> passes the floor, is recorded as created here, and turns
+    # the contract's chmod into a root chmod on whatever it points at - /etc,
+    # /usr/bin, /var/lib. The archive path below has refused exactly this since
+    # it was written; there is no reason for the two to disagree.
+    [ ! -L "$HOME_DIR" ] \
+      || fail "$HOME_DIR is a symlink - a mode set on it would land on whatever it points at; account $USERNAME is left $(add_left_summary), not configured - remove it by hand if that is not what you wanted"
     chmod 750 "$HOME_DIR" || fail "could not set mode 750 on $HOME_DIR"
-    echo "helper: home $HOME_DIR mode 750"
+    add_left "home mode 750"
+    receipt "home $HOME_DIR mode 750"
+    # THE GROUPS ARE OPTIONAL, PER HOST. A host with no graphics stack has no
+    # render group, and refusing there would make a headless host un-onboardable
+    # for a reason that has nothing to do with the person.
+    for g in video render; do
+      if getent group "$g" >/dev/null 2>&1; then
+        usermod -aG "$g" "$USERNAME" || fail "could not add '$USERNAME' to group '$g'"
+        add_left "group $g"
+        receipt "group $g"
+      else
+        receipt "group $g absent on this host, skipped"
+      fi
+    done
+    # NO PASSWORD, EVER. The account is reached over ssh with a key or as its
+    # own user manager; a password is one more credential nobody rotates.
+    #
+    # ITS STDOUT IS QUIET AND ITS STDERR IS NOT: the only text explaining why a
+    # root password lock failed is the one this used to throw away.
+    passwd -l "$USERNAME" >/dev/null || fail "could not lock the password for '$USERNAME'"
+    add_left "password locked"
+    receipt "password locked"
+    loginctl enable-linger "$USERNAME" || fail "could not enable lingering for '$USERNAME'"
+    add_left "lingering enabled"
+    receipt "lingering enabled"
   else
-    echo "helper: home $HOME_DIR left as it is (the mode is set only on a home this helper creates)"
+    receipt "home $HOME_DIR left as it is (the mode is set only on a home this helper creates)"
+    receipt "groups, password and lingering left as is (this helper configures only an account it created)"
   fi
-  # THE GROUPS ARE OPTIONAL, PER HOST. A host with no graphics stack has no
-  # render group, and refusing there would make a headless host un-onboardable
-  # for a reason that has nothing to do with the person.
-  for g in video render; do
-    if getent group "$g" >/dev/null 2>&1; then
-      usermod -aG "$g" "$USERNAME" || fail "could not add '$USERNAME' to group '$g'"
-      echo "helper: group $g"
-    else
-      echo "helper: group $g absent on this host, skipped"
-    fi
-  done
-  # NO PASSWORD, EVER. The account is reached over ssh with a key or as its own
-  # user manager; a password is one more credential nobody rotates.
-  passwd -l "$USERNAME" >/dev/null 2>&1 || fail "could not lock the password for '$USERNAME'"
-  echo "helper: password locked"
-  loginctl enable-linger "$USERNAME" || fail "could not enable lingering for '$USERNAME'"
-  echo "helper: lingering enabled"
   # THE RIG SOCKET DIRECTORY, PER ACCOUNT. The rig's account must be able to
   # create the socket and the steward account must be able to connect to it, so
   # the directory is 0710 owned <account>:steward. Harmless on an account that
@@ -218,9 +316,10 @@ if [ "$ACTION" = "add" ]; then
   FRAGMENT="/etc/tmpfiles.d/steward-rig-$USERNAME.conf"
   printf 'd /run/steward/rig/%s 0710 %s steward -\n' "$USERNAME" "$USERNAME" \
     | install -m 0644 /dev/stdin "$FRAGMENT" \
-    || fail "could not write $FRAGMENT"
-  systemd-tmpfiles --create "$FRAGMENT" || fail "could not apply $FRAGMENT"
-  echo "helper: tmpfiles $FRAGMENT"
+    || fail "could not write $FRAGMENT - account $USERNAME is left $(add_left_summary), and has no rig socket directory"
+  systemd-tmpfiles --create "$FRAGMENT" \
+    || fail "could not apply $FRAGMENT - account $USERNAME is left $(add_left_summary), and the fragment is written but not applied"
+  receipt "tmpfiles $FRAGMENT"
   exit 0
 fi
 
@@ -237,11 +336,50 @@ require_ordinary_account
 # way the steward account can stop another person's sessions without a shell in
 # their home.
 loginctl disable-linger "$USERNAME" || fail "could not disable lingering for '$USERNAME'"
-echo "helper: lingering disabled (the user manager and its units are down)"
+# DISABLE-LINGER ALONE DOES NOT STOP ANYTHING WHILE A SESSION IS OPEN. It
+# removes /var/lib/systemd/linger/<name> and releases logind's own reference;
+# logind stops user@<uid>.service when the reference count reaches zero, and an
+# open ssh connection is a reference. So the member who is logged in at the
+# moment they are offboarded keeps their user manager and every unit under it -
+# and if --archive-home follows, their processes go on working through open file
+# descriptors into the tree that was just moved out from under them. Neither
+# usermod --lock (the password) nor --expiredate (new logins) signals a single
+# running process.
+#
+# So the sessions are terminated and then the claim is MEASURED. The receipt is
+# this product's evidence and must not be able to be wrong: terminate-user is
+# allowed to fail, because an account with nothing to terminate is the ordinary
+# case, but the session list afterwards is not - if logind will not answer, the
+# receipt below is a claim this helper cannot make.
+loginctl terminate-user -- "$USERNAME" 2>/dev/null || true
+SESSIONS="$(loginctl --no-legend list-sessions 2>/dev/null)" \
+  || fail "could not ask logind which sessions are open for '$USERNAME' - without that answer the receipt below would be a claim this helper cannot make"
+while read -r _s_id _s_uid s_user _s_rest; do
+  [ "$s_user" = "$USERNAME" ] || continue
+  fail "'$USERNAME' still has an open session - the user manager is not down, so the account's units are still running"
+done <<<"$SESSIONS"
+receipt "lingering disabled (the user manager and its units are down)"
 usermod --lock "$USERNAME" || fail "could not lock '$USERNAME'"
-echo "helper: password locked"
+receipt "password locked"
 usermod --expiredate 1 "$USERNAME" || fail "could not expire '$USERNAME'"
-echo "helper: account expired"
+receipt "account expired"
+# THE FRAGMENT IS THIS HELPER'S OWN FILE, and add is what put it there. Left
+# behind, systemd recreates /run/steward/rig/<name> at every boot for an account
+# that was offboarded. Removing it is not deleting the member's data - it is
+# this helper taking back the one file it placed outside their home - and the
+# receipt says which of the two just happened, because that distinction is the
+# whole promise of the archive below.
+FRAGMENT="/etc/tmpfiles.d/steward-rig-$USERNAME.conf"
+rm -f "$FRAGMENT" || fail "could not remove $FRAGMENT"
+receipt "tmpfiles fragment $FRAGMENT removed - this helper's OWN file, not the member's data"
+# AND THE DIRECTORY ONLY IF IT IS EMPTY. rmdir refuses a directory with anything
+# in it, which is exactly the reading wanted: a socket still in there is
+# somebody's live rig, and this helper does not decide that.
+if rmdir "/run/steward/rig/$USERNAME" 2>/dev/null; then
+  receipt "rig socket directory /run/steward/rig/$USERNAME removed (it was empty)"
+else
+  receipt "rig socket directory /run/steward/rig/$USERNAME left in place (it is not empty, or it was never there) - nothing was deleted"
+fi
 if [ -n "$ARCHIVE" ]; then
   # THE ARCHIVE ROOT IS FIXED AND THE SOURCE IS NOT. Where a home lives is the
   # system's answer; where an archived home waits for the operator's word is a
@@ -256,13 +394,49 @@ if [ -n "$ARCHIVE" ]; then
   # restoring from that receipt would find the PREVIOUS archive instead.
   [ ! -L "$HOME_DIR" ] \
     || fail "$HOME_DIR is a symlink - archiving it would move the link and leave the home in place"
-  DEST="/home/.offboarded/$USERNAME-$(date -u +%Y-%m-%d)"
+  # A COMMAND SUBSTITUTION THAT FAILS IS NOT CAUGHT BY set -u: it yields an
+  # empty string. An unstamped destination is /home/.offboarded/<name>-, which
+  # collides with itself and turns every later archive of that account into the
+  # refusal two lines down, for a reason nothing in the message would name.
+  STAMP="$(date -u +%Y-%m-%d)" || STAMP=""
+  [ -n "$STAMP" ] \
+    || fail "could not read the date this archive would be stamped with - an unstamped destination collides with the next one"
+  DEST="/home/.offboarded/$USERNAME-$STAMP"
   if [ -e "$DEST" ] || [ -L "$DEST" ]; then
     fail "archive destination $DEST already exists - move or remove it before archiving again"
   fi
   mkdir -p /home/.offboarded || fail "could not create /home/.offboarded"
-  mv "$HOME_DIR" "$DEST" || fail "could not archive $HOME_DIR to $DEST"
-  echo "helper: archived $DEST"
-  echo "helper: NOTHING WAS DELETED - the archive is removed on the operator's word, never by this helper"
+  # THE ARCHIVE ROOT IS CHECKED AFTER IT IS MADE, because mkdir -p succeeds on a
+  # symlink that already points at a directory - which is the one way the
+  # archive lands somewhere other than the path this receipt names. And 700,
+  # because root's umask leaves a fresh directory at 0755 and the list of who
+  # was offboarded and when is not every account's business.
+  [ ! -L /home/.offboarded ] \
+    || fail "/home/.offboarded is a symlink - the archive would land somewhere other than the path this receipt names"
+  [ -d /home/.offboarded ] \
+    || fail "/home/.offboarded is not a directory - there is nowhere to archive to"
+  chmod 700 /home/.offboarded || fail "could not set mode 700 on /home/.offboarded"
+  # A MOVE ACROSS FILESYSTEMS IS NOT A MOVE. mv degrades silently to a recursive
+  # copy followed by a recursive delete of the source, and both of the things
+  # this archive promises stop being true: the receipt below says nothing was
+  # deleted, and the one tree it exists to preserve is the tree that was
+  # deleted; and the operation stops being atomic, so a member who fills the
+  # archive volume leaves half a home and half an archive behind. A per-user
+  # dataset, a quota volume and a bind-mounted home all produce it. Refused
+  # rather than worked around: this helper does not delete, so it does not use a
+  # move that would.
+  SRC_DEV="$(stat -c %d "$HOME_DIR" 2>/dev/null)" || SRC_DEV=""
+  ARCHIVE_DEV="$(stat -c %d /home/.offboarded 2>/dev/null)" || ARCHIVE_DEV=""
+  [ -n "$SRC_DEV" ] && [ -n "$ARCHIVE_DEV" ] \
+    || fail "could not read the device number of $HOME_DIR or of /home/.offboarded - without it there is no telling a rename from a copy and a delete"
+  [ "$SRC_DEV" = "$ARCHIVE_DEV" ] \
+    || fail "$HOME_DIR (device $SRC_DEV) and /home/.offboarded (device $ARCHIVE_DEV) are on different filesystems - a move between them copies and then deletes, and this helper never deletes"
+  # -T MAKES THE KERNEL REFUSE A NEST. The destination test above is a
+  # check-then-act taken several statements earlier; -T means mv treats the
+  # destination as a name and not as a directory to move into, so the guarantee
+  # is the kernel's rather than the stat's.
+  mv -T "$HOME_DIR" "$DEST" || fail "could not archive $HOME_DIR to $DEST"
+  receipt "archived $DEST"
+  receipt "NOTHING WAS DELETED - the archive is removed on the operator's word, never by this helper"
 fi
 exit 0
