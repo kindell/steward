@@ -330,7 +330,7 @@ F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
 # every estate that spells the two the same the raw comparison is right and
 # stays the fast path; on the estates the account model exists for it refuses a
 # requester that is perfectly in order. So the row's own principal is resolved
-# (registry_load publishes it) and either spelling satisfies the check.
+# through the account it names, and either spelling satisfies the check.
 #
 # READ WITH THIS FILE'S OWN GRAMMAR (sed over the row, never source) and
 # resolved through the account register, not through registry_load: the loader
@@ -350,7 +350,7 @@ if [ -n "$F_ACCOUNT" ]; then
     F_PRINCIPAL="$_fa_p"
   fi
 fi
-[ "$F_OWNER" = "$PERSON" ] || [ -n "$F_PRINCIPAL" -a "$F_PRINCIPAL" = "$PERSON" ] || \
+[ "$F_OWNER" = "$PERSON" ] || { [ -n "$F_PRINCIPAL" ] && [ "$F_PRINCIPAL" = "$PERSON" ]; } || \
   fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}'${F_PRINCIPAL:+ (principal '$F_PRINCIPAL')}, the request names '$PERSON'"
 # A conf without HOST lives on the hub — the same default registry_load applies.
 [ "${F_HOST:-$NAV_VARD}" = "$VARD" ] || \
