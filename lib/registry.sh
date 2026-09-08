@@ -3002,11 +3002,20 @@ registry_resolve_session() { # <handle> -> key on stdout; rc 1 unknown/ambiguous
 # from the estate and also refuses 78, but only for a row that carries no
 # LOGIN on a schema-6 estate - so it is a row-conditional gate, and a probe
 # that ran it would refuse for estates whose rows all load.
+# THE THREE VALUE READERS ARE ASKED THROUGH A COMMAND SUBSTITUTION, and that
+# is not a style choice. Each of them SOURCES the estate file, and a key the
+# file sets that the reader did not clear with `local` first becomes a GLOBAL
+# in whatever shell called it - which is every session on a live machine. The
+# subshell is the containment, and registry_load has always asked these three
+# that way. registry_schema_check is called directly because it clears the keys
+# it knows itself, and because the value it publishes - _REGISTRY_SCHEMA_SEEN -
+# is read further down registry_load and cannot cross back out of a subshell.
 registry_estate_gates() {
   registry_schema_check >/dev/null || return 78
-  registry_hub_host >/dev/null || return 78
-  registry_op_token_name >/dev/null || return 78
-  registry_label_prefix >/dev/null || return 78
+  local _gate_value
+  _gate_value="$(registry_hub_host)" || return 78
+  _gate_value="$(registry_op_token_name)" || return 78
+  _gate_value="$(registry_label_prefix)" || return 78
 }
 
 registry_load() {
