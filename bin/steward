@@ -5905,6 +5905,15 @@ cmd_mcp_render() {
 # env file. THE ALLOWLIST IS THE SHAPE OF THE jq CALL BELOW: id, name, axis,
 # source. Nothing read from mcp.d is consulted here at all — a command, an
 # argument, an env file are the asset's business, never the surface's.
+#
+# ONE ENTRY PER GRANT, SO AN ID MAY APPEAR MORE THAN ONCE. A managing team and
+# the client it manages may both declare the same asset, and both DID grant it;
+# a surface that named only the first left a member of the client - who cannot
+# see its manager - without an asset their own entity handed them. The entries
+# are in collection order, closest granting level first, and the consumer
+# deduplicates AFTER applying its own visibility rule (desk/filter.jq). The
+# asset SET (`steward mcp render`) is deduplicated as it always was: one server
+# per slug is what actually runs.
 cmd_mcp_surface() { # <session-id> --json
   local sid="" want_json="" a
   for a in "$@"; do case "$a" in --json) want_json=1 ;; -*) fel "mcp surface: unknown flag '$a'" 64 ;; *) sid="$a" ;; esac; done
