@@ -165,6 +165,20 @@ is  "and is false for a colleague's" "$(jq -r '.sessions[]|select(.slug=="work-a
 is  "b sees the team it belongs to, marked as membership" "$(jq -r '.entities|map(.id+":"+(.member|tostring))|join(" ")' "$D/b.json")" "team:true"
 is  "c sees no entity" "$(jq '.entities|length' "$D/c.json")" "0"
 
+echo "== the generation is private to the account that produced it =="
+# THE FILES ARE THE WHOLE ACCESS CONTROL. Each one was filtered when it was
+# written precisely so that no code path decides who may read it - which means
+# the mode bits are the last gate, and a home that happens to be group- or
+# world-readable would hand every principal's file to anyone with a login on
+# the machine. The producer therefore sets its own umask rather than inheriting
+# whatever the timer, the shell or the deploy happened to have.
+# ASSERTED PORTABLY: `stat` has no common spelling across BSD and GNU, and the
+# first ten characters of `ls -ld` do.
+gen_dir="$T/desk/$(readlink "$T/desk/current")"
+is  "the generation directory is 0700" "$(ls -ld "$gen_dir" | cut -c1-10)" "drwx------"
+is  "and every file in it is 0600" \
+    "$(ls -l "$gen_dir" | grep -c '^-rw-------' | tr -d ' ')" "4"
+
 echo "== generations: every run is a new directory, current is a symlink =="
 is  "current is a symlink" "$([ -L "$T/desk/current" ] && echo yes || echo no)" "yes"
 is  "one generation after one run" "$(ls -d "$T/desk"/gen-* | wc -l | tr -d ' ')" "1"

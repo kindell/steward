@@ -52,6 +52,17 @@ def isVisibleEntity($id; $managerOf): $id != null and (isMember($id) or isMember
 #
 # THE TWO ORG AXES ASK isVisibleEntity, not isMember: an asset the entity level
 # granted travels exactly as far as the entity itself does.
+#
+# THE `source` THIS RULE READS IS ONE HOP, NOT THE WHOLE CHAIN THAT GRANTED IT.
+# registry_session_mcp_surface attributes an entity-axis asset to the level it
+# found it at, and it looks at the session's own entity and its manager - so an
+# asset declared on BOTH a manager and the entity it manages arrives here named
+# after the manager alone. A member of the managed entity is then not a member
+# of the source, and the asset is dropped. That only ever DENIES: the viewer
+# sees fewer assets than the estate granted, never more, and the missing row is
+# one a member of the manager can see. Worth fixing in the surface, where the
+# attribution is decided; nothing here can fix it, because the second granting
+# level never reaches this file.
 def keepAsset($own; $parentOf; $managerOf):
   if   .axis == "account" then ($readAll or $own)
   elif .axis == "entity"  then ($readAll or $own or isVisibleEntity(.source; $managerOf))

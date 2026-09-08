@@ -301,6 +301,39 @@ test('a project whose entity is not in the file is still a node', () => {
   assert.ok(h.indexOf('/desk/project/work') < h.indexOf('/desk/session/s-1'));
 });
 
+// THE TEAM PAGE KEEPS EVERY SESSION THAT NAMES THE TEAM. The page was the
+// entity's own subtree and nothing else, and a session hangs under its PROJECT
+// whenever that project is in the file - so a session working on a project
+// whose parent entity the viewer cannot see (the filter's own-session clause
+// puts exactly those projects in the file) stood as a ROOT of the forest and
+// vanished from the page of the very team it names. The index still showed it,
+// which is what makes the absence a half-answer rather than a missing feature.
+test('the team page keeps a session whose project hangs under an entity not in the file', () => {
+  const h = pageTeam(doc({
+    entities: [{ id: 'team', name: 'Team', managedBy: null, members: ['b'], member: true }],
+    projects: [{ id: 'p-orphan', name: 'Orphan', parent: 'absent-entity' }],
+    sessions: [sess('s-1', 'work-a', { domain: 'team', project: 'p-orphan' })]
+  }), 'team');
+  assert.ok(h.includes('/desk/session/s-1'), h);
+  assert.ok(h.includes('/desk/project/p-orphan'), h);
+  assert.ok(between(h, '/desk/project/p-orphan', '/desk/session/s-1').includes('<ul>'), h);
+});
+
+// AND ONLY THE SESSIONS THAT NAME IT. A root project can carry sessions from
+// more than one entity; the ones that name somebody else are not this team's
+// business, however visible they are elsewhere in the same file.
+test('a root project on the team page carries only the sessions that name this team', () => {
+  const h = pageTeam(doc({
+    entities: [{ id: 'team', name: 'Team', managedBy: null, members: ['b'], member: true },
+               { id: 'e2', name: 'E2', managedBy: null, members: ['b'], member: true }],
+    projects: [{ id: 'p-orphan', name: 'Orphan', parent: 'absent-entity' }],
+    sessions: [sess('s-1', 'work-a', { domain: 'team', project: 'p-orphan' }),
+               sess('s-2', 'work-b', { domain: 'e2', project: 'p-orphan' })]
+  }), 'team');
+  assert.ok(h.includes('/desk/session/s-1'), h);
+  assert.ok(!h.includes('/desk/session/s-2'), h);
+});
+
 test('a session with no entity and no project is still a node', () => {
   const h = pageIndex(doc({ viewer: 'a', sessions: [sess('s-1', 'work-a', { mine: true })] }));
   assert.ok(h.includes('/desk/session/s-1'));

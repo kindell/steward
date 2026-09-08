@@ -131,17 +131,50 @@ the desk stops the moment the last session ends. Later deploys need none of
 this repeated - they overwrite the unit files and reload, and systemd keeps
 what was enabled.
 
-**How quickly a change reaches a desk.** Two different answers, and confusing
-them is the trap:
+The first enabled round is also what brings `<STEWARD_DESK_DIR>` into being,
+and that directory is how a host says it has a desk: `linux/deploy-self.sh`
+takes a snapshot after an apply only when it is already there, and prints
+`no desk on this host ... snapshot skipped` otherwise. So the sequence above
+is the switch, and every deploy after it refreshes what the switch turned on.
 
-- **A withdrawal is the deploy's own latency - seconds.** Every file was
-  filtered when it was written, so a person keeps seeing what the last
-  generation gave them until a new one exists. `linux/deploy-self.sh` therefore
-  runs `steward desk snapshot` itself after an apply that succeeded, and a
-  failed snapshot makes the deploy exit 70: the rollout happened, the view of
-  it did not.
-- **Liveness is the timer's - up to five minutes.** That is all
-  `steward-desk-snapshot.timer` is for. It is not the revocation path.
+### Reaching it from the tailnet
+
+**The desk mounts at ROOT, and the serve tool must be given no path prefix.**
+Its routes and every link it writes are absolute `/desk/...`, so the prefix is
+inside the application already; adding a second one outside it is what breaks
+the desk. Measured 2026-09-08: `--set-path /desk` strips the prefix before
+proxying, the socket then receives `/`, `/team/...`, `/session/...`, and every
+route answers 404.
+
+Aim the serve tool at the socket - the `sock=` line `desk/bin/desk-paths`
+prints - with no path prefix. The invocation has the shape:
+
+    tailscale serve --bg --https=443 unix:<the sock= path>
+
+`--set-path` is the flag to leave out. Everything else about the exposure is
+the operator's business; the desk only requires that what arrives at the socket
+is the path the reader typed.
+
+**How quickly a change reaches a desk.** Different answers for different
+changes, and confusing them is the trap:
+
+- **A withdrawal has two latencies, and which one you get depends on where the
+  withdrawal was made.** Every file was filtered when it was written, so a
+  person keeps seeing what the last generation gave them until a new one
+  exists.
+  - Withdrawn by a deploy that lands on the desk's own host: **seconds.**
+    `linux/deploy-self.sh` runs `steward desk snapshot` itself after an apply
+    that succeeded, and a failed snapshot makes the deploy exit 70 - the
+    rollout happened, the view of it did not.
+  - Withdrawn in the estate registry and pulled into the checkout some other
+    way - a `git pull` on the desk host, an edit made straight in the estate,
+    a deploy that ran on a different host: **up to five minutes.** Nothing
+    told the desk, so the next timer round is what notices.
+- **Liveness is the timer's - up to five minutes.** That is what
+  `steward-desk-snapshot.timer` is for. It is the floor under a withdrawal, not
+  the path a withdrawal is meant to take: a rollout that knows a withdrawal
+  happened says so in seconds, and reading the timer as the revocation path is
+  what would make five minutes look like the design rather than the fallback.
 
 The server needs no restart when a generation changes; it reads
 `<STEWARD_DESK_DIR>/current` per request. Restart it only when `serve.mjs`,

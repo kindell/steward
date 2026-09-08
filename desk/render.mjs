@@ -303,7 +303,28 @@ export function pageTeam(snap, id) {
   // THE SAME TREE, ROOTED HERE. The entity itself is the page, so the node for
   // it is not repeated - what follows is everything under it, to any depth: the
   // entities it manages, its own projects, and the sessions that hang on it.
-  const kids = entityKids(plan(v), e, new Set([e.id]));
+  const P = plan(v);
+  const kids = entityKids(P, e, new Set([e.id]));
+
+  // AND THEN THE SESSIONS THAT NAME THIS TEAM FROM OUTSIDE ITS OWN SUBTREE. A
+  // session hangs under its PROJECT wherever that project sits in the forest,
+  // and the filter deliberately hands a viewer projects whose parent entity
+  // they cannot see (the own-session clause) - such a project is a ROOT here,
+  // so its sessions never reached this page even though `domain` names this
+  // very team. The index showed them and the team page did not, which is one
+  // question answered two ways.
+  //
+  // ONLY THE SESSIONS THAT NAME THIS ENTITY travel: a root project can carry
+  // sessions belonging to more than one team, and the others are not this
+  // page's business. The rows are read out of the same plan, so the order
+  // inside every appended node is the order the rest of the tree uses.
+  const namesThis = (s) => s.domain === e.id;
+  for (const p of P.rootProjects) {
+    const own = (P.projectSessions.get(p.id) || []).filter(namesThis);
+    if (own.length) kids.push(li(projectHead(p), own.map(sessionNode)));
+  }
+  for (const s of P.rootSessions) if (namesThis(s)) kids.push(sessionNode(s));
+
   body += section('Under this team', kids.length
     ? '<ul>' + kids.join('') + '</ul>'
     : empty('Nothing hangs under this team in this view.'));

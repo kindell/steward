@@ -21,9 +21,18 @@
 # either never read or reduced here - REPO_PATH becomes its basename before it
 # is ever put into JSON.
 #
+# THE MODE BITS ARE THE LAST GATE, so this process sets them rather than
+# inheriting them. Every file here was filtered when it was written precisely
+# so that nothing has to decide at read time who may see it - which puts the
+# whole weight on the filesystem, and a home that happens to be group- or
+# world-readable would then hand every principal's file to anyone with a login
+# on the machine. umask 077 makes each generation directory 0700 and each file
+# 0600 whatever the timer, the shell or the deploy was running with.
+#
 # Exit codes: 0 ok - 69 jq is missing - 73 the desk directory cannot be
 # written - 78 the estate or the registry would not load.
 set -u
+umask 077
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # THE LIBRARY SITS ONE HOP UP IN BOTH LAYOUTS: desk/ beside lib/ at the repo
