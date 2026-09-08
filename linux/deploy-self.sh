@@ -82,6 +82,15 @@ if [ ! -d "$ESTATE" ]; then
   echo "REFUSED: estate designated but does not exist: $ESTATE" >&2
   exit 78
 fi
+# CANONICAL, ONCE, FOR EVERY LATER CALLER THAT NEEDS TO HAND THE ESTATE TO A
+# CHILD PROCESS THROUGH THE ENVIRONMENT (step 7 below, and the desk drop-in).
+# $ESTATE may carry a relative path or a trailing "..", and a value burned
+# into a child's environment or a unit file outlives this run - it has to be
+# the real directory, not a description of how to get there from here.
+ESTATE_ROOT="$(CDPATH= cd -- "$ESTATE" && pwd)" || {
+  echo "REFUSED: could not resolve the estate to a real directory: $ESTATE" >&2
+  exit 78
+}
 
 
 # ── 1. HOME LIST FROM THE REGISTRY (a read, not an action) ───────────
@@ -208,15 +217,26 @@ esac
 # snapshot.sh that the line below runs, and that script resolves the bridge
 # beside itself - a check reading any other copy would be answering about a
 # directory this run is not going to write.
+#
+# BOTH CALLS CARRY STEWARD_ESTATE_ROOT="$ESTATE_ROOT" EXPLICITLY. MEASURED
+# 2026-09-08 on a two-account host: steward-desk-snapshot.service runs
+# desk/snapshot.sh with no STEWARD_ESTATE_ROOT set, so the registry root
+# defaulted to ~/scripts - which, on a hub account whose HOME is not the
+# estate checkout, holds only that account's own two rows. The desk showed
+# two sessions instead of twenty-five. The deploy already knows the estate
+# (it provenance-gated it in step 3, above); desk-paths and the snapshot both
+# resolve the registry root the same way (lib/registry.sh's
+# _registry_estate_root), so both need the same value. NOT exported for the
+# whole script: the sudo apply step above must not see it change.
 if [ "$rc" -eq 0 ]; then
   desk_dir="${STEWARD_DESK_DIR:-}"
   if [ -z "$desk_dir" ] && [ -x "$PRODUCT/desk/bin/desk-paths" ]; then
-    desk_dir="$("$PRODUCT/desk/bin/desk-paths" 2>/dev/null | sed -n 's/^dir=//p')"
+    desk_dir="$(STEWARD_ESTATE_ROOT="$ESTATE_ROOT" "$PRODUCT/desk/bin/desk-paths" 2>/dev/null | sed -n 's/^dir=//p')"
   fi
   if [ -n "$desk_dir" ] && [ -d "$desk_dir" ]; then
     # bin/steward is a manifest source now (linux/deploy-manifest), so the
     # cleanliness/provenance gate above already covers the file this line runs.
-    bash "$PRODUCT/bin/steward" desk snapshot
+    STEWARD_ESTATE_ROOT="$ESTATE_ROOT" bash "$PRODUCT/bin/steward" desk snapshot
     snap_rc=$?
     if [ "$snap_rc" -ne 0 ]; then
       echo "deploy-self: desk snapshot failed (rc $snap_rc) - the desk shows the previous generation until the timer runs" >&2

@@ -41,11 +41,14 @@ printf 'x\n' > "$FX/repo/linux/tool-a"
 # regenerates the desk by calling `bin/steward desk snapshot` in its own
 # checkout - so the fixture's checkout needs that file, and a stub is what
 # makes the call measurable without a registry, a snapshot or jq. It records
-# its argv and returns whatever the case under test asks for.
+# its argv AND its STEWARD_ESTATE_ROOT - the snapshot reads the registry
+# through that variable, and a deploy that forgot to pass it would still look
+# green here if only argv were checked.
 mkdir -p "$FX/repo/bin"
 cat > "$FX/repo/bin/steward" <<EOF
 #!/bin/bash
 echo "\$*" >> "$FX/steward.calls"
+echo "env STEWARD_ESTATE_ROOT=\$STEWARD_ESTATE_ROOT" >> "$FX/steward.calls"
 exit "\${STEWARD_STUB_RC:-0}"
 EOF
 chmod 755 "$FX/repo/bin/steward"
@@ -145,6 +148,17 @@ echo "== the deploy REGENERATES THE DESK, and only after an apply that worked ==
 u="$(SUDO_RC=0 STEWARD_DESK_DIR="$DESKDIR" run testhost testhost)"; rc=$?
 check "a successful apply still exits 0" [ "$rc" -eq 0 ]
 case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) ok ;; *) bad "the deploy did not regenerate the desk after a successful apply: '$(cat "$FX/steward.calls")'" ;; esac
+# THE SNAPSHOT MUST READ THE ESTATE, NOT THE HOME. Measured 2026-09-08: the
+# snapshot unit runs with no STEWARD_ESTATE_ROOT, so on a hub account whose
+# HOME is not the estate checkout the registry root defaults to ~/scripts -
+# that account's own two rows instead of the estate's twenty-five. The deploy
+# already knows the estate (it just provenance-gated it), so the call it makes
+# here must carry the canonical estate root.
+estate_root_expect="$(CDPATH= cd -- "$FX/repo" && pwd)"
+case "$(cat "$FX/steward.calls")" in
+  *"env STEWARD_ESTATE_ROOT=$estate_root_expect"*) ok ;;
+  *) bad "the desk snapshot call did not carry the canonical estate root ($estate_root_expect): '$(cat "$FX/steward.calls")'" ;;
+esac
 
 # A FAILED APPLY MUST NOT PUBLISH A NEW GENERATION. What went onto the disk is
 # then unknown, and a desk regenerated from a half-applied rollout describes an
