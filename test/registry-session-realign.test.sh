@@ -67,13 +67,21 @@ write_old "$OLD" old-one
 out="$(run "$OLD" 2>"$T/err")"; rc=$?
 is  "rc 0" "$rc" "0"
 has "the receipt names the old owner" "$out" "'ann' -> 'svc-ann'"
-has "the receipt names the old host"  "$out" "'h1' -> 'h2'"
 is  "OWNER is now the account's username" \
     "$(grep -c '^OWNER="svc-ann"$' "$ROOT/sessions.d/$OLD.conf")" "1"
-is  "HOST is now the account's host" \
-    "$(grep -c '^HOST="h2"$' "$ROOT/sessions.d/$OLD.conf")" "1"
-is  "and neither old value survives anywhere in the row" \
-    "$(grep -cE '^OWNER="ann"$|^HOST="h1"$' "$ROOT/sessions.d/$OLD.conf")" "0"
+# WHERE THE SESSION LIVES IS NOT PART OF THE SHAPE. lib/registry.sh states that
+# a session may run on a host the hub only deploys to, so a HOST that differs
+# from the account's is a legitimate row rather than yesterday's shape - and a
+# verb that rewrote it would silently relocate a correct session. HOST moves
+# only when --host says so.
+is  "HOST is left exactly as the row had it" \
+    "$(grep -c '^HOST="h1"$' "$ROOT/sessions.d/$OLD.conf")" "1"
+case "$out" in
+  *HOST*) bad "the receipt does not mention a field that did not move" "got: $out" ;;
+  *)      ok  "the receipt does not mention a field that did not move" ;;
+esac
+is  "the old owner survives nowhere in the row" \
+    "$(grep -c '^OWNER="ann"$' "$ROOT/sessions.d/$OLD.conf")" "0"
 is  "every other field is carried through byte for byte" \
     "$(grep -cE '^ACCOUNT="ann-h2"$|^SLUG="old-one"$|^TARGET_ENTITY="alpha"$|^DOMAIN="alpha"$|^REPO_PATH="/tmp/repo"$|^ASSETS="widget"$|^ID="'"$OLD"'"$' "$ROOT/sessions.d/$OLD.conf")" "7"
 has "the conf carries the receipt as a comment for the next reader" \
@@ -105,8 +113,63 @@ is  "the previous owner is named" "$(printf '%s' "$j" | jq -r .was.owner)" "ann"
 is  "the new owner is named"      "$(printf '%s' "$j" | jq -r .owner)" "svc-ann"
 is  "the account is never chosen here, only reported" \
     "$(printf '%s' "$j" | jq -r .account)" "ann-h2"
+is  "changedFields names OWNER and nothing else" \
+    "$(printf '%s' "$j" | jq -rc .changedFields)" '["OWNER"]'
+is  "and HOST is reported unchanged on both sides" \
+    "$(printf '%s' "$j" | jq -r '.was.host + "/" + .host')" "h1/h1"
+
+# A CORRECT ROW WITH A DIFFERING HOST IS NOT A ROW TO FIX. This is the state
+# the loader calls legitimate and warns about: OWNER already the account's
+# username, HOST somewhere the hub only deploys to. Before this rule the
+# product recommended realign for it and realign moved the session.
+echo "== a correct row on another host is left byte-identical =="
+REMOTE="s-00000000000000b4"
+cat > "$ROOT/sessions.d/$REMOTE.conf" <<EOF
+# $REMOTE - session
+ID="$REMOTE"
+ACCOUNT="ann-h2"
+SLUG="remote-one"
+TARGET_ENTITY="alpha"
+DOMAIN="alpha"
+HOST="h9"
+REPO_PATH="/tmp/repo"
+OWNER="svc-ann"
+EOF
+remote_before="$(cat "$ROOT/sessions.d/$REMOTE.conf")"
+rout="$(run "$REMOTE" 2>/dev/null)"; rrc=$?
+is  "rc 0" "$rrc" "0"
+has "and it says there was nothing to write" "$rout" "already in the new shape"
+is  "the conf is byte-identical afterwards" \
+    "$(cat "$ROOT/sessions.d/$REMOTE.conf")" "$remote_before"
+
+echo "== --host is the one way to restate where a session lives =="
+hout="$(run "$REMOTE" --host h7 2>/dev/null)"; hrc=$?
+is  "rc 0" "$hrc" "0"
+has "the receipt names the host that moved" "$hout" "HOST 'h9' -> 'h7'"
+case "$hout" in
+  *OWNER*) bad "and does not claim OWNER moved" "got: $hout" ;;
+  *)       ok  "and does not claim OWNER moved" ;;
+esac
+is  "the row now says the host that was asked for" \
+    "$(grep -c '^HOST="h7"$' "$ROOT/sessions.d/$REMOTE.conf")" "1"
+is  "the owner is untouched" \
+    "$(grep -c '^OWNER="svc-ann"$' "$ROOT/sessions.d/$REMOTE.conf")" "1"
+jh="$(run "$REMOTE" --host h5 --json 2>/dev/null)"
+is  "changedFields names HOST alone" \
+    "$(printf '%s' "$jh" | jq -rc .changedFields)" '["HOST"]'
+is  "and the row still loads after a host restatement" \
+    "$(STEWARD_ESTATE_ROOT="$ROOT" STEWARD_REGISTRY_DIR="$ROOT/sessions.d" bash -c '
+        . "'"$here"'/lib/registry.sh"; registry_load "'"$REMOTE"'" >/dev/null 2>&1; echo $?')" "0"
 
 echo "== the refusals =="
+out="$(run "$REMOTE" --host 'Not A Host' 2>&1 >/dev/null)"; rc=$?
+is  "an invalid --host is a usage error" "$rc" "64"
+has "and names the value"                "$out" "Not A Host"
+out="$(run "$REMOTE" --host 2>&1 >/dev/null)"; rc=$?
+is  "a --host with no value is a usage error" "$rc" "64"
+out="$(run "$REMOTE" --bogus 2>&1 >/dev/null)"; rc=$?
+is  "an unknown flag is a usage error" "$rc" "64"
+
 out="$(run 2>&1 >/dev/null)"; rc=$?
 is  "no handle is a usage error" "$rc" "64"
 has "and says what is missing"   "$out" "needs a session handle"

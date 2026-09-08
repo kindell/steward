@@ -2877,6 +2877,13 @@ _registry_word_in_list() {
 # The principal does not depend on the host at all, so the mismatch is said out
 # loud on stderr and the row still reads. Strictness belongs to the writer,
 # which forces HOST to the account's own (bin/steward, `session add`).
+#
+# AND THE LINE RECOMMENDS NOTHING. It used to point at `registry session
+# realign`, which rewrote HOST to the account's - so the product warned about a
+# state it calls legitimate and then offered the fix that erases it. An
+# operator who follows the advice relocates a correct row. The line states the
+# gap; `realign` now leaves HOST alone unless `--host` says otherwise, which is
+# the one way to restate it deliberately.
 _registry_account_principal_for_row() (
   if ! registry_account_load "${1:-}" >/dev/null 2>&1; then
     echo "registry: ${4:-session}: ACCOUNT '${1:-}' cannot be read; the row's principal cannot be measured" >&2
@@ -2887,7 +2894,7 @@ _registry_account_principal_for_row() (
     return 78
   fi
   if [ "$ACCOUNT_HOST" != "${3:-}" ]; then
-    echo "registry: ${4:-session}: HOST='${3:-}' is not ACCOUNT '${1:-}' HOST='$ACCOUNT_HOST'; the row still reads - 'steward registry session realign ${4:-session}' rewrites it" >&2
+    echo "registry: ${4:-session}: HOST='${3:-}' is not ACCOUNT '${1:-}' HOST='$ACCOUNT_HOST'; the row still reads - a session may live on a host the hub only deploys to" >&2
   fi
   printf '%s' "$ACCOUNT_PRINCIPAL"
 )
