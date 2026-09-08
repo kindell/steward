@@ -197,7 +197,13 @@ export async function exchangeCode(provider, doc, { code, verifier, redirectUri 
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }
   });
   if (!res.ok) throw new Error('token endpoint for ' + provider.slug + ' answered ' + res.status);
-  const body = await res.json();
+  // READ THROUGH THE SAME BOUND AS EVERY OTHER PROVIDER ANSWER. This is a
+  // provider read like discovery and the JWKS, and res.json() reads whatever
+  // arrives: a compromised or hostile token endpoint answering a gigabyte
+  // chunked would take this process with it, and the refusal an operator then
+  // read would be V8's own string-length error rather than the cap's message.
+  // There is nothing about a token response that needs more room than 64 KiB.
+  const body = await boundedJson(res, 'token endpoint for ' + provider.slug);
   if (typeof body.id_token !== 'string' || !body.id_token) throw new Error('token endpoint for ' + provider.slug + ' returned no id_token');
   return body.id_token;
 }

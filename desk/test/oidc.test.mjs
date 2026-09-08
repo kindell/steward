@@ -299,6 +299,81 @@ test('a JWKS over the cap is refused rather than parsed into keys', async (t) =>
     /id_token: jwks unavailable/);
 });
 
+// AND THE TOKEN ENDPOINT IS READ THROUGH THE SAME BOUND. It was the last
+// provider read on a bare res.json(), which reads whatever arrives - so a
+// hostile token endpoint could stream this process out of memory on the one
+// request that happens after a person has already clicked through their
+// provider's login. The stub here answers 200 and then streams, exactly as
+// the discovery streamer below does, and the refusal must be the cap's own
+// message rather than V8's string-length error.
+test('a token endpoint that streams past the cap is refused, and the transfer is abandoned', async (t) => {
+  const CHUNK = Buffer.alloc(65536, 0x20);
+  const TOTAL = 32 * 1024 * 1024;
+  let served = 0;
+  const server = http.createServer((req, res) => {
+    req.resume(); // the form body: read and dropped, this endpoint answers regardless
+    req.on('end', () => {
+      // No content-length, so the declared-length gate has nothing to say and
+      // the reader is the only thing between this and the process's memory.
+      res.writeHead(200, { 'content-type': 'application/json' });
+      let closed = false;
+      res.on('close', () => { closed = true; });
+      res.on('error', () => { closed = true; });
+      const pump = () => {
+        while (!closed && served < TOTAL) {
+          served += CHUNK.length;
+          if (!res.write(CHUNK)) return res.once('drain', pump);
+        }
+        if (!closed) res.end();
+      };
+      pump();
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => server.close(r)));
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const secretFile = join(mkdtempSync(join(tmpdir(), 'desk-secret-')), 'client-secret');
+  writeFileSync(secretFile, 'shh\n');
+  const prov = {
+    slug: 'token-streamer', issuer: origin, issuerTemplate: null, clientId: 'cid',
+    clientSecretFile: secretFile, discovery: origin + '/.well-known/openid-configuration'
+  };
+  const doc = { token_endpoint: origin + '/token' };
+  await assert.rejects(
+    exchangeCode(prov, doc, { code: 'CODE', verifier: 'v', redirectUri: origin + '/cb' }),
+    /token endpoint for token-streamer answered a body over 65536 bytes/);
+  // The same bound the discovery streamer uses, for the same reason: what the
+  // kernel and the client had already taken before the cancel landed counts,
+  // and reading to the end would be the whole 32 MiB.
+  assert.ok(served < 8 * 1024 * 1024,
+    'the transfer must be abandoned at the cap, not read to the end: the endpoint sent ' + served + ' bytes');
+});
+
+// A body inside the cap that is not JSON is named as such here too, so an
+// error page from a proxy in front of the provider does not reach the
+// operator's log as a class name.
+test('a token endpoint that answers something that is not JSON is named as such', async (t) => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<html>a proxy error page</html>');
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => server.close(r)));
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const secretFile = join(mkdtempSync(join(tmpdir(), 'desk-secret-')), 'client-secret');
+  writeFileSync(secretFile, 'shh\n');
+  const prov = {
+    slug: 'token-html', issuer: origin, issuerTemplate: null, clientId: 'cid',
+    clientSecretFile: secretFile, discovery: origin + '/.well-known/openid-configuration'
+  };
+  await assert.rejects(
+    exchangeCode(prov, { token_endpoint: origin + '/token' }, { code: 'CODE', verifier: 'v', redirectUri: origin + '/cb' }),
+    /token endpoint for token-html answered something that is not JSON/);
+});
+
 // THE CAP IS MEASURED WHILE THE BODY ARRIVES. The test above streams from a
 // Blob, which is a stream the runtime already holds whole; this one is a real
 // socket sending real chunks with no content-length, which is what a hostile
