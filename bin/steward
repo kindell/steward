@@ -38,6 +38,9 @@
 #   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
 #   steward registry project add <slug> --parent <entity-slug> --name "Display Name" [--json]
 #   steward registry session add --account <slug> ( --project <slug> | --entity <slug> ) --slug <slug> --repo /abs/path [--host <host>] [--json]
+#   steward invite issue --name N --principal P --entity E --host H [--runtime R] [--provider V] [--days D] [--issued-by P] [--json]
+#   steward invite ls [--json]
+#   steward invite revoke <inv-id> [--json]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -2852,6 +2855,357 @@ cmd_registry_session_check() {
   return 0
 }
 
+# -- INVITATIONS ------------------------------------------------------------
+#
+# Registration is CLOSED. `invite issue` records the operator's word, prints
+# the one-time link ONCE, and stores only the digest; `invite ls` reads the
+# register; `invite revoke` moves a row to revoked. Redemption is its own verb.
+
+# _invite_validate_row <staged-file> - the validate_fn both the invite writer
+# and the invite replace call under the register's write lock. It does NOT
+# source what it validates (this register's reader never does either): the
+# staged bytes are copied into a one-row register and read back through
+# registry_invite_load, so "valid" means exactly what every later reader will
+# see. Same technique as _registry_validate_login_stage.
+_invite_validate_row() {
+  local file="$1" dir rc=0
+  dir="$(mktemp -d)" || { echo "registry: cannot stage-validate an invite row" >&2; return 70; }
+  cp "$file" "$dir/inv-00000000.conf" || { rm -rf "$dir"; return 70; }
+  chmod 600 "$dir/inv-00000000.conf"
+  ( STEWARD_INVITE_DIR="$dir"; registry_invite_load inv-00000000 >/dev/null 2>&1 ) || rc=70
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$dir"
+    echo "registry: the staged invite row does not parse with the register's own reader: $file" >&2
+    return 70
+  fi
+  # THE FIELD NAME IS RESOLVED THROUGH INDIRECT EXPANSION, NOT AN INLINE `case`
+  # INSIDE $( ) - bash 3.2 (macOS) mis-parses that shape, and this file runs on
+  # it. See the same note in _registry_validate_login_stage.
+  local got k varname want
+  for k in NAME PRINCIPAL ENTITY HOST RUNTIME PROVIDER TOKEN_SHA256 ISSUED_BY \
+           ISSUED_AT EXPIRES_AT STATE REDEEMED_LOGIN REDEEMED_AT; do
+    varname="INVITE_$k"
+    got="$( STEWARD_INVITE_DIR="$dir"; registry_invite_load inv-00000000 >/dev/null 2>&1; printf '%s' "${!varname}" )"
+    eval "want=\"\${_REGW_EXPECT_INV_$k:-}\""
+    if [ "$got" != "$want" ]; then
+      rm -rf "$dir"
+      echo "registry: staged invite row's $k does not match what was written: $file" >&2
+      return 70
+    fi
+  done
+  rm -rf "$dir"
+  return 0
+}
+
+# _invite_compose - the row's bytes, from the _REGW_EXPECT_INV_* values the
+# caller has already set. ONE serializer for issue, revoke and redeem, so the
+# three can never write three different shapes of the same row.
+#
+# The optional pair is written only when it has a value: a redeemed row carries
+# REDEEMED_LOGIN/REDEEMED_AT, an open one carries no empty lines for them.
+_invite_compose() { # <id>
+  local id="$1" k kv line body="" kv_err rc
+  kv_err="$(mktemp)" || return 70
+  for k in NAME PRINCIPAL ENTITY HOST RUNTIME PROVIDER TOKEN_SHA256 ISSUED_BY \
+           ISSUED_AT EXPIRES_AT STATE REDEEMED_LOGIN REDEEMED_AT; do
+    eval "kv=\"\${_REGW_EXPECT_INV_$k:-}\""
+    case "$k" in
+      REDEEMED_LOGIN|REDEEMED_AT) [ -n "$kv" ] || continue ;;
+    esac
+    line="$(_registry_emit_kv "$k" "$kv" 2>"$kv_err")"; rc=$?
+    if [ "$rc" -ne 0 ]; then rm -f "$kv_err"; return 64; fi
+    body="$body$line
+"
+  done
+  rm -f "$kv_err"
+  printf '# %s - invitation, written by steward invite.\n%s' "$id" "$body"
+}
+
+# _invite_load_expect <id> - load a row and copy every field into the
+# _REGW_EXPECT_INV_* values, so a caller can change ONE of them and recompose
+# the whole row without retyping the rest.
+_invite_load_expect() { # <id>
+  registry_invite_load "$1" || return $?
+  _REGW_EXPECT_INV_NAME="$INVITE_NAME"
+  _REGW_EXPECT_INV_PRINCIPAL="$INVITE_PRINCIPAL"
+  _REGW_EXPECT_INV_ENTITY="$INVITE_ENTITY"
+  _REGW_EXPECT_INV_HOST="$INVITE_HOST"
+  _REGW_EXPECT_INV_RUNTIME="$INVITE_RUNTIME"
+  _REGW_EXPECT_INV_PROVIDER="$INVITE_PROVIDER"
+  _REGW_EXPECT_INV_TOKEN_SHA256="$INVITE_TOKEN_SHA256"
+  _REGW_EXPECT_INV_ISSUED_BY="$INVITE_ISSUED_BY"
+  _REGW_EXPECT_INV_ISSUED_AT="$INVITE_ISSUED_AT"
+  _REGW_EXPECT_INV_EXPIRES_AT="$INVITE_EXPIRES_AT"
+  _REGW_EXPECT_INV_STATE="$INVITE_STATE"
+  _REGW_EXPECT_INV_REDEEMED_LOGIN="$INVITE_REDEEMED_LOGIN"
+  _REGW_EXPECT_INV_REDEEMED_AT="$INVITE_REDEEMED_AT"
+  return 0
+}
+
+# _invite_self_principal - which principal is running this verb, measured from
+# the register rather than typed. The unix account this process runs as is
+# matched against accounts.d on this machine; its PRINCIPAL is the answer. rc 1
+# and nothing when no row matches - the caller turns that into a refusal that
+# names --issued-by, because guessing who signed an invitation is exactly the
+# kind of guess this register exists to prevent.
+_invite_self_principal() {
+  local me d f slug u p
+  me="$(id -un)"
+  d="$(registry_account_dir)" || return 78
+  [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    slug="$(basename "$f" .conf)"
+    u="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )"
+    [ "$u" = "$me" ] || continue
+    p="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+    [ -n "$p" ] || continue
+    printf '%s\n' "$p"; return 0
+  done
+  return 1
+}
+
+cmd_invite_issue() {
+  local want_json="" name="" principal="" entity="" host="" runtime="claude-code" \
+        provider="claude-max" days="7" issued_by="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --name)      [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --name needs a value"; return 64; };      name="$2"; shift 2 ;;
+      --principal) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --principal needs a value"; return 64; }; principal="$2"; shift 2 ;;
+      --entity)    [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --entity needs a value"; return 64; };    entity="$2"; shift 2 ;;
+      --host)      [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --host needs a value"; return 64; };      host="$2"; shift 2 ;;
+      --runtime)   [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --runtime needs a value"; return 64; };   runtime="$2"; shift 2 ;;
+      --provider)  [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --provider needs a value"; return 64; };  provider="$2"; shift 2 ;;
+      --days)      [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --days needs a value"; return 64; };      days="$2"; shift 2 ;;
+      --issued-by) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite issue: --issued-by needs a value"; return 64; }; issued_by="$2"; shift 2 ;;
+      *) _reg_fail "$want_json" "steward invite issue: unexpected argument '$1'"; return 64 ;;
+    esac
+  done
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  [ -n "$name" ] || { _reg_fail "$want_json" "steward invite issue: --name is required (the invited person's display name)"; return 64; }
+  case "$name" in
+    *'$'*|*'`'*|*'\'*|*'"'*)
+      _reg_fail "$want_json" "steward invite issue: --name must not contain a quote, a backslash or a substitution character"; return 64 ;;
+  esac
+  local nm v
+  for nm in principal entity host; do
+    eval "v=\$$nm"
+    [ -n "$v" ] || { _reg_fail "$want_json" "steward invite issue: --$nm is required"; return 64; }
+    if ! [[ "$v" =~ ^[a-z][a-z0-9-]*$ ]]; then
+      _reg_fail "$want_json" "steward invite issue: invalid --$nm '$v' (a-z, then a-z 0-9 and hyphen)"; return 64
+    fi
+  done
+  case "$runtime" in
+    claude-code|opencode|codex) ;;
+    *) _reg_fail "$want_json" "steward invite issue: invalid --runtime '$runtime' (one of: claude-code opencode codex)"; return 64 ;;
+  esac
+  case " $_REGISTRY_LOGIN_PROVIDERS " in
+    *" $provider "*) ;;
+    *) _reg_fail "$want_json" "steward invite issue: invalid --provider '$provider' (one of: $_REGISTRY_LOGIN_PROVIDERS)"; return 64 ;;
+  esac
+  if ! [[ "$days" =~ ^[0-9]+$ ]] || [ "$days" -lt 1 ] || [ "$days" -gt 365 ]; then
+    _reg_fail "$want_json" "steward invite issue: --days must be a whole number of days between 1 and 365"; return 64
+  fi
+
+  # THE PRINCIPAL MUST NOT EXIST. An invitation MINTS a principal; aiming one at
+  # a person who already has a row would bind a second identity to them through
+  # a door meant for strangers.
+  if [ -e "$(registry_principal_dir)/$principal.conf" ]; then
+    _reg_fail "$want_json" "steward invite issue: principal '$principal' already exists - an invitation mints a principal, it does not extend one"
+    return 65
+  fi
+  if ! ( registry_entity_load "$entity" >/dev/null 2>&1 ); then
+    _reg_fail "$want_json" "steward invite issue: no such entity '$entity' - register the entity before inviting somebody into it"
+    return 65
+  fi
+  if ! ( registry_host_load "$(registry_host_dir)/$host.conf" >/dev/null 2>&1 ); then
+    _reg_fail "$want_json" "steward invite issue: no such host '$host' - the account and the first session live on a host the register knows"
+    return 65
+  fi
+  local open_id
+  open_id="$(registry_invite_open_for_principal "$principal" 2>/dev/null)" || open_id=""
+  if [ -n "$open_id" ]; then
+    _reg_fail "$want_json" "steward invite issue: an open invitation for '$principal' already exists: $open_id - revoke it or let it expire"
+    return 65
+  fi
+  if [ -z "$issued_by" ]; then
+    issued_by="$(_invite_self_principal)" || issued_by=""
+  fi
+  if [ -z "$issued_by" ]; then
+    _reg_fail "$want_json" "steward invite issue: could not resolve which principal is issuing this invitation from the account register - pass --issued-by <slug>"
+    return 65
+  fi
+  if ! [[ "$issued_by" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward invite issue: invalid --issued-by '$issued_by'"; return 64
+  fi
+
+  local origin; origin="$(registry_desk_origin)" || return 78
+
+  local id token digest now expires
+  id="$(registry_invite_mint_id)" || return 70
+  token="$(registry_invite_mint_token)" || return 70
+  digest="$(printf '%s' "$token" | _registry_sha256)" || return 78
+  now="$(date -u +%s)"
+  expires=$((now + days * 86400))
+
+  _REGW_EXPECT_INV_NAME="$name"
+  _REGW_EXPECT_INV_PRINCIPAL="$principal"
+  _REGW_EXPECT_INV_ENTITY="$entity"
+  _REGW_EXPECT_INV_HOST="$host"
+  _REGW_EXPECT_INV_RUNTIME="$runtime"
+  _REGW_EXPECT_INV_PROVIDER="$provider"
+  _REGW_EXPECT_INV_TOKEN_SHA256="$digest"
+  _REGW_EXPECT_INV_ISSUED_BY="$issued_by"
+  _REGW_EXPECT_INV_ISSUED_AT="$now"
+  _REGW_EXPECT_INV_EXPIRES_AT="$expires"
+  _REGW_EXPECT_INV_STATE="open"
+  _REGW_EXPECT_INV_REDEEMED_LOGIN=""
+  _REGW_EXPECT_INV_REDEEMED_AT=""
+
+  local content rc rw_err
+  content="$(_invite_compose "$id")" || {
+    _reg_fail "$want_json" "steward invite issue: a field carries a control character or newline"; return 64; }
+  rw_err="$(mktemp)" || { _reg_fail "$want_json" "steward invite issue: cannot create a temporary file"; return 70; }
+  registry_invite_write "$id" "$content" _invite_validate_row 2>"$rw_err"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward invite issue: $(tr '\n' ' ' < "$rw_err")"
+    rm -f "$rw_err"
+    return "$rc"
+  fi
+  rm -f "$rw_err"
+
+  # THE LINK IS PRINTED HERE AND NOWHERE ELSE, EVER. The row holds the digest;
+  # there is no path in the product that can print this string a second time.
+  local link="$origin/desk/invite/$token"
+  if [ -n "$want_json" ]; then
+    _json ok true kind invite id "$id" principal "$principal" entity "$entity" host "$host" \
+      runtime "$runtime" provider "$provider" expires "$expires" link "$link"
+  else
+    printf 'steward: invitation %s for %s (%s) on %s, valid %s day(s)\n' \
+      "$id" "$principal" "$name" "$host" "$days"
+    printf 'steward: this link is shown ONCE and is stored nowhere - send it now:\n'
+    printf '%s\n' "$link"
+  fi
+  return 0
+}
+
+# cmd_invite_ls - the register, as columns or as JSON.
+#
+# THE TOKEN CANNOT APPEAR HERE, and not because this function is careful: the
+# register holds a digest and nothing else, so there is no token in scope to
+# print. Storing only the digest is what makes that true.
+#
+# EXPIRES IS PRINTED IN THE REGISTER'S OWN UNIT (epoch seconds). Formatting it
+# would need a date(1) whose flags differ between the two systems this file
+# runs on, and the operational answer - is this invitation still good - is
+# already in STATE, which reads `expired` the moment the clock passes it.
+#
+# NAME IS LAST because it is the one free-text field: a display name carries
+# spaces, and a column of them anywhere but the end would break every column
+# after it.
+cmd_invite_ls() {
+  local want_json="" a
+  for a in "$@"; do
+    case "$a" in
+      --json) want_json=1 ;;
+      *) _reg_fail "" "steward invite ls: unexpected argument '$a'"; return 64 ;;
+    esac
+  done
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  local ids rc=0
+  ids="$(registry_invite_list)" || return $?
+  if [ -n "$want_json" ]; then
+    local tmp; tmp="$(mktemp)" || return 70
+    local id
+    for id in $ids; do
+      ( registry_invite_load "$id" >/dev/null 2>&1 || exit 0
+        _json id "$INVITE_ID" name "$INVITE_NAME" principal "$INVITE_PRINCIPAL" \
+          entity "$INVITE_ENTITY" host "$INVITE_HOST" runtime "$INVITE_RUNTIME" \
+          provider "$INVITE_PROVIDER" state "$INVITE_EFFECTIVE_STATE" \
+          issuedBy "$INVITE_ISSUED_BY" issuedAt "$INVITE_ISSUED_AT" \
+          expiresAt "$INVITE_EXPIRES_AT" redeemedLogin "$INVITE_REDEEMED_LOGIN" ) >> "$tmp"
+    done
+    jq -s . < "$tmp"; rc=$?
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  printf '%-12s %-12s %-10s %-10s %-12s %-14s %-9s %-12s %s\n' \
+    ID PRINCIPAL ENTITY HOST RUNTIME PROVIDER STATE EXPIRES NAME
+  local id
+  for id in $ids; do
+    ( registry_invite_load "$id" >/dev/null 2>&1 || exit 0
+      printf '%-12s %-12s %-10s %-10s %-12s %-14s %-9s %-12s %s\n' \
+        "$INVITE_ID" "$INVITE_PRINCIPAL" "$INVITE_ENTITY" "$INVITE_HOST" \
+        "$INVITE_RUNTIME" "$INVITE_PROVIDER" "$INVITE_EFFECTIVE_STATE" \
+        "$INVITE_EXPIRES_AT" "$INVITE_NAME" )
+  done
+  return 0
+}
+
+cmd_invite_revoke() {
+  local want_json="" id="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      -*) _reg_fail "$want_json" "steward invite revoke: unknown flag '$1'"; return 64 ;;
+      *) if [ -n "$id" ]; then _reg_fail "$want_json" "steward invite revoke: one invitation at a time"; return 64; fi
+         id="$1"; shift ;;
+    esac
+  done
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  if ! registry_invite_id_valid "$id"; then
+    _reg_fail "$want_json" "steward invite revoke: invalid invitation id '$id' (expected inv- and eight hex digits)"
+    return 64
+  fi
+  if [ ! -f "$(registry_invite_dir)/$id.conf" ]; then
+    _reg_fail "$want_json" "steward invite revoke: no such invitation '$id'"
+    return 78
+  fi
+  _invite_load_expect "$id" >/dev/null 2>&1 || {
+    _reg_fail "$want_json" "steward invite revoke: invitation '$id' does not load - repair the row"
+    return 78; }
+  if [ "$INVITE_STATE" = "revoked" ]; then
+    if [ -n "$want_json" ]; then _json ok true kind invite id "$id" state revoked changed false
+    else printf 'steward: invitation %s is already revoked\n' "$id"; fi
+    return 0
+  fi
+  if [ "$INVITE_STATE" = "redeemed" ]; then
+    _reg_fail "$want_json" "steward invite revoke: invitation '$id' was already redeemed - it stays as history; offboard the principal instead"
+    return 65
+  fi
+  _REGW_EXPECT_INV_STATE="revoked"
+  local content rc rw_err
+  content="$(_invite_compose "$id")" || {
+    _reg_fail "$want_json" "steward invite revoke: a field carries a control character or newline"; return 64; }
+  rw_err="$(mktemp)" || { _reg_fail "$want_json" "steward invite revoke: cannot create a temporary file"; return 70; }
+  registry_invite_replace "$id" "$content" _invite_validate_row 2>"$rw_err"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward invite revoke: $(tr '\n' ' ' < "$rw_err")"
+    rm -f "$rw_err"; return "$rc"
+  fi
+  rm -f "$rw_err"
+  if [ -n "$want_json" ]; then _json ok true kind invite id "$id" state revoked changed true
+  else printf 'steward: invitation %s revoked - the link no longer opens anything\n' "$id"; fi
+  return 0
+}
+
+cmd_invite() {
+  case "${1:-}" in
+    issue)  shift; cmd_invite_issue "$@" ;;
+    ls)     shift; cmd_invite_ls "$@" ;;
+    revoke) shift; cmd_invite_revoke "$@" ;;
+    *) fel "steward invite: unknown verb '${1:-}' (allowed: issue, ls, revoke)" 64 ;;
+  esac
+}
+
 # _migrate_snap <conf> <FIELD> — prints the value FIELD holds after sourcing
 # <conf>, IN A SUBSHELL. The subshelled source is the whole safety story: a
 # hostile conf is sourced in a child process, so nothing it assigns reaches
@@ -5217,6 +5571,7 @@ case "${1:-}" in
   # (`steward <estate> attach|peek|ls`) the moment an operator's own estate
   # happened to be named "team" or "client". `registry` is the one word this
   # dispatcher does not already use for a dispatch route into an estate.
+  invite)   shift; cmd_invite "$@"; exit $? ;;
   registry) shift; cmd_registry "$@"; exit $? ;;
   -h|--help) usage 0 ;;
   "")
