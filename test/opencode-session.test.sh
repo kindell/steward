@@ -5,7 +5,7 @@ set -u
 
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fx="$(mktemp -d)"
-trap 'rm -rf "$fx"' EXIT
+trap 'chmod -R u+w "$fx" 2>/dev/null; rm -rf "$fx"' EXIT
 
 pass=0; fail=0
 ok() { pass=$((pass + 1)); }
@@ -105,7 +105,7 @@ done
 case "$url" in
   */global/health)
     [ "${FAKE_CURL_HEALTH:-healthy}" = "healthy" ] || exit 22
-    printf '%s\n' '{"healthy":true,"version":"1.18.14"}'
+    printf '{"healthy":true,"version":"%s"}\n' "${FAKE_OPENCODE_VERSION:-1.18.14}"
     ;;
   */session)
     printf '%s\n' "{\"id\":\"${FAKE_SESSION_ID:-ses_bootstrap123}\",\"title\":\"steward-opencode\"}"
@@ -269,6 +269,20 @@ rm -f "$session_file"
 STEWARD_RSYNC_BIN="$bin/rsync-race" run_adapter >/dev/null 2>&1
 check_eq "source mutation during snapshot is refused" "$?" 65
 check "source race does not create session state" test ! -e "$session_file"
+
+# THE VERSION PIN IS THE ROW'S. A row that names a newer OPENCODE_VERSION selects
+# that binary; the runtime must accept exactly that version, and refuse a
+# binary that reports another - naming both, so the operator sees which side
+# moved. Measured 2026-09-08: a literal 1.18.14 in the runtime refused the
+# very binary the row had just selected.
+write_conf "openai/gpt-5.3-codex" "$memory"
+sed -i.bak 's/^OPENCODE_VERSION="1.18.14"/OPENCODE_VERSION="1.18.29"/' "$estate/sessions.d/steward-opencode.conf" && rm -f "$estate/sessions.d/steward-opencode.conf.bak"
+FAKE_OPENCODE_VERSION="1.18.29" run_adapter >/dev/null 2>"$fx/pin.err"; pin_rc=$?
+check_eq "a newer pin on the row is accepted when the binary matches it" "$pin_rc" 0
+FAKE_OPENCODE_VERSION="1.18.14" run_adapter >/dev/null 2>"$fx/pin.err"; pin_rc=$?
+check_eq "a binary that is not the row's version is refused" "$pin_rc" 78
+check_file_contains "and the refusal names the row's version" "$fx/pin.err" "1.18.29"
+check_file_contains "and the binary's version" "$fx/pin.err" "1.18.14"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

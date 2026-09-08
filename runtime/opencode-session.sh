@@ -47,7 +47,11 @@ RSYNC_BIN="${STEWARD_RSYNC_BIN:-rsync}"
 
 [ -x "$OPENCODE_BIN" ] || refuse 78 "OpenCode binary missing or not executable: $OPENCODE_BIN"
 installed_version="$("$OPENCODE_BIN" --version 2>/dev/null)"
-[ "$installed_version" = "1.18.14" ] || refuse 78 "OpenCode must be exactly 1.18.14 (got '${installed_version:-missing}')"
+# THE PIN IS THE ROW'S, NOT THIS FILE'S. The row already names the version
+# (OPENCODE_VERSION selects the binary's directory above); a literal here made
+# the field a lie - a row moved to a newer pin was refused by the runtime that
+# had just picked the newer binary from that very field. Measured 2026-09-08.
+[ "$installed_version" = "$OPENCODE_VERSION" ] || refuse 78 "OpenCode must be the row's OPENCODE_VERSION ($OPENCODE_VERSION); the binary at $OPENCODE_BIN reports '${installed_version:-missing}'"
 [ -d "$CLAUDE_MEMORY_ROOT" ] || refuse 65 "Claude memory source is unavailable: $CLAUDE_MEMORY_ROOT"
 
 umask 077
@@ -178,7 +182,7 @@ else
   while [ "$attempt" -lt 10 ]; do
     health="$(curl_with_password "http://127.0.0.1:$OPENCODE_PORT/global/health" 2>/dev/null)"
     case "$health" in
-      *'"healthy":true'*'"version":"1.18.14"'*) healthy=1; break ;;
+      *'"healthy":true'*"\"version\":\"$OPENCODE_VERSION\""*) healthy=1; break ;;
     esac
     attempt=$((attempt + 1))
     [ "$attempt" -lt 10 ] && sleep 1
