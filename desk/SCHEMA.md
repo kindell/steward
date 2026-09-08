@@ -172,15 +172,25 @@ two-account host: a request the desk's own host sends toward its own socket
 carries the node owner's login header, because the tailnet client
 identifies the node rather than the local account that made the
 request - so any local account on that host could otherwise read the node
-owner's view. The desk refuses this: a request whose forwarded address is the
-host's own is answered with 403, whatever login header it carries. The host's
-own uid-gated egress rule is the first line of defense against this and the
-server's refusal is the second, so a host without that rule is not left open.
-This check matters on the socket mode above, where only the serve tool can
-reach the server at all; it adds nothing on top of `serve.mjs`'s
-loopback-listen mode (`STEWARD_DESK_LISTEN`), which already accepts, as its
-own documented cost, that any local process there can set the same headers
-itself.
+owner's view. The desk refuses this: a request where ANY comma-separated
+entry of the forwarded-address header is the host's own is answered with
+403, whatever login header it carries. Every entry is checked, not only the
+first, because this server is the terminus of the chain, never a hop: the
+proxy in front of it appends a client-supplied forwarded-address entry to
+the one it inserts for the inbound node, rather than replacing it, so the
+host's own address can land anywhere in the list - and because this server
+never forwards the request on, checking every entry never refuses a real
+remote caller. The host's own uid-gated egress rule is the first line of
+defense against this and the server's refusal is the second, so a host
+without that rule is not left open. This check matters on the socket mode
+above, where only the serve tool can reach the server at all; it adds
+nothing on top of `serve.mjs`'s loopback-listen mode
+(`STEWARD_DESK_LISTEN`), which already accepts, as its own documented cost,
+that any local process there can set the same headers itself. The set of
+addresses that count as the host's own is read once, at startup: a desk
+started before its tailnet interface has an address never learns that
+address later, so restart the desk after the address is up, or name it in
+`STEWARD_DESK_SELF_ADDRS` ahead of time.
 
 **How quickly a change reaches a desk.** Different answers for different
 changes, and confusing them is the trap:

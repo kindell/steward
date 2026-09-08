@@ -571,13 +571,78 @@ test('no x-forwarded-for header at all is unaffected', async () => {
   assert.ok(r.body.includes('work-a'));
 });
 
-test('the forwarded address is normalized: first entry wins, mapped IPv4 form stripped', async () => {
+// ANY ENTRY WINS, NOT THE FIRST ONE. This desk is the terminus of the chain,
+// never a hop: the proxy in front of it inserts the inbound node's own
+// address and APPENDS a client-supplied X-Forwarded-For rather than
+// replacing it, so the self address can land anywhere in the list. A gate
+// that only read the first entry is bypassed by one header a local account
+// can set itself: `curl -H 'x-forwarded-for: 198.51.100.9'` arrives here as
+// `198.51.100.9, <node addr>`, self last. Reading every entry costs nothing
+// a real remote caller pays for, since a legitimate chain never happens to
+// contain this host's own address.
+test('a forwarded chain with self last is still refused', async (t) => {
+  const addr = firstSelfAddr();
+  if (!addr) {
+    t.skip('no non-internal interface address on this host');
+    return;
+  }
+  const r = await get('/desk/', Object.assign({ 'x-forwarded-for': '198.51.100.9, ' + addr }, B));
+  assert.equal(r.status, 403);
+  assert.equal(r.body, SELF_ORIGIN_BODY);
+});
+
+test('a forwarded chain with self first is still refused', async (t) => {
+  const addr = firstSelfAddr();
+  if (!addr) {
+    t.skip('no non-internal interface address on this host');
+    return;
+  }
+  const r = await get('/desk/', Object.assign({ 'x-forwarded-for': addr + ', 198.51.100.9' }, B));
+  assert.equal(r.status, 403);
+  assert.equal(r.body, SELF_ORIGIN_BODY);
+});
+
+test('a forwarded chain of two addresses, neither self, does not affect the gate', async () => {
+  const r = await get('/desk/', Object.assign({ 'x-forwarded-for': '198.51.100.9, 203.0.113.5' }, B));
+  assert.equal(r.status, 200);
+  assert.ok(r.body.includes('work-a'));
+});
+
+test('the forwarded address is normalized: any entry wins, mapped IPv4 form stripped', async () => {
   const sock2 = join(T, 'self-norm.sock');
   const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '192.0.2.7' });
   let handle;
   try {
     handle = await spawnUp(env, sock2);
-    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '::ffff:192.0.2.7, 198.51.100.9' }, B));
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '198.51.100.9, ::ffff:192.0.2.7' }, B));
+    assert.equal(r.status, 403);
+    assert.equal(r.body, SELF_ORIGIN_BODY);
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+test('STEWARD_DESK_SELF_ADDRS is normalized the same way a header entry is: mapped IPv4 form', async () => {
+  const sock2 = join(T, 'self-addrs-mapped.sock');
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '::ffff:192.0.2.7' });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '192.0.2.7' }, B));
+    assert.equal(r.status, 403);
+    assert.equal(r.body, SELF_ORIGIN_BODY);
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+test('a bracketed IPv6 literal with a trailing port is normalized to the bare address', async () => {
+  const sock2 = join(T, 'self-bracket-port.sock');
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '192.0.2.7' });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '[::ffff:192.0.2.7]:41234' }, B));
     assert.equal(r.status, 403);
     assert.equal(r.body, SELF_ORIGIN_BODY);
   } finally {

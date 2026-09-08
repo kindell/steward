@@ -215,26 +215,60 @@ if (!LISTEN && Buffer.byteLength(SOCK) > SOCK_MAX) {
   process.exit(64);
 }
 
-// normalizeAddr - lowercase, and drop a trailing `%zone` suffix (an IPv6
-// link-local address carries the interface it was seen on, and that suffix
-// is local to this process, never something a forwarded header would
-// reproduce the same way twice).
+// normalizeAddr - one comparable form, used for both SELF_ADDRS members and
+// every forwarded-header entry, so the two sides of the comparison are never
+// normalized two different ways:
+//   - a bracketed IPv6 literal (`[addr]` or `[addr]:port`, the RFC 3986
+//     host:port form) loses the brackets and any port outside them;
+//   - an unbracketed address with a trailing `:<port>` loses that suffix,
+//     but only when what remains has no colon of its own - a bare IPv6
+//     address always has more than one colon, so this never eats part of one;
+//   - a trailing `%zone` suffix is dropped (an IPv6 link-local address
+//     carries the interface it was seen on, and that suffix is local to this
+//     process, never something a forwarded header would reproduce the same
+//     way twice);
+//   - a leading `::ffff:` (the IPv4-mapped IPv6 form some platforms use) is
+//     dropped so a mapped and a bare form of the same address compare equal;
+//   - the whole thing is trimmed and lowercased.
 function normalizeAddr(raw) {
   let a = String(raw).trim().toLowerCase();
+  if (a.startsWith('[')) {
+    const close = a.indexOf(']');
+    if (close !== -1) a = a.slice(1, close);
+  } else {
+    const lastColon = a.lastIndexOf(':');
+    if (lastColon !== -1) {
+      const portPart = a.slice(lastColon + 1);
+      const hostPart = a.slice(0, lastColon);
+      if (/^[0-9]+$/.test(portPart) && !hostPart.includes(':')) a = hostPart;
+    }
+  }
   const zone = a.indexOf('%');
   if (zone !== -1) a = a.slice(0, zone);
+  if (a.startsWith('::ffff:')) a = a.slice(7);
   return a;
 }
 
-// SELF_ADDRS - every address this host answers to, collected once at
+// SELF_ADDRS - every address this host answers to, collected ONCE at
 // startup, never per request: the interfaces' own non-internal addresses
 // (loopback excluded on purpose - the serve tool forwards the tailnet
 // address, never 127.0.0.1, so a bare loopback hit without the header is the
 // existing gate's business, not this one), plus whatever
 // STEWARD_DESK_SELF_ADDRS names for a host where that is not the whole
-// picture (a second tailnet interface, a container's own address).
+// picture (a second tailnet interface, a container's own address). Because
+// this is read once, a desk started before the tailnet interface has its
+// address never learns it later - the gate is then a silent no-op for that
+// address until the process is restarted, or the operator names the address
+// in STEWARD_DESK_SELF_ADDRS up front.
 const SELF_ADDRS = new Set();
-for (const ifaces of Object.values(os.networkInterfaces())) {
+let ownInterfaces;
+try {
+  ownInterfaces = os.networkInterfaces();
+} catch (e) {
+  console.error('desk: could not read the host\'s own network interfaces: ' + (e && e.message ? e.message : e));
+  process.exit(78);
+}
+for (const ifaces of Object.values(ownInterfaces)) {
   for (const iface of ifaces || []) {
     if (!iface.internal) SELF_ADDRS.add(normalizeAddr(iface.address));
   }
@@ -258,20 +292,31 @@ for (const extra of (process.env.STEWARD_DESK_SELF_ADDRS || '').split(/\s+/)) {
 // the first place - the loopback-listen mode already accepts that any local
 // process can set its own headers, and this check adds nothing to a cost
 // already paid there.
+//
+// ANY ENTRY IN THE CHAIN WINS, NOT ONLY THE FIRST ONE. This server is the
+// TERMINUS of the forwarded-for chain, never a hop: the proxy in front of it
+// inserts the inbound node's own address and APPENDS a client-supplied
+// X-Forwarded-For to that, rather than replacing it. So the self address can
+// land anywhere in the list, and a gate that trusted only the first entry is
+// bypassed by one header a local account sets itself: a request sent as
+// `x-forwarded-for: 198.51.100.9` arrives here as
+// `198.51.100.9, <the node's own address>`, self last. Because this server
+// never forwards the request on, scanning every entry costs nothing a
+// legitimate remote caller pays for - a real chain never happens to contain
+// this host's own address, so refusing on any match never refuses a real one.
 const SELF_ORIGIN_FORBIDDEN = "a request from the desk's own host cannot be attributed to a person";
 
-// selfOriginAddr - the address a forwarded-for header names, normalized the
-// way SELF_ADDRS is: the FIRST comma-separated entry (the chain's origin,
-// closest to the actual sender), trimmed, lowercased, `%zone` stripped, and
-// with a leading `::ffff:` (the IPv4-mapped IPv6 form some platforms use)
-// removed so a mapped and a bare form of the same address compare equal.
-function selfOriginAddr(req) {
+// selfOriginAddrs - every comma-separated entry of the forwarded-for header,
+// each normalized exactly the way SELF_ADDRS is (see normalizeAddr), so a
+// match on any one of them is a match. Node already joins repeated headers
+// with ", " before handler code ever sees them - only set-cookie is
+// delivered as an array - so the Array.isArray branch below exists only to
+// feed that join-then-split the same way regardless, never as a live path.
+function selfOriginAddrs(req) {
   const raw = req.headers['x-forwarded-for'];
-  if (!raw) return null;
-  const first = String(Array.isArray(raw) ? raw[0] : raw).split(',')[0];
-  let addr = normalizeAddr(first);
-  if (addr.startsWith('::ffff:')) addr = addr.slice(7);
-  return addr;
+  if (!raw) return [];
+  const joined = Array.isArray(raw) ? raw.join(', ') : String(raw);
+  return joined.split(',').map((entry) => normalizeAddr(entry));
 }
 
 const HEADERS = {
@@ -380,10 +425,11 @@ const server = http.createServer((req, res) => {
 
   // A NODE CANNOT VOUCH FOR A PERSON. Checked before the login header is even
   // read - see SELF_ORIGIN_FORBIDDEN above for why a self-origin request's
-  // login header is true and still names the wrong person.
-  const selfAddr = selfOriginAddr(req);
-  if (selfAddr !== null && SELF_ADDRS.has(selfAddr)) {
-    console.error('desk: refused self-origin request from ' + selfAddr);
+  // login header is true and still names the wrong person, and for why every
+  // entry of the chain is checked, not only the first.
+  const selfMatch = selfOriginAddrs(req).find((addr) => SELF_ADDRS.has(addr));
+  if (selfMatch !== undefined) {
+    console.error('desk: refused self-origin request from ' + selfMatch);
     return send(res, 403, SELF_ORIGIN_FORBIDDEN, { 'content-type': 'text/plain; charset=utf-8' });
   }
 
