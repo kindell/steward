@@ -8,6 +8,8 @@
 // is the only thing that can reach the port at all. Nothing here reads a
 // login header or a cookie: identity is serve.mjs's business.
 
+import { isIP } from 'node:net';
+
 // normalizeAddr - one spelling per address, so a set lookup or an equality is
 // a real comparison: brackets and an IPv4 port stripped, an IPv6 zone
 // stripped, the ::ffff: prefix of an IPv4-mapped address stripped, lowercased.
@@ -82,14 +84,24 @@ export function parseFrontPeer(raw) {
 
 // visitorAddress - null when the socket peer is not the box (the caller must
 // refuse); otherwise the visitor as the box reported it, or the box itself
-// when it reported nothing. Only the FIRST x-real-ip entry counts: the box
-// writes exactly one, and anything after a comma came from the visitor.
+// when it reported nothing believable.
+//
+// X-REAL-IP IS BELIEVED ONLY AS A SINGLE WELL-FORMED IP LITERAL. The box
+// overwrites the header with the connection's own remote address (Caddy
+// `header_up X-Real-IP {remote_host}`, nginx `proxy_set_header X-Real-IP
+// $remote_addr;`), so exactly one address arrives and it is an address. A
+// comma means a list, which this header never is when the box sets it, and
+// anything net.isIP does not recognise is not an address at all. Either way
+// the value is dropped and the budget keys on the box - a visitor who sends
+// junk shares one bucket rather than minting a fresh one per request.
 export function visitorAddress(req, peer) {
   const remote = normalizeAddr(req.socket && req.socket.remoteAddress);
   if (remote !== peer) return null;
   const hdr = req.headers['x-real-ip'];
   if (typeof hdr !== 'string' || hdr.trim() === '') return peer;
-  return normalizeAddr(hdr.split(',')[0]);
+  if (hdr.includes(',')) return peer;
+  const v = normalizeAddr(hdr);
+  return isIP(v) === 0 ? peer : v;
 }
 
 // RateLimiter - a trailing window per key, in memory. The desk is one process

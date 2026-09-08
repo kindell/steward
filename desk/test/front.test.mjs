@@ -52,9 +52,16 @@ test('parseFrontPeer normalizes and refuses a non-tailnet peer', () => {
 
 const fakeReq = (remote, realIp) => ({ socket: { remoteAddress: remote }, headers: realIp === undefined ? {} : { 'x-real-ip': realIp } });
 
-test('visitorAddress trusts x-real-ip only from the configured peer', () => {
+test('visitorAddress trusts x-real-ip only from the configured peer, and only as one IP literal', () => {
   assert.equal(visitorAddress(fakeReq('100.98.0.8', '203.0.113.9'), '100.98.0.8'), '203.0.113.9');
-  assert.equal(visitorAddress(fakeReq('::ffff:100.98.0.8', '203.0.113.9, 10.0.0.1'), '100.98.0.8'), '203.0.113.9');
+  assert.equal(visitorAddress(fakeReq('::ffff:100.98.0.8', '[2001:db8::9]:443'), '100.98.0.8'), '2001:db8::9');
+  // A list is not what the box writes, so it is not believed at all: the
+  // budget falls back to the box rather than keying on a visitor-chosen half.
+  assert.equal(visitorAddress(fakeReq('100.98.0.8', '203.0.113.9, 10.0.0.1'), '100.98.0.8'), '100.98.0.8');
+  // Neither is anything that is not an address.
+  assert.equal(visitorAddress(fakeReq('100.98.0.8', 'example.test'), '100.98.0.8'), '100.98.0.8');
+  assert.equal(visitorAddress(fakeReq('100.98.0.8', '999.1.1.1'), '100.98.0.8'), '100.98.0.8');
+  assert.equal(visitorAddress(fakeReq('100.98.0.8', '../../etc/passwd'), '100.98.0.8'), '100.98.0.8');
   assert.equal(visitorAddress(fakeReq('100.98.0.8'), '100.98.0.8'), '100.98.0.8');
   assert.equal(visitorAddress(fakeReq('100.98.0.9', '203.0.113.9'), '100.98.0.8'), null);
 });

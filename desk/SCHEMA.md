@@ -247,7 +247,13 @@ The estate provides, in this order:
    read.
 4. The tailnet ACL lets only the box's tag reach this host on that port.
 5. The box: a reverse proxy with automatic certificates, forwarding to
-   `<tailnet addr>:<port>` with the visitor's address as `X-Real-IP`.
+   `<tailnet addr>:<port>` with the visitor's address as `X-Real-IP`. The box
+   must **overwrite** any `X-Real-IP` the client sent rather than append to
+   it - Caddy `header_up X-Real-IP {remote_host}`, nginx
+   `proxy_set_header X-Real-IP $remote_addr;`. The desk believes the header
+   only as a single well-formed IP literal (a comma, or anything that is not
+   an address, falls back to the box's own address), so a client-set copy
+   cannot mint a fresh rate-limit bucket per request.
 
 What a visitor sees: `/desk/auth/login` lists the providers; after the
 provider's login the desk verifies the `id_token` (signature against the
