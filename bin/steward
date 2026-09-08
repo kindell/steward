@@ -3717,10 +3717,25 @@ cmd_invite_redeem() {
       #
       # WHICH OF THE TWO HAPPENED IS READ OFF THE OUTPUT, because a shell has
       # no other way to ask: sudo passes the command's exit status straight
-      # through, so the number alone cannot say whose it is. Every line the
-      # helper prints - receipt and refusal alike - is prefixed "helper: ", so
-      # output with no line BEGINNING "helper:" is output the helper never
-      # wrote.
+      # through, so the number alone cannot say whose it is. Nearly every line
+      # the helper prints - receipt and refusal alike - is prefixed "helper: ",
+      # so output with no line beginning "helper:" is nearly always output the
+      # helper never wrote.
+      #
+      # THE ONE THING IT PRINTS WITHOUT THAT PREFIX IS ITS USAGE BANNER, and
+      # that is not a corner: the helper answers with the banner, on rc 64, for
+      # a name outside its argument guard and for a sub-command it does not
+      # have - the two refusals a caller passing a bad argument actually
+      # produces. Read as sudo's words they became rc 77 "the estate has not
+      # installed the sudoers line", quoting the helper's own usage text as what
+      # sudo said, and sending the reader to /etc/sudoers on a host whose
+      # sudoers line is working exactly as designed. The banner's first line
+      # names the binary, so it is as recognisable as the prefix is.
+      #
+      # THE HELPER'S OUTPUT IS CAPTURED WITH 2>&1 ABOVE, and the receipts and
+      # refusals it writes go to STDERR by contract. Both arms below read that
+      # combined capture; narrowing it to stdout would leave this classifier
+      # with nothing to read at all.
       #
       # THE MATCH IS ANCHORED TO THE START OF A LINE, and that anchor is the
       # whole finding. The helper's binary is called steward-account-HELPER, so
@@ -3729,7 +3744,7 @@ cmd_invite_redeem() {
       # says, and the exact case rc 77 exists for - contains the substring
       # "helper: " and used to be reported as a helper that ran and refused,
       # with the sudoers line never printed.
-      if printf '%s\n' "$helper_out" | grep -q '^helper:'; then
+      if printf '%s\n' "$helper_out" | grep -qE '^(helper:|usage: steward-account-helper)'; then
         _redeem_fail "step 3 (unix account): the account helper ran and refused (rc $rc): $helper_out" 70
         return 70
       fi

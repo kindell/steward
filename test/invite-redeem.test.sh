@@ -115,9 +115,16 @@ chmod 755 "$FX/bin/homelookup"
 # account appear, so a second run can find the mark and skip the step.
 #
 # FIX_SUDO_MODE is the fixture's own knob - nothing in the product reads it.
-# It models the four ways this call can go wrong on a real host: sudo cannot
-# execute the helper, sudo wants a password, the helper itself refuses, and
-# sudo declines the -u runas the five in-home writes need.
+# It models the five ways this call can go wrong on a real host: sudo cannot
+# execute the helper, sudo wants a password, the helper itself refuses, the
+# helper answers with its usage banner, and sudo declines the -u runas the five
+# in-home writes need.
+#
+# THE HELPER'S RECEIPTS GO TO STDERR, and this shim writes them where the real
+# one does. That is not decoration: step 3 captures the call with 2>&1 and step
+# 10 reads the fragment path back out of what it captured, so a capture that
+# took stdout alone would find neither the receipts nor the refusals. Writing
+# them on stdout here would let that regression through unseen.
 cat > "$FX/bin/sudo" <<EOF
 #!/bin/bash
 echo "sudo \$*" >> "$FX/calls"
@@ -139,10 +146,11 @@ case "\${args[0]:-}" in
       nohelper) echo "sudo: unable to execute \${args[0]}: No such file or directory" >&2; exit 1 ;;
       password) echo "sudo: a password is required" >&2; exit 1 ;;
       refuse)   echo "helper: REFUSING - '\${args[2]}' is a reserved account name" >&2; exit 64 ;;
+      usage)    printf 'usage: steward-account-helper add <username>\n       steward-account-helper lock <username> [--archive-home]\n' >&2; exit 64 ;;
     esac
     mkdir -p "$FX/home/\${args[2]}/.ssh"
-    echo "helper: account \${args[2]} created"
-    echo "helper: tmpfiles /etc/tmpfiles.d/steward-rig-\${args[2]}.conf"
+    echo "helper: account \${args[2]} created" >&2
+    echo "helper: tmpfiles /etc/tmpfiles.d/steward-rig-\${args[2]}.conf" >&2
     exit 0 ;;
 esac
 if [ -n "\$user" ] && [ "\$mode" = "norunas" ]; then
@@ -380,6 +388,21 @@ out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
 is  "a helper that ran and refused is rc 70" "$rc" "70"
 has "and quotes the helper's own line" "$out" "helper: REFUSING"
 no  "and does not send the operator to sudoers" "$out" "NOPASSWD"
+# A USAGE BANNER IS THE HELPER SPEAKING TOO. Every OTHER thing the helper prints
+# is prefixed "helper: ", but its usage text is not - and the helper answers
+# with it, on rc 64, for a name it will not take and for a sub-command it does
+# not have. Those are the two cases a caller passing a bad argument produces, so
+# they are the likeliest refusals of the lot; both were reported as rc 77 "the
+# estate has not installed the sudoers line", with the helper's own words quoted
+# underneath as what sudo said. The reader is sent to /etc/sudoers to fix a host
+# where the sudoers line is already working perfectly.
+FIX_SUDO_MODE="usage"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "a helper that answered with its usage banner is rc 70" "$rc" "70"
+has "and quotes the banner it printed" "$out" "usage: steward-account-helper"
+has "and reports it as the helper refusing" "$out" "ran and refused"
+no  "and does not send the operator to sudoers" "$out" "NOPASSWD"
+no  "and does not attribute the helper's words to sudo" "$out" "sudo said"
 
 echo "== the five in-home writes name sudo when sudo is what refused =="
 # The spec's single sudoers line covers the helper and nothing else, so on a
