@@ -64,6 +64,14 @@ impl Session {
 pub struct Fleet {
     /// The principal used by the engine's visibility decision. The cockpit
     /// consumes this answer instead of resolving the Unix login a second way.
+    ///
+    /// DEFAULTED, so a cockpit built from this branch can still parse a
+    /// document from an engine that predates the field. Without the default
+    /// the field is required and the parse fails naming it, which makes the
+    /// deploy order engine-first on every host - a coupling nothing else in
+    /// this struct imposes. An empty viewer is the honest reading of a
+    /// document that never said who it was filtered for.
+    #[serde(default)]
     pub viewer: String,
     pub sessions: Vec<Session>,
     pub hidden: u32,

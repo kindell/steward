@@ -3006,12 +3006,13 @@ registry_load() {
   # TARGET_*     what the session works ON — a reference the display is
   #              DERIVED from, never a stored label.
   #
-# ACCOUNT ABSENCE IS LENIENT; ACCOUNT PRESENCE IS STRICT. Rows predating the
-# model omit it and keep OWNER as their principal. Once present, ACCOUNT is an
-# identity claim and must resolve to this exact OWNER and HOST on every read.
-# SLUG and TARGET_* remain shape-checked references whose existence is enforced
-# by the consumers that need those joins. The composite (ACCOUNT, SLUG)
-# uniqueness gate remains a writer concern.
+  # ACCOUNT ABSENCE IS LENIENT; ACCOUNT PRESENCE IS AN IDENTITY CLAIM. Rows
+  # predating the model omit it and keep OWNER as their principal. Once
+  # present, ACCOUNT must load and must name THIS row's human, in either shape
+  # the writers here have emitted - see _registry_account_principal_for_row.
+  # SLUG and TARGET_* remain shape-checked references whose existence is
+  # enforced by the consumers that need those joins. The composite
+  # (ACCOUNT, SLUG) uniqueness gate remains a writer concern.
   #
   # The shape refused here is refused for the same reason OWNER's is: these
   # values index other registers, so a path escape or a control byte would
