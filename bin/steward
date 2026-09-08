@@ -3304,10 +3304,38 @@ cmd_mcp_render() {
   mcp_render_document "$sid"
 }
 
+# ── steward mcp surface <session-id> --json ────────────────────────────────
+#
+# Prints the session's MCP asset ids together with the AXIS each was granted
+# on (account/entity/project) and the granting row's own slug — the desk's
+# view of "who gave this session what", never the asset's own command/args/
+# env file. THE ALLOWLIST IS THE SHAPE OF THE jq CALL BELOW: id, name, axis,
+# source. Nothing read from mcp.d is consulted here at all — a command, an
+# argument, an env file are the asset's business, never the surface's.
+cmd_mcp_surface() { # <session-id> --json
+  local sid="" want_json="" a
+  for a in "$@"; do case "$a" in --json) want_json=1 ;; -*) fel "mcp surface: unknown flag '$a'" 64 ;; *) sid="$a" ;; esac; done
+  [ -n "$want_json" ] || fel "mcp surface: --json is the only output form" 64
+  [ -n "$sid" ] || fel "mcp surface: needs a session id" 64
+  command -v jq >/dev/null 2>&1 || fel "mcp surface: jq is required" 69
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  local rows rc
+  rows="$(registry_session_mcp_surface "$sid")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    jq -cn --arg s "$sid" '{ok:false,session:$s,reason:"a level of the org would not load; the surface is not known"}'
+    exit 65
+  fi
+  printf '%s' "$rows" | jq -cRn --arg s "$sid" '
+    {ok:true, session:$s,
+     assets:[inputs | select(length>0) | split("\t") | {id:.[0], name:.[0], axis:.[1], source:.[2]}]}'
+}
+
 cmd_mcp() {
   case "${1:-}" in
     render) shift; cmd_mcp_render "$@" ;;
-    *) fel "steward mcp: unknown verb '${1:-}' (allowed: render)" 64 ;;
+    surface) shift; cmd_mcp_surface "$@" ;;
+    *) fel "steward mcp: unknown verb '${1:-}' (allowed: render, surface)" 64 ;;
   esac
 }
 

@@ -732,7 +732,7 @@ registry_session_mcp_assets() {
     # happened: all four levels may fail independently, every one of them has
     # to be named, and an early return would silence the three after the
     # first.
-    _MCP_SEEN=""; _MCP_OUT=""; _MCP_LEVEL_FAILED=""
+    _MCP_SEEN=""; _MCP_OUT=""; _MCP_SURFACE=""; _MCP_LEVEL_FAILED=""
 
     # LEVEL 0 — THE OWNING ACCOUNT, the person rather than the org node, and
     # collected FIRST so a shared asset is attributed to the level that is
@@ -767,7 +767,7 @@ registry_session_mcp_assets() {
           echo "registry: mcp assets for '$sid' — the owning account '$account' would not load; it grants nothing here" >&2
           _MCP_LEVEL_FAILED=1
         else
-          _registry_mcp_collect "${acct_out%%$'\n'*}"
+          _registry_mcp_collect "${acct_out%%$'\n'*}" account "$account"
         fi
       fi
     fi
@@ -812,11 +812,11 @@ registry_session_mcp_assets() {
             echo "registry: mcp assets for '$sid' — the managing team '$mgr' would not load; it grants nothing here" >&2
             _MCP_LEVEL_FAILED=1
           else
-            _registry_mcp_collect "${mgr_out%%$'\n'*}"
+            _registry_mcp_collect "${mgr_out%%$'\n'*}" entity "$mgr"
           fi
         fi
         # LEVEL 2 — the owning entity itself.
-        _registry_mcp_collect "$ent_assets"
+        _registry_mcp_collect "$ent_assets" entity "$owning"
       fi
     fi
 
@@ -832,32 +832,49 @@ registry_session_mcp_assets() {
         echo "registry: mcp assets for '$sid' — the project '$target_project' would not load; it grants nothing here" >&2
         _MCP_LEVEL_FAILED=1
       else
-        _registry_mcp_collect "${proj_out%%$'\n'*}"
+        _registry_mcp_collect "${proj_out%%$'\n'*}" project "$target_project"
       fi
     fi
 
     # THE PARTIAL SET IS STILL PRINTED, and then flagged. Printing first means
     # a caller that reads stdout and ignores the rc is no worse off than
     # before; the rc is what stops it being read as the whole grant.
-    printf '%s' "$_MCP_OUT"
+    if [ "${_REGISTRY_MCP_WANT:-}" = "surface" ]; then printf '%s' "$_MCP_SURFACE"; else printf '%s' "$_MCP_OUT"; fi
     [ -z "$_MCP_LEVEL_FAILED" ] || exit 65
   )
 }
 
-# _registry_mcp_collect <assets-string> — appends the string's words to the
-# accumulator (_MCP_OUT), skipping any slug already collected. Called only
-# from inside registry_session_mcp_assets' subshell, which owns both globals.
+# registry_session_mcp_surface <sid> — the same walk as
+# registry_session_mcp_assets, but prints `name<TAB>axis<TAB>source` rows (axis
+# ∈ account|entity|project, source = the granting row's own slug) instead of
+# the bare asset list — one row per asset in the granted set, naming the axis
+# it CAME IN ON. Same rc contract, same four levels, same
+# first-collected-wins precedence as _MCP_OUT — it is the SAME collector run
+# with a flag set, not a second walk that could drift from the first.
+registry_session_mcp_surface() { _REGISTRY_MCP_WANT=surface registry_session_mcp_assets "$@"; }
+
+# _registry_mcp_collect <assets-string> <axis> <source> — appends the string's
+# words to the accumulator (_MCP_OUT), skipping any slug already collected,
+# and appends one `word<TAB>axis<TAB>source` row to _MCP_SURFACE for each word
+# newly collected — the same first-collected-wins gate _MCP_OUT uses, so every
+# id that reaches _MCP_OUT has exactly one row in _MCP_SURFACE naming the axis
+# it was FIRST granted on (the level closest to the session), and one already
+# seen at an earlier, closer level is not re-attributed to a farther one.
+# axis/source are ignored when a caller omits them. Called only from inside
+# registry_session_mcp_assets' subshell, which owns both globals.
 #
 # THE MEMBERSHIP TEST IS SPACE-DELIMITED CONTAINMENT, the same idiom
 # lib/visibility.sh's MEMBERS check uses — the surrounding spaces are what
 # stop `chat` from matching inside `chat-tool`.
 _registry_mcp_collect() {
+  local _axis="${2:-}" _source="${3:-}"
   _registry_words "${1:-}"
   local w
   for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
     case " $_MCP_SEEN " in *" $w "*) continue ;; esac
     _MCP_SEEN="$_MCP_SEEN $w"
     _MCP_OUT="$_MCP_OUT$w"$'\n'
+    _MCP_SURFACE="$_MCP_SURFACE$w"$'\t'"$_axis"$'\t'"$_source"$'\n'
   done
 }
 
