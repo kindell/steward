@@ -33,12 +33,16 @@ export function normalizeAddr(raw) {
 }
 
 // isCgnat - 100.64.0.0/10: the tailnet's own address range. The second octet
-// carries the /10: 64..127.
+// carries the /10: 64..127. EVERY OCTET IS RANGE-CHECKED, not merely counted
+// in digits: `100.64.999.999` is three digits per field and is not an
+// address, and a check that says yes to it says yes about something the rest
+// of this file will then compare, bind or log.
 export function isCgnat(addr) {
-  const m = String(addr).match(/^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  const m = String(addr).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
-  const second = Number(m[1]);
-  return second >= 64 && second <= 127;
+  const octets = m.slice(1).map(Number);
+  if (octets.some((n) => n > 255)) return false;
+  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
 export function isLoopback(addr) {

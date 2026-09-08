@@ -51,6 +51,12 @@ bash "$here/desk/bin/desk-paths" >/dev/null 2>"$T/err"; rc=$?
 is  "rc 78" "$rc" "78"
 has "names the key" "$(cat "$T/err")" "DESK_ORIGIN"
 
+echo "== a plaintext origin is refused, not quietly served =="
+sed -i.bak 's|^DESK_ORIGIN=.*|DESK_ORIGIN="http://desk.example.test"|' "$ROOT/estate/steward.conf"
+bash "$here/desk/bin/desk-paths" >/dev/null 2>"$T/err"; rc=$?
+is  "http is rc 78" "$rc" "78"
+has "http names the key" "$(cat "$T/err")" "DESK_ORIGIN"
+
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

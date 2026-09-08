@@ -22,6 +22,11 @@ test('isCgnat is exactly 100.64.0.0/10', () => {
   assert.equal(isCgnat('100.63.255.255'), false);
   assert.equal(isCgnat('10.0.0.1'), false);
   assert.equal(isCgnat('::1'), false);
+  // Three digits is not the same as an octet.
+  assert.equal(isCgnat('100.64.999.999'), false);
+  assert.equal(isCgnat('100.64.0.256'), false);
+  assert.equal(isCgnat('100.256.0.1'), false);
+  assert.equal(isCgnat('999.64.0.1'), false);
 });
 
 test('isLoopback accepts the two literal spellings only', () => {

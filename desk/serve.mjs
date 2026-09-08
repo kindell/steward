@@ -710,9 +710,12 @@ function authLogout(req, res) {
   if (req.headers.origin !== undefined && req.headers.origin !== FRONT.origin) {
     return send(res, 403, FORBIDDEN, FRONT_HEADERS);
   }
+  // BOTH COOKIES GO. A login begun and abandoned leaves __Host-desk-oauth in
+  // the browser for its full ten minutes, and a person who just logged out has
+  // said they are done - the callback clears both, and so does this.
   return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
     location: '/desk/auth/login',
-    'set-cookie': clearCookie(SESSION_COOKIE)
+    'set-cookie': [clearCookie(SESSION_COOKIE), clearCookie(STATE_COOKIE)]
   }));
 }
 

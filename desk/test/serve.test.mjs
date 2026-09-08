@@ -1133,6 +1133,8 @@ describe('the front listener', () => {
     const ok = await front('POST', '/desk/auth/logout', from(13, { cookie, 'sec-fetch-site': 'same-origin', origin: FRONT_ORIGIN }));
     assert.equal(ok.status, 303);
     assert.ok(cookieOf(ok).includes('__Host-desk-session='));
+    // A login begun and abandoned must not outlive the logout either.
+    assert.ok(cookieOf(ok).includes('__Host-desk-oauth='));
   });
 
   // The visitor address is what the box reported, so two visitors behind the
