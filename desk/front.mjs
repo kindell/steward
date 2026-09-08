@@ -105,22 +105,52 @@ export function visitorAddress(req, peer) {
 }
 
 // RateLimiter - a trailing window per key, in memory. The desk is one process
-// on one host, so a map is the whole store; keys idle for a window are pruned
-// on every call so a scan of the internet does not grow it without bound.
+// on one host, so a map is the whole store.
+//
+// THE MAP IS BOUNDED AND THE PRUNE IS AMORTIZED, because both the size and
+// the cost are things a stranger can drive. A scan from many addresses would
+// otherwise grow the map without limit; pruning every key on every call would
+// otherwise make each request cost the whole map, so a big map makes the next
+// request more expensive, which is the wrong direction under load.
+//
+// The cap: when the map is full and the key is new, hit() returns false and
+// the map does not grow - the caller 429s. That is a deliberate trade. Under
+// a flood of fresh keys a genuine new visitor can be refused while the flood
+// occupies the map, but every key already in the map keeps its own budget,
+// and a full window later the prune frees room again. An unbounded map is
+// the worse failure: it never comes back.
+const PRUNE_EVERY = 256;
 export class RateLimiter {
-  constructor(limit, windowMs) {
+  constructor(limit, windowMs, maxKeys = 10000) {
     this.limit = limit;
     this.windowMs = windowMs;
+    this.maxKeys = maxKeys;
     this.hits = new Map();
+    this.sincePrune = 0;
   }
-  hit(key, now) {
+  prune(now) {
     const floor = now - this.windowMs;
     for (const [k, times] of this.hits) {
       const kept = times.filter((t) => t > floor);
       if (kept.length === 0) this.hits.delete(k); else this.hits.set(k, kept);
     }
-    const times = this.hits.get(key) || [];
-    if (times.length >= this.limit) return false;
+    this.sincePrune = 0;
+  }
+  hit(key, now) {
+    // Every 256th call, or whenever the map has reached the cap - so the
+    // sweep is amortized in the ordinary case and always runs before a
+    // refusal that the cap would otherwise make permanent.
+    if (++this.sincePrune >= PRUNE_EVERY || this.hits.size >= this.maxKeys) this.prune(now);
+    const floor = now - this.windowMs;
+    // Between prunes this key's own list can hold entries older than the
+    // window, so the window is applied here too: the trailing-window count is
+    // never the sweep's leftovers.
+    const times = (this.hits.get(key) || []).filter((t) => t > floor);
+    if (times.length >= this.limit) {
+      this.hits.set(key, times);
+      return false;
+    }
+    if (!this.hits.has(key) && this.hits.size >= this.maxKeys) return false;
     times.push(now);
     this.hits.set(key, times);
     return true;

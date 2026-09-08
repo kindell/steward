@@ -75,3 +75,41 @@ test('RateLimiter allows limit hits per window and forgets old ones', () => {
   assert.equal(rl.hit('b', 4000), true);
   assert.equal(rl.hit('a', 61001), true);
 });
+
+test('RateLimiter refuses a new key at the cap and keeps serving the keys it holds', () => {
+  const rl = new RateLimiter(3, 60000, 2);
+  assert.equal(rl.hit('a', 1000), true);
+  assert.equal(rl.hit('b', 1000), true);
+  assert.equal(rl.hits.size, 2);
+  // The map is full: a third address is refused rather than admitted, and
+  // the map does not grow by refusing it.
+  assert.equal(rl.hit('c', 1000), false);
+  assert.equal(rl.hits.size, 2);
+  // The two keys already in the map still have their own budgets.
+  assert.equal(rl.hit('a', 1100), true);
+  assert.equal(rl.hit('b', 1100), true);
+});
+
+test('RateLimiter frees room again once a window has passed', () => {
+  const rl = new RateLimiter(3, 60000, 2);
+  assert.equal(rl.hit('a', 1000), true);
+  assert.equal(rl.hit('b', 1000), true);
+  assert.equal(rl.hit('c', 1000), false);
+  // A full window later a and b are stale, so the prune that runs when the
+  // map is at the cap empties it and the new key is admitted.
+  assert.equal(rl.hit('c', 61001), true);
+  assert.equal(rl.hits.has('a'), false);
+  assert.equal(rl.hits.has('b'), false);
+});
+
+test('RateLimiter counts only the trailing window even when no prune has swept', () => {
+  // The prune runs every 256th call, so between sweeps a key's own list can
+  // hold entries older than the window; the count must not include them.
+  const rl = new RateLimiter(2, 60000);
+  assert.equal(rl.hit('a', 1000), true);
+  assert.equal(rl.hit('a', 2000), true);
+  assert.equal(rl.hit('a', 3000), false);
+  assert.equal(rl.hit('a', 62001), true);
+  assert.equal(rl.hit('a', 62002), true);
+  assert.equal(rl.hit('a', 62003), false);
+});
