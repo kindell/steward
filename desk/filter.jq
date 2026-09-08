@@ -40,9 +40,18 @@ def isVisibleEntity($id; $managerOf):
    entities: [(.entities // [])[]
      | select($readAll or isVisibleEntity(.id; $managerOf))
      | {id, name, managedBy, members, member: isMember(.id)}],
+   # A PROJECT TRAVELS WITH ITS ENTITY, or because the VIEWER'S OWN session
+   # works on it - never because a colleague's does. The session clause exists
+   # so a person's own session page has no 404 behind its `project` link, and
+   # that argument reaches exactly as far as their own row. Widened to every
+   # visible session, the clause hands over a project's `name` and its `parent`
+   # - and `parent` can name an entity the entity rule above deliberately
+   # withheld from this viewer, which is the withheld thing recovered from the
+   # disclosed one, one level up from the doctrine docs/client-spec.md states
+   # for `hidden`.
    projects: [(.projects // [])[]
      | .id as $id
      | select($readAll or isVisibleEntity(.parent; $managerOf)
-              or any($sessions[]; .project == $id))
+              or any($sessions[]; .project == $id and .mine))
      | {id, name, parent}],
    sessions: $sessions}

@@ -74,12 +74,21 @@ everything.
 
 ## `projects[]`
 
-A project is present when the entity it hangs under is visible, when it is the
-target of a session already in this document, or when the viewer reads
-everything. The session clause is what keeps a `project` link from being a 404:
-a row the viewer may see names a project, so the name that row points at has to
-be resolvable. It follows the session decision rather than repeating it - the
-projects that appear are the ones `sessions[]` already reached.
+A project is present when the entity it hangs under is visible, when the
+VIEWER'S OWN session works on it, or when the viewer reads everything. The
+session clause is what keeps a `project` link from being a 404: a person's own
+session page names a project, so the name that row points at has to be
+resolvable. It follows the session decision rather than repeating it.
+
+**The session clause reaches the viewer's own rows and no further.** A project
+carries `name` and `parent`, and `parent` can name an entity the entity rule
+above deliberately withheld from this viewer. Following every VISIBLE session -
+a colleague's included - would therefore make a withheld entity recoverable out
+of `projects[].parent`, which is what `docs/client-spec.md` refuses one level
+down when it says `hidden` is a count and never names. The rationale for the
+clause only ever covered the viewer's own link, so that is how far it goes.
+Pinned in `test/desk-snapshot.test.sh` ("a project travels with its entity or
+with the viewer's OWN session").
 
 | key | type | meaning |
 |-----|------|---------|

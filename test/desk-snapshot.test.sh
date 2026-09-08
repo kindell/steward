@@ -348,6 +348,47 @@ out_none="$(jq '.sessions[].sight.b = "none"' "$T/raw4.json" |
      --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" -f "$here/desk/filter.jq")"
 is "membership cannot override shell sight none" "$(printf '%s' "$out_none" | jq '.sessions|length')" 0
 
+echo "== filter.jq: a project travels with its entity or with the viewer's OWN session =="
+# THE DISCLOSURE THIS PINS. `b` is a member of `acme` and nothing else. Session
+# `alpha` belongs to `a`, reaches `b` through a member sight, and works on
+# project `p` whose parent is `client-x` - an entity the entity rule correctly
+# withholds from `b`. If the project clause followed EVERY visible session
+# rather than the viewer's own, `b` would learn the name of a project under
+# `client-x` and the id of `client-x` itself out of `projects[].parent`, while
+# `entities[]` still refuses to name it. That is the withheld thing recovered
+# from the disclosed one - the doctrine docs/client-spec.md states for
+# `hidden`, one level up.
+#
+# THE SESSION CLAUSE IS NOT REMOVED, only narrowed to what its own rationale
+# covers: a person's own session page must not have a 404 behind its `project`
+# link. `b`'s own session `beta` works on `q`, and `q` still travels.
+cat > "$T/raw-projects.json" <<'EOF'
+{"host":"h","generatedAt":"g","registryRevision":"r",
+ "principals":[{"id":"a","name":"A","readAll":false},{"id":"b","name":"B","readAll":false}],
+ "entities":[{"id":"acme","name":"Acme","managedBy":null,"members":["a","b"]},
+             {"id":"client-x","name":"Client X","managedBy":null,"members":["a"]}],
+ "projects":[{"id":"p","name":"Secret Delivery","parent":"client-x"},
+             {"id":"q","name":"Own Work","parent":"acme"}],
+ "sessions":[{"id":"s1","slug":"alpha","label":"Alpha","owner":"a","domain":"acme","project":"p",
+              "runtime":"claude-code","host":"h","repo":"repo","sight":{"b":"member"},
+              "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},"mcp":[]},
+             {"id":"s2","slug":"beta","label":"Beta","owner":"b","domain":"acme","project":"q",
+              "runtime":"claude-code","host":"h","repo":"repo","sight":{"b":"owner"},
+              "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},"mcp":[]}]}
+EOF
+outp="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["acme"]' \
+           --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+           -f "$here/desk/filter.jq" "$T/raw-projects.json")"
+is "b sees both sessions" "$(printf '%s' "$outp" | jq -r '.sessions|map(.slug)|sort|join(" ")')" "alpha beta"
+is "b's entities still withhold client-x" \
+   "$(printf '%s' "$outp" | jq -r '.entities|map(.id)|sort|join(" ")')" "acme"
+is "a colleague's session does NOT hand over the project it works on" \
+   "$(printf '%s' "$outp" | jq -r '[.projects[]|select(.id=="p")]|length')" "0"
+is "so the withheld entity is not recoverable from projects[].parent" \
+   "$(printf '%s' "$outp" | jq -r '[.projects[].parent]|unique|join(" ")')" "acme"
+is "and the viewer's OWN project still travels, so their session link is no 404" \
+   "$(printf '%s' "$outp" | jq -r '.projects|map(.id)|join(" ")')" "q"
+
 echo "== client membership never grants the rest of the managing team =="
 printf 'NAME="Client"\nMEMBERS="c"\nMANAGED_BY="team"\n' > "$ROOT/entities.d/client.conf"
 printf 'NAME="Client work"\nPARENT="client"\n' > "$ROOT/projects.d/client-work.conf"
