@@ -15,14 +15,21 @@
 # root, and scripts/desk/bin/ beside scripts/lib/ in a deployed home.
 # STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
 #
+# ARGUMENTS. Two forms, because the desk has two entrances and one identity
+# function:
+#   principal-for-login <login>            the tailnet source (what the
+#                                          tailnet listener calls today)
+#   principal-for-login <source> <value>   source in tailscale|oidc
+#
 # EXIT CODES ARE THE LIBRARY'S, PASSED THROUGH UNCHANGED, because the caller
 # treats every non-zero the same way - no desk - and must never be tempted to
 # recover from one of them:
-#   0   the slug on stdout: exactly one row carries this login
+#   0   the slug on stdout: exactly one row carries this identity
 #   1   no row carries it
 #   65  more than one row carries it - the library refuses to pick, and so do we
 #   78  the estate does not load
-#   64  this script was called with something other than one argument
+#   64  this script was called with the wrong number of arguments, or with a
+#       source the library does not know
 set -uo pipefail
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
@@ -36,5 +43,8 @@ else
   exit 78
 fi
 
-[ $# -eq 1 ] || { echo "usage: principal-for-login <login>" >&2; exit 64; }
-registry_principal_for_login "$1"
+case $# in
+  1) registry_principal_for_identity tailscale "$1" ;;
+  2) registry_principal_for_identity "$1" "$2" ;;
+  *) echo "usage: principal-for-login <login> | principal-for-login <source> <value>" >&2; exit 64 ;;
+esac
