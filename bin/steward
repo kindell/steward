@@ -4400,6 +4400,7 @@ cmd_doctor() {
       --arg root_val "${STEWARD_ESTATE_ROOT:-}" --arg root_src "${_CFG_SOURCE_STEWARD_ESTATE_ROOT:-unset}" \
       --arg sock_val "${STEWARD_TMUX_SOCKET:-}" --arg sock_src "${_CFG_SOURCE_STEWARD_TMUX_SOCKET:-unset}" \
       --arg live_val "${STEWARD_LIVENESS_CMD:-}" --arg live_src "${_CFG_SOURCE_STEWARD_LIVENESS_CMD:-unset}" \
+      --arg usage_val "${STEWARD_USAGE_CMD:-}" --arg usage_src "${_CFG_SOURCE_STEWARD_USAGE_CMD:-unset}" \
       --argjson rc "$worst" '
       ($probes | split("\n") | map(select(length>0) | split("\t"))
         | map({id: .[0], status: .[1], text: .[2]})) as $probelist |
@@ -4409,7 +4410,8 @@ cmd_doctor() {
         sources: {
           root:     {value: $root_val, source: $root_src},
           socket:   {value: $sock_val, source: $sock_src},
-          liveness: {value: $live_val, source: $live_src}
+          liveness: {value: $live_val, source: $live_src},
+          usage:    {value: $usage_val, source: $usage_src}
         } }'
   fi
 

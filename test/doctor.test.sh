@@ -526,8 +526,8 @@ mkfx "$FX/jsonrun"
 live_json_ok="$(stub json-live 'cat <<J
 {"sessions":{"alpha":{"daemon":"loaded","tmux":"up","agent":"running"}}}
 J')"
-json="$(rundoc_stdout "$FX/jsonrun" "$FX/jsonrun/hostcmd" "--json" env STEWARD_LIVENESS_CMD="$live_json_ok")"; json_rc=$?
-human="$(rundoc_stdout "$FX/jsonrun" "$FX/jsonrun/hostcmd" "" env STEWARD_LIVENESS_CMD="$live_json_ok")"; human_rc=$?
+json="$(rundoc_stdout "$FX/jsonrun" "$FX/jsonrun/hostcmd" "--json" env STEWARD_LIVENESS_CMD="$live_json_ok" STEWARD_USAGE_CMD=/abs/usage-json-ok)"; json_rc=$?
+human="$(rundoc_stdout "$FX/jsonrun" "$FX/jsonrun/hostcmd" "" env STEWARD_LIVENESS_CMD="$live_json_ok" STEWARD_USAGE_CMD=/abs/usage-json-ok)"; human_rc=$?
 is "--json exits with the same rc as the human form" "$json_rc" "$human_rc"
 printf '%s' "$json" | jq . >/dev/null 2>&1
 is "--json output parses with jq ." "$?" "0"
@@ -544,6 +544,9 @@ has "--json sources object has root, socket and liveness" "$(printf '%s' "$json"
 is "--json sources.liveness.value is the stub path" "$(printf '%s' "$json" | jq -r '.sources.liveness.value')" "$live_json_ok"
 is "--json sources.liveness.source" "$(printf '%s' "$json" | jq -r '.sources.liveness.source')" "process-environment"
 is "--json sources.root.source" "$(printf '%s' "$json" | jq -r '.sources.root.source')" "process-environment"
+has "--json sources object also has usage, the liveness key's twin" "$(printf '%s' "$json" | jq -Sc '.sources | keys')" "usage"
+is "--json sources.usage.value is the stub path" "$(printf '%s' "$json" | jq -r '.sources.usage.value')" "/abs/usage-json-ok"
+is "--json sources.usage.source" "$(printf '%s' "$json" | jq -r '.sources.usage.source')" "process-environment"
 
 echo "== 18. rc table: all required PASS -> 0; unsafe/missing config -> 78; missing facility -> 69; temporary-unknown -> 75 =="
 # All-PASS (well, PASS/WARN — nothing FAILs): already proven at rc 0 by the
