@@ -928,7 +928,7 @@ git commit -m "desk front: providers are estate rows, discovery is fetched once,
 - Produces:
   - `async exchangeCode(provider, doc, { code, verifier, redirectUri }, fetchImpl = fetch) -> string` - POSTs `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `client_secret` (read from `provider.clientSecretFile`, trimmed, at call time), `code_verifier` as `application/x-www-form-urlencoded` to `doc.token_endpoint`; returns `id_token`; throws on non-2xx or a missing `id_token`.
   - `async verifyIdToken(provider, doc, token, { nonce, now = Math.floor(Date.now()/1000) }, fetchImpl = fetch) -> { sub, tid: string|null, email: string|null }` - throws `Error` whose message starts with `id_token:` on: malformed JWT, `alg` not `RS256`, unknown `kid` after one JWKS refresh, bad signature, `iss` mismatch (byte for byte with `provider.issuer`, or `provider.issuerTemplate` with `<tid>` replaced by the token's `tid` claim - a template provider with a token lacking `tid` is refused), `aud` not equal to `provider.clientId` (string or one-element array), `exp <= now`, `iat > now + 300` or `iat < now - 300`, `nonce` mismatch, `sub` missing.
-  - `identityOf(provider, claims) -> string` - `oidc:<provider.slug>:<sub>`; for a template provider, `oidc:<slug>:<tid>/<sub>` so a personal and a work account with the same `sub` shape stay distinct.
+  - `identityOf(provider, claims) -> string` - `oidc:<provider.slug>:<sub>`; for a template provider, `oidc:<slug>:<tid>.<sub>` so a personal and a work account with the same `sub` shape stay distinct. The separator is `.`: the registry's `OIDC_LOGIN` word allows `[A-Za-z0-9._~-]` in the subject half and nothing else (measured on the services branch), and a tenant id is a UUID without dots, so the first dot splits unambiguously.
   - JWKS cache per provider: `Map<slug, { keys: Map<kid, KeyObject>, at }>`, refreshed when a `kid` is unknown, at most once per verification.
 
 - [ ] **Step 1: Write the failing test**
@@ -1003,7 +1003,7 @@ test('a template provider matches iss against the token tenant and keys identity
   const tok = f.stub.mintIdToken();
   const claims = await verifyIdToken(f.prov, f.doc, tok, { nonce: f.begun.nonce });
   assert.equal(claims.tid, 'tenant-1');
-  assert.equal(identityOf(f.prov, claims), 'oidc:p:tenant-1/sub-1');
+  assert.equal(identityOf(f.prov, claims), 'oidc:p:tenant-1.sub-1');
   await assert.rejects(verifyIdToken(f.prov, f.doc, f.stub.mintIdToken({ tid: 'tenant-2' }), { nonce: f.begun.nonce }), /id_token: iss/);
   await assert.rejects(verifyIdToken(f.prov, f.doc, f.stub.mintIdToken({ tid: undefined }), { nonce: f.begun.nonce }), /id_token: tid/);
   await f.stub.close();
@@ -1097,7 +1097,7 @@ export async function verifyIdToken(provider, doc, token, { nonce, now = Math.fl
 }
 
 export function identityOf(provider, claims) {
-  return 'oidc:' + provider.slug + ':' + (claims.tid ? claims.tid + '/' : '') + claims.sub;
+  return 'oidc:' + provider.slug + ':' + (claims.tid ? claims.tid + '.' : '') + claims.sub;
 }
 ```
 
@@ -1355,7 +1355,7 @@ In `desk/serve.mjs`:
    // principalForIdentity - the same bridge, the two-argument form: a source and
    // a value. Same rc reading as principalFor.
    function principalForIdentity(source, value) {
-     if (!/^[A-Za-z0-9._%+@:\/-]{1,300}$/.test(value)) return { slug: null, outage: false };
+     if (!/^[a-z0-9][a-z0-9-]*:[A-Za-z0-9._~-]{1,300}$/.test(value)) return { slug: null, outage: false };
      let out;
      try {
        out = execFileSync(LOOKUP, [source, value], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1484,7 +1484,7 @@ In `desk/serve.mjs`:
      for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => fs2.close());
    }
    ```
-7. The `principal-for-login` value regex for `oidc` identities: `principalForIdentity` strips the `oidc:` prefix and passes `<slug>:<sub>` (or `<slug>:<tid>/<sub>`) as the value, matching the `OIDC_LOGIN` word form of the services plan (`<issuer-slug>:<subject>`). Confirm against `docs/superpowers/plans/2026-09-08-desk-services-registry.md` Task 1 that a `/` inside the subject is accepted by its word regex; if not, use `<tid>.<sub>`-style joining in `identityOf` (Task 5) and update its test.
+7. The `principal-for-login` value regex for `oidc` identities: `principalForIdentity` strips the `oidc:` prefix and passes `<slug>:<sub>` (or `<slug>:<tid>.<sub>`) as the value, matching the `OIDC_LOGIN` word form of the services plan: `^[a-z0-9][a-z0-9-]*:[A-Za-z0-9._~-]+$` (measured on the services branch, `lib/registry.sh` `_registry_oidc_login_valid`). The pre-spawn shape check above is that regex.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
