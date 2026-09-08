@@ -84,8 +84,32 @@ printf 'HOST="testhost"\nOWNER="alfa"\nDOMAIN="d"\n' > "$FX/reg/a.conf"
 DESKDIR="$FX/desk"; mkdir -p "$DESKDIR"
 NODESKDIR="$FX/no-such-desk"    # deliberately never created
 
+# A HERMETIC HOME. Once the deploy writes a systemd drop-in under
+# $HOME/.config, a fixture that leaves HOME aimed at this account's real
+# home would write into it. $FX/home is the fixture's own account; every
+# case below reads its drop-ins under $FX/home/.config/systemd/user.
+mkdir -p "$FX/home"
+
+# THE SYSTEMCTL STUB, IN ITS OWN DIRECTORY SO IT CAN BE LEFT OFF PATH. One
+# case (systemctl absent) needs a PATH with no systemctl at all - a stub that
+# always answers rc 0 the way sudo's does cannot express "not installed", so
+# it lives in $FX/binsys and run() includes that directory unless
+# NO_SYSTEMCTL_STUB is set. It records its argv (for the "called exactly
+# once with daemon-reload" case) and is steerable through SYSTEMCTL_RC.
+mkdir -p "$FX/binsys"
+cat > "$FX/binsys/systemctl" <<EOF
+#!/bin/bash
+echo "\$*" >> "$FX/systemctl.calls"
+exit "\${SYSTEMCTL_RC:-0}"
+EOF
+chmod 755 "$FX/binsys/systemctl"
+: > "$FX/systemctl.calls"
+
 run() {  # run <hostname answer> <host argument>
-  ( export PATH="$FX/bin:$PATH"
+  ( _rp="$FX/bin:$PATH"
+    [ -n "${NO_SYSTEMCTL_STUB:-}" ] || _rp="$FX/binsys:$_rp"
+    export PATH="$_rp"
+    export HOME="$FX/home"
     export STEWARD_DESK_DIR="${STEWARD_DESK_DIR:-}"
     export STEWARD_REGISTRY_DIR="$FX/reg"
     # THE ESTATE IS EXPLICIT IN THE FIXTURE TOO. deploy-self.sh refuses (78)
@@ -95,6 +119,7 @@ run() {  # run <hostname answer> <host argument>
     export STEWARD_ESTATE="$FX/repo"
     export STEWARD_DEPLOY_HOSTNAME="$1"
     export SUDO_RC="${SUDO_RC:-0}"
+    export SYSTEMCTL_RC="${SYSTEMCTL_RC:-0}"
     bash "$SF" "$2" 2>&1 )
 }
 
@@ -193,6 +218,59 @@ case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) bad "the producer ran on
 case "$u" in *"no desk on this host"*) ok ;; *) bad "the skip is silent - nothing says why no snapshot was taken: $u" ;; esac
 case "$u" in *"$NODESKDIR"*) ok ;; *) bad "the skip line does not name the directory it looked for: $u" ;; esac
 
+echo "== the desk units learn the estate through a drop-in, the way activation binds a session =="
+# UNLIKE THE SNAPSHOT ABOVE, THIS RUNS ON EVERY DEPLOY, DESK OR NO DESK: the
+# units this writes for (steward-desk.service, steward-desk-snapshot.service)
+# get their files and units on every home regardless of whether that account
+# has ever turned the desk on - so the drop-in is written the same way, not
+# gated on STEWARD_DESK_DIR existing. No desk dir is set for this block on
+# purpose, to prove the two are independent.
+rm -rf "$FX/home/.config"; : > "$FX/systemctl.calls"
+estate_root_expect="$(CDPATH= cd -- "$FX/repo" && pwd)"
+expect_dropin="[Service]
+Environment=STEWARD_ESTATE_ROOT=$estate_root_expect"
+DROPIN1="$FX/home/.config/systemd/user/steward-desk.service.d/50-estate.conf"
+DROPIN2="$FX/home/.config/systemd/user/steward-desk-snapshot.service.d/50-estate.conf"
+
+echo "-- (a) both drop-ins exist with exactly the expected two lines --"
+u="$(SUDO_RC=0 run testhost testhost)"; rc=$?
+check "a green deploy still exits 0" [ "$rc" -eq 0 ]
+if [ -f "$DROPIN1" ]; then
+  got1="$(cat "$DROPIN1")"
+  if [ "$got1" = "$expect_dropin" ]; then ok; else bad "steward-desk.service drop-in content: got [$got1] want [$expect_dropin]"; fi
+else bad "drop-in missing: $DROPIN1"; fi
+if [ -f "$DROPIN2" ]; then
+  got2="$(cat "$DROPIN2")"
+  if [ "$got2" = "$expect_dropin" ]; then ok; else bad "steward-desk-snapshot.service drop-in content: got [$got2] want [$expect_dropin]"; fi
+else bad "drop-in missing: $DROPIN2"; fi
+
+echo "-- (b) systemctl --user daemon-reload, called exactly once --"
+reload_count="$(grep -c -- '--user daemon-reload' "$FX/systemctl.calls" 2>/dev/null || true)"
+check "daemon-reload called exactly once" [ "${reload_count:-0}" -eq 1 ]
+
+echo "-- (c) a reload failure is rc 70, named on stderr --"
+: > "$FX/systemctl.calls"
+u="$(SUDO_RC=0 SYSTEMCTL_RC=1 run testhost testhost)"; rc=$?
+check "systemctl reload failure: rc 70" [ "$rc" -eq 70 ]
+case "$u" in *"did not reload"*) ok ;; *) bad "no reload-failure text: $u" ;; esac
+case "$u" in *"daemon-reload"*) ok ;; *) bad "the failure text does not tell the operator how to recover: $u" ;; esac
+
+echo "-- (d) no systemctl on PATH: rc unchanged, one line, files still written --"
+: > "$FX/systemctl.calls"
+rm -rf "$FX/home/.config"
+u="$(SUDO_RC=0 NO_SYSTEMCTL_STUB=1 run testhost testhost)"; rc=$?
+check "no user manager present: rc unchanged (0)" [ "$rc" -eq 0 ]
+case "$u" in *"no user"*"manager"*) ok ;; *) bad "no line about the absent user manager: $u" ;; esac
+[ -s "$FX/systemctl.calls" ] && bad "systemctl was called despite being off PATH" || ok
+[ -f "$DROPIN1" ] && [ -f "$DROPIN2" ] && ok || bad "the drop-ins were not written when systemctl is absent"
+
+echo "-- (e) a second deploy leaves the drop-in byte-identical --"
+cp "$DROPIN1" "$FX/before1"; cp "$DROPIN2" "$FX/before2"
+u="$(SUDO_RC=0 run testhost testhost)"; rc=$?
+check "second deploy: rc 0" [ "$rc" -eq 0 ]
+if cmp -s "$FX/before1" "$DROPIN1"; then ok; else bad "steward-desk.service drop-in changed across a second deploy"; fi
+if cmp -s "$FX/before2" "$DROPIN2"; then ok; else bad "steward-desk-snapshot.service drop-in changed across a second deploy"; fi
+
 echo "== the stage gets an UNPREDICTABLE name — measured on the BEHAVIOUR =="
 # The old variant looked for the string 'mktemp' on a non-comment line in the
 # entry point — satisfied by an end-of-line comment without the script ever
@@ -244,6 +322,7 @@ symdir="$(mktemp -d)"
 ln -s "$SF" "$symdir/deploy-self"
 u="$( export PATH="$FX/bin:$PATH" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_DEPLOY_HOSTNAME=testhost SUDO_RC=0
       export STEWARD_ESTATE="$FX/repo"   # the same estate as run() — without it the case measures the refusal, not the symlink
+      export HOME="$FX/home"   # this run reaches rc 0 and now writes the desk drop-in - never the real ~/.config
       bash "$symdir/deploy-self" testhost 2>&1 )"; rc=$?
 case "$u" in *"No such file"*) bad "sourcing broke through the symlink: $u" ;; *) ok ;; esac
 case "$u" in *"command not found"*) bad "the symlink did not resolve — a follow-on error (command not found): $u" ;; *) ok ;; esac
@@ -254,7 +333,7 @@ rm -rf "$symdir"
 echo "== the sourcing is checked — a broken core gives 70, not a raw bash error =="
 corelessdir="$(mktemp -d)"; mkdir -p "$corelessdir/linux"
 cp "$SF" "$corelessdir/linux/deploy-self.sh"   # this tree has NO lib/deploy-core.sh
-u="$( export PATH="$FX/bin:$PATH" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_DEPLOY_HOSTNAME=testhost
+u="$( export PATH="$FX/bin:$PATH" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_DEPLOY_HOSTNAME=testhost HOME="$FX/home"
       bash "$corelessdir/linux/deploy-self.sh" testhost 2>&1 )"; rc=$?
 check "broken core: rc 70" [ "$rc" -eq 70 ]
 case "$u" in *"could not read the core"*) ok ;; *) bad "the error message is missing: $u" ;; esac

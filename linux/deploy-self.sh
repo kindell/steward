@@ -182,7 +182,71 @@ case "$rc" in
   127) echo "execution failure: command not found — either sudo is missing, or the stage carries no deploy-apply.sh ($STAGE/deploy-apply.sh)." >&2; rc=70 ;;
 esac
 
-# --- 7. THE DESK: REGENERATED HERE, BECAUSE THE DEPLOY IS THE REVOCATION ---
+# -- 7. THE DESK UNITS LEARN THE ESTATE THROUGH A DROP-IN, THE WAY ACTIVATION
+# BINDS A SESSION --------------------------------------------------------
+# MEASURED 2026-09-08, the same round that found step 8 below carrying no
+# estate either: steward-desk-snapshot.service runs with no
+# STEWARD_ESTATE_ROOT of its own, so its registry root defaulted to whatever
+# ~/scripts happened to resolve to on the account that ran it. Fixed by hand
+# on that host with a drop-in of this exact shape, then removed here so the
+# next deploy does not have to be told twice.
+#
+# THE DEPLOY WRITES IT, NOT ACTIVATION AND NOT THE UNIT TEMPLATE. Activation
+# (linux/session-new.sh, `_dropdir=...50-estate.conf` above) writes a
+# PER-INSTANCE drop-in because a session's estate is a fact only activation
+# knows, at the moment a new instance is born. The desk units carry no
+# instance - there is one desk per account, not one per session - so there
+# is no activation-shaped moment for them; the deploy is what plays that
+# role instead, because the deploy already knows the estate (it just
+# provenance-gated it, above) and runs on every host that has a checkout,
+# whether or not that account has ever turned the desk on. A value baked
+# into the unit template itself would work for one estate per account and
+# break the day a second one lands on the same machine - the same reason
+# activation writes a drop-in rather than editing its template.
+#
+# EVERY DEPLOY, DESK OR NO DESK - unlike step 8 below, this does not wait
+# for a desk directory to exist. Every home on every host gets the desk's
+# unit files regardless of whether that account has enabled them (see
+# desk/SCHEMA.md), so the environment they would read is written the same
+# way: on every deploy, so the day the account turns the desk on the units
+# are already correctly wired.
+#
+# ONLY $HOME, NEVER ANOTHER ACCOUNT'S OWN. This account's own systemd user
+# manager reads only its own config; deploy-self.sh runs once per invoking
+# account, and writing into a different home's config here would be the
+# skeleton acting on a home nobody asked it to touch. (Projecting this
+# through the register to every home on the host is a later design, not
+# this change.)
+#
+# TMP THEN MOVE, so a reader mid-write never sees a torn file - and the two
+# lines written are byte-identical to what session-new.sh writes for a
+# session, because both express the same fact for the same variable.
+_desk_dropdir_base="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+for _desk_unit in steward-desk.service steward-desk-snapshot.service; do
+  _dd="$_desk_dropdir_base/$_desk_unit.d"
+  _dst="$_dd/50-estate.conf"
+  mkdir -p "$_dd" \
+    && _tmp="$_dd/.50-estate.conf.$$" \
+    && printf '[Service]\nEnvironment=STEWARD_ESTATE_ROOT=%s\n' "$ESTATE_ROOT" > "$_tmp" \
+    && mv -f "$_tmp" "$_dst"
+  if [ $? -ne 0 ]; then
+    rm -f "$_dd/.50-estate.conf.$$"
+    echo "deploy-self: could not write the desk drop-in: $_dst" >&2
+    rc=70
+  fi
+done
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload
+  _reload_rc=$?
+  if [ "$_reload_rc" -ne 0 ]; then
+    echo "deploy-self: the desk drop-in was written but systemd did not reload (rc $_reload_rc) - the desk units keep their old environment until 'systemctl --user daemon-reload'" >&2
+    rc=70
+  fi
+else
+  echo "deploy-self: the desk drop-in was written; no user systemd manager is present on this host"
+fi
+
+# --- 8. THE DESK: REGENERATED HERE, BECAUSE THE DEPLOY IS THE REVOCATION ---
 # The desk hands each person a file that was FILTERED WHEN IT WAS WRITTEN, so
 # what a person may see is decided by the last snapshot and by nothing at
 # request time. A rollout that removes somebody's row, or moves a session out
