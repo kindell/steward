@@ -131,8 +131,10 @@ _sessions_registry_snapshot() (
   # subshell so lowercase assignments cannot overwrite the caller's loop,
   # viewer, counters or already captured rows through Bash dynamic scope.
   registry_load "${1:-}" >/dev/null || exit $?
-  local principal
-  principal="$(_registry_row_principal "${1:-}")" || exit $?
+  # THE LOAD ALREADY ANSWERED THIS. registry_load publishes ROW_PRINCIPAL, and
+  # asking again would re-run the account join and re-print its host-gap line
+  # for a question that has been answered once already in this subshell.
+  local principal="${ROW_PRINCIPAL:-}"
   jq -cn --arg id "${ID:-${1:-}}" --arg owner "$principal" \
     --arg domain "${DOMAIN:--}" --arg host "${HOST:--}" --arg assets "${ASSETS:-}" \
     --arg targetEntity "${TARGET_ENTITY:-}" --arg targetProject "${TARGET_PROJECT:-}" \
@@ -285,7 +287,14 @@ session_identity_rows() {
     # silently would make a filtered fleet look like a small one; naming it
     # would leak the thing being withheld. The count says "there is more here"
     # without saying what.
-    if ! _session_visible_to "$_viewer" "$n" "$owner"; then
+    # ITS STDERR IS A REPEAT BY CONSTRUCTION, so it is dropped. The rule
+    # deliberately reloads the row (see below), and this line is only reached
+    # for a row that ALREADY loaded a moment ago in this same sweep, from the
+    # same conf and the same estate - so anything registry_load says here it
+    # has already said once, through the collapsed cause line above. The one
+    # sentence the rule itself can emit is "could not load the registry",
+    # which cannot fire: this function sourced registry.sh before the loop.
+    if ! _session_visible_to "$_viewer" "$n" "$owner" 2>/dev/null; then
       SESSIONS_HIDDEN=$((SESSIONS_HIDDEN + 1))
       continue
     fi

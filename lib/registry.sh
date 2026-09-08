@@ -2980,6 +2980,11 @@ registry_load() {
   ACCOUNT=""; SLUG=""; TARGET_ENTITY=""; TARGET_PROJECT=""; LOGIN=""
   VISIBILITY=""; VISIBLE_TO=""
   OP_TOKEN_FILE=""; OWNER=""; DOMAIN=""; ENV_SOURCE=""; HOST=""
+  # ROW_PRINCIPAL is DERIVED, not read from the conf - reset here so a stale
+  # one from a previous load can never be mistaken for this row's, and
+  # assigned below AFTER the source so a conf that sets the name itself is
+  # overwritten rather than believed.
+  ROW_PRINCIPAL=""
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
   BROWSER_RIG_OWNER=""
   RUNTIME=""; MODEL=""; OPENCODE_VERSION=""; OPENCODE_PORT=""; AUTO_APPROVE=""; CLAUDE_MEMORY_ROOT=""
@@ -3080,10 +3085,20 @@ registry_load() {
   # And a refusal here is ONE ROW, never the fleet - docs/client-spec.md:208-213
   # says what the answer looks like: the row absent, named in `unreadable`,
   # `ok` still true.
+  #
+  # AND IT IS PUBLISHED AS ROW_PRINCIPAL. Every sweep over the register asked
+  # this question two or three times per row - once here, once in the caller,
+  # once inside the visibility rule's own load - and each ask re-emitted the
+  # host-gap diagnostic, so one legitimate row printed the same sentence three
+  # times per invocation. Three permanent lines per row is how an operator
+  # learns to stop reading stderr. The answer is derived once, where the load
+  # already pays for it, and handed to whoever asks next.
+  ROW_PRINCIPAL="$OWNER"
   if [ -n "$ACCOUNT" ]; then
     local _account_principal
     _account_principal="$(_registry_row_principal "$project")" || return 78
     [ -n "$_account_principal" ] || return 78
+    ROW_PRINCIPAL="$_account_principal"
   fi
   # AT SCHEMA 6 THE FIELD IS REQUIRED. Below it, absence is the transition.
   #

@@ -40,8 +40,11 @@ _visibility_member_of() {
 
 _visibility_session_snapshot() (
   registry_load "${1:-}" >/dev/null || exit $?
+  # THE LOAD PUBLISHES ROW_PRINCIPAL, so the join is not run a second time
+  # when the caller had nothing to hand in.
   local principal="${2:-}"
-  [ -n "$principal" ] || principal="$(_registry_row_principal "${1:-}")" || exit $?
+  [ -n "$principal" ] || principal="${ROW_PRINCIPAL:-}"
+  [ -n "$principal" ] || exit 78
   printf '%s|%s|%s|%s|%s|%s\n' "$principal" "${DOMAIN:-}" \
     "${VISIBILITY:-}" "${VISIBLE_TO:-}" "${TARGET_PROJECT:-}" "${TARGET_ENTITY:-}"
 )

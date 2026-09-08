@@ -337,6 +337,33 @@ is "and ok is false" "$(printf '%s' "$noest" | jq -r '.ok')" "false"
 has "and the reason names the key" "$(printf '%s' "$noest" | jq -r '.reason')" "HUB_HOST"
 rm -rf "$FX5"
 
+echo "== a legitimate host gap is said ONCE per row per run =="
+# THE STATE IS ONE THE PRODUCT CALLS CORRECT: a session on a host the hub only
+# deploys to. Its diagnostic is permanent, so it is emitted per row per
+# invocation forever - and the sweep used to resolve the row's principal three
+# times (the load, the caller, and the visibility rule's own load), printing
+# the same sentence three times. Three permanent lines per row is how an
+# operator learns to stop reading stderr, which is the thing stderr is for.
+FX6="$(mktemp -d)"
+mkdir -p "$FX6/sessions.d" "$FX6/entities.d" "$FX6/accounts.d" "$FX6/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX6/estate/steward.conf"
+printf 'NAME="Acme"\nMEMBERS="ann"\n' > "$FX6/entities.d/acme.conf"
+printf 'PRINCIPAL="ann"\nUSERNAME="svc-ann"\nHOST="h2"\n' > "$FX6/accounts.d/ann-h2.conf"
+printf 'ID="s-gap"\nACCOUNT="ann-h2"\nSLUG="gap"\nTARGET_ENTITY="acme"\nDOMAIN="acme"\nHOST="h9"\nREPO_PATH="/tmp/x"\nOWNER="svc-ann"\n' \
+  > "$FX6/sessions.d/s-gap.conf"
+g6err="$(mktemp)"
+g6="$(STEWARD_REGISTRY_DIR="$FX6/sessions.d" STEWARD_ESTATE_ROOT="$FX6" STEWARD_VIEWER="ann" \
+      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>"$g6err")"
+g6rc=$?
+is "the row still reads" "$g6rc" "0"
+is "and it is in the fleet" \
+   "$(printf '%s' "$g6" | jq -r '[.sessions[].name] | index("s-gap") != null')" "true"
+is "the host gap is stated exactly once" \
+   "$(grep -o 'is not ACCOUNT' "$g6err" | wc -l | tr -d ' ')" "1"
+has "and it names the two hosts" "$(cat "$g6err")" "HOST='h9'"
+rm -f "$g6err"; rm -rf "$FX6"
+
 # AN UNREADABLE REGISTRY REFUSES, in both forms, and the json form must still be
 # json — a consumer that gets a bare error string on stdout cannot parse it.
 echo "== an unreadable registry refuses in both forms =="

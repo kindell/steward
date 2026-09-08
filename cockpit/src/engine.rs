@@ -67,10 +67,20 @@ pub struct Fleet {
     ///
     /// DEFAULTED, so a cockpit built from this branch can still parse a
     /// document from an engine that predates the field. Without the default
-    /// the field is required and the parse fails naming it, which makes the
-    /// deploy order engine-first on every host - a coupling nothing else in
-    /// this struct imposes. An empty viewer is the honest reading of a
-    /// document that never said who it was filtered for.
+    /// the field is required and the parse FAILS, so such a cockpit shows
+    /// nothing at all on a host whose engine is older - a coupling nothing
+    /// else in this struct imposes. An empty viewer is the honest reading of
+    /// a document that never said who it was filtered for.
+    ///
+    /// WHAT THE DEFAULT DOES AND DOES NOT BUY, stated precisely because the
+    /// first wording of this comment overclaimed it. The document parses and
+    /// the fleet RENDERS; what does not work is `enter`, because
+    /// `verb::enter_allowed` refuses an empty viewer and must (an empty
+    /// viewer is not a wildcard). So the deploy order is free for reading and
+    /// not for attaching: on a host whose engine predates the field the
+    /// operator sees the fleet and cannot enter a session until the engine is
+    /// redeployed. That is fail-closed, which is the right way round, and it
+    /// is pinned by `a_document_without_viewer_parses_and_cannot_enter`.
     #[serde(default)]
     pub viewer: String,
     pub sessions: Vec<Session>,
@@ -211,6 +221,27 @@ mod tests {
         let json = r#"{"ok":true,"viewer":"alice","hidden":0,"unreadable":[],"sessions":[]}"#;
         let e = read_fleet(&stub(json)).unwrap_err();
         assert!(e.contains("hub"), "the refusal should name the missing field, got: {e}");
+    }
+
+    // THE PRE-VIEWER DOCUMENT, BOTH HALVES. `#[serde(default)]` on `viewer` is
+    // a compatibility promise, and a promise no test feeds is a promise
+    // nobody is holding: before this test the attribute could be deleted and
+    // the whole suite stayed green. The test asserts what the default actually
+    // buys (the document parses, the fleet renders) AND what it does not (the
+    // empty viewer cannot enter anything), so a later reader is not left with
+    // the earlier, larger claim that the deploy order was free.
+    #[test]
+    fn a_document_without_viewer_parses_and_cannot_enter() {
+        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
+          {"name":"alpha","owner":"alice","host":"h1","assets":[],
+           "liveness":{"tmux":"up","agent":"running","model":null,"reason":null}}]}"#;
+        let f = read_fleet(&stub(json)).expect("a document that predates `viewer` must still parse");
+        assert_eq!(f.viewer, "", "the missing field reads as empty, never as a wildcard");
+        assert_eq!(f.sessions.len(), 1, "and the fleet still renders");
+        assert!(
+            !crate::verb::enter_allowed(&f.sessions[0].owner, &f.viewer),
+            "an empty viewer may not enter, not even its own owner's session"
+        );
     }
 
     // A COUNT THAT IS ZERO IS STILL A COUNT. The engine always emits `hidden`,
