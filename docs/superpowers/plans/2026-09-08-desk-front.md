@@ -945,7 +945,7 @@ git commit -m "desk front: providers are estate rows, discovery is fetched once,
   - `async exchangeCode(provider, doc, { code, verifier, redirectUri }, fetchImpl = fetch) -> string` - POSTs `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `client_secret` (read from `provider.clientSecretFile`, trimmed, at call time), `code_verifier` as `application/x-www-form-urlencoded` to `doc.token_endpoint`; returns `id_token`; throws on non-2xx or a missing `id_token`.
   - `async verifyIdToken(provider, doc, token, { nonce, now = Math.floor(Date.now()/1000) }, fetchImpl = fetch) -> { sub, tid: string|null, email: string|null }` - throws `Error` whose message starts with `id_token:` on: malformed JWT, `alg` not `RS256`, unknown `kid` after one JWKS refresh, bad signature, `iss` mismatch (byte for byte with `provider.issuer`, or `provider.issuerTemplate` with `<tid>` replaced by the token's `tid` claim - a template provider with a token lacking `tid` is refused), `aud` not equal to `provider.clientId` (string or one-element array), `exp <= now`, `iat > now + 300` or `iat < now - 300`, `nonce` mismatch, `sub` missing.
   - `identityOf(provider, claims) -> string` - `oidc:<provider.slug>:<sub>`; for a template provider, `oidc:<slug>:<tid>.<sub>` so a personal and a work account with the same `sub` shape stay distinct. The separator is `.`: the registry's `OIDC_LOGIN` word allows `[A-Za-z0-9._~-]` in the subject half and nothing else (measured on the services branch), and a tenant id is a UUID without dots, so the first dot splits unambiguously.
-  - JWKS cache per provider: `Map<slug, { keys: Map<kid, KeyObject>, at }>`, refreshed when a `kid` is unknown, at most once per verification.
+  - JWKS cache per provider: `Map<slug + '::' + jwks_uri, { keys: Map<kid, KeyObject>, at }>`, refreshed when a `kid` is unknown, at most once per verification. The key carries the URL for the same reason Task 4's discovery cache does: two fixtures may reuse a slug against different stub servers, and `loadProviders` guarantees one URL per slug in production, so the behaviour there is unchanged.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1057,10 +1057,11 @@ export async function exchangeCode(provider, doc, { code, verifier, redirectUri 
   return body.id_token;
 }
 
-const jwksCache = new Map(); // slug -> { keys: Map<kid, KeyObject>, at }
+const jwksCache = new Map(); // slug + '::' + jwks_uri -> { keys: Map<kid, KeyObject>, at }
 
 async function jwksFor(provider, doc, kid, fetchImpl) {
-  let entry = jwksCache.get(provider.slug);
+  const cacheKey = provider.slug + '::' + doc.jwks_uri;
+  let entry = jwksCache.get(cacheKey);
   if (!entry || !entry.keys.has(kid)) {
     // Refresh once on an unknown kid (rotation), never more: a second miss is
     // a token this provider did not sign, not a cache that is behind.
@@ -1074,7 +1075,7 @@ async function jwksFor(provider, doc, kid, fetchImpl) {
       keys.set(k.kid, createPublicKey({ key: k, format: 'jwk' }));
     }
     entry = { keys, at: Date.now() };
-    jwksCache.set(provider.slug, entry);
+    jwksCache.set(cacheKey, entry);
   }
   return entry.keys.get(kid) || null;
 }
