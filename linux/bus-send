@@ -294,7 +294,18 @@ _BUS_SECRET_NOUNS="l$(printf '\303\266')senord|losenord|password|passwd|secret|h
 
 bus_secret_guard() { # <text>
   [ -n "${_NOT_A_SECRET:-}" ] && return 0
-  local _n=0 _line _tok
+  local _n=0 _line _tok _sg_prefixes _sg_label _sg_pattern _sg_rc
+  # THE PREFIX TABLE IS BUILT ONCE, before the line loop, not per line: the
+  # patterns never depend on the line being checked, so rebuilding it on every
+  # iteration was pure waste - a printf and a subshell for a string that never
+  # changed.
+  _sg_prefixes="$(printf '%s\t%s\n' \
+    'ghp_/gho_/ghs_/github_pat_' '(ghp_|gho_|ghs_|github_pat_)' \
+    'sk-' '(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}' \
+    'xox-' 'xox[baprs]-' \
+    'AKIA' 'AKIA[A-Z0-9]{12}' \
+    'PEM private key' '-----BEGIN [A-Z ]*PRIVATE KEY' \
+    'JWT' 'eyJ[A-Za-z0-9_-]{10}')"
   while IFS= read -r _line; do
     _n=$((_n + 1))
     # TWO WAYS IN. Noun plus value-like run is the main rule. But a BARE value
@@ -323,19 +334,26 @@ bus_secret_guard() { # <text>
     # tab-separated block read a row at a time - a pipe cannot be the field
     # separator here, since the patterns themselves use pipe for ERE
     # alternation.
-    _sg_prefixes="$(printf '%s\t%s\n' \
-      'ghp_/gho_/ghs_/github_pat_' '(ghp_|gho_|ghs_|github_pat_)' \
-      'sk-' '(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}' \
-      'xox-' 'xox[baprs]-' \
-      'AKIA' 'AKIA[A-Z0-9]{12}' \
-      'PEM private key' '-----BEGIN [A-Z ]*PRIVATE KEY' \
-      'JWT' 'eyJ[A-Za-z0-9_-]{10}')"
     while IFS=$'\t' read -r _sg_label _sg_pattern; do
       [ -n "$_sg_pattern" ] || continue
       # `--` ENDS OPTION PARSING before the pattern: split out on its own,
       # the PEM pattern starts with "-----" and grep would otherwise read it
       # as a run of short options and refuse to run at all.
-      printf '%s' "$_line" | grep -qE -- "$_sg_pattern" || continue
+      #
+      # THE RC IS CHECKED EXPLICITLY, not folded into `|| continue`: grep
+      # returns 0 on a match, 1 on no match, and 2 (or higher) when it could
+      # not run at all - a bad pattern, for instance. Collapsing all non-zero
+      # exits into "no match" would let a broken pattern pass every line in
+      # silence, which is the one failure mode this guard cannot afford: a
+      # secret guard that cannot measure must fail CLOSED, not open.
+      printf '%s' "$_line" | grep -qE -- "$_sg_pattern"
+      _sg_rc=$?
+      if [ "$_sg_rc" -eq 1 ]; then
+        continue
+      elif [ "$_sg_rc" -ne 0 ]; then
+        echo "bus-send: REFUSES - the secret guard could not run (family $_sg_label, grep rc $_sg_rc)." >&2
+        return 65
+      fi
       # THE REFUSAL NAMES THE FAMILY, NEVER THE STRING. The string is the
       # thing this guard exists to refuse to say out loud; the family is
       # enough for the sender to see what tripped it and fix the message.

@@ -25,6 +25,7 @@ ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+hasnt() { case "$2" in *"$3"*) bad "$1" "found '$3' in: $2" ;; *) ok "$1" ;; esac; }
 
 eval "$(sed -n '/^_BUS_SECRET_NOUNS=/p; /^bus_secret_guard() {/,/^}/p' "$here/linux/bus-send")"
 
@@ -59,6 +60,8 @@ echo "c. a real key is still refused, whatever comes before it"
 r="$(guard_rc 'sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef012345')"
 is "sk- alone on a line: refused"         "$r" "65"
 has "...names the sk- family"             "$(err)" "(sk-)"
+hasnt "...never echoes the matched key"   "$(err)" "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef012345"
+has "...the second refusal line is still printed" "$(err)" "does the same job"
 r="$(guard_rc 'key: sk-abcdefghijklmnopqrst')"
 is "sk- preceded by a space: refused"     "$r" "65"
 has "...names the sk- family"             "$(err)" "(sk-)"
@@ -70,18 +73,23 @@ echo "d. the other prefix families are unaffected, and the refusal names each"
 r="$(guard_rc 'ghp_abcdef')"
 is "ghp_ token: refused"    "$r" "65"
 has "...names the github family" "$(err)" "ghp_"
+hasnt "...never echoes the matched token" "$(err)" "ghp_abcdef"
 r="$(guard_rc 'xoxb-1')"
 is "xoxb- token: refused"   "$r" "65"
 has "...names the xox- family"   "$(err)" "xox-"
+hasnt "...never echoes the matched token" "$(err)" "xoxb-1"
 r="$(guard_rc 'AKIAABCDEFGHIJKL')"
 is "AKIA token: refused"    "$r" "65"
 has "...names the AKIA family"   "$(err)" "AKIA"
+hasnt "...never echoes the matched token" "$(err)" "AKIAABCDEFGHIJKL"
 r="$(guard_rc '-----BEGIN RSA PRIVATE KEY-----')"
 is "PEM block: refused"     "$r" "65"
 has "...names the PEM family"    "$(err)" "PEM private key"
+hasnt "...never echoes the matched header line" "$(err)" "-----BEGIN RSA PRIVATE KEY-----"
 r="$(guard_rc 'eyJabcdefghij')"
 is "JWT token: refused"     "$r" "65"
 has "...names the JWT family"    "$(err)" "JWT"
+hasnt "...never echoes the matched token" "$(err)" "eyJabcdefghij"
 
 echo "e. --not-a-secret still bypasses everything, including a real-looking key"
 _NOT_A_SECRET=1
@@ -93,6 +101,28 @@ echo "f. the noun-plus-value rule is untouched by the prefix work"
 r="$(guard_rc 'password: Abc12345')"
 is "noun plus a value-shaped token: refused" "$r" "65"
 has "...the second refusal line is still printed" "$(err)" "does the same job"
+
+echo "g. a family whose pattern cannot compile fails CLOSED, not open"
+# THE PROPERTY UNDER TEST: grep returns 0 on a match, 1 on no match, and 2 (or
+# higher) when the pattern itself will not compile. A guard that folds every
+# non-zero exit into "no match" would let a broken pattern pass every line in
+# silence - the one failure mode this guard cannot afford. There is no
+# production knob to provoke this from outside: the shipped pattern table is
+# always valid ERE, so grep never fails to run on it. This case therefore
+# builds a SECOND, renamed copy of the function from a text copy of the
+# source, with one prefix pattern swapped for an invalid ERE - a single open
+# parenthesis, which grep cannot compile - and calls that copy instead.
+# Extraction only, the same technique as the top of this file; linux/bus-send
+# itself is not touched and gains no test-only knob.
+_broken_src="$(sed -n '/^bus_secret_guard() {/,/^}/p' "$here/linux/bus-send")"
+_broken_src="$(printf '%s\n' "$_broken_src" | sed \
+  -e 's/^bus_secret_guard() {/bus_secret_guard_broken() {/' \
+  -e "s/'(ghp_|gho_|ghs_|github_pat_)'/'('/")"
+eval "$_broken_src"
+bus_secret_guard_broken 'irrelevant text' >/dev/null 2>"$ERRFILE"
+r="$?"
+is "broken pattern table: fails closed, rc 65" "$r" "65"
+has "...names the failure, not a false pass" "$(err)" "could not run"
 
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
