@@ -1504,6 +1504,99 @@ registry_account_slug_available() {
   return 0
 }
 
+# ── PRINCIPALS — one row per HUMAN, across hosts and accounts ───────────────
+# accounts.d names a (principal, host) pair; the human behind it has no row
+# of their own, and the one identity a tailnet hands us — the login — belongs
+# to the human, not to a host. principals.d is that row. The desk gate maps a
+# login to exactly one principal here; two rows with one login are refused
+# by the writer and by the lookup, because a gate that picks one of two is a
+# gate that can be steered.
+registry_principal_dir() {
+  if [ -n "${STEWARD_PRINCIPAL_DIR:-}" ]; then printf '%s\n' "$STEWARD_PRINCIPAL_DIR"; return 0; fi
+  printf '%s\n' "$(_registry_estate_root)/principals.d"
+}
+
+# _registry_login_valid <login> — the shape a tailnet login has.
+_registry_login_valid() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]
+}
+
+# registry_principal_load <slug>: sets PRINCIPAL_ID, PRINCIPAL_NAME,
+# PRINCIPAL_TAILSCALE_LOGIN (lower-cased), PRINCIPAL_DESK_READ_ALL ('yes' or
+# ''). rc 1 on any missing/invalid field, matching registry_entity_load's own
+# contract.
+#
+# RESET BEFORE SOURCING — the same leak-guard pattern registry_account_load
+# follows: a caller that gets rc 1 for a missing or invalid principal must
+# not still see the last principal that loaded successfully.
+registry_principal_load() {
+  PRINCIPAL_ID=""; PRINCIPAL_NAME=""; PRINCIPAL_TAILSCALE_LOGIN=""; PRINCIPAL_DESK_READ_ALL=""
+  local slug="${1:-}" d f
+  [ -n "$slug" ] || return 1
+  registry_valid_name "$slug" || { echo "registry: invalid principal slug" >&2; return 1; }
+  d="$(registry_principal_dir)" || return 78
+  f="$d/$slug.conf"
+  [ -f "$f" ] || { echo "registry: no such principal: $slug" >&2; return 1; }
+  local NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL=""
+  # shellcheck source=/dev/null
+  source "$f" || return 1
+  if [ -z "$NAME" ]; then
+    echo "registry: $slug.conf missing NAME" >&2
+    return 1
+  fi
+  if ! _registry_login_valid "$TAILSCALE_LOGIN"; then
+    echo "registry: $slug.conf missing/invalid TAILSCALE_LOGIN" >&2
+    return 1
+  fi
+  case "$DESK_READ_ALL" in
+    ""|yes) ;;
+    *) echo "registry: $slug.conf DESK_READ_ALL must be yes or absent" >&2; return 1 ;;
+  esac
+  PRINCIPAL_ID="$slug"; PRINCIPAL_NAME="$NAME"
+  PRINCIPAL_TAILSCALE_LOGIN="$(printf '%s' "$TAILSCALE_LOGIN" | tr '[:upper:]' '[:lower:]')"
+  PRINCIPAL_DESK_READ_ALL="$DESK_READ_ALL"
+}
+
+# registry_principal_for_login <login> -> slug on stdout.
+# rc 0 exactly one row; rc 1 none; rc 65 more than one (both named on stderr).
+#
+# EVERY ROW IS LOADED IN A SUBSHELL: registry_principal_load's own PRINCIPAL_*
+# globals are read back out of the subshell through the environment it left
+# behind, but a hostile conf sourced deep inside registry_principal_load must
+# never be able to reach or overwrite this function's own locals (want, hits,
+# slug) the way registry_account_slug_available's comment describes for its
+# own scan.
+registry_principal_for_login() {
+  local want d f hits="" slug
+  want="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$want" ] || return 1
+  d="$(registry_principal_dir)" || return 78
+  [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    slug="$(basename "$f" .conf)"
+    if ( registry_principal_load "$slug" >/dev/null 2>&1 && [ "$PRINCIPAL_TAILSCALE_LOGIN" = "$want" ] ); then
+      hits="$hits $slug"
+    fi
+  done
+  set -- $hits
+  case $# in
+    0) return 1 ;;
+    1) printf '%s\n' "$1"; return 0 ;;
+    *) echo "registry: the login maps to more than one principal:$hits — refusing to pick" >&2; return 65 ;;
+  esac
+}
+
+# registry_principal_write <slug> <content> <validate_fn> — THIN WRAPPER over
+# registry_row_write, the principal-register twin of registry_entity_write
+# above: resolves the principal directory (honoring STEWARD_PRINCIPAL_DIR),
+# reads back through registry_principal_load, and labels refusals "principal".
+registry_principal_write() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_principal_dir)" || return 78
+  registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_principal_load "principal"
+}
+
 # registry_session_write <id> <content> <validate_fn> — THIN WRAPPER over
 # registry_row_write, the session-register sibling of the entity/project/
 # account wrappers above: resolves the session directory (registry_dir,

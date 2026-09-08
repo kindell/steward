@@ -1112,6 +1112,30 @@ _registry_validate_account_stage() {
   return 0
 }
 
+# _principal_validate_row <staged-file> — the validate_fn registry_principal_write
+# calls before publishing a principal row. Same shape as the team/client/
+# account validators above: re-reads the STAGED file and confirms NAME,
+# TAILSCALE_LOGIN and DESK_READ_ALL equal what cmd_registry_principal_add
+# meant to write, byte for byte.
+_principal_validate_row() {
+  local file="$1" NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: staged principal file did not source: $file" >&2; return 70; }
+  if [ "$NAME" != "$_REGW_EXPECT_NAME" ]; then
+    echo "registry: staged principal file's NAME does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$TAILSCALE_LOGIN" != "$_REGW_EXPECT_TAILSCALE_LOGIN" ]; then
+    echo "registry: staged principal file's TAILSCALE_LOGIN does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$DESK_READ_ALL" != "$_REGW_EXPECT_DESK_READ_ALL" ]; then
+    echo "registry: staged principal file's DESK_READ_ALL does not match what was written: $file" >&2
+    return 70
+  fi
+  return 0
+}
+
 # _registry_validate_login_stage <staged-file> — the ONLY stage validator in
 # this file that does NOT source what it validates.
 #
@@ -1277,6 +1301,12 @@ cmd_registry() {
         ls)  shift; cmd_registry_login_ls "$@" ;;
         *)   _reg_fail "" "steward registry login: add|ls" 64; return 64 ;;
       esac ;;
+    principal)
+      shift
+      case "${1:-}" in
+        add) shift; cmd_registry_principal_add "$@" ;;
+        *) fel "steward registry principal: unknown verb '${1:-}' (allowed: add)" 64 ;;
+      esac ;;
     project)
       shift
       case "${1:-}" in
@@ -1291,7 +1321,7 @@ cmd_registry() {
         *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check)" 64 ;;
       esac ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
-    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, project, session, migrate-session)" 64 ;;
+    *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, principal, project, session, migrate-session)" 64 ;;
   esac
 }
 
@@ -1653,6 +1683,120 @@ cmd_registry_account_add() {
     _json ok true kind account slug "$slug" principal "$principal" host "$host" username "$username" file "$file"
   else
     printf 'steward: wrote accounts.d/%s.conf (account for %s@%s, username %s)\n' "$slug" "$principal" "$host" "$username"
+  fi
+  return 0
+}
+
+# cmd_registry_principal_add <slug> --name N --tailscale-login L [--read-all] [--json]
+#
+# Writes principals.d/<slug>.conf through the same shared serializer and
+# writer transaction as team/client/account add — registry_principal_write is
+# a thin wrapper over the ONE writer core (registry_row_write, lib/registry.sh),
+# not a second implementation.
+#
+# THE LOGIN MUST BE UNIQUE ACROSS THE REGISTER, CHECKED BEFORE THE WRITE. Two
+# principal rows sharing one tailnet login is exactly the ambiguity
+# registry_principal_for_login refuses at lookup time (rc 65) — catching it
+# here, before a second row is ever staged, means the caller sees which
+# principal already holds the login instead of a row that then has to be
+# torn down. registry_row_write's own lock still closes the race between
+# this check and the publish; this check exists so the ORDINARY case (no
+# race, just a duplicate) is refused with a useful message instead of a
+# generic "already exists".
+cmd_registry_principal_add() {
+  local want_json="" slug="" name="" login="" read_all="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --name)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry principal add: --name needs a value" 64; return 64; }
+        name="$2"; shift 2 ;;
+      --tailscale-login)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login needs a value" 64; return 64; }
+        login="$2"; shift 2 ;;
+      --read-all)
+        read_all="yes"; shift ;;
+      -*)
+        _reg_fail "$want_json" "steward registry principal add: unknown flag '$1'" 64; return 64 ;;
+      *)
+        if [ -n "$slug" ]; then
+          _reg_fail "$want_json" "steward registry principal add: one principal at a time" 64; return 64
+        fi
+        slug="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$slug" ] || { _reg_fail "$want_json" "steward registry principal add: a slug is required" 64; return 64; }
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry principal add: invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" 64
+    return 64
+  fi
+  [ -n "$name" ] || { _reg_fail "$want_json" "steward registry principal add: --name is required" 64; return 64; }
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  if ! _registry_login_valid "$login"; then
+    _reg_fail "$want_json" "steward registry principal add: --tailscale-login must look like user@domain" 64
+    return 64
+  fi
+
+  # DUPLICATE, BEFORE THE WRITE — see the comment above this function.
+  local other; other="$(registry_principal_for_login "$login" 2>/dev/null)"
+  if [ -n "$other" ]; then
+    _reg_fail "$want_json" "steward registry principal add: the login already belongs to principal '$other' — one login, one human" 65
+    return 65
+  fi
+
+  # See the matching comment in cmd_registry_team_add: _registry_emit_kv's
+  # own refusal is CAPTURED, never left to leak onto whatever real stderr
+  # this process has.
+  local kv_name kv_login rc kv_err
+  kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry principal add: cannot create a temporary file" 70; return 70; }
+  kv_name="$(_registry_emit_kv NAME "$name" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry principal add: --name contains a control character or newline" 64
+    return 64
+  fi
+  kv_login="$(_registry_emit_kv TAILSCALE_LOGIN "$login" 2>"$kv_err")"; rc=$?
+  rm -f "$kv_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry principal add: --tailscale-login contains a control character or newline" 64
+    return 64
+  fi
+
+  _REGW_EXPECT_NAME="$name"
+  _REGW_EXPECT_TAILSCALE_LOGIN="$login"
+  _REGW_EXPECT_DESK_READ_ALL="$read_all"
+  local rw_err; rw_err="$(mktemp)" || {
+    _reg_fail "$want_json" "steward registry principal add: cannot create a temporary file" 70
+    return 70
+  }
+  # HEADER + TRAILING NEWLINE — see the matching comment in
+  # cmd_registry_team_add.
+  local content
+  content="$(printf '# %s — principal, written by steward registry principal add.\n%s\n%s' \
+    "$slug" "$kv_name" "$kv_login")"
+  [ -n "$read_all" ] && content="$content"$'\n''DESK_READ_ALL="yes"'
+  content="$content"$'\n'
+  registry_principal_write "$slug" "$content" _principal_validate_row 2>"$rw_err"
+  rc=$?
+  local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
+  if [ "$rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry principal add: $rw_msg" "$rc"
+    return "$rc"
+  fi
+
+  local file; file="$(registry_principal_dir)/$slug.conf"
+  if [ -n "$want_json" ]; then
+    local ra_bool=false; [ -n "$read_all" ] && ra_bool=true
+    _json ok true kind principal slug "$slug" name "$name" tailscaleLogin "$login" readAll "$ra_bool" file "$file"
+  else
+    printf 'steward: wrote principals.d/%s.conf (principal %s, login %s%s)\n' \
+      "$slug" "$name" "$login" "$( [ -n "$read_all" ] && printf ', read-all' )"
   fi
   return 0
 }
