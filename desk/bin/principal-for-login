@@ -1,0 +1,40 @@
+#!/bin/bash
+# desk/bin/principal-for-login <login> - which person a tailnet login belongs
+# to, answered by the registry and by nothing else.
+#
+# THE DESK HAS TWO LANGUAGES AND MUST NOT HAVE TWO OPINIONS ABOUT WHO SOMEBODY
+# IS. The registry already answers this question - registry_principal_for_login
+# scans principals.d, compares the login word by word against each row's
+# already-normalised TAILSCALE_LOGIN list, and refuses to pick when two rows
+# claim the same login. A Node process cannot source a bash library, so this
+# script is the bridge, exactly as desk/bin/desk-paths is for the two paths and
+# watch/bin/registry-dump is for the watch. One reader of the estate, two
+# languages reading it.
+#
+# THE LIBRARY IS TWO HOPS UP IN BOTH LAYOUTS: desk/bin/ beside lib/ at the repo
+# root, and scripts/desk/bin/ beside scripts/lib/ in a deployed home.
+# STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
+#
+# EXIT CODES ARE THE LIBRARY'S, PASSED THROUGH UNCHANGED, because the caller
+# treats every non-zero the same way - no desk - and must never be tempted to
+# recover from one of them:
+#   0   the slug on stdout: exactly one row carries this login
+#   1   no row carries it
+#   65  more than one row carries it - the library refuses to pick, and so do we
+#   78  the estate does not load
+#   64  this script was called with something other than one argument
+set -uo pipefail
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
+  # shellcheck source=/dev/null
+  . "$STEWARD_REGISTRY_LIB" || exit 78
+elif [ -f "$here/../../lib/registry.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$here/../../lib/registry.sh" || exit 78
+else
+  echo "principal-for-login: the registry library was found in neither layout (from $here)" >&2
+  exit 78
+fi
+
+[ $# -eq 1 ] || { echo "usage: principal-for-login <login>" >&2; exit 64; }
+registry_principal_for_login "$1"
