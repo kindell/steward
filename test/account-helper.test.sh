@@ -63,13 +63,22 @@ mkshim getent 'case "$1" in
     done < "'"$FX"'/passwd"
     [ -n "$row" ] || exit 2
     rest="${row#*:}"
-    printf "%s:x:%s:%s::%s:/bin/bash\n" "$2" "${rest%%:*}" "${rest%%:*}" "${rest#*:}"
+    printf "%s:x:%s:%s::%s:/bin/bash\n" "${FAKE_ROW_NAME:-$2}" "${rest%%:*}" "${rest%%:*}" "${rest#*:}"
     exit 0 ;;
   group)  case "$2" in video) exit 0 ;; *) exit 2 ;; esac ;;
 esac
 exit 2'
-mkshim useradd 'for a in "$@"; do u="$a"; done
-printf "%s:1001:/home/%s\n" "$u" "$u" >> "'"$FX"'/passwd"
+# useradd answers two different questions and the shim answers both: -D reports
+# the host's default HOME (the helper reads it before creating anything), and a
+# real invocation registers the account. FAKE_NEW_UID and FAKE_NEW_HOME are how
+# a host whose useradd lands somewhere other than /home/<name> is arranged -
+# which is the one case where a privileged command has already run when the
+# floor speaks.
+mkshim useradd 'case "${1:-}" in
+  -D) printf "%s\n" "${FAKE_USERADD_DEFAULT_HOME:-HOME=/home}"; exit 0 ;;
+esac
+for a in "$@"; do u="$a"; done
+printf "%s:%s:%s\n" "$u" "${FAKE_NEW_UID:-1001}" "${FAKE_NEW_HOME:-/home/$u}" >> "'"$FX"'/passwd"
 exit 0'
 mkshim usermod 'exit 0'
 mkshim passwd 'exit 0'
@@ -109,6 +118,15 @@ has "and the copy searches the fixture bin first" \
 # an authority by whatever is written next.
 no  "the file does not claim a 750 home is reachable by the steward group" \
     "$(cat "$H")" "the steward account's group reaches it"
+# Two more rationales in the same class, and the same guard. bash reads BASH_ENV
+# before the first statement of a script, so the two exports cannot be what
+# keeps the environment out - env_reset in the sudoers line is. And the flag
+# comment must describe what the code below it does, not its opposite.
+no  "the file does not claim its two exports are what keeps the environment out" \
+    "$(cat "$H")" "and only because of them"
+has "it names env_reset as what keeps BASH_ENV out" "$(cat "$H")" "env_reset"
+no  "the file does not say add accepts and ignores --archive-home" \
+    "$(cat "$H")" "Accepted and ignored on add"
 
 run() { ( bash "$FX/helper" "$@" ); }
 
@@ -256,6 +274,63 @@ is  "a home under another name is rc 64" "$rc" "64"
 is  "and not one of those refusals ran a privileged command" \
     "$(grep -cvE '^(id|getent) ' "$FX/calls" | tr -d ' ')" "0"
 
+echo "== the floor also judges the account useradd just made =="
+# Every case above seeds the database first, so every one of them takes the
+# EXISTING-account branch. The create path has its own floor call, and it is the
+# only one that speaks after a privileged command has already run - so it is
+# also the only one that must not answer 64, which this file documents as "you
+# asked wrong, nothing happened".
+#
+# First, the cheap half: the host's useradd default is readable, so a host that
+# would put the home somewhere else is refused BEFORE anything is created.
+: > "$FX/calls"; db_empty
+out="$( ( export FAKE_USERADD_DEFAULT_HOME='HOME=/srv'; run add alice ) 2>&1 )"; rc=$?
+is  "a host whose useradd default HOME is not /home is rc 64" "$rc" "64"
+has "and the refusal names the value it measured" "$out" "/srv"
+has "and what it expected instead" "$out" "/home"
+has "and says nothing was created" "$out" "nothing was created"
+no  "and nothing was created" "$(cat "$FX/calls")" "useradd --create-home"
+
+# Then the belt: the host answered /home to -D and put the account somewhere
+# else anyway. The account EXISTS now, so the receipt has to say so and the code
+# cannot be the usage code.
+: > "$FX/calls"; db_empty
+out="$( ( export FAKE_NEW_HOME=/srv/alice; run add alice ) 2>&1 )"; rc=$?
+is  "an account useradd put outside /home is rc 70, not 64" "$rc" "70"
+calls="$(cat "$FX/calls")"
+has "because the account really was created" "$calls" "useradd --create-home --shell /bin/bash alice"
+has "and the receipt says so" "$out" "created by useradd but fails the floor"
+has "and names the account it left behind" "$out" "alice"
+has "and the home the host gave it" "$out" "/srv/alice"
+has "and that it was not configured" "$out" "not configured"
+no  "and nothing was configured after the create: no mode" "$calls" "chmod"
+no  "no groups" "$calls" "usermod"
+no  "no lingering" "$calls" "loginctl"
+no  "no password" "$calls" "passwd -l"
+no  "no rig fragment" "$calls" "systemd-tmpfiles"
+
+: > "$FX/calls"; db_empty
+out="$( ( export FAKE_NEW_UID=999; run add alice ) 2>&1 )"; rc=$?
+is  "an account useradd gave a system uid is rc 70 too" "$rc" "70"
+has "and the receipt names the uid" "$out" "uid 999"
+no  "and it was left unconfigured as well" "$(cat "$FX/calls")" "loginctl"
+
+echo "== a row about another account is not an answer =="
+# ONE lookup answers every question this helper asks, which is only worth
+# anything if the answer is about the account that was asked for. $USERNAME, not
+# the row's name, is what every privileged command receives - so a mismatch
+# cannot steer the helper onto another account, but it does mean the uid and the
+# home being judged belong to someone else.
+: > "$FX/calls"; db 'alice:1001:/home/alice'
+out="$( ( export FAKE_ROW_NAME=bob; run lock alice ) 2>&1 )"; rc=$?
+is  "lock on a row that names another account is rc 64" "$rc" "64"
+has "and the refusal names the account that was asked for" "$out" "alice"
+no  "and nothing was locked" "$(cat "$FX/calls")" "usermod"
+: > "$FX/calls"
+out="$( ( export FAKE_ROW_NAME=bob; run add alice ) 2>&1 )"; rc=$?
+no  "and add does not take such a row for an existing account" "$out" "already exists"
+has "it goes to the create path instead" "$(cat "$FX/calls")" "useradd --create-home --shell /bin/bash alice"
+
 echo "== the archive refuses anything that would make its receipt false =="
 # The real file's fixed paths, asserted here because the cases below run
 # against the copy that relocates them.
@@ -264,7 +339,9 @@ is  "the real helper archives under /home/.offboarded" \
 is  "and creates that root there" \
     "$(grep -Fc -- 'mkdir -p /home/.offboarded' "$H" | tr -d ' ')" "1"
 is  "and the floor pins the home to /home/<name>" \
-    "$(grep -Fc -- '[ "$HOME_DIR" = "/home/$USERNAME" ]' "$H" | tr -d ' ')" "1"
+    "$(grep -Fc -- '[ "$HOME_DIR" != "/home/$USERNAME" ]' "$H" | tr -d ' ')" "1"
+is  "and the create path pins the host's useradd default to /home" \
+    "$(grep -Fc -- '[ "$UA_HOME" = "/home" ]' "$H" | tr -d ' ')" "1"
 
 today="$(date -u +%Y-%m-%d)"
 mkdir -p "$FXHOME" "$FX/elsewhere"

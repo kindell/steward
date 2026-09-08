@@ -13,18 +13,25 @@
 # so the product measures the same thing on every host - and the day a host
 # restricts that account, nothing changes.
 #
-# IT TAKES NO INPUT BUT ITS ARGUMENTS. No environment variable steers it, no
-# file configures it, and it never reads stdin. Anything it read would be a way
-# to steer root through a line that was written to be narrow. That claim is
-# true because of the two lines below, and only because of them: PATH chose
-# every binary this file runs as root, and LC_ALL chose what the argument guard
-# accepts. Both are pinned here rather than assumed from sudo, because
-# secure_path is a setting in someone else's sudoers file and this product
-# neither installs nor measures it - and because root also reaches this file
-# from cron and from a root shell, where there is no sudo to reset anything.
-# They are the FIRST statements: nothing may run before the search path is ours.
+# IT TAKES NO INPUT BUT ITS ARGUMENTS. It reads no configuration file and never
+# reads stdin, and the two lines below pin the two things an argument alone does
+# not settle: PATH chooses every binary this file runs as root, and LC_ALL
+# chooses what the argument guard accepts. Both are pinned HERE rather than
+# assumed from sudo, because secure_path is a setting in someone else's sudoers
+# file that this product neither installs nor measures - and because root also
+# reaches this file from cron and from a root shell, where there is no sudo at
+# all. They are the FIRST statements: nothing may run before the search path is
+# ours.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
+#
+# WHAT THOSE TWO LINES DO NOT PIN, AND WHAT DOES. bash reads BASH_ENV - and ENV,
+# and SHELLOPTS - before the first statement of this script runs, so no line in
+# this file can close that door from the inside. The sudoers line's env_reset is
+# what keeps them out on the path this file was written for, and the product
+# relies on it for exactly that. On the other paths the claim is not needed: a
+# caller who already has a root shell or a root crontab is not going through
+# here to reach root.
 #
 # IT VALIDATES ITS OWN ARGUMENT. A sudoers line permits a COMMAND, not an
 # argument, so a caller can pass anything; the guard has to live here.
@@ -62,8 +69,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$ACTION" in
-  # --archive-home belongs to lock. Accepted and ignored on add, a typo'd
-  # offboard would return 0 having quietly onboarded the person instead.
+  # --archive-home BELONGS TO LOCK, AND ADD REFUSES IT rather than dropping it:
+  # a flag that was taken and ignored would turn a typo'd offboard into a
+  # return 0 that had quietly onboarded the person instead.
   add)  [ -z "$ARCHIVE" ] || usage ;;
   lock) ;;
   *)    usage ;;
@@ -77,9 +85,12 @@ fi
 [ "$(id -u)" = "0" ] || fail "this helper must run as root (through the estate's sudoers line)" 77
 
 # read_account <username> - sets ACCT_UID and HOME_DIR from the SYSTEM's own
-# database, never from a /home literal; rc 1 when there is no such account. ONE
-# lookup answers both questions, so the uid this file judges and the home it
-# acts on can never come from two answers that disagree.
+# database, never from a /home literal; rc 1 when there is no such account, rc 2
+# when the database answered about a DIFFERENT account. ONE lookup answers both
+# questions, so the uid this file judges and the home it acts on can never come
+# from two answers that disagree - and the name field is checked for the same
+# reason: an answer that is not about the account we asked about is not an
+# answer, whatever else it contains.
 ACCT_UID=""
 HOME_DIR=""
 read_account() {
@@ -89,6 +100,7 @@ read_account() {
   [ -n "$row" ] || return 1
   IFS=: read -r _name _pw ACCT_UID _gid _gecos HOME_DIR _shell <<<"$row"
   [ -n "$ACCT_UID" ] || return 1
+  [ "$_name" = "$1" ] || return 2
   return 0
 }
 
@@ -104,29 +116,67 @@ read_account() {
 # uid, never root, with its home exactly at /home/<name>, which is the account
 # layout this product's own 'add' produces. Anything else is a usage error: the
 # caller named something that is not this helper's business.
+#
+# The judgement is split in two: account_fails_floor names the reason without
+# deciding what to do about it, because the create path below has already run a
+# privileged command by the time it asks and owes a different answer than a
+# caller who named the wrong account.
+FLOOR_REASON=""
+account_fails_floor() {
+  FLOOR_REASON=""
+  if [ "$USERNAME" = "root" ]; then
+    FLOOR_REASON="'$USERNAME' is the root account - this helper never manages it"
+  else
+    case "$ACCT_UID" in
+      ''|*[!0-9]*)
+        FLOOR_REASON="the account database gives no numeric uid for '$USERNAME'" ;;
+      *)
+        if [ "$ACCT_UID" -lt 1000 ]; then
+          FLOOR_REASON="'$USERNAME' is a system account (uid $ACCT_UID) - this helper manages ordinary accounts only"
+        elif [ "$HOME_DIR" != "/home/$USERNAME" ]; then
+          FLOOR_REASON="'$USERNAME' has home '$HOME_DIR', not /home/$USERNAME - this helper manages only the account layout it creates"
+        fi ;;
+    esac
+  fi
+  [ -n "$FLOOR_REASON" ]
+}
 require_ordinary_account() {
-  [ "$USERNAME" != "root" ] \
-    || fail "'$USERNAME' is the root account - this helper never manages it" 64
-  case "$ACCT_UID" in
-    ''|*[!0-9]*) fail "the account database gives no numeric uid for '$USERNAME'" 64 ;;
-  esac
-  [ "$ACCT_UID" -ge 1000 ] \
-    || fail "'$USERNAME' is a system account (uid $ACCT_UID) - this helper manages ordinary accounts only" 64
-  [ "$HOME_DIR" = "/home/$USERNAME" ] \
-    || fail "'$USERNAME' has home '$HOME_DIR', not /home/$USERNAME - this helper manages only the account layout it creates" 64
+  ! account_fails_floor || fail "$FLOOR_REASON" 64
 }
 
 if [ "$ACTION" = "add" ]; then
   CREATED=""
+  # A row for another account is not a row for this one: the create path is the
+  # honest answer, and useradd will refuse for real if the name is taken.
   if read_account "$USERNAME"; then
     require_ordinary_account
     echo "helper: account $USERNAME already exists"
   else
+    # THE HOST'S ANSWER IS MEASURED BEFORE ANYTHING IS CREATED. The floor below
+    # judges the row useradd produced - but by then the account exists, and on a
+    # host whose useradd puts homes somewhere other than /home EVERY add would
+    # create an account this helper then has to refuse. That default is
+    # readable, so it is read first and the refusal costs nothing.
+    UA_DEFAULTS="$(useradd -D 2>/dev/null)" \
+      || fail "could not read this host's useradd defaults ('useradd -D' failed)"
+    UA_HOME=""
+    while IFS= read -r ua_line; do
+      case "$ua_line" in HOME=*) UA_HOME="${ua_line#HOME=}"; break ;; esac
+    done <<<"$UA_DEFAULTS"
+    [ "$UA_HOME" = "/home" ] \
+      || fail "useradd default HOME is '$UA_HOME', expected /home - nothing was created" 64
     useradd --create-home --shell /bin/bash "$USERNAME" \
       || fail "useradd failed for '$USERNAME'"
     read_account "$USERNAME" \
       || fail "the account database has no row for '$USERNAME' after useradd"
-    require_ordinary_account
+    # THE BELT, AND WHY ITS CODE IS 70 AND NOT 64. The account exists now: root
+    # ran useradd two lines ago. 64 means the caller asked wrong and nothing
+    # happened, so it would be a lie here - and a receipt that can be wrong is
+    # the one thing this file refuses to print. The account is left exactly as
+    # useradd made it: unconfigured, and named in the refusal so the operator
+    # knows what is there.
+    ! account_fails_floor \
+      || fail "account $USERNAME was created by useradd but fails the floor ($FLOOR_REASON); left as is, not configured - remove it by hand if that is not what you wanted" 70
     CREATED=1
     echo "helper: account $USERNAME created"
   fi
@@ -175,8 +225,12 @@ if [ "$ACTION" = "add" ]; then
 fi
 
 # lock - the reverse of add, in reverse order.
-read_account "$USERNAME" \
-  || fail "no such account '$USERNAME' - nothing to lock"
+read_account "$USERNAME"; FOUND=$?
+case "$FOUND" in
+  0) ;;
+  2) fail "the account database answered about another account than '$USERNAME' - this helper acts on nothing it cannot identify" 64 ;;
+  *) fail "no such account '$USERNAME' - nothing to lock" ;;
+esac
 require_ordinary_account
 # DISABLE-LINGER IS WHAT STOPS THE WORK. It takes the account's user manager
 # down, and every session unit under it with the manager - which is the only
