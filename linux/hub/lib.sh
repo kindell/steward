@@ -1315,6 +1315,32 @@ bus_send() {
   bus_resolve_recipient "$to" || _rrc=$?
   # A refusal (ambiguous slug, broken ID) has already explained itself on stderr.
   [ "$_rrc" -eq 65 ] && return 65
+  # A FRAGA GOES TO THE HUB ONLY. The class means "answered by machinery", and
+  # the only machinery is the hub's catalogue answerer; a session has none. A
+  # FRAGA delivered to a session arrives as an ordinary letter and sits there:
+  # the sender waits for a DRIFT that never comes and concludes the HUB did not
+  # answer, and the recipient sees a catalogue word as a headline and cannot
+  # tell whether a person wants a reply. Measured from both sides 2026-09-08 by
+  # two sessions on one project. So the refusal is here, loud and local, before
+  # anything is written - the same shape as an envelope without a class. The
+  # recipient is compared by ID, never by spelling: the hub answers to its word
+  # and to its id alike. Asking ABOUT a session is the hub's job, not the
+  # session's. A name this hub cannot resolve takes the peer path below, which
+  # refuses a FRAGA with its own reason (no return route across a link).
+  if [ "${BUS_KLASS:-}" = "FRAGA" ] && [ "$_rrc" -eq 0 ]; then
+    local _to_id="${BUS_RES_ID:-}" _hub_word _hub_id=""
+    _hub_word="$(bus_hub_word 2>/dev/null)" || _hub_word=""
+    if [ -n "$_hub_word" ] && bus_resolve_recipient "$_hub_word" >/dev/null 2>&1; then _hub_id="${BUS_RES_ID:-}"; fi
+    # The hub lookup overwrote BUS_RES_*; put the recipient's resolution back.
+    bus_resolve_recipient "$to" >/dev/null 2>&1
+    if [ -z "$_hub_id" ] || [ -z "$_to_id" ] || [ "$_to_id" != "$_hub_id" ]; then
+      echo "bus: a FRAGA goes to the hub only ('${_hub_word:-the hub}') - nothing is sent to '$to'." >&2
+      echo "     A FRAGA is answered by the hub's catalogue; a session has no machinery for it," >&2
+      echo "     and a letter delivered there sits unanswered while you wait for a DRIFT." >&2
+      echo "     To ask about a session, ask the hub. To write to the session, use another class." >&2
+      return 65
+    fi
+  fi
   if [ "$_rrc" -ne 0 ]; then
     # A NAME WE DO NOT HAVE MAY BE A NAME THE NEIGHBOUR HAS. There is no lookup
     # protocol and deliberately none: the letter is forwarded on the strength of

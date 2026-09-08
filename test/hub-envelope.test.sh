@@ -148,6 +148,24 @@ is  "FYND is stopped by the unreadable list: rc 70" "$rc" "70"
 call="$(awk '/^bus_send\(\)/,/^}/' "$here/linux/hub/lib.sh" | grep -F 'bus_parked ')"
 has "the class is passed to bus_parked as an ARGUMENT, not read from an inherited export" "$call" '"$BUS_KLASS"'
 
+echo "9. a FRAGA goes to the hub only"
+# The fixture's estate names hub-one as the hub; give it a row so it resolves.
+printf 'HOST="host-one"\nOWNER="operator-a"\nDOMAIN="entity-one"\nRC_LABEL="H"\nREPO_PATH="/tmp/h"\nID="hub-one"\nSLUG="hub-one"\n' > "$FX/reg/hub-one.conf"
+# The sender needs a row too: the hub's own FRAGA gate (same owner or domain) runs after this guard.
+printf 'HOST="host-one"\nOWNER="operator-a"\nDOMAIN="entity-one"\nRC_LABEL="S"\nREPO_PATH="/tmp/s"\nID="sender"\nSLUG="sender"\n' > "$FX/reg/sender.conf"
+fraga() { ( export STEWARD_BUS_HOME="$FX/bh9"; bus_send "$1" sender "$2" noop_ping >"$FX/out" 2>"$FX/err" ); echo $?; }
+written9() { find "$FX/bh9" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
+is  "a FRAGA to a session: rc 65"                "$(fraga rcpt 'FRAGA topic: status')" "65"
+has "...and the refusal says where a FRAGA goes" "$(cat "$FX/err")" "hub only"
+has "...and names the recipient it refused"      "$(cat "$FX/err")" "rcpt"
+is  "...and nothing was written"                 "$(written9)" "0"
+is  "a FRAGA to the hub by its word: rc 0"       "$(fraga hub-one 'FRAGA topic: status')" "0"
+is  "a SAMORDNING to a session still passes"     "$(fraga rcpt 'SAMORDNING topic: a question for a person')" "0"
+is  "a DRIFT to a session still passes"          "$(fraga rcpt 'DRIFT topic: news')" "0"
+rm -f "$FX/reg/hub-one.conf"
+is  "a FRAGA when the hub has no row: rc 65 (no guess)" "$(fraga rcpt 'FRAGA topic: status')" "65"
+rm -f "$FX/reg/sender.conf"
+
 echo "z. no test reached a real ssh"
 is "ssh was never called" "$(wc -l < "$SSH_REFUSED" | tr -d ' ')" "0"
 

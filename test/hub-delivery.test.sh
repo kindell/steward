@@ -139,7 +139,11 @@ has "...naming both rows" "$err" "s-00000000000000cc"
 bus_send alpha legacy "no envelope here" recording_ping >/dev/null 2>&1; rc=$?
 is "missing envelope: rc 65" "$rc" "65"
 is "nothing was written by any refusal" "$(find "$FX/bus-home" -name '*.json' | wc -l | tr -d ' ')" "$before"
-bus_send colleague legacy "FRAGA status: how" recording_ping >/dev/null 2>&1 && ok "FRAGA: same entity, other person - allowed" || bad "FRAGA: same entity, other person - allowed"
+# A FRAGA GOES TO THE HUB ONLY (2026-09-08): a session has no machinery to answer
+# one, so the same-entity permit of the gate applies to asking the HUB, never to
+# asking a colleague's session. Both of these are refused before anything is
+# written; the gate itself is proved against the hub in hub-envelope.test.sh.
+bus_send colleague legacy "FRAGA status: how" recording_ping >/dev/null 2>&1 && bad "FRAGA: same entity, other person - refused (a FRAGA goes to the hub only)" || ok "FRAGA: same entity, other person - refused (a FRAGA goes to the hub only)"
 bus_send stranger legacy "FRAGA status: how" recording_ping >/dev/null 2>&1 && bad "FRAGA: other entity, other person - refused" || ok "FRAGA: other entity, other person - refused"
 
 echo "3. same machine, other home: delivered AS THE OWNER over ssh, then archived"
@@ -157,7 +161,7 @@ is  ".to carries the ID on the remote copy too" "$(jq -r .to "$rem/$f")" "s-0000
 is  ".klass survives the wire" "$(jq -r .klass "$rem/$f")" "DRIFT"
 has "the remote wake went over the home's socket, named by its estate" "$(cat "$TMUX_CALLS")" "-S $FX/hh/.tmux/hub-one.sock has-session -t s-00000000000000ee"
 has "...and typed the registry's ping text" "$(cat "$TMUX_CALLS")" "send-keys -t s-00000000000000ee -l -- [bus] you have mail"
-is  "the sender's archive got the copy after success" "$(count_json "$FX/bus-home/legacy/sent")" "5"
+is  "the sender's archive got the copy after success" "$(count_json "$FX/bus-home/legacy/sent")" "4"
 unset TMUX_ALIVE
 
 echo "4. another machine: ssh to that host as the owner; a failed delivery is not archived"
