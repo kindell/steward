@@ -441,10 +441,16 @@ EOF
     _sessions_estate_readable 2>/dev/null; _erc=$?
     if [ "$_erc" -ne 0 ]; then
       rm -f "$_diagfile"
+      # THE LIST IS THE GATE SET, AND IT IS COPIED HERE ON PURPOSE - a sentence
+      # cannot call a function. So it is spelled in registry_estate_gates order
+      # and it names all five: three keys were listed while the gate asked
+      # about four, and after LOGIN_REQUIRED_FOR joined it, five. A reader sent
+      # after the wrong key by a short list looks in the wrong place first.
       echo "sessions: REFUSING — $total session(s) listed and none could be loaded," \
            "and the estate itself does not read (rc $_erc):" \
-           "the estate file is missing, or missing a required field" \
-           "(LABEL_PREFIX, HUB_HOST, OP_TOKEN_FILE_NAME) — see the lines above" >&2
+           "the estate file is missing, or a field the loader gates on is missing or malformed" \
+           "(SCHEMA_VERSION, HUB_HOST, OP_TOKEN_FILE_NAME, LABEL_PREFIX, LOGIN_REQUIRED_FOR)" \
+           "— see the lines above" >&2
       return 1
     fi
   fi

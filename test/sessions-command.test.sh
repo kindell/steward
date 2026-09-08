@@ -347,6 +347,13 @@ noest_rc=$?
 is "a missing estate key refuses" "$( [ "$noest_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$noest" | jq -r '.ok')" "false"
 has "and the reason names the key" "$(printf '%s' "$noest" | jq -r '.reason')" "HUB_HOST"
+# THE SENTENCE LISTS THE GATE SET, AND A SHORT LIST SENDS THE READER TO THE
+# WRONG KEY FIRST. It named three while registry_estate_gates asked about four,
+# and five once LOGIN_REQUIRED_FOR joined. The whole list is asserted, in gate
+# order, because it is a hand copy of a function that keeps growing.
+has "and the sentence names the whole gate set" \
+    "$(printf '%s' "$noest" | jq -r '.reason')" \
+    "(SCHEMA_VERSION, HUB_HOST, OP_TOKEN_FILE_NAME, LABEL_PREFIX, LOGIN_REQUIRED_FOR)"
 
 # THE SAME BRANCH FOR THE OTHER TWO KEYS. registry_load passes four estate-wide
 # gates, and the probe that decides ok used to name two of them. An estate that
