@@ -104,8 +104,10 @@
 // signature check all happen in this process (desk/oidc.mjs), so the box can
 // forward bytes and nothing more. The identity the provider proves is
 // resolved to a principal by the registry's own bridge, exactly as a tailnet
-// login is - and the row is checked again on EVERY front request, so removing
-// a person takes effect on their next click and not at their cookie's expiry.
+// login is - and the cookie carries that IDENTITY rather than the principal,
+// so the same question is asked of the registry again on EVERY front request.
+// Removing a person's OIDC word, or moving it to somebody else, therefore
+// takes effect on their next click and not at their cookie's expiry.
 //
 // EXIT CODES
 //   64  A setting that cannot be honoured: STEWARD_DESK_MAX_AGE that is not a
@@ -125,10 +127,9 @@
 //       read is a second desk nobody is reading, so there is no fallback for
 //       any of the three. With the front enabled, also: desk-paths printed no
 //       origin=, providers= or session_key= line, the session key file cannot
-//       be loaded, desk/providers.d names no provider, or
-//       desk/bin/principal-exists is not runnable. A front that started
-//       without one of those would be a login page that can never finish a
-//       login, which is worse than a desk that refused to start.
+//       be loaded, or desk/providers.d names no provider. A front that
+//       started without one of those would be a login page that can never
+//       finish a login, which is worse than a desk that refused to start.
 // =======================================================================
 
 import http from 'node:http';
@@ -255,8 +256,8 @@ if (LISTEN) {
 // startup: the two variables must arrive together (one alone is a typo, and
 // guessing the other would either publish a desk nobody meant to publish or
 // open a port that answers nobody), the estate must name an origin, a
-// providers directory and a key file, at least one provider must be readable,
-// and the row bridge the cookie gate asks on every request must be runnable.
+// providers directory and a key file, and at least one provider must be
+// readable.
 const FRONT_LISTEN_RAW = process.env.STEWARD_DESK_FRONT_LISTEN;
 const FRONT_PEER_RAW = process.env.STEWARD_DESK_FRONT_PEER;
 let FRONT = null;
@@ -298,16 +299,12 @@ if (FRONT_LISTEN_RAW || FRONT_PEER_RAW) {
     console.error('desk: desk/providers.d names no provider, so the front could never finish a login');
     process.exit(78);
   }
-  const EXISTS_BRIDGE = join(HERE, 'bin', 'principal-exists');
-  try {
-    accessSync(EXISTS_BRIDGE, constants.X_OK);
-  } catch {
-    console.error('desk: ' + EXISTS_BRIDGE + ' is missing or not executable; the front cannot start');
-    process.exit(78);
-  }
+  // No second bridge to check here: the front asks principal-for-login, the
+  // same bridge the tailnet listener asks, and its runnability was checked
+  // once at the top of this file for both.
   FRONT = {
     listen: frontListen, peer: frontPeer, origin: p.origin, key: sessionKey,
-    providers, exists: EXISTS_BRIDGE, limiter: new RateLimiter(10, 60000)
+    providers, limiter: new RateLimiter(10, 60000)
   };
 }
 
@@ -431,12 +428,12 @@ const LOGIN_RE = /^[A-Za-z0-9._%+@-]{1,254}$/;
 // charset, not merely a superset that happens to be safe.
 const SLUG_RE = /^[a-z0-9-]+$/;
 
-// logBridgeOutage - the ONE line an outage gets, for either bridge. Never the
-// value's own text: only its length, because that value is attacker-reachable
-// and a log is not the place to reflect it back. What an operator needs is
-// what failed and how - a code, a signal, an exit status - not the login that
-// triggered it.
-function logBridgeOutage(value, e, bridge = 'principal-for-login') {
+// logBridgeOutage - the ONE line an outage gets. Never the value's own text:
+// only its length, because that value is attacker-reachable and a log is not
+// the place to reflect it back. What an operator needs is what failed and how
+// - a code, a signal, an exit status - not the login that triggered it.
+function logBridgeOutage(value, e) {
+  const bridge = 'principal-for-login';
   const bits = [];
   if (e) {
     if (e.code) bits.push('code=' + e.code);
@@ -501,22 +498,6 @@ function principalForIdentity(source, value) {
   if (slug && SLUG_RE.test(slug)) return { slug, outage: false };
   logBridgeOutage(value, null);
   return { slug: null, outage: true };
-}
-
-// principalExists - is the row the cookie names still there? rc 0 yes, rc 1
-// no, anything else an outage. Asked on EVERY front request: a session cookie
-// is self-contained by design, so this is the only place where removing a
-// person from the registry becomes a refusal on their next click rather than
-// at their cookie's expiry twelve hours later.
-function principalExists(slug) {
-  try {
-    execFileSync(FRONT.exists, [slug], { timeout: 5000, stdio: ['ignore', 'ignore', 'pipe'] });
-    return { exists: true, outage: false };
-  } catch (e) {
-    if (e && e.status === 1) return { exists: false, outage: false };
-    logBridgeOutage(slug, e, 'principal-exists');
-    return { exists: false, outage: true };
-  }
 }
 
 // loadSnapshot - the viewer's file out of the CURRENT generation, or null.
@@ -707,10 +688,14 @@ async function authCallback(url, cookies, res) {
   const { slug, outage } = principalForIdentity('oidc', identity.slice('oidc:'.length));
   if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
   if (!slug) return refuse(); // invitation binding attaches here (services plan)
+  // THE COOKIE CARRIES THE IDENTITY, NOT THE SLUG THIS LOGIN RESOLVED TO. The
+  // slug is today's answer and it is asked again on every request; minting it
+  // into the cookie would freeze it for twelve hours. It is resolved here only
+  // so that an identity no row claims never gets a session at all.
   return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
     location: '/desk/',
     'set-cookie': [
-      serializeCookie(SESSION_COOKIE, mintSession(FRONT.key, slug, nowSec()), { maxAge: SESSION_MAX_AGE }),
+      serializeCookie(SESSION_COOKIE, mintSession(FRONT.key, identity, nowSec()), { maxAge: SESSION_MAX_AGE }),
       clearCookie(STATE_COOKIE)
     ]
   }));
@@ -803,22 +788,28 @@ async function handleFront(req, res) {
   // Past the auth block the method is a read: logoutPost is the only other
   // way through the check above, and its path returned inside that block.
 
-  // IDENTITY IS THE COOKIE, AND THE ROW MUST STILL BE THERE. No login header
-  // is read on this listener, by any path, ever. A visitor without a valid
-  // cookie is sent to the login page rather than refused, because they are not
-  // refused - they have not said who they are yet.
-  const principal = verifySession(FRONT.key, cookies.get(SESSION_COOKIE), nowSec());
-  if (!principal) {
+  // IDENTITY IS THE COOKIE, AND THE REGISTRY SAYS WHOSE IT IS - EVERY TIME. No
+  // login header is read on this listener, by any path, ever. A visitor
+  // without a valid cookie is sent to the login page rather than refused,
+  // because they are not refused - they have not said who they are yet.
+  //
+  // The cookie proves an identity a provider signed for; it does not prove a
+  // principal, and it is not allowed to. So the same bridge the callback asked
+  // is asked again here, with the same argument: nobody claims this identity
+  // any more (rc 1), or two rows do (rc 65), and the session is over on this
+  // click rather than at the cookie's expiry twelve hours later.
+  const identity = verifySession(FRONT.key, cookies.get(SESSION_COOKIE), nowSec());
+  if (!identity) {
     return send(res, 303, '', Object.assign({}, FRONT_HEADERS, { location: '/desk/auth/login' }));
   }
-  const { exists, outage } = principalExists(principal);
+  const { slug, outage } = principalForIdentity('oidc', identity.slice('oidc:'.length));
   if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
-  if (!exists) {
+  if (!slug) {
     return send(res, 403, FORBIDDEN, Object.assign({}, FRONT_HEADERS, {
       'set-cookie': clearCookie(SESSION_COOKIE)
     }));
   }
-  return servePage(req, res, principal, FRONT_HEADERS);
+  return servePage(req, res, slug, FRONT_HEADERS);
 }
 
 // frontServer - handleFront is async, and an unhandled rejection would take

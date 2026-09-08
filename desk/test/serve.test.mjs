@@ -985,6 +985,13 @@ describe('the front listener', () => {
   const visitor = (n) => ({ 'x-real-ip': '203.0.113.' + n });
   const from = (n, headers) => Object.assign(visitor(n), headers || {});
 
+  // The identity row e claims, and the row itself: the cookie carries the
+  // identity, so a test that hand-mints a session mints one of these.
+  const IDENTITY = 'oidc:stub:sub-1';
+  const KEY = () => Buffer.from('k'.repeat(44));
+  const ROW_E = () => join(ROOT, 'principals.d', 'e.conf');
+  const sessionFor = (id) => '__Host-desk-session=' + mintSession(KEY(), id, Math.floor(Date.now() / 1000));
+
   it('starts both listeners: the socket still answers the header, the front ignores it', async () => {
     const viaSock = await req('GET', '/desk/', B);
     assert.equal(viaSock.status, 200);
@@ -994,8 +1001,7 @@ describe('the front listener', () => {
   });
 
   it('the socket ignores a cookie', async () => {
-    const key = Buffer.from('k'.repeat(44));
-    const r = await req('GET', '/desk/', { cookie: '__Host-desk-session=' + mintSession(key, 'b', Math.floor(Date.now() / 1000)) });
+    const r = await req('GET', '/desk/', { cookie: sessionFor(IDENTITY) });
     assert.equal(r.status, 403);
   });
 
@@ -1042,26 +1048,51 @@ describe('the front listener', () => {
     assert.equal(bad.body, nowhere.body);
   });
 
-  it('a removed principal is out on the next request with a still-valid cookie', async () => {
-    const key = Buffer.from('k'.repeat(44));
-    const cookie = '__Host-desk-session=' + mintSession(key, 'e', Math.floor(Date.now() / 1000));
+  // REVOCATION IS THE REGISTRY'S ANSWER, NOT A FILE'S EXISTENCE. The cookie
+  // carries the identity, so the question asked on every click is the one the
+  // login asked - which of the two ways an operator takes somebody off the
+  // front happened is not something the front has to know.
+  it('removing the OIDC word revokes the session on the next request', async () => {
+    const cookie = sessionFor(IDENTITY);
     assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
-    unlinkSync(join(ROOT, 'principals.d', 'e.conf'));
+    // The row stays and keeps a tailnet login: only the front's word goes,
+    // which is the natural edit for "off the front, still on the tailnet".
+    writeFileSync(ROW_E(), 'NAME="Eve"\nTAILSCALE_LOGIN="eve@example.test"\n');
     const gone = await front('GET', '/desk/', { cookie });
     assert.equal(gone.status, 403);
     assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
-    writeFileSync(join(ROOT, 'principals.d', 'e.conf'), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+    writeFileSync(ROW_E(), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+    assert.equal((await front('GET', '/desk/', { cookie })).status, 200, 'the word back is the session back');
+  });
+
+  it('deleting the row revokes the session on the next request', async () => {
+    const cookie = sessionFor(IDENTITY);
+    assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
+    unlinkSync(ROW_E());
+    const gone = await front('GET', '/desk/', { cookie });
+    assert.equal(gone.status, 403);
+    assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
+    writeFileSync(ROW_E(), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+  });
+
+  it('an identity no row claims is refused even with a cookie this host minted', async () => {
+    const r = await front('GET', '/desk/', { cookie: sessionFor('oidc:stub:nobody') });
+    assert.equal(r.status, 403);
+    assert.ok(cookieOf(r).includes('__Host-desk-session='));
   });
 
   it('a cookie forged under another key, or tampered, is not a session', async () => {
-    const bad = '__Host-desk-session=' + mintSession(Buffer.from('x'.repeat(44)), 'e', Math.floor(Date.now() / 1000));
+    const bad = '__Host-desk-session=' + mintSession(Buffer.from('x'.repeat(44)), IDENTITY, Math.floor(Date.now() / 1000));
     const r = await front('GET', '/desk/', { cookie: bad });
     assert.equal(r.status, 303);
+    // And so is this host's own MAC over a body edited afterwards.
+    const mine = mintSession(KEY(), IDENTITY, Math.floor(Date.now() / 1000)).split('.');
+    const tampered = Buffer.from('oidc:stub:sub-2').toString('base64url') + '.' + mine[1] + '.' + mine[2];
+    assert.equal((await front('GET', '/desk/', { cookie: '__Host-desk-session=' + tampered })).status, 303);
   });
 
   it('logout needs same-origin and a matching Origin, then clears the cookie', async () => {
-    const key = Buffer.from('k'.repeat(44));
-    const cookie = '__Host-desk-session=' + mintSession(key, 'e', Math.floor(Date.now() / 1000));
+    const cookie = sessionFor(IDENTITY);
     assert.equal((await front('POST', '/desk/auth/logout', from(13, { cookie }))).status, 403);
     assert.equal((await front('POST', '/desk/auth/logout', from(13, { cookie, 'sec-fetch-site': 'cross-site' }))).status, 403);
     assert.equal((await front('POST', '/desk/auth/logout', from(13, { cookie, 'sec-fetch-site': 'same-origin', origin: 'https://evil.example.test' }))).status, 403);

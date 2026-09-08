@@ -1,6 +1,6 @@
 #!/bin/bash
-# desk-paths grows three optional lines for the front; principal-exists is the
-# per-request row check the front's cookie identity needs.
+# desk-paths grows three optional lines for the front: the origin, the
+# providers directory and the session key file the front cannot start without.
 set -u
 here="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 pass=0; fail=0
@@ -51,14 +51,6 @@ bash "$here/desk/bin/desk-paths" >/dev/null 2>"$T/err"; rc=$?
 is  "rc 78" "$rc" "78"
 has "names the key" "$(cat "$T/err")" "DESK_ORIGIN"
 
-echo "== principal-exists =="
-printf 'NAME="Alice"\nTAILSCALE_LOGIN="alice@example.test"\n' > "$ROOT/principals.d/alice.conf"
-bash "$here/desk/bin/principal-exists" alice; is "alice exists" "$?" "0"
-bash "$here/desk/bin/principal-exists" bob;   is "bob does not" "$?" "1"
-bash "$here/desk/bin/principal-exists" '../x' 2>/dev/null; is "a path is a usage error" "$?" "64"
-bash "$here/desk/bin/principal-exists" 2>/dev/null; is "no argument is a usage error" "$?" "64"
-out="$(bash "$here/desk/bin/principal-exists" alice)"; is "prints nothing" "$out" ""
-STEWARD_ESTATE_ROOT="$T/nowhere" bash "$here/desk/bin/principal-exists" alice 2>/dev/null; is "no estate is 78" "$?" "78"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

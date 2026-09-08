@@ -263,10 +263,13 @@ What a visitor sees: `/desk/auth/login` lists the providers; after the
 provider's login the desk verifies the `id_token` (signature against the
 provider's JWKS, issuer, audience, expiry, nonce), maps
 `oidc:<slug>:<subject>` to a principal row through `desk/bin/principal-for-login`
-and sets `__Host-desk-session` for 12 hours. Every request re-checks that the
-principal row still exists (`desk/bin/principal-exists`), so removing a row
-logs the person out on their next click. `POST /desk/auth/logout` clears the
-cookie. `/desk/auth/*` is rate limited to 10 requests per minute per visitor.
+and sets `__Host-desk-session` for 12 hours. **The cookie carries that
+identity, not the principal**, and every request resolves it through
+`desk/bin/principal-for-login` again - so removing the person's `OIDC_LOGIN`
+word, moving it to another row, or deleting the row all log them out on their
+next click rather than at the cookie's expiry. `POST /desk/auth/logout` clears
+the cookie. `/desk/auth/*` is rate limited to 10 requests per minute per
+visitor.
 
 The front never reads the `tailscale-user-login` header; the tailnet socket
 never reads a cookie.
@@ -280,9 +283,9 @@ meet them:
   `STEWARD_ESTATE_ROOT` for the desk, not `STEWARD_ESTATE`, or the desk finds
   an origin and a key and no providers - and refuses to start for the
   providers it cannot see. The deploy sets `STEWARD_ESTATE_ROOT`.
-- The per-request `principal-exists` check is a synchronous spawn with a five
-  second timeout, and the desk is one process with both listeners in it. A
-  slow registry bridge therefore stalls the tailnet listener as well as the
+- The per-request `principal-for-login` lookup is a synchronous spawn with a
+  five second timeout, and the desk is one process with both listeners in it.
+  A slow registry bridge therefore stalls the tailnet listener as well as the
   front, for up to five seconds per request.
 
 ## What is deliberately absent
