@@ -21,6 +21,15 @@
 // answer: exactly one row, or no desk. A login two rows claim is refused, never
 // guessed - guessing there hands one person another person's desk.
 //
+// A BRIDGE THAT CANNOT ANSWER AT ALL IS NOT THIS DECISION. Missing, not
+// executable, hung past its timeout, exiting some code that is neither 1 nor
+// 65, or printing something that is not a slug - all four mean the desk is
+// completely down, and that is an outage: logged once, answered 503, never
+// folded into the silent 403 the policy path uses for an unknown or
+// ambiguous login. principal-for-login's own executable bit is also checked
+// once at startup, so a bridge that a deploy broke is caught before the first
+// request rather than on it.
+//
 // THE PATH IS THE GENERATIONS LAYOUT. The producer writes
 // <STEWARD_DESK_DIR>/gen-<epoch>/<principal>.json and then moves the symlink
 // <STEWARD_DESK_DIR>/current onto that directory, so this server reads
@@ -44,13 +53,18 @@
 // EXIT CODES
 //   64  A setting that cannot be honoured: STEWARD_DESK_MAX_AGE that is not a
 //       positive number (a silent fallback there would serve a stale desk
-//       forever), or a socket path the kernel would truncate (see below).
-//   78  desk/bin/desk-paths could not answer. A guessed path is a second desk
-//       nobody is reading, so there is no fallback.
+//       forever), a socket path the kernel would truncate (see below), a bind
+//       failure on the socket, or a socket path another live desk already
+//       holds (never stolen - see bindSocket below).
+//   78  desk/bin/desk-paths could not answer, or desk/bin/principal-for-login
+//       is not runnable (checked once at startup with accessSync). A guessed
+//       path, or a gate nobody could even ask, is a second desk nobody is
+//       reading, so there is no fallback for either.
 // =======================================================================
 
 import http from 'node:http';
-import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync } from 'node:fs';
+import net from 'node:net';
+import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync, accessSync, constants } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +73,17 @@ import { pageIndex, pageTeam, pageProject, pageSession } from './render.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOOKUP = join(HERE, 'bin', 'principal-for-login');
 const PATHS_BRIDGE = join(HERE, 'bin', 'desk-paths');
+
+// A BRIDGE THAT CANNOT EVEN RUN IS AN OUTAGE, CHECKED ONCE, NOT PER REQUEST.
+// A deploy that drops the executable bit, or omits the file, must fail loudly
+// at startup rather than presenting every viewer with "No desk for this
+// login." forever.
+try {
+  accessSync(LOOKUP, constants.X_OK);
+} catch {
+  console.error('desk: ' + LOOKUP + ' is missing or not executable; the desk cannot start');
+  process.exit(78);
+}
 
 function maxAge() {
   const raw = process.env.STEWARD_DESK_MAX_AGE;
@@ -144,20 +169,52 @@ const NO_MEASUREMENT = '<!doctype html><meta charset="utf-8"><title>Steward Desk
 // The shape a tailnet login has. Checked BEFORE the bridge is spawned, so a
 // hostile or malformed header value never becomes an argument to a process.
 const LOGIN_RE = /^[A-Za-z0-9._%+@-]{1,254}$/;
-// The shape a principal slug has, checked before it becomes a path segment.
-const SLUG_RE = /^[A-Za-z0-9._-]+$/;
+// The shape a principal slug has: registry_valid_name minus the leading `_`
+// the registry reserves for the operator file, so this is the registry's own
+// charset, not merely a superset that happens to be safe.
+const SLUG_RE = /^[a-z0-9-]+$/;
 
-function principalFor(login) { // exactly one, or nothing - never a guess
-  if (typeof login !== 'string' || !LOGIN_RE.test(login)) return null;
-  let slug;
-  try {
-    // stderr is captured, not inherited: an unknown login is an ordinary event
-    // on a shared tailnet, and the log must not fill with it.
-    slug = execFileSync(LOOKUP, [login], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  } catch {
-    return null; // rc 1 none, rc 65 two, rc 78 no estate - all of them: no desk
+// logBridgeOutage - the ONE line an outage gets. Never the header value's own
+// text: only its length, because that value is attacker-reachable and a log
+// is not the place to reflect it back. What an operator needs is what failed
+// and how - a code, a signal, an exit status - not the login that triggered it.
+function logBridgeOutage(login, e) {
+  const bits = [];
+  if (e) {
+    if (e.code) bits.push('code=' + e.code);
+    if (e.signal) bits.push('signal=' + e.signal);
+    if (typeof e.status === 'number') bits.push('rc=' + e.status);
+    if (!bits.length) bits.push('detail=' + String(e.message || e).slice(0, 120));
+  } else {
+    bits.push('unexpected-output');
   }
-  return slug && SLUG_RE.test(slug) ? slug : null;
+  const len = typeof login === 'string' ? login.length : 0;
+  console.error('desk: principal-for-login failed (' + bits.join(' ') + '), login length ' + len);
+}
+
+// principalFor - exactly one slug, or nothing, or an outage. Never a guess.
+//
+// rc 1 (no row claims the login) and rc 65 (two rows claim it) are the
+// POLICY path: an unknown or ambiguous login is an ordinary event on a shared
+// tailnet, so those two stay silent and become a 403. Everything else - the
+// bridge missing or not executable, the 5s timeout, an estate that stopped
+// loading (rc 78), any other exit code, or output that is not a bare slug -
+// means the desk is down, not that this viewer was refused, so it is logged
+// once and reported as an outage for the caller to turn into a 503.
+function principalFor(login) {
+  if (typeof login !== 'string' || !LOGIN_RE.test(login)) return { slug: null, outage: false };
+  let out;
+  try {
+    out = execFileSync(LOOKUP, [login], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    if (e && (e.status === 1 || e.status === 65)) return { slug: null, outage: false };
+    logBridgeOutage(login, e);
+    return { slug: null, outage: true };
+  }
+  const slug = out.trim();
+  if (slug && SLUG_RE.test(slug)) return { slug, outage: false };
+  logBridgeOutage(login, null);
+  return { slug: null, outage: true };
 }
 
 // loadSnapshot - the viewer's file out of the CURRENT generation, or null.
@@ -193,7 +250,8 @@ const server = http.createServer((req, res) => {
   // forwarding, so this value came from the tailnet's own identity and not from
   // the request. Nothing else - no query parameter, no cookie, no other header
   // - is consulted, so there is nothing else to spoof.
-  const principal = principalFor(req.headers['tailscale-user-login']);
+  const { slug: principal, outage } = principalFor(req.headers['tailscale-user-login']);
+  if (outage) return send(res, 503, NO_MEASUREMENT); // a dead gate is an outage, never a refusal
   if (!principal) return send(res, 403, FORBIDDEN);
 
   let path;
@@ -212,7 +270,8 @@ const server = http.createServer((req, res) => {
   let html;
   try {
     html = route[1](snap, route[0][1]);
-  } catch {
+  } catch (e) {
+    console.error('desk: render threw: ' + (e && e.message ? e.message : e));
     return send(res, 503, NO_MEASUREMENT); // a snapshot this renderer cannot read is not a page
   }
   if (html === null) return send(res, 404, NOT_FOUND); // same body as unknown: no oracle
@@ -221,15 +280,48 @@ const server = http.createServer((req, res) => {
 
 const cleanUp = () => { try { unlinkSync(SOCK); } catch { /* already gone */ } };
 
-mkdirSync(dirname(SOCK), { recursive: true });
-if (existsSync(SOCK)) unlinkSync(SOCK);
-server.listen(SOCK, () => {
-  // THE SOCKET IS THE OWNER'S ALONE. Tailscale Serve runs as the same account;
-  // every other account on the machine is refused by the filesystem, before a
-  // single byte of HTTP is parsed.
-  chmodSync(SOCK, 0o600);
-  console.error('desk: listening on ' + SOCK);
+server.on('error', (e) => {
+  console.error('desk: could not bind ' + SOCK + ': ' + (e && e.code ? e.code : e));
+  process.exit(64);
 });
+
+function listen() {
+  server.listen(SOCK, () => {
+    // THE SOCKET IS THE OWNER'S ALONE. Tailscale Serve runs as the same account;
+    // every other account on the machine is refused by the filesystem, before a
+    // single byte of HTTP is parsed. The umask is set before this call, so
+    // there is no window where the socket exists at a wider mode.
+    chmodSync(SOCK, 0o600);
+    console.error('desk: listening on ' + SOCK);
+  });
+}
+
+// bindSocket - a socket path that already exists is either STALE (the process
+// that made it is gone, and the file is a leftover) or LIVE (another desk is
+// answering on it right now). Only the stale case may be unlinked; stealing
+// the path out from under a live process would mean two desks momentarily
+// both believe they own it, and the file this server actually creates could
+// end up owned by neither. connect() is the only cheap way to tell them
+// apart: ECONNREFUSED (nobody home) means stale, a successful connect means
+// live.
+function bindSocket() {
+  mkdirSync(dirname(SOCK), { recursive: true });
+  if (!existsSync(SOCK)) return listen();
+  const probe = net.connect(SOCK);
+  probe.on('connect', () => {
+    probe.destroy();
+    console.error('desk: another desk holds the socket at ' + SOCK);
+    process.exit(64);
+  });
+  probe.on('error', () => {
+    // Not live: an unlink here races nothing, because nothing was listening.
+    try { unlinkSync(SOCK); } catch { /* already gone */ }
+    listen();
+  });
+}
+
+process.umask(0o077);
+bindSocket();
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => { server.close(); cleanUp(); process.exit(0); });

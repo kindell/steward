@@ -38,6 +38,12 @@ const snap = {
       domain: 'team', project: null, runtime: 'claude-code', host: 'h1', repo: 'repo',
       liveness: { state: 'unknown', measuredAt: '2026-09-08T00:00:00Z', ageSeconds: null },
       mcp: []
+    },
+    {
+      id: 's-3', slug: 'team-c', label: 'Idle One', owner: 'c', mine: false,
+      domain: 'team', project: null, runtime: 'codex', host: 'h1', repo: 'repo',
+      liveness: { state: 'not-running', measuredAt: '2026-09-08T00:00:00Z', ageSeconds: 300 },
+      mcp: []
     }
   ]
 };
@@ -140,6 +146,16 @@ test('a null age reads unknown, never null', () => {
   const h = pageSession(snap, 's-2');
   assert.ok(h.includes('unknown'));
   assert.ok(!h.includes('null'));
+});
+
+// T3's contract names three liveness states (running, unknown, not-running);
+// the other fixtures only ever exercise the first two, so this one session
+// carries the third and both places that show liveness are checked.
+test('a not-running session renders its own state, on its own page and on the index', () => {
+  const page = pageSession(snap, 's-3');
+  assert.ok(page.includes('not-running'));
+  const index = pageIndex(snap);
+  assert.ok(index.includes('not-running'));
 });
 
 test('the session page renders the mcp table by id, axis and source', () => {

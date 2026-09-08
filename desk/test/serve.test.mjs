@@ -19,12 +19,13 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
+const LOOKUP_BIN = fileURLToPath(new URL('../bin/principal-for-login', import.meta.url));
 
 // THE FIXTURE LIVES SOMEWHERE WITH A SHORT NAME, AND THAT IS NOT FUSSINESS. A
 // unix socket path is capped by sockaddr_un (104 bytes on macOS), and this
@@ -144,6 +145,50 @@ function runToExit(env) {
     p.stderr.setEncoding('utf8');
     p.stderr.on('data', (c) => { err += c; });
     p.on('close', (code) => resolve({ code, err }));
+  });
+}
+
+// spawnUp - a SECOND server instance, its own process, its own socket. Used
+// by the outage and socket-ownership tests below, which each need a server
+// that actually starts (unlike runToExit's callers) so a request can be sent
+// to it. Resolves once the socket exists; the caller reads stderr through
+// getErr() whenever it matters in the test.
+function spawnUp(env, sockPath) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(process.execPath, [SERVE], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.setEncoding('utf8');
+    p.stderr.on('data', (c) => { err += c; });
+    (async () => {
+      const up = await waitForSocket(sockPath, 5000);
+      if (!up) {
+        try { p.kill('SIGKILL'); } catch { /* already gone */ }
+        reject(new Error('server never bound ' + sockPath + '; stderr so far: ' + err));
+        return;
+      }
+      resolve({ proc: p, getErr: () => err });
+    })();
+  });
+}
+
+async function stopSpawned(handle) {
+  if (handle.proc.exitCode !== null) return;
+  const done = new Promise((r) => handle.proc.on('close', r));
+  handle.proc.kill('SIGTERM');
+  await Promise.race([done, sleep(2000)]);
+  if (handle.proc.exitCode === null) handle.proc.kill('SIGKILL');
+}
+
+function reqTo(sockPath, method, path, headers) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ socketPath: sockPath, path, method, headers: headers || {}, agent: false }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+    });
+    r.on('error', reject);
+    r.end();
   });
 }
 
@@ -342,7 +387,11 @@ test('a socket path the kernel would truncate is a refusal, never a bind', async
   const r = await runToExit(childEnv({ STEWARD_DESK_SOCK: tooLong }));
   assert.equal(r.code, 64);
   assert.ok(/socket path/.test(r.err), r.err);
-  assert.ok(!existsSync(tooLong));
+  // Nothing exists under the truncated prefix either - the property that
+  // actually matters, since !existsSync(tooLong) alone would hold no matter
+  // what the server did (a 120-character path could never exist regardless).
+  const truncated = tooLong.slice(0, 103);
+  assert.ok(!existsSync(truncated), 'nothing must be bound under the truncated prefix: ' + truncated);
 });
 
 test('an estate that does not load is a refusal, never a guessed path', async () => {
@@ -377,10 +426,133 @@ test('the default paths come from the bridge, not from a literal', async () => {
   }
 });
 
-test('the server writes nothing but one startup line to stderr', () => {
+// This pins the SILENT 403 PATH only: rc 1 (no such login) and rc 65 (two
+// rows claim it) are ordinary events on a shared tailnet and must never fill
+// a log. It is not a claim that this server never logs anything - the outage
+// tests further down use their own child processes and assert the opposite:
+// exactly one console.error line, every time the bridge cannot answer at all.
+// This shared child only ever exercises the policy path (unknown login,
+// ambiguous login, malformed header), so its stderr stays at the one startup
+// line for the whole suite.
+test('the server writes nothing but one startup line to stderr on the silent 403 path', () => {
   assert.equal(childErr.trim().split('\n').length, 1, childErr);
   assert.ok(childErr.includes(SOCK));
   assert.ok(!/SENTINEL|Error|error:/.test(childErr), childErr);
+});
+
+// ---------------------------------------------------------------------------
+// A DEAD GATE IS AN OUTAGE, NOT A REFUSAL. Everything below spawns its own
+// server, because the shared `child` above must stay on the silent 403 path
+// for the assertion just above to mean anything.
+
+test('a bridge that is not executable is an outage at startup, before a socket exists', async () => {
+  const mode = statSync(LOOKUP_BIN).mode;
+  chmodSync(LOOKUP_BIN, 0o600); // remove every exec bit
+  try {
+    const sock2 = join(T, 'noexec.sock');
+    const r = await runToExit(childEnv({ STEWARD_DESK_SOCK: sock2 }));
+    assert.equal(r.code, 78);
+    assert.ok(/principal-for-login/.test(r.err), r.err);
+    assert.equal(r.err.trim().split('\n').length, 1, r.err);
+    assert.ok(!existsSync(sock2), 'no socket must exist when the bridge cannot even run');
+  } finally {
+    chmodSync(LOOKUP_BIN, mode);
+  }
+});
+
+test('a bridge that fails on every request is a 503 outage, with one stderr line, never a silent 403', async () => {
+  // STEWARD_DESK_DIR and STEWARD_DESK_SOCK are given directly, so this second
+  // instance never calls desk-paths and starts fine even though the estate it
+  // is pointed at cannot be sourced - the failure only shows up once a
+  // request actually spawns principal-for-login.
+  const dir2 = join(T, 'outage-desk');
+  const gen2 = join(dir2, 'gen-1');
+  mkdirSync(gen2, { recursive: true });
+  writeFileSync(join(gen2, 'b.json'), JSON.stringify(snapshotFor('b', false, [sessionOne])));
+  symlinkSync('gen-1', join(dir2, 'current'));
+  const sock2 = join(T, 'outage.sock');
+  const env = childEnv({
+    STEWARD_DESK_DIR: dir2,
+    STEWARD_DESK_SOCK: sock2,
+    STEWARD_REGISTRY_LIB: join(T, 'no-such-registry.sh')
+  });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const stale = await get('/desk/', { 'tailscale-user-login': 'c@example.com' }); // main child, 503 no snapshot
+    assert.equal(stale.status, 503);
+
+    const r = await reqTo(sock2, 'GET', '/desk/', B);
+    assert.equal(r.status, 503);
+    assert.equal(r.body, stale.body, '503 must have one body, whatever the reason');
+
+    const err = handle.getErr();
+    const lines = err.trim().split('\n');
+    assert.equal(lines.length, 2, err); // the startup line, and exactly one outage line
+    assert.ok(/principal-for-login failed/.test(lines[1]), err);
+    assert.ok(/rc=78/.test(lines[1]), err);
+    assert.ok(!err.includes('b@example.com'), 'the header value itself must never be logged: ' + err);
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+test('rc 1 and rc 65 stay the silent 403, never the 503 outage body', async () => {
+  const unknown = await get('/desk/', { 'tailscale-user-login': 'x@example.com' });
+  const ambiguous = await get('/desk/', { 'tailscale-user-login': 'two@example.com' });
+  assert.equal(unknown.status, 403);
+  assert.equal(ambiguous.status, 403);
+  assert.equal(unknown.body, ambiguous.body);
+});
+
+test('a stale socket file is replaced, and the server binds behind it', async () => {
+  // A LEFTOVER, NOT A LIVE SOCKET. Node's own server.close() unlinks the
+  // path it was listening on, so a crashed process is the only real source
+  // of a dead socket file - not reproducible by listen-then-close here. A
+  // plain file at the path stands in for it: connect() fails on it exactly
+  // the way it fails on a genuinely dead socket (some error, never
+  // 'connect'), which is the only distinction serve.mjs's probe makes.
+  const sock2 = join(T, 'stale.sock');
+  writeFileSync(sock2, '');
+  assert.ok(existsSync(sock2), 'the leftover file must exist before the server starts');
+
+  // existsSync(sock2) is already true - it is our own placeholder file - so
+  // waitForSocket's file-presence check would pass instantly and prove
+  // nothing. Poll with a real request instead: the leftover file answers
+  // ENOTSOCK until the server has actually replaced it and is listening.
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2 });
+  const p = spawn(process.execPath, [SERVE], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  p.stderr.setEncoding('utf8');
+  p.stderr.on('data', (c) => { err += c; });
+  try {
+    let r = null;
+    const until = Date.now() + 5000;
+    while (Date.now() < until) {
+      try {
+        r = await reqTo(sock2, 'GET', '/desk/', B);
+        break;
+      } catch {
+        await sleep(25);
+      }
+    }
+    assert.ok(r, 'the server never came up behind the leftover file; stderr: ' + err);
+    assert.equal(r.status, 200);
+  } finally {
+    const done = new Promise((r2) => p.on('close', r2));
+    p.kill('SIGTERM');
+    await Promise.race([done, sleep(2000)]);
+    if (p.exitCode === null) p.kill('SIGKILL');
+  }
+});
+
+test('a socket path another desk holds is refused, and the first desk keeps serving', async () => {
+  // The shared `child` from `before` is still listening on SOCK - a second
+  // instance pointed at the exact same path must not steal it.
+  const r = await runToExit(childEnv());
+  assert.equal(r.code, 64);
+  assert.ok(/another desk holds the socket/.test(r.err), r.err);
+  assert.equal((await get('/desk/', B)).status, 200, 'the first desk must still answer');
 });
 
 test('the pages never name a path from the machine', async () => {
