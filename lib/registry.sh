@@ -1693,7 +1693,7 @@ registry_row_replace() {
   # thing this function exists to prevent.
   if [ ! -f "$final" ] || [ -L "$final" ]; then
     rm -f "$final/$(basename "$stage")" 2>/dev/null
-    echo "registry: refusing - $final is not a regular file (something raced the publish) - the previous $label row is at $backup, refusing" >&2
+    echo "registry: refusing - $final is not a regular file (something raced the publish) - the previous $label row is at $backup" >&2
     rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 70
   fi

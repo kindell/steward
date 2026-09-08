@@ -152,7 +152,7 @@ has "and says what it found" "$(cat "$T/err")" "not a regular file"
 is  "and nothing of ours is left inside the raced directory" \
     "$(ls -A "$ROOT/entities.d/acme.conf" 2>/dev/null | wc -l | tr -d ' ')" "0"
 is  "and the previous bytes are still readable where the refusal says" \
-    "$(sed -n 's/.*previous entity row is at \(.*\), refusing.*/\1/p' "$T/err" | xargs cat | grep -c 'MEMBERS="alice"')" "1"
+    "$(sed -n 's/.*previous entity row is at \(.*\)$/\1/p' "$T/err" | xargs cat | grep -c 'MEMBERS="alice"')" "1"
 chmod 700 "$ROOT/entities.d/acme.conf" 2>/dev/null
 rm -rf "$ROOT/entities.d/acme.conf"
 rm -f "$ROOT"/entities.d/.backup.* "$ROOT"/entities.d/.stage.*
