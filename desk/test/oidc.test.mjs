@@ -334,6 +334,12 @@ test('a chunked body past the cap is refused while it arrives, not after it', as
     clientSecretFile: '/f', discovery: origin + '/.well-known/openid-configuration'
   };
   await assert.rejects(discover(prov), /discovery for streamer answered a body over 65536 bytes/);
-  assert.ok(served < 4 * 1024 * 1024,
+  // THE BOUND IS GENEROUS ON PURPOSE. Abandoning the stream does not stop the
+  // sender mid-chunk: what the kernel and the client had already accepted
+  // before the cancel landed still counts, and that is 2.5 MiB on this box,
+  // steady across runs and under the whole suite's load. Eight is three times
+  // that and a quarter of what reading to the end would be, so the assertion
+  // separates the two answers without being a measurement of socket buffers.
+  assert.ok(served < 8 * 1024 * 1024,
     'the transfer must be abandoned at the cap, not read to the end: the provider sent ' + served + ' bytes');
 });
