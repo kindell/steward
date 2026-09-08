@@ -307,7 +307,10 @@ mate_err="$(cat "$T/err")"
 is  "17: the round still exits 0" "$rc" "0"
 has "17: the log names the code"  "$mate_err" "rc 78"
 has "17: and says it is a degradation, not a refusal" "$mate_err" "codex-session: DEGRADED"
-has "17: and that this session's own row reads"       "$mate_err" "this session's own row reads"
+# THE CLAIM IS A MEASUREMENT, so the assertion pins the measured wording rather
+# than the old assertion the sentence used to make.
+has "17: and that this session's own row was measured again" \
+    "$mate_err" "measured again just now, this session's own row still reads"
 has "17: the registry's own cause survives"           "$mate_err" "missing-account"
 has "17: the instructions say the list is incomplete" \
     "$(cat "$INSTR" 2>/dev/null)" "rc 78"

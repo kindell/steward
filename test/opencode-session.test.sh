@@ -392,8 +392,10 @@ check_eq "a colleague's refused identity does not stop the start" "$mates_rc" 0
 check_file_contains "the log names the code" "$mates_err" "rc 78"
 check_file_contains "and says it is a degradation, not a refusal" \
   "$mates_err" "opencode-session: DEGRADED"
-check_file_contains "and that this session's own row reads" \
-  "$mates_err" "this session's own row reads"
+# THE CLAIM IS A MEASUREMENT, so the assertion pins the measured wording rather
+# than the old assertion the sentence used to make.
+check_file_contains "and that this session's own row was measured again" \
+  "$mates_err" "measured again just now, this session's own row still reads"
 check_file_contains "the registry's own cause survives" "$mates_err" "missing-account"
 check_file_contains "the instructions say the list is incomplete" \
   "$instructions_file" "rc 78"

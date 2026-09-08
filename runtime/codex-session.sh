@@ -158,7 +158,16 @@ LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 _mates_rc=0
 PROJECT_MATES="$(registry_mates_summary "$NAME")" || _mates_rc=$?
 if [ "$_mates_rc" -eq 78 ]; then
-  echo "codex-session: DEGRADED - the register refused another row's identity claim while reading the mates (rc 78, cause above); this session's own row reads, so it starts with an incomplete mate list" >&2
+  # THE SENTENCE MEASURES INSTEAD OF ASSERTING. It used to state that this
+  # session's own row reads, which is an inference from the fail-closed load
+  # one screen up and not a fact about now: a conf can be rewritten between
+  # the two, and a restart that says "the fault is somebody else's" while its
+  # own row has just broken sends the operator to the wrong home.
+  # Subshelled because registry_load sources a conf into the shell that runs
+  # it - the same shape linux/hub/enroll uses for the same question.
+  _own_reads="still reads"
+  ( registry_load "$NAME" >/dev/null 2>&1 ) || _own_reads="does NOT read either, and needs repairing"
+  echo "codex-session: DEGRADED - the register refused another row's identity claim while reading the mates (rc 78, cause above); measured again just now, this session's own row $_own_reads, so it starts with an incomplete mate list" >&2
   PROJECT_MATES="unknown - the register refused a row's identity claim while reading the mates back (rc 78)"
 elif [ "$_mates_rc" -ne 0 ]; then
   echo "codex-session: DEGRADED - the mates could not be read back (rc $_mates_rc)" >&2
