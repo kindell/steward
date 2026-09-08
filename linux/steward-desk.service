@@ -33,6 +33,11 @@ Type=simple
 Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/env node %h/scripts/desk/serve.mjs
 Restart=on-failure
+# rc 64 is a deterministic configuration refusal (a socket path too long, a
+# bad STEWARD_DESK_MAX_AGE) - restarting changes nothing, so it is excluded.
+# rc 78 is deliberately NOT listed: the bridge or the estate can fail to load
+# transiently mid-deploy, and a slow retry beats a desk that stays dead.
+RestartPreventExitStatus=64
 RestartSec=5s
 
 [Install]

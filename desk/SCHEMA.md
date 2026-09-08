@@ -105,7 +105,9 @@ The axis decides who sees the asset at all:
 
 The deploy writes the files and the unit files, and daemon-reloads. It never
 enables and never starts anything - that verb is refused by design
-(`test/deploy-policy.test.sh`). So after the first rollout that carries the
+(`test/deploy-policy.test.sh`). The deploy writes the units and the desk files
+into every home on the host; only the hub account enables the units, and the
+other homes carry the files unused. So after the first rollout that carries the
 desk, the hub account turns it on once, by hand:
 
     loginctl enable-linger <the hub account>     # once per account, if not already

@@ -150,6 +150,10 @@ REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/install-user-jobs.sh"
 REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/desk/snapshot.sh scripts/desk/serve.mjs"
 REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/desk/bin/desk-paths scripts/desk/bin/principal-for-login"
 REQUIRED_TARGETS="$REQUIRED_TARGETS .config/systemd/user/steward-desk.service .config/systemd/user/steward-desk-snapshot.timer"
+# The producer calls the client for the mcp surface; without scripts/bin/steward
+# in the deployed home, that call fails and the desk's mcp section goes quietly
+# null on every principal.
+REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/bin/steward"
 [ -n "$ESTATE_MANIFEST" ] && REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/docs/tysta-fel.md"
 for required in $REQUIRED_TARGETS; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"
@@ -176,7 +180,17 @@ done
 # somebody's home, where nothing runs it and nothing prunes it - and the desk's
 # tests write sockets and generation directories. What belongs in a home is the
 # part a unit starts.
-leaked="$(grep -v '^#' "$M" | awk '$1 ~ /^desk\/test\// {print $1}')"
+# Matches desk/test itself (a registry-kind row, source is the directory with
+# no trailing slash) as well as anything under it - two case patterns, not one
+# regex, because bash 3.2's case is what the rest of this suite already uses.
+leaked=""
+while read -r src _target _mode _kind _extra; do
+  case "$src" in
+    ''|'#'*) continue ;;
+    desk/test|desk/test/*) leaked="$leaked $src" ;;
+  esac
+done < "$M"
+leaked="${leaked# }"
 [ -z "$leaked" ] && ok || bad "a desk test file is a manifest source: $leaked"
 
 # 9. THE TOOLS ARE NEVER PART OF WHAT THEY WRITE.

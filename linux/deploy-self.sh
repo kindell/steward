@@ -192,6 +192,8 @@ esac
 # and a green exit code hides that until somebody happens to read a page. Rc 70
 # says: the rollout happened, the view of it did not.
 if [ "$rc" -eq 0 ]; then
+  # bin/steward is a manifest source now (linux/deploy-manifest), so the
+  # cleanliness/provenance gate above already covers the file this line runs.
   bash "$PRODUCT/bin/steward" desk snapshot
   snap_rc=$?
   if [ "$snap_rc" -ne 0 ]; then

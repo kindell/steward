@@ -136,6 +136,15 @@ watch/bin/restart-session.sh     scripts/watch/bin/restart-session.sh 755  scrip
 # "no desk for this login" forever.
 #
 # NOT desk/test/ - see test/deploy-manifest.test.sh, which guards that.
+#
+# BIN/STEWARD SHIPS WITH THE DESK because the producer calls it: snapshot.sh
+# runs `steward mcp surface` for the mcp section of every principal's file. A
+# home without this row serves a desk whose mcp section is quietly null - the
+# call fails, the RAW document falls back to its default, and nothing marks
+# the page as degraded. It resolves lib/ and desk/ relative to its own parent,
+# so the deployed layout (scripts/bin/steward beside scripts/lib and
+# scripts/desk) is the layout it already expects.
+bin/steward                      scripts/bin/steward                  755  scripts
 desk/snapshot.sh                 scripts/desk/snapshot.sh             755  scripts
 desk/filter.jq                   scripts/desk/filter.jq               644  scripts
 desk/serve.mjs                   scripts/desk/serve.mjs               644  scripts
