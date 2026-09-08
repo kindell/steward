@@ -3021,10 +3021,23 @@ registry_resolve_session() { # <handle> -> key on stdout; rc 1 unknown/ambiguous
 # wants the question without the publication wraps this in its own subshell,
 # which is what the probe in lib/sessions.sh does.
 #
-# LOGIN_REQUIRED_FOR IS NOT IN HERE. registry_login_required_for is also read
-# from the estate and also refuses 78, but only for a row that carries no
-# LOGIN on a schema-6 estate - so it is a row-conditional gate, and a probe
-# that ran it would refuse for estates whose rows all load.
+# LOGIN_REQUIRED_FOR IS IN HERE, AND THE REASON IT WAS NOT IS A MEASUREMENT
+# NOBODY TOOK. This comment used to call registry_login_required_for a
+# row-conditional gate. It is not one: the reader answers rc 0 for an absent
+# key and rc 0 for a valid one, and refuses 78 only when the estate itself
+# names an invalid principal - an estate fault, identical for every row.
+# Measured: an empty value -> 0, "ann" -> 0, "Ann,bob" -> 78.
+#
+# WHAT IS ROW-CONDITIONAL IS THE REFUSAL, NOT THE READER. The no-LOGIN gate
+# further down this file fires only for a row that carries no LOGIN on a
+# schema-6 estate. That one stays where it is; the estate-wide question the
+# reader answers belongs up here with the other four.
+#
+# AND THE HOLE IT LEFT WAS THE ONE THIS FUNCTION EXISTS TO CLOSE, verbatim.
+# A schema-6 estate with LOGIN_REQUIRED_FOR="Ann,bob" and rows carrying no
+# LOGIN passed the probe and refused every row, so the sweep answered ok:true
+# with an empty session list - a machine where everything runs, reported as a
+# readable registry with nothing on it. Measured before the line below existed.
 # THE THREE VALUE READERS ARE ASKED THROUGH A COMMAND SUBSTITUTION, and that
 # is not a style choice. Each of them SOURCES the estate file, and a key the
 # file sets that the reader did not clear with `local` first becomes a GLOBAL
@@ -3039,6 +3052,7 @@ registry_estate_gates() {
   _gate_value="$(registry_hub_host)" || return 78
   _gate_value="$(registry_op_token_name)" || return 78
   _gate_value="$(registry_label_prefix)" || return 78
+  _gate_value="$(registry_login_required_for)" || return 78
 }
 
 registry_load() {

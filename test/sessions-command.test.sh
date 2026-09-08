@@ -372,6 +372,30 @@ noprefix_rc=$?
 is "a missing LABEL_PREFIX refuses" "$( [ "$noprefix_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$noprefix" | jq -r '.ok')" "false"
 has "and the reason names the key" "$(printf '%s' "$noprefix" | jq -r '.reason')" "LABEL_PREFIX"
+
+# AND THE FIFTH GATE, WHICH THE PROBE USED TO SKIP ON A WRONG PREMISE.
+# registry_login_required_for was called row-conditional and left out of the
+# gate set. It is not: it answers rc 0 for an absent key and for a valid one,
+# and refuses 78 only when the estate names an invalid principal - an estate
+# fault that hits every row alike. The state below is finding 1 verbatim, one
+# key further along: a schema-6 estate whose LOGIN_REQUIRED_FOR is malformed
+# and rows that carry no LOGIN. The probe answered 0, every row refused 78,
+# and the sweep reported ok:true with an empty session list - a machine where
+# everything runs, described as a readable registry with nothing on it.
+#
+# SCHEMA_VERSION IS PART OF THE FIXTURE, not decoration: the row refusal this
+# pairs with only exists at schema 6, so an estate without the line would let
+# the row load and measure nothing.
+printf 'SCHEMA_VERSION="6"\nLABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\nLOGIN_REQUIRED_FOR="Ann,bob"\n' \
+  > "$FX5/estate/steward.conf"
+badlrf="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEWARD_VIEWER="a" \
+          env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>/dev/null)"
+badlrf_rc=$?
+is "a malformed LOGIN_REQUIRED_FOR refuses" "$( [ "$badlrf_rc" -ne 0 ] && echo yes || echo no )" "yes"
+is "and ok is false" "$(printf '%s' "$badlrf" | jq -r '.ok')" "false"
+has "and the reason names the key" "$(printf '%s' "$badlrf" | jq -r '.reason')" "LOGIN_REQUIRED_FOR"
+has "and blames the estate rather than the row" \
+    "$(printf '%s' "$badlrf" | jq -r '.reason')" "the estate itself does not read"
 rm -rf "$FX5"
 
 echo "== a legitimate host gap is said ONCE per row per run =="
