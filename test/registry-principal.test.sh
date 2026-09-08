@@ -41,6 +41,27 @@ is  "and prints no slug" "$(cat "$T/out")" ""
 has "and names both rows" "$(cat "$T/err")" "a2"
 rm -f "$ROOT/principals.d/a2.conf"
 
+echo "== TAILSCALE_LOGIN is a LIST: one human can carry several tailnet logins =="
+printf 'NAME="Dee"\nTAILSCALE_LOGIN="d1@example.com d2@example.com"\n' > "$ROOT/principals.d/d.conf"
+registry_principal_load d; rc=$?
+is  "a row with two logins loads" "$rc" "0"
+is  "and exposes both words" "$PRINCIPAL_TAILSCALE_LOGIN" "d1@example.com d2@example.com"
+is  "the first word resolves via for_login" "$(registry_principal_for_login d1@example.com)" "d"
+is  "the second word resolves via for_login" "$(registry_principal_for_login d2@example.com)" "d"
+
+printf 'NAME="Empty"\nTAILSCALE_LOGIN=""\n' > "$ROOT/principals.d/empty.conf"
+registry_principal_load empty 2>"$T/err"; rc=$?
+is  "an empty login list is refused" "$rc" "1"
+
+printf 'NAME="Kay"\nTAILSCALE_LOGIN="K1@Example.com k2@EXAMPLE.com"\n' > "$ROOT/principals.d/k.conf"
+registry_principal_load k
+is  "each word is lower-cased on load" "$PRINCIPAL_TAILSCALE_LOGIN" "k1@example.com k2@example.com"
+is  "the lookup is case-insensitive per word" "$(registry_principal_for_login K2@EXAMPLE.COM)" "k"
+
+printf 'NAME="Bad2"\nTAILSCALE_LOGIN="ok@example.com not-a-login"\n' > "$ROOT/principals.d/bad2.conf"
+registry_principal_load bad2 2>"$T/err"; rc=$?
+is  "a row with one malformed word among valid ones is refused" "$rc" "1"
+
 # the verb
 out="$(bash "$here/bin/steward" registry principal add c --name Cy --tailscale-login c@example.com 2>&1)"; rc=$?
 is  "the verb writes a row" "$rc" "0"
@@ -50,6 +71,54 @@ is  "a duplicate login is refused before writing" "$rc" "65"
 is  "and no row was written" "$(ls "$ROOT/principals.d" | grep -c again)" "0"
 out="$(bash "$here/bin/steward" registry principal add bad --name Bad --tailscale-login 'not a login' 2>&1)"; rc=$?
 is  "a malformed login is refused" "$rc" "64"
+
+echo "== the verb: --tailscale-login is a repeatable, space-splittable LIST =="
+out="$(bash "$here/bin/steward" registry principal add multi --name Multi \
+  --tailscale-login m1@example.com --tailscale-login m2@example.com 2>&1)"; rc=$?
+is  "the verb accepts a repeated --tailscale-login flag" "$rc" "0"
+has "the row carries both logins" "$(cat "$ROOT/principals.d/multi.conf")" 'TAILSCALE_LOGIN="m1@example.com m2@example.com"'
+
+out="$(bash "$here/bin/steward" registry principal add multi2 --name Multi2 \
+  --tailscale-login 'm3@example.com m4@example.com' 2>&1)"; rc=$?
+is  "the verb accepts one space-separated value" "$rc" "0"
+has "producing the same row shape as the repeated flag" \
+    "$(cat "$ROOT/principals.d/multi2.conf")" 'TAILSCALE_LOGIN="m3@example.com m4@example.com"'
+
+out="$(bash "$here/bin/steward" registry principal add dedupe --name Dedupe \
+  --tailscale-login dd@example.com --tailscale-login dd@example.com 2>&1)"; rc=$?
+is  "a login repeated within the row is de-duplicated" "$rc" "0"
+has "writing it once" "$(cat "$ROOT/principals.d/dedupe.conf")" 'TAILSCALE_LOGIN="dd@example.com"'
+
+out="$(bash "$here/bin/steward" registry principal add nologins --name NoLogins 2>&1)"; rc=$?
+is  "the verb requires at least one --tailscale-login" "$rc" "64"
+
+out="$(bash "$here/bin/steward" registry principal add again2 --name Again2 --tailscale-login m1@example.com 2>&1)"; rc=$?
+is  "a second row carrying a word from another row is refused before writing" "$rc" "65"
+is  "and no row was written" "$(ls "$ROOT/principals.d" | grep -c again2)" "0"
+
+out="$(bash "$here/bin/steward" registry principal add bad3 --name Bad3 \
+  --tailscale-login 'ok2@example.com not-a-login' 2>&1)"; rc=$?
+is  "a malformed word among valid ones is rc 64" "$rc" "64"
+is  "and nothing was written" "$(ls "$ROOT/principals.d" | grep -c bad3)" "0"
+
+# the under-lock validator also refuses a collision on a NON-FIRST word — same
+# bypass-the-pre-check technique as the ATOMIC gate below.
+_DUP3='NAME="Raced2"
+TAILSCALE_LOGIN="other@example.com m1@example.com"'
+_rc=0
+( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"
+  . "$here/lib/registry.sh"
+  eval "$(sed -n '/^_principal_validate_row()/,/^}/p' "$here/bin/steward")"
+  export _REGW_EXPECT_NAME="Raced2" _REGW_EXPECT_TAILSCALE_LOGIN="other@example.com m1@example.com" _REGW_EXPECT_DESK_READ_ALL=""
+  registry_principal_write raced2 "$_DUP3" _principal_validate_row ) >/dev/null 2>&1 || _rc=$?
+is  "the under-lock validator refuses when ANY word collides, not only the first" \
+    "$( [ "$_rc" -ne 0 ] && echo refused || echo passed )" "refused"
+if [ -e "$ROOT/principals.d/raced2.conf" ]; then
+  bad "no row with a colliding word must be published" "found $ROOT/principals.d/raced2.conf"
+else
+  ok "no row with a colliding word published"
+fi
+rm -f "$ROOT/principals.d/raced2.conf"
 
 echo "== ATOMIC gate: the login-uniqueness check runs INSIDE the write lock =="
 # A parallel race is non-reproducible on demand; the deterministic proof is
@@ -83,7 +152,11 @@ echo "== PARALLEL sanity — a real race never yields more than one winner =="
 # the SAME NEW login both pass it before either has staged anything. Fire a
 # 20-way race at one login across 20 distinct slugs: at most one row for that
 # login may land, exactly one call may succeed, and every loser must be
-# refused specifically as a duplicate (rc 65) — not some other failure.
+# refused as a duplicate — rc 65 if the pre-check caught it, rc 70 if only
+# the under-lock recheck did (no remapping between the two, per the
+# controller ruling on the earlier fix round: registry_row_write hardcodes
+# 70 for every validate_fn failure, the same as every other validator in
+# this file).
 for i in $(seq 1 20); do
   ( r=0; bash "$here/bin/steward" registry principal add "raced$i" --name Raced \
       --tailscale-login raced-shared@example.com >/dev/null 2>&1 || r=$?
@@ -97,13 +170,13 @@ _zeros=0; _bad=0
 for i in $(seq 1 20); do
   v="$(cat "$T/rc_$i" 2>/dev/null)"
   case "$v" in
-    0)  _zeros=$((_zeros+1)) ;;
-    65) : ;;
-    *)  _bad=$((_bad+1)) ;;
+    0)     _zeros=$((_zeros+1)) ;;
+    65|70) : ;;
+    *)     _bad=$((_bad+1)) ;;
   esac
 done
 is "exactly one concurrent add succeeds" "$_zeros" "1"
-is "every loser is refused specifically as a duplicate (rc 65)" "$_bad" "0"
+is "every loser is refused as a duplicate (rc 65 or 70)" "$_bad" "0"
 grep -l 'TAILSCALE_LOGIN="raced-shared@example.com"' "$ROOT"/principals.d/*.conf 2>/dev/null | xargs rm -f 2>/dev/null || true
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"

@@ -1506,11 +1506,15 @@ registry_account_slug_available() {
 
 # ── PRINCIPALS — one row per HUMAN, across hosts and accounts ───────────────
 # accounts.d names a (principal, host) pair; the human behind it has no row
-# of their own, and the one identity a tailnet hands us — the login — belongs
-# to the human, not to a host. principals.d is that row. The desk gate maps a
-# login to exactly one principal here; two rows with one login are refused
-# by the writer and by the lookup, because a gate that picks one of two is a
-# gate that can be steered.
+# of their own, and the identities a tailnet hands us — the logins — belong
+# to the human, not to a host. principals.d is that row. A human can have
+# more than one tailnet login (measured on the real tailnet: one person, three
+# login names), so TAILSCALE_LOGIN is a LIST, the same space-separated idiom
+# as MEMBERS and MCP_ASSETS (_registry_words). The desk gate maps a login word
+# to exactly one principal here; uniqueness holds PER WORD across every row —
+# two rows sharing one login word, in any position, are refused by the writer
+# and by the lookup, because a gate that picks one of two is a gate that can
+# be steered.
 registry_principal_dir() {
   if [ -n "${STEWARD_PRINCIPAL_DIR:-}" ]; then printf '%s\n' "$STEWARD_PRINCIPAL_DIR"; return 0; fi
   printf '%s\n' "$(_registry_estate_root)/principals.d"
@@ -1522,13 +1526,23 @@ _registry_login_valid() {
 }
 
 # registry_principal_load <slug>: sets PRINCIPAL_ID, PRINCIPAL_NAME,
-# PRINCIPAL_TAILSCALE_LOGIN (lower-cased), PRINCIPAL_DESK_READ_ALL ('yes' or
-# ''). rc 1 on any missing/invalid field, matching registry_entity_load's own
-# contract.
+# PRINCIPAL_TAILSCALE_LOGIN (the row's login words, each lower-cased, joined
+# back with single spaces), PRINCIPAL_DESK_READ_ALL ('yes' or ''). rc 1 on
+# any missing/invalid field, matching registry_entity_load's own contract.
 #
 # RESET BEFORE SOURCING — the same leak-guard pattern registry_account_load
 # follows: a caller that gets rc 1 for a missing or invalid principal must
 # not still see the last principal that loaded successfully.
+#
+# TAILSCALE_LOGIN IS SPLIT WITH _registry_words, THE SAME FUNCTION MEMBERS
+# AND MCP_ASSETS USE — an unquoted split-and-glob would let an asterisk in
+# the conf become a pathname (the lesson _registry_words' own comment
+# records), and this field is exactly as untrusted as those. EVERY WORD IS
+# VALIDATED, not just the whole string: a row that mixes one real login with
+# one malformed word must be refused, not silently truncated to the valid
+# prefix. An empty list is invalid — a principal with no login at all cannot
+# be matched by the desk gate, so it is refused the same way a missing field
+# is.
 registry_principal_load() {
   PRINCIPAL_ID=""; PRINCIPAL_NAME=""; PRINCIPAL_TAILSCALE_LOGIN=""; PRINCIPAL_DESK_READ_ALL=""
   local slug="${1:-}" d f
@@ -1544,7 +1558,16 @@ registry_principal_load() {
     echo "registry: $slug.conf missing NAME" >&2
     return 1
   fi
-  if ! _registry_login_valid "$TAILSCALE_LOGIN"; then
+  _registry_words "$TAILSCALE_LOGIN"
+  local w normalized=""
+  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    if ! _registry_login_valid "$w"; then
+      echo "registry: $slug.conf has an invalid TAILSCALE_LOGIN word '$(registry_printable "$w")'" >&2
+      return 1
+    fi
+    normalized="${normalized:+$normalized }$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')"
+  done
+  if [ -z "$normalized" ]; then
     echo "registry: $slug.conf missing/invalid TAILSCALE_LOGIN" >&2
     return 1
   fi
@@ -1553,19 +1576,28 @@ registry_principal_load() {
     *) echo "registry: $slug.conf DESK_READ_ALL must be yes or absent" >&2; return 1 ;;
   esac
   PRINCIPAL_ID="$slug"; PRINCIPAL_NAME="$NAME"
-  PRINCIPAL_TAILSCALE_LOGIN="$(printf '%s' "$TAILSCALE_LOGIN" | tr '[:upper:]' '[:lower:]')"
+  PRINCIPAL_TAILSCALE_LOGIN="$normalized"
   PRINCIPAL_DESK_READ_ALL="$DESK_READ_ALL"
 }
 
 # registry_principal_for_login <login> -> slug on stdout.
-# rc 0 exactly one row; rc 1 none; rc 65 more than one (both named on stderr).
+# rc 0 exactly one row carries the login as one of its words; rc 1 none;
+# rc 65 more than one (both named on stderr).
+#
+# THE MEMBERSHIP TEST IS SPACE-DELIMITED CONTAINMENT AGAINST THE ALREADY
+# NORMALISED LIST — the same idiom _registry_mcp_collect and lib/visibility.sh's
+# MEMBERS check use — PRINCIPAL_TAILSCALE_LOGIN is single-space-joined by
+# registry_principal_load, so wrapping it (and the wanted login) in one space
+# on each side and matching `*" $want "*` finds the word without matching
+# inside a longer one.
 #
 # EVERY ROW IS LOADED IN A SUBSHELL: registry_principal_load's own PRINCIPAL_*
 # globals are read back out of the subshell through the environment it left
 # behind, but a hostile conf sourced deep inside registry_principal_load must
 # never be able to reach or overwrite this function's own locals (want, hits,
 # slug) the way registry_account_slug_available's comment describes for its
-# own scan.
+# own scan. The containment test runs INSIDE the same subshell, for the same
+# reason.
 registry_principal_for_login() {
   local want d f hits="" slug
   want="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
@@ -1575,7 +1607,8 @@ registry_principal_for_login() {
   for f in "$d"/*.conf; do
     [ -e "$f" ] || continue
     slug="$(basename "$f" .conf)"
-    if ( registry_principal_load "$slug" >/dev/null 2>&1 && [ "$PRINCIPAL_TAILSCALE_LOGIN" = "$want" ] ); then
+    if ( registry_principal_load "$slug" >/dev/null 2>&1 && \
+         case " $PRINCIPAL_TAILSCALE_LOGIN " in *" $want "*) true ;; *) false ;; esac ); then
       hits="$hits $slug"
     fi
   done

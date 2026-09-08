@@ -1118,10 +1118,13 @@ _registry_validate_account_stage() {
 # TAILSCALE_LOGIN and DESK_READ_ALL equal what cmd_registry_principal_add
 # meant to write, byte for byte.
 #
-# THEN ASKS THE REGISTER-WIDE QUESTION, UNDER THE LOCK — same shape as
-# _registry_validate_session_stage's (ACCOUNT,SLUG) recheck above. The verb's
-# own pre-check (registry_principal_for_login, called before any lock is
-# taken) is a FAST PATH ONLY: two concurrent `principal add` calls for the
+# THEN ASKS THE REGISTER-WIDE QUESTION, UNDER THE LOCK, PER WORD — same shape
+# as _registry_validate_session_stage's (ACCOUNT,SLUG) recheck above.
+# TAILSCALE_LOGIN is a list; uniqueness holds per word, not per row, so every
+# word of the staged row's list is checked against the register in turn — a
+# row may not carry a login that any OTHER row carries, in any position. The
+# verb's own pre-check (registry_principal_for_login, called before any lock
+# is taken) is a FAST PATH ONLY: two concurrent `principal add` calls for the
 # SAME NEW login can both pass it before either has staged anything. This is
 # the GUARANTEE — it runs after registry_row_write has taken
 # principals.d/.write.lock, so a concurrent winner's row (if any) is
@@ -1130,6 +1133,12 @@ _registry_validate_account_stage() {
 # steps 6-8). The staged file's name is `.stage.XXXXXX`, never `<slug>.conf`,
 # so registry_principal_for_login's *.conf scan never matches the row being
 # written — any hit it finds here is necessarily some OTHER principal.
+#
+# THE RC A REFUSAL REPORTS HERE IS 70, NOT 65 — registry_row_write hardcodes
+# 70 for every validate_fn failure (its own step 4), the same as every other
+# validator in this file (the session-add verb's under-lock refusal is left
+# at 70 too). 65 means "refused before the lock" (the verb's pre-check);
+# 70 means "refused under it" (here). No remapping between the two.
 _principal_validate_row() {
   local file="$1" NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL=""
   # shellcheck source=/dev/null
@@ -1146,18 +1155,21 @@ _principal_validate_row() {
     echo "registry: staged principal file's DESK_READ_ALL does not match what was written: $file" >&2
     return 70
   fi
-  local other rc2
-  other="$(registry_principal_for_login "$TAILSCALE_LOGIN" 2>/dev/null)"; rc2=$?
-  case "$rc2" in
-    0)
-      echo "registry: the login already belongs to principal '$other' — one login, one human — refusing" >&2
-      return 70
-      ;;
-    65)
-      echo "registry: the login already maps to more than one principal — refusing to add a third — one login, one human" >&2
-      return 70
-      ;;
-  esac
+  _registry_words "$TAILSCALE_LOGIN"
+  local w other rc2
+  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    other="$(registry_principal_for_login "$w" 2>/dev/null)"; rc2=$?
+    case "$rc2" in
+      0)
+        echo "registry: the login '$w' already belongs to principal '$other' — one login, one human — refusing" >&2
+        return 70
+        ;;
+      65)
+        echo "registry: the login '$w' already maps to more than one principal — refusing to add a third — one login, one human" >&2
+        return 70
+        ;;
+    esac
+  done
   return 0
 }
 
@@ -1712,33 +1724,40 @@ cmd_registry_account_add() {
   return 0
 }
 
-# cmd_registry_principal_add <slug> --name N --tailscale-login L [--read-all] [--json]
+# cmd_registry_principal_add <slug> --name N --tailscale-login L [--tailscale-login L2 ...] [--read-all] [--json]
 #
 # Writes principals.d/<slug>.conf through the same shared serializer and
 # writer transaction as team/client/account add — registry_principal_write is
 # a thin wrapper over the ONE writer core (registry_row_write, lib/registry.sh),
 # not a second implementation.
 #
-# THE LOGIN MUST BE UNIQUE ACROSS THE REGISTER. Two principal rows sharing
-# one tailnet login is exactly the ambiguity registry_principal_for_login
-# refuses at lookup time (rc 65) — checking it HERE, before anything is
-# staged, means the ORDINARY case (no race, just a duplicate) is refused
-# with a useful message naming the other principal instead of a generic
-# "already exists".
+# --tailscale-login MAY BE REPEATED, the same shape as --member on
+# `registry team add`, and a single value may itself carry several
+# space-separated words — both forms are collected into one list, every word
+# validated individually, and duplicates within the row collapsed before the
+# write (so `--tailscale-login a --tailscale-login a` and a bare `a` both
+# write one word).
+#
+# EVERY LOGIN MUST BE UNIQUE ACROSS THE REGISTER, PER WORD. Two principal
+# rows sharing one login word — in any position — is exactly the ambiguity
+# registry_principal_for_login refuses at lookup time (rc 65) — checking it
+# HERE, before anything is staged, means the ORDINARY case (no race, just a
+# duplicate) is refused with a useful message naming the other principal
+# instead of a generic "already exists".
 #
 # THIS CHECK IS THE FAST PATH, NOT THE GUARANTEE. It runs before
 # registry_row_write ever takes principals.d/.write.lock, so two concurrent
-# `principal add` calls for the SAME NEW login can both pass it before
-# either has staged anything. THE GUARANTEE is `_principal_validate_row`
-# (above), the validate_fn registry_principal_write calls WHILE THE LOCK IS
-# HELD — see its own comment for why that timing makes the recheck
-# reliable, not merely "narrower window". registry_row_write maps every
-# validate_fn failure to rc 70 regardless of why it refused; the case below
-# re-maps THIS refusal (recognised by its shared wording) back to 65 so a
-# race caught under the lock is indistinguishable, to the caller, from the
-# ordinary duplicate this pre-check catches.
+# `principal add` calls sharing a login word can both pass it before either
+# has staged anything. THE GUARANTEE is `_principal_validate_row` (above),
+# the validate_fn registry_principal_write calls WHILE THE LOCK IS HELD —
+# see its own comment for why that timing makes the recheck reliable, not
+# merely "narrower window". A refusal caught here is rc 65; a refusal caught
+# under the lock surfaces as rc 70 (registry_row_write's own hardcoded rc for
+# every validate_fn failure — no remapping between the two, see the comment
+# above _principal_validate_row).
 cmd_registry_principal_add() {
-  local want_json="" slug="" name="" login="" read_all="" a
+  local want_json="" slug="" name="" read_all="" a
+  local logins=()
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
 
   while [ $# -gt 0 ]; do
@@ -1749,7 +1768,7 @@ cmd_registry_principal_add() {
         name="$2"; shift 2 ;;
       --tailscale-login)
         [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login needs a value" 64; return 64; }
-        login="$2"; shift 2 ;;
+        logins+=("$2"); shift 2 ;;
       --read-all)
         read_all="yes"; shift ;;
       -*)
@@ -1768,21 +1787,49 @@ cmd_registry_principal_add() {
     return 64
   fi
   [ -n "$name" ] || { _reg_fail "$want_json" "steward registry principal add: --name is required" 64; return 64; }
+  [ "${#logins[@]}" -gt 0 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login is required" 64; return 64; }
 
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
-  if ! _registry_login_valid "$login"; then
-    _reg_fail "$want_json" "steward registry principal add: --tailscale-login must look like user@domain" 64
-    return 64
-  fi
+  # COLLECT, SPLIT, VALIDATE EVERY WORD, DE-DUPLICATE — every value collected
+  # from every --tailscale-login occurrence is joined with a space and
+  # re-split through _registry_words (the same MEMBERS/MCP_ASSETS idiom), so
+  # a value that itself carries several words behaves exactly like several
+  # occurrences of the flag. A malformed word anywhere refuses before
+  # anything is staged.
+  local joined="" one
+  for one in "${logins[@]}"; do
+    joined="${joined:+$joined }$one"
+  done
+  _registry_words "$joined"
+  local w lw seen="" login_words=()
+  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    if ! _registry_login_valid "$w"; then
+      _reg_fail "$want_json" "steward registry principal add: --tailscale-login '$(registry_printable "$w")' must look like user@domain" 64
+      return 64
+    fi
+    lw="$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')"
+    case " $seen " in *" $lw "*) continue ;; esac
+    seen="$seen $lw"
+    login_words+=("$lw")
+  done
+  [ "${#login_words[@]}" -gt 0 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login is required" 64; return 64; }
+  local login_joined=""
+  for w in "${login_words[@]}"; do
+    login_joined="${login_joined:+$login_joined }$w"
+  done
 
-  # DUPLICATE, BEFORE THE WRITE — see the comment above this function.
-  local other; other="$(registry_principal_for_login "$login" 2>/dev/null)"
-  if [ -n "$other" ]; then
-    _reg_fail "$want_json" "steward registry principal add: the login already belongs to principal '$other' — one login, one human" 65
-    return 65
-  fi
+  # DUPLICATE, BEFORE THE WRITE, PER WORD — see the comment above this
+  # function.
+  local other
+  for w in "${login_words[@]}"; do
+    other="$(registry_principal_for_login "$w" 2>/dev/null)"
+    if [ -n "$other" ]; then
+      _reg_fail "$want_json" "steward registry principal add: the login '$w' already belongs to principal '$other' — one login, one human" 65
+      return 65
+    fi
+  done
 
   # See the matching comment in cmd_registry_team_add: _registry_emit_kv's
   # own refusal is CAPTURED, never left to leak onto whatever real stderr
@@ -1795,7 +1842,7 @@ cmd_registry_principal_add() {
     _reg_fail "$want_json" "steward registry principal add: --name contains a control character or newline" 64
     return 64
   fi
-  kv_login="$(_registry_emit_kv TAILSCALE_LOGIN "$login" 2>"$kv_err")"; rc=$?
+  kv_login="$(_registry_emit_kv TAILSCALE_LOGIN "$login_joined" 2>"$kv_err")"; rc=$?
   rm -f "$kv_err"
   if [ "$rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry principal add: --tailscale-login contains a control character or newline" 64
@@ -1803,7 +1850,7 @@ cmd_registry_principal_add() {
   fi
 
   _REGW_EXPECT_NAME="$name"
-  _REGW_EXPECT_TAILSCALE_LOGIN="$login"
+  _REGW_EXPECT_TAILSCALE_LOGIN="$login_joined"
   _REGW_EXPECT_DESK_READ_ALL="$read_all"
   local rw_err; rw_err="$(mktemp)" || {
     _reg_fail "$want_json" "steward registry principal add: cannot create a temporary file" 70
@@ -1820,14 +1867,10 @@ cmd_registry_principal_add() {
   rc=$?
   local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
   if [ "$rc" -ne 0 ]; then
-    # registry_row_write hardcodes rc 70 for every validate_fn refusal — see
-    # its step 4. _principal_validate_row's duplicate-login refusal (caught
-    # under the lock) and this function's own pre-check above share the
-    # phrase "one login, one human"; re-map on it so both paths report the
-    # SAME rc for the SAME kind of refusal.
-    case "$rw_msg" in
-      *"one login, one human"*) rc=65 ;;
-    esac
+    # registry_row_write hardcodes rc 70 for every validate_fn refusal (its
+    # own step 4) — reported as-is, not remapped: 65 means refused before
+    # the lock (the pre-check above), 70 means refused under it (see the
+    # comment above _principal_validate_row).
     _reg_fail "$want_json" "steward registry principal add: $rw_msg" "$rc"
     return "$rc"
   fi
@@ -1835,10 +1878,10 @@ cmd_registry_principal_add() {
   local file; file="$(registry_principal_dir)/$slug.conf"
   if [ -n "$want_json" ]; then
     local ra_bool=false; [ -n "$read_all" ] && ra_bool=true
-    _json ok true kind principal slug "$slug" name "$name" tailscaleLogin "$login" readAll "$ra_bool" file "$file"
+    _json ok true kind principal slug "$slug" name "$name" tailscaleLogin "$login_joined" readAll "$ra_bool" file "$file"
   else
     printf 'steward: wrote principals.d/%s.conf (principal %s, login %s%s)\n' \
-      "$slug" "$name" "$login" "$( [ -n "$read_all" ] && printf ', read-all' )"
+      "$slug" "$name" "$login_joined" "$( [ -n "$read_all" ] && printf ', read-all' )"
   fi
   return 0
 }
