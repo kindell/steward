@@ -291,7 +291,7 @@ cat > "$T/raw3.json" <<'EOF'
               "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
               "mcp":[{"id":"x","name":"X","axis":"other","source":"whatever"}]}]}
 EOF
-out3="$(jq --arg viewer a --argjson readAll true --argjson memberOf '[]' \
+out3="$(jq --arg viewer a --argjson readAll true --argjson memberOf '[]' --argjson visible '[]' \
            -f "$here/desk/filter.jq" "$T/raw3.json")"
 is  "an unknown axis is dropped even for the owner/readAll viewer" \
     "$(printf '%s' "$out3" | jq '.sessions[0].mcp|length')" "0"
@@ -316,9 +316,9 @@ cat > "$T/raw4.json" <<'EOF'
                      {"id":"tool","name":"tool","axis":"project","source":"work"},
                      {"id":"other-tool","name":"other-tool","axis":"project","source":"other"}]}]}
 EOF
-out4b="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+out4b="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' --argjson visible '["s1"]' \
             -f "$here/desk/filter.jq" "$T/raw4.json")"
-out4a="$(jq --arg viewer a --argjson readAll true  --argjson memberOf '[]' \
+out4a="$(jq --arg viewer a --argjson readAll true  --argjson memberOf '[]' --argjson visible '[]' \
             -f "$here/desk/filter.jq" "$T/raw4.json")"
 is  "b's work-a mcp axes read exactly entity project" \
     "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")')" \
@@ -349,7 +349,7 @@ cat > "$T/raw5.json" <<'EOF'
               "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
               "mcp":[{"id":"orphan","name":"orphan","axis":"project","source":null}]}]}
 EOF
-rc5="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+rc5="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' --argjson visible '["s1"]' \
           -f "$here/desk/filter.jq" "$T/raw5.json" >"$T/out5.json" 2>"$T/err5b"; echo $?)"
 is  "the snapshot succeeds with a null-source project asset" "$rc5" "0"
 [ "$rc5" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err5b")"
@@ -498,6 +498,71 @@ is  "and no asset anywhere in the file" \
     "$(jq '[.sessions[]?.mcp[]?]|length' "$D7/current/c.json")" "0"
 is  "a row with no ACCOUNT falls back to OWNER" \
     "$(jq -r '.sessions[]|select(.slug=="plain-c")|.owner' "$D7/current/_operator.json")" "d"
+
+echo "== private with a grant: the desk asks the one visibility rule =="
+# THE DEFECT THIS SECTION WAS WRITTEN AGAINST, measured on a real estate: a
+# session with VISIBILITY=private and VISIBLE_TO=<a group entity> reached a
+# viewer who belonged to the OWNING entity but not the GRANTED one, because
+# desk/filter.jq re-implemented the session rule as
+# ".owner == $viewer or isVisibleEntity(.domain; $managerOf) or $readAll" and
+# that copy never learned `private` or `VISIBLE_TO` at all. lib/visibility.sh
+# session_visible_to answers rc 1 for that same viewer; this section proves
+# the desk now asks it instead of its own copy.
+#
+# A FOURTH ESTATE, NOT AN EDIT TO ONE ABOVE - the same reason every prior
+# section built its own: an edit here would change what earlier assertions
+# are counting.
+ROOT4="$T/estate4"
+mkdir -p "$ROOT4"/{estate,sessions.d,entities.d,projects.d,accounts.d,mcp.d,hosts.d,principals.d}
+sed 's/"fixture"/"fixture4"/' "$ROOT/estate/steward.conf" > "$ROOT4/estate/steward.conf"
+printf 'OWNER="alice"\nOPERATOR="hub"\n' > "$ROOT4/hosts.d/h1.conf"
+printf 'NAME="Client"\nMEMBERS="alice bob carol"\n' > "$ROOT4/entities.d/client.conf"
+printf 'NAME="Board"\nMEMBERS="alice"\n'             > "$ROOT4/entities.d/board.conf"
+printf 'NAME="Alice"\nTAILSCALE_LOGIN="alice@example.com"\n' > "$ROOT4/principals.d/alice.conf"
+printf 'NAME="Bob"\nTAILSCALE_LOGIN="bob@example.com"\n'     > "$ROOT4/principals.d/bob.conf"
+printf 'NAME="Carol"\nTAILSCALE_LOGIN="carol@example.com"\n' > "$ROOT4/principals.d/carol.conf"
+printf 'NAME="Dave"\nTAILSCALE_LOGIN="dave@example.com"\nDESK_READ_ALL="yes"\n' > "$ROOT4/principals.d/dave.conf"
+SID_BOARD="s-0000000000000051"
+cat > "$ROOT4/sessions.d/$SID_BOARD.conf" <<EOF
+OWNER="carol"
+HOST="h1"
+DOMAIN="client"
+REPO_PATH="$T/repo"
+ID="$SID_BOARD"
+SLUG="board-session"
+RC_LABEL=""
+VISIBILITY="private"
+VISIBLE_TO="board"
+KIND="work"
+EOF
+# THE REGRESSION CHECK: a NON-private session in the same entity, so the fix
+# must not have also broken the ordinary team-visibility path.
+SID_OPEN="s-0000000000000052"
+cat > "$ROOT4/sessions.d/$SID_OPEN.conf" <<EOF
+OWNER="carol"
+HOST="h1"
+DOMAIN="client"
+REPO_PATH="$T/repo"
+ID="$SID_OPEN"
+SLUG="open-session"
+RC_LABEL=""
+KIND="work"
+EOF
+D8="$T/desk8"
+rc="$(env -u STEWARD_LIVENESS_CMD STEWARD_ESTATE_ROOT="$ROOT4" STEWARD_DESK_DIR="$D8" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err8"; echo $?)"
+is  "the fourth estate snapshots" "$rc" "0"
+[ "$rc" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err8")"
+is  "alice reaches the board session through her grant" \
+    "$(jq -r '[.sessions[]|.slug]|sort|join(" ")' "$D8/current/alice.json")" "board-session open-session"
+is  "bob is a member of the owning entity but not the grant - the leak stays closed" \
+    "$(jq -r '[.sessions[]|.slug]|sort|join(" ")' "$D8/current/bob.json")" "open-session"
+is  "carol sees her own private session as owner" \
+    "$(jq -r '[.sessions[]|.slug]|sort|join(" ")' "$D8/current/carol.json")" "board-session open-session"
+is  "a read-all principal still sees the private session - that semantic is unchanged" \
+    "$(jq -r '[.sessions[]|.slug]|sort|join(" ")' "$D8/current/dave.json")" "board-session open-session"
+is  "the operator file still carries every session, private included" \
+    "$(jq '.sessions|length' "$D8/current/_operator.json")" "2"
 
 echo "== the verb's own refusals =="
 out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?

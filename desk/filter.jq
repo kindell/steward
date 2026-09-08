@@ -17,6 +17,13 @@
 #              unfiltered operator file)
 #   $readAll   true when this viewer's row carries DESK_READ_ALL
 #   $memberOf  the entity ids this viewer is a MEMBER of, as a JSON array
+#   $visible   session ids lib/visibility.sh session_visible_to has already
+#              said yes to for this viewer, as a JSON array of strings. The
+#              SHELL decides who may see which SESSION (owner, group grant,
+#              `private`, the one entity/manager hop - all of it, once, in
+#              desk/snapshot.sh); this file only projects the fields of the
+#              ones it is handed. Entities, projects and mcp assets are not
+#              decided this way yet - they still ask isVisibleEntity below.
 
 # isMember - membership of the viewer in an entity id. NULL IS NOT A MATCH: a
 # session with no owning entity, or an entity with no manager, must never come
@@ -102,11 +109,24 @@ def ownsSessionOn($id; $ownProjects): $id != null and (($ownProjects | index($id
                          or ownsSessionOn(.id; $ownProjects))
                 | { id, name, parent } ],
 
-    # A session travels to its owner, and to anyone the session's owning entity
-    # is visible to - the same one hop, so a team member sees what the client
-    # their team manages is running.
+    # THE SHELL DECIDED; THIS ONLY PROJECTS. `$visible` is the list
+    # lib/visibility.sh session_visible_to already answered yes to, one call
+    # per session, in desk/snapshot.sh - owner, group grant, `private`
+    # withdrawal, and the one entity/manager hop are all decided there, once,
+    # in the product's one rule. This file no longer re-derives any of that
+    # for sessions: a session travels here when its id is in $visible, or
+    # when the viewer reads everything.
+    #
+    # `.id AS $sid` BEFORE THE PIPE INTO `$visible`, NOT `index(.id)` INLINE.
+    # `index()` is a $-parameter builtin, and jq desugars `f(.id)` by binding
+    # "." to whatever the input is WHERE `.id` is evaluated inside
+    # index's own body - which, after `$visible | index(...)`, is `$visible`
+    # itself, an array with no `id` key. Measured: `index(.id)` written where
+    # `$visible` is already the input fails every call with "Cannot index
+    # array with string \"id\"", never reaching a single viewer's file. The
+    # session's id has to be captured as a value BEFORE the context changes.
     sessions: [ (.sessions // [])[]
-                | select(.owner == $viewer or isVisibleEntity(.domain; $managerOf) or $readAll)
+                | select(.id as $sid | $readAll or (($visible | index($sid)) != null))
                 | (.owner == $viewer) as $own
                 | { id, slug, label, owner,
                     mine: $own,

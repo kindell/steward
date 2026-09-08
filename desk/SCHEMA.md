@@ -67,8 +67,10 @@ from being a 404 for the person sitting in that session.
 
 ## `sessions[]`
 
-A session is present when the viewer owns it, when its owning entity is visible,
-or when the viewer reads everything.
+A session is present when `lib/visibility.sh`'s `session_visible_to` says so for
+this viewer, or when the viewer reads everything - that function is the
+product's one rule for who may see a session, and this document only projects
+the fields of the sessions it already returned yes for.
 
 | key | type | meaning |
 |-----|------|---------|
