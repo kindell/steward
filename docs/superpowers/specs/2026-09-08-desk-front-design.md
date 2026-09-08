@@ -97,9 +97,18 @@ Node 22 standard library only, like the rest of the Desk.
 3. Verifies the `id_token` locally: signature against the provider's JWKS
    (cached, refreshed on unknown `kid`, never trusted from the token
    itself), `iss`, `aud` = our client id, `exp`, `iat` skew under 5 min,
-   `nonce` equal to the one sent. Microsoft: `tid` recorded with the
-   subject so a personal and a work account with the same email stay
-   distinct.
+   `nonce` equal to the one sent. Microsoft: an app registered for both
+   work and personal accounts discovers through the `common` tenant
+   (`https://login.microsoftonline.com/common/v2.0`), but its `id_token`
+   carries the real tenant: `iss` =
+   `https://login.microsoftonline.com/<tid>/v2.0`. The `iss` check for
+   such a provider therefore matches the template with `<tid>` taken from
+   the token's own `tid` claim (the signature has already been verified
+   against the JWKS at that point, so the claim is trusted), and `tid` is
+   recorded with the subject so a personal and a work account with the
+   same email stay distinct. A provider row states this with
+   `ISSUER_TEMPLATE` in place of `ISSUER`; a row with a fixed `ISSUER`
+   is compared byte for byte.
 4. Identity = `oidc:<issuer-slug>:<sub>`. Resolves to a principal, or,
    when the request carries an open invitation token, binds to it
    (companion spec). Otherwise 403.
@@ -112,7 +121,8 @@ Node 22 standard library only, like the rest of the Desk.
 6. `POST /desk/auth/logout` clears it.
 
 Provider configuration lives in the estate: `desk/providers.d/<slug>.conf`
-with `ISSUER`, `CLIENT_ID`, `CLIENT_SECRET_FILE`, `DISCOVERY` (the
+with `ISSUER` (or `ISSUER_TEMPLATE` with a literal `<tid>`, Microsoft
+multi-tenant), `CLIENT_ID`, `CLIENT_SECRET_FILE`, `DISCOVERY` (the
 `.well-known/openid-configuration` URL). The product ships no client ids.
 
 ## Cross-site protection on the front
