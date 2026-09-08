@@ -702,6 +702,103 @@ is "G2: LOGIN_REQUIRED_FOR scopes the refusal — a listed principal still refus
 after="$(ls "$GFX/sessions.d" | sort)"
 is "G2: nothing was written" "$after" "$before"
 
+# ── OWNER IS A LOGIN, AND THE HUB IS A WRITER ───────────────────────────────
+# THE FINDING. enroll resolved the account by (PRINCIPAL, HOST) and then wrote
+# OWNER=<principal>. On every estate that spells USERNAME and PRINCIPAL the
+# same that is the same string, which is why it went unseen; on the estates the
+# account model exists for, the hub minted by hand exactly the row shape its
+# own strict writer refuses.
+#
+# WRITER AND READER MEET IN ONE TEST. Asserting the text of the line enroll
+# emits would only re-state the writer to itself; the row is read BACK through
+# registry_load, and the strict rule (OWNER is the account's USERNAME) is
+# checked against the account register rather than against a literal.
+echo
+echo "nav-enroll — OWNER is the unix login, not the principal"
+UFX="$(mktemp -d)"
+mkdir -p "$UFX/estate" "$UFX/sessions.d" "$UFX/bus/bin" "$UFX/bin" \
+  "$UFX/accounts.d" "$UFX/entities.d" "$UFX/projects.d"
+cat > "$UFX/estate/steward.conf" <<'CONF'
+ESTATE_NAME="prov"
+SCHEMA_VERSION="3"
+RC_LABEL_PREFIX="Hub: "
+HUB_SESSION="hub"
+HUB_HOST="hubhost"
+HUB_SSH="someone@hubhost"
+LABEL_PREFIX="com.fixture.claude"
+JOB_LABEL_PREFIX="com.fixture.job"
+SERVICE_LABEL_PREFIX="com.fixture.service"
+BROWSER_LABEL_PREFIX="com.fixture.browser"
+JOB_LOG_DIR="fixture-jobs"
+TMUX_SOCKET="fixture.sock"
+PING_MSG="you have mail"
+STATE_DIR_NAME="fixture-supervisor"
+PAUSED_DIR_NAME="fixture-paused"
+OP_TOKEN_FILE_NAME="fixture-token"
+CONF
+cat > "$UFX/entities.d/acme.conf" <<'CONF'
+NAME="Acme"
+CONF
+# THE ONE ACCOUNT SHAPE THAT SEPARATES THE TWO NAMES: a human called 'ann'
+# whose work runs under a service login.
+cat > "$UFX/accounts.d/ann-farhost.conf" <<'CONF'
+PRINCIPAL="ann"
+USERNAME="svc-ann"
+HOST="farhost"
+CONF
+# THE REQUESTER IS ITSELF IN THE NEW SHAPE - OWNER is the login, and the row
+# names the account. The owner check reads person= as a principal, so a
+# requester that states its login must still be able to enrol.
+cat > "$UFX/sessions.d/asker.conf" <<'CONF'
+HOST="farhost"
+OWNER="svc-ann"
+ACCOUNT="ann-farhost"
+DOMAIN="acme"
+RC_LABEL="Asker"
+REPO_PATH="/tmp/x"
+ID="asker"
+CONF
+printf '#!/bin/bash\n' > "$UFX/bus/bin/bus-relay-in"; chmod +x "$UFX/bus/bin/bus-relay-in"
+printf '#!/bin/bash\nexit 0\n' > "$UFX/bin/send"; chmod +x "$UFX/bin/send"
+: > "$UFX/authorized_keys"
+cat > "$UFX/u1.txt" <<'REQ'
+DRIFT enroll: acme-widgetu-ann requests registration
+ENROLL-REQUEST v1
+namn=acme-widgetu-ann
+doman=acme
+projekt=widgetu
+person=ann
+vard=farhost
+repo=/srv/homes/ann/Projects/widgetu
+pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYUFXAAAAAAAAAAAAAAAAAAAAAAAA test-only
+REQ
+uout="$( STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.d" \
+         STEWARD_RELAY_ROOT="$UFX" STEWARD_AUTHORIZED_KEYS="$UFX/authorized_keys" \
+         STEWARD_BUS_SEND="$UFX/bin/send" STEWARD_ENROLL_FROM=asker \
+         bash "$ENROLL" --send < "$UFX/u1.txt" 2>&1 )"; urc=$?
+is "U1: a new-shape requester enrols, rc 0" "$urc" "0"
+uid="$(printf '%s' "$uout" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+ubody="$(cat "$UFX/sessions.d/$uid.conf" 2>/dev/null)"
+has "U1: OWNER is the account's USERNAME"       "$ubody" 'OWNER="svc-ann"'
+is  "U1: and never the principal" \
+    "$(printf '%s' "$ubody" | grep -c '^OWNER="ann"$')" "0"
+has "U1: ACCOUNT names the row that was matched" "$ubody" 'ACCOUNT="ann-farhost"'
+
+# READ BACK THROUGH THE LOADER, AND MEASURED AGAINST THE ACCOUNT REGISTER.
+uread="$( export STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.d"
+  . "$here/lib/registry.sh"
+  registry_load "$uid" >/dev/null 2>&1 || exit $?
+  _o="$OWNER"; _h="$HOST"; _a="$ACCOUNT"; _p="${ROW_PRINCIPAL:-}"
+  registry_account_load "$_a" >/dev/null 2>&1 || exit 78
+  # THE STRICT RULE, spelled out: a row today's writer would emit names the
+  # account's login and the account's host.
+  [ "$ACCOUNT_USERNAME" = "$_o" ] || exit 65
+  [ "$ACCOUNT_HOST" = "$_h" ] || exit 65
+  printf '%s' "$_p" )"; urrc=$?
+is "U1: the written row loads and satisfies the STRICT writer rule" "$urrc" "0"
+is "U1: and it resolves to the human the account names" "$uread" "ann"
+rm -rf "$UFX"
+
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
 # Optional field, same contract as registry_liveness_cmd: absent is not broken,
 # invalid is a refusal, and a relative path is invalid because it would resolve

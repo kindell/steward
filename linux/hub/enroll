@@ -324,8 +324,34 @@ fi
 
 F_OWNER="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
 F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
-[ "$F_OWNER" = "$PERSON" ] || \
-  fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}', the request names '$PERSON'"
+# person= IS A PRINCIPAL, AND OWNER IS A LOGIN. The account lookup further down
+# matches person= against accounts.d PRINCIPAL, so that is what the field means
+# - while OWNER on the requester's own row states which unix login runs it. On
+# every estate that spells the two the same the raw comparison is right and
+# stays the fast path; on the estates the account model exists for it refuses a
+# requester that is perfectly in order. So the row's own principal is resolved
+# (registry_load publishes it) and either spelling satisfies the check.
+#
+# READ WITH THIS FILE'S OWN GRAMMAR (sed over the row, never source) and
+# resolved through the account register, not through registry_load: the loader
+# carries the estate's schema gates, and a requester whose row is merely
+# missing a LOGIN line on a schema-6 estate must still be able to fail THIS
+# check on identity rather than on a gate that belongs somewhere else.
+#
+# THE ACCOUNT MUST ALSO OWN THE ROW - the same rule the loader applies: OWNER
+# is the account's USERNAME or its PRINCIPAL, and anything else is a row
+# borrowing somebody's account, which must not become a way past this gate.
+F_ACCOUNT="$(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
+F_PRINCIPAL=""
+if [ -n "$F_ACCOUNT" ]; then
+  _fa_p="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )" || _fa_p=""
+  _fa_u="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )" || _fa_u=""
+  if [ -n "$_fa_p" ] && { [ "$_fa_u" = "$F_OWNER" ] || [ "$_fa_p" = "$F_OWNER" ]; }; then
+    F_PRINCIPAL="$_fa_p"
+  fi
+fi
+[ "$F_OWNER" = "$PERSON" ] || [ -n "$F_PRINCIPAL" -a "$F_PRINCIPAL" = "$PERSON" ] || \
+  fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}'${F_PRINCIPAL:+ (principal '$F_PRINCIPAL')}, the request names '$PERSON'"
 # A conf without HOST lives on the hub — the same default registry_load applies.
 [ "${F_HOST:-$NAV_VARD}" = "$VARD" ] || \
   fel "host check: '$FROM' lives on '${F_HOST:-$NAV_VARD}', the request names '$VARD'"
@@ -370,19 +396,32 @@ fi
 # file a session under an account it does not own.
 _ACDIR="$(registry_account_dir)" || exit 78
 ACCOUNT_SLUG=""
+ACCOUNT_LOGIN=""
 for _af in "$_ACDIR"/*.conf; do
   [ -f "$_af" ] || continue
   _aslug="$(basename "$_af" .conf)"
-  # SUBSHELLED, twice — the same pattern registry_account_slug_available uses
-  # below: a hostile or merely malformed accounts.d row must not clobber this
-  # loop's own locals via bash's dynamic scoping.
+  # SUBSHELLED, three times — the same pattern registry_account_slug_available
+  # uses below: a hostile or merely malformed accounts.d row must not clobber
+  # this loop's own locals via bash's dynamic scoping.
   _ap="$( registry_account_load "$_aslug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
   _ah="$( registry_account_load "$_aslug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_HOST" )"
+  _au="$( registry_account_load "$_aslug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )"
   [ "$_ap" = "$PERSON" ] && [ "$_ah" = "$VARD" ] || continue
   ACCOUNT_SLUG="$_aslug"
+  # THE UNIX LOGIN IS CARRIED OUT OF THE LOOP, because the row this script is
+  # about to write states OWNER, and OWNER is a LOGIN, not a person. The
+  # account is matched on (PRINCIPAL, HOST) — that is who and where — but the
+  # row must say which unix account runs it. USERNAME defaults to PRINCIPAL in
+  # registry_account_load, so on the estates where the two are spelled the
+  # same this changes nothing; on the estates the account model exists for it
+  # is the difference between a row today's writer would emit and one it would
+  # refuse. Measured on this file: it wrote OWNER=<principal> while reading
+  # only PRINCIPAL and HOST, so the hub minted yesterday's shape by hand.
+  ACCOUNT_LOGIN="$_au"
   break
 done
 [ -n "$ACCOUNT_SLUG" ] || fel "no account resolves for owner '$PERSON' on host '$VARD' — register the account in accounts.d first"
+[ -n "$ACCOUNT_LOGIN" ] || fel "account '$ACCOUNT_SLUG' names no unix login — a row's OWNER is a login, and this one cannot be measured"
 
 # ── THE LOGIN — GATE 1, THE SAME SHARED GATE `steward registry session add`
 # USES (lib/registry.sh) ─────────────────────────────────────────────────────
@@ -548,7 +587,7 @@ HOST="$VARD"
 REPO_PATH="$REPO_S"
 RC_LABEL="$RC_ETIKETT"
 PERMISSION_MODE="bypassPermissions"
-OWNER="$PERSON"
+OWNER="$ACCOUNT_LOGIN"
 DOMAIN="$DOMAN"
 CONFEOF
 # LOGIN IS APPENDED, NEVER INTERPOLATED INTO THE HEREDOC ABOVE. Below the
