@@ -1704,9 +1704,26 @@ _registry_login_valid() {
   [[ "${1:-}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]
 }
 
+# _registry_oidc_login_valid <word> - the shape an OIDC identity has here:
+# "<issuer-slug>:<subject>". The issuer half is OURS (a slug we choose per
+# provider) and is therefore a slug; the subject half is the PROVIDER'S and is
+# taken as-is within a conservative charset - it is an opaque string that we
+# compare and never parse.
+#
+# THE SUBJECT IS NEVER CASE-FOLDED, and that is the whole reason this is a
+# separate validator rather than a second call to the login one. A tailnet
+# login is an address, where case carries no meaning; a subject can be
+# base64url, where two spellings are two different people. Folding it would
+# merge two humans into one row's worth of authority.
+_registry_oidc_login_valid() {
+  [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*:[A-Za-z0-9._~-]+$ ]]
+}
+
 # registry_principal_load <slug>: sets PRINCIPAL_ID, PRINCIPAL_NAME,
 # PRINCIPAL_TAILSCALE_LOGIN (the row's login words, each lower-cased, joined
-# back with single spaces), PRINCIPAL_DESK_READ_ALL ('yes' or ''). rc 1 on
+# back with single spaces), PRINCIPAL_OIDC_LOGIN (the row's OIDC words, case
+# PRESERVED, joined the same way), PRINCIPAL_OIDC_EMAIL,
+# PRINCIPAL_DESK_READ_ALL ('yes' or ''). rc 1 on
 # any missing/invalid field, matching registry_entity_load's own contract.
 #
 # RESET BEFORE SOURCING — the same leak-guard pattern registry_account_load
@@ -1719,18 +1736,19 @@ _registry_login_valid() {
 # records), and this field is exactly as untrusted as those. EVERY WORD IS
 # VALIDATED, not just the whole string: a row that mixes one real login with
 # one malformed word must be refused, not silently truncated to the valid
-# prefix. An empty list is invalid — a principal with no login at all cannot
-# be matched by the desk gate, so it is refused the same way a missing field
-# is.
+# prefix. A row with NEITHER source is invalid - a principal no entrance can
+# resolve cannot be matched by any gate, so it is refused the same way a
+# missing field is.
 registry_principal_load() {
   PRINCIPAL_ID=""; PRINCIPAL_NAME=""; PRINCIPAL_TAILSCALE_LOGIN=""; PRINCIPAL_DESK_READ_ALL=""
+  PRINCIPAL_OIDC_LOGIN=""; PRINCIPAL_OIDC_EMAIL=""
   local slug="${1:-}" d f
   [ -n "$slug" ] || return 1
   registry_valid_name "$slug" || { echo "registry: invalid principal slug" >&2; return 1; }
   d="$(registry_principal_dir)" || return 78
   f="$d/$slug.conf"
   [ -f "$f" ] || { echo "registry: no such principal: $slug" >&2; return 1; }
-  local NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL=""
+  local NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL="" OIDC_LOGIN="" OIDC_EMAIL=""
   # shellcheck source=/dev/null
   source "$f" || return 1
   if [ -z "$NAME" ]; then
@@ -1746,8 +1764,23 @@ registry_principal_load() {
     fi
     normalized="${normalized:+$normalized }$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')"
   done
-  if [ -z "$normalized" ]; then
-    echo "registry: $slug.conf missing/invalid TAILSCALE_LOGIN" >&2
+  # OIDC_LOGIN IS THE SECOND SOURCE, VALIDATED PER WORD LIKE THE FIRST. No case
+  # folding - see _registry_oidc_login_valid.
+  _registry_words "$OIDC_LOGIN"
+  local oidc=""
+  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    if ! _registry_oidc_login_valid "$w"; then
+      echo "registry: $slug.conf has an invalid OIDC_LOGIN word '$(registry_printable "$w")' (expected <issuer-slug>:<subject>)" >&2
+      return 1
+    fi
+    oidc="${oidc:+$oidc }$w"
+  done
+  # AT LEAST ONE SOURCE. A principal no entrance can resolve is a row that
+  # grants nothing and can never be matched - refused the same way a missing
+  # field is. The message still names TAILSCALE_LOGIN because that is the
+  # source every existing row carries and the one a reader looks for first.
+  if [ -z "$normalized" ] && [ -z "$oidc" ]; then
+    echo "registry: $slug.conf missing/invalid identity - a principal needs TAILSCALE_LOGIN, OIDC_LOGIN, or both" >&2
     return 1
   fi
   case "$DESK_READ_ALL" in
@@ -1756,12 +1789,21 @@ registry_principal_load() {
   esac
   PRINCIPAL_ID="$slug"; PRINCIPAL_NAME="$NAME"
   PRINCIPAL_TAILSCALE_LOGIN="$normalized"
+  PRINCIPAL_OIDC_LOGIN="$oidc"
+  # INFORMATIONAL ONLY, and never used for lookup: an email moves between
+  # people, a subject does not.
+  PRINCIPAL_OIDC_EMAIL="$OIDC_EMAIL"
   PRINCIPAL_DESK_READ_ALL="$DESK_READ_ALL"
 }
 
-# registry_principal_for_login <login> -> slug on stdout.
-# rc 0 exactly one row carries the login as one of its words; rc 1 none;
-# rc 65 more than one (both named on stderr).
+# registry_principal_for_identity <source> <value> -> slug on stdout.
+# <source> is `tailscale` or `oidc`; rc 64 for anything else. rc 0 exactly one
+# row carries the value as one of that source's words; rc 1 none; rc 65 more
+# than one (both named on stderr). registry_principal_for_login below is the
+# tailnet half under its old name.
+#
+# THE SOURCE DECIDES WHETHER CASE IS FOLDED, and only the tailnet one folds -
+# see _registry_oidc_login_valid for why an OIDC subject must not.
 #
 # THE MEMBERSHIP TEST IS SPACE-DELIMITED CONTAINMENT AGAINST THE ALREADY
 # NORMALISED LIST — the same idiom _registry_mcp_collect and lib/visibility.sh's
@@ -1777,9 +1819,13 @@ registry_principal_load() {
 # slug) the way registry_account_slug_available's comment describes for its
 # own scan. The containment test runs INSIDE the same subshell, for the same
 # reason.
-registry_principal_for_login() {
-  local want d f hits="" slug
-  want="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+registry_principal_for_identity() {
+  local src="${1:-}" want="${2:-}" d f hits="" slug
+  case "$src" in
+    tailscale) want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ;;
+    oidc)      : ;;
+    *) echo "registry: unknown identity source '$(registry_printable "$src")' (allowed: tailscale, oidc)" >&2; return 64 ;;
+  esac
   [ -n "$want" ] || return 1
   d="$(registry_principal_dir)" || return 78
   [ -d "$d" ] || return 1
@@ -1787,7 +1833,10 @@ registry_principal_for_login() {
     [ -e "$f" ] || continue
     slug="$(basename "$f" .conf)"
     if ( registry_principal_load "$slug" >/dev/null 2>&1 && \
-         case " $PRINCIPAL_TAILSCALE_LOGIN " in *" $want "*) true ;; *) false ;; esac ); then
+         case "$src" in
+           tailscale) case " $PRINCIPAL_TAILSCALE_LOGIN " in *" $want "*) true ;; *) false ;; esac ;;
+           *)         case " $PRINCIPAL_OIDC_LOGIN "      in *" $want "*) true ;; *) false ;; esac ;;
+         esac ); then
       hits="$hits $slug"
     fi
   done
@@ -1795,8 +1844,16 @@ registry_principal_for_login() {
   case $# in
     0) return 1 ;;
     1) printf '%s\n' "$1"; return 0 ;;
-    *) echo "registry: the login maps to more than one principal:$hits — refusing to pick" >&2; return 65 ;;
+    *) echo "registry: the identity maps to more than one principal:$hits - refusing to pick" >&2; return 65 ;;
   esac
+}
+
+# registry_principal_for_login <login> - the tailnet half of the function
+# above, kept under its old name because every existing caller (the desk
+# bridge, the principal-add pre-check, the under-lock validator) asks exactly
+# this question. Same return codes, same output.
+registry_principal_for_login() {
+  registry_principal_for_identity tailscale "${1:-}"
 }
 
 # registry_principal_write <slug> <content> <validate_fn> — THIN WRAPPER over
