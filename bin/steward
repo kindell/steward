@@ -3389,11 +3389,21 @@ _REDEEM_LINES=""
 _REDEEM_RECEIPT=""
 _REDEEM_INVITE=""
 _REDEEM_PRINCIPAL=""
+_REDEEM_JSON=""
+_REDEEM_ENT_RECHECK=""
+_REDEEM_ENT_MEMBERS_SEEN=""
 
 # _redeem_note <n> <label> <text> - one receipt line, printed and recorded.
+#
+# UNDER --json THE LINES GO TO STDERR. The estate's convention for a --json
+# verb is one JSON value on stdout and nothing else; twelve prose lines in
+# front of it is a parse error for every caller that reads stdout as JSON.
+# The lines are not lost - they are the receipt file's whole content, and the
+# JSON names that file.
 _redeem_note() {
   local line; line="$1/12 $2: $3"
-  printf '%s\n' "$line"
+  if [ -n "$_REDEEM_JSON" ]; then printf '%s\n' "$line" >&2
+  else printf '%s\n' "$line"; fi
   _REDEEM_LINES="$_REDEEM_LINES$line
 "
 }
@@ -3420,10 +3430,44 @@ _redeem_receipt() {
 }
 
 # _redeem_fail <msg> <rc> - a refusal that writes the receipt before it leaves.
+#
+# THE REFUSAL GOES INTO THE RECEIPT TOO. The receipt is what the Desk's apply
+# step reads back, and a receipt that carried only the steps that worked left
+# the reader with "state: failed" and no way to tell WHICH machine said no -
+# the sudo refusals below are the case that matters, because the repair is on
+# the host and not in the register.
+#
+# THE REFUSAL WEARS THE SAME SHAPE AS EVERY OTHER ONE THIS VERB MAKES: under
+# --json it is _reg_fail's {ok:false,reason}, exactly what the refusals before
+# step 1 emit. The Desk's apply step is the specified caller, and one verb
+# handing it two different failure shapes depending on which step failed is a
+# parser bug waiting in the caller.
 _redeem_fail() {
-  echo "steward invite redeem: $1" >&2
+  local msg="steward invite redeem: $1"
+  _REDEEM_LINES="$_REDEEM_LINES$msg
+"
+  _reg_fail "$_REDEEM_JSON" "$msg"
   _redeem_receipt failed
   return "${2:-70}"
+}
+
+# _redeem_runas_fail <what-failed> <user> <output> - the refusal for one of the
+# five `sudo -n -u <user> ...` calls that write inside the new account's home.
+#
+# SUDO'S REFUSAL AND THE COMMAND'S REFUSAL ARE DIFFERENT REPAIRS, and only the
+# output tells them apart: sudo prefixes its own complaints "sudo:", and a
+# command that ran never does. The estate's sudoers line covers the account
+# helper and nothing else, so a host set up exactly to the spec refuses every
+# one of these five - and reporting that as "could not generate the relay key"
+# sends the reader looking at ssh-keygen instead of at sudoers.
+_redeem_runas_fail() {
+  local what="$1" user="$2" out="$3"
+  if printf '%s\n' "$out" | grep -q '^sudo:'; then
+    _redeem_fail "$what - and sudo, not the command, is what refused: this host must let the account running the hub use 'sudo -n -u $user' to write inside that account's home, and the estate's sudoers line covers only the account helper. sudo said: $out" 77
+    return 77
+  fi
+  _redeem_fail "$what: $out" 70
+  return 70
 }
 
 # _redeem_session_id <account> <slug> - the id of the row carrying that pair,
@@ -3452,6 +3496,22 @@ _redeem_validate_entity() {
   local file="$1" NAME="" MEMBERS="" MANAGED_BY="" MCP_ASSETS=""
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: staged entity file did not source: $file" >&2; return 70; }
+  # THE ROW ON DISK IS RE-READ HERE, UNDER THE LOCK, and compared against what
+  # step 5 read before it composed. Step 5's read happens outside the lock, so
+  # a second redemption into the same entity - or an operator's own membership
+  # edit - landing in between is invisible to it, and the composed row would
+  # publish straight over the other membership. A row that moved is refused,
+  # never merged: this run measured its decision against a state that no
+  # longer exists, and the right answer is to run the verb again. Same rule,
+  # and the same reasoning, as _invite_validate_row's own recheck.
+  if [ -n "${_REDEEM_ENT_RECHECK:-}" ]; then
+    local ent_now
+    ent_now="$( registry_entity_load "$_REDEEM_ENT_RECHECK" >/dev/null 2>&1; printf '%s' "$ENTITY_MEMBERS" )"
+    if [ "$ent_now" != "${_REDEEM_ENT_MEMBERS_SEEN:-}" ]; then
+      echo "registry: entity '$_REDEEM_ENT_RECHECK' changed while redeeming - MEMBERS is now '$ent_now', was '$_REDEEM_ENT_MEMBERS_SEEN'; nothing written, a rerun resumes" >&2
+      return 70
+    fi
+  fi
   local k got want
   for k in NAME MEMBERS MANAGED_BY MCP_ASSETS; do
     eval "got=\$$k"
@@ -3469,6 +3529,15 @@ cmd_invite_redeem() {
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
   while [ $# -gt 0 ]; do
     case "$1" in
+      # `--` ENDS THE FLAGS, the one convention that lets a caller hand over a
+      # value it did not choose. Tokens are minted without a leading hyphen
+      # (registry_invite_mint_token), so this is for the older ones that were
+      # not, and for any caller that would rather be explicit than lucky.
+      --) shift
+          while [ $# -gt 0 ]; do
+            if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+            token="$1"; shift
+          done ;;
       --json) shift ;;
       --identity) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --identity needs a value"; return 64; }
                   identity="$2"; shift 2 ;;
@@ -3496,9 +3565,14 @@ cmd_invite_redeem() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
+  # EVERY REFUSAL FROM HERE ON WEARS THE SHAPE THE CALLER ASKED FOR - see
+  # _redeem_fail, which reads this and nothing else.
+  _REDEEM_JSON="$want_json"; _REDEEM_LINES=""; _REDEEM_RECEIPT=""
+
   # -- STEP 1: the token, the row, and the two refusals ---------------------
   local digest id
-  digest="$(printf '%s' "$token" | _registry_sha256)" || return 78
+  digest="$(printf '%s' "$token" | _registry_sha256)" || {
+    _redeem_fail "no sha256 tool on PATH, so the token cannot be digested" 78; return 78; }
   id="$(registry_invite_for_digest "$digest" 2>/dev/null)" || id=""
   if [ -z "$id" ]; then
     # THE SAME ANSWER FOR WRONG, USED AND EXPIRED. A refusal that distinguished
@@ -3513,6 +3587,31 @@ cmd_invite_redeem() {
     return 65
   fi
 
+  # THE INVITATION MUST NAME THIS MACHINE, and that is decided here, before the
+  # first side effect. Steps 3, 8, 9 and 10 all act LOCALLY - the helper
+  # through local sudo, the local account database, files under a local home -
+  # while the rows they write say the account lives on the invitation's host.
+  # Redeeming an invitation for another machine therefore used to create a unix
+  # account, two keys and the seeds HERE, and only then fail at the skeleton
+  # deploy, which applies a machine gate of its own.
+  local self_host; self_host="$(_registry_self_host)"
+  if [ "$INVITE_HOST" != "$self_host" ]; then
+    _reg_fail "$want_json" "steward invite redeem: invitation '$id' is for host '$INVITE_HOST' and this machine answers to '$self_host' - redeem it there; the account, the keys and the seeds are all made on the machine this verb runs on"
+    return 65
+  fi
+
+  # THE ROW IS SNAPSHOTTED HERE, AND STEP 12 COMPARES AGAINST THIS SNAPSHOT -
+  # not against a fresh read of its own. The decision this verb makes is
+  # "open -> redeemed", and it is made HERE, before an account, a key and a
+  # skeleton deploy that take seconds to minutes on a real host. Step 12 used
+  # to re-take the recheck snapshot through _invite_load_expect, so a revoke
+  # that landed in between was compared against itself and published straight
+  # over: the row said revoked, the verb said redeemed, and the person was let
+  # in. Carrying step 1's values into the under-lock recheck is what makes the
+  # window between the two the register's problem instead of nobody's.
+  local inv1_state="$INVITE_STATE" inv1_digest="$INVITE_TOKEN_SHA256"
+  local inv1_login="$INVITE_REDEEMED_LOGIN" inv1_at="$INVITE_REDEEMED_AT"
+
   local p_slug="$INVITE_PRINCIPAL" ent_slug="$INVITE_ENTITY" host_slug="$INVITE_HOST"
   local runtime="$INVITE_RUNTIME" provider="$INVITE_PROVIDER" person="$INVITE_NAME"
   local acct_slug="$p_slug-$host_slug" unix_user="$p_slug"
@@ -3526,6 +3625,14 @@ cmd_invite_redeem() {
   # refusal, and so is an identity that resolves to more than one row.
   local bound brc
   bound="$(registry_principal_for_identity "$src" "$val" 2>/dev/null)"; brc=$?
+  # A LOOKUP THAT COULD NOT ANSWER IS NOT AN ANSWER OF "nobody holds this".
+  # rc 1 means the register was read and nothing matched; anything else means
+  # the question was not settled, and a gate that falls through on an
+  # unsettled question is not a gate.
+  if [ "$brc" -ne 0 ] && [ "$brc" -ne 1 ] && [ "$brc" -ne 65 ]; then
+    _reg_fail "$want_json" "steward invite redeem: the principal register could not be searched for '$identity' (rc $brc), so who holds this identity is unknown - repair the register before redeeming"
+    return 78
+  fi
   if [ "$brc" -eq 65 ]; then
     _reg_fail "$want_json" "steward invite redeem: the identity '$identity' maps to more than one principal - repair the principal register before redeeming"
     return 65
@@ -3536,7 +3643,8 @@ cmd_invite_redeem() {
   fi
 
   _REDEEM_INVITE="$id"; _REDEEM_PRINCIPAL="$p_slug"; _REDEEM_LINES=""
-  local state_dir; state_dir="$(registry_state_dir_name)" || return 78
+  local state_dir; state_dir="$(registry_state_dir_name)" || {
+    _redeem_fail "the estate does not name a state directory, so no receipt could be written" 78; return 78; }
   _REDEEM_RECEIPT="$HOME/.local/state/$state_dir/invites/$id.receipt.json"
 
   # THE ONE RUNTIME THIS PATH CAN FINISH. `registry session add` writes no
@@ -3551,10 +3659,34 @@ cmd_invite_redeem() {
   _redeem_note 1 invite "$id for $p_slug on $host_slug, identity $identity"
   _redeem_receipt running
 
-  local out rc
+  local out rc runas_out=""
 
   # -- STEP 2: the principal ------------------------------------------------
   if [ -e "$(registry_principal_dir)/$p_slug.conf" ]; then
+    # A ROW IS NOT A MARK UNTIL IT CARRIES THE IDENTITY. The gate at step 1
+    # settles who may HOLD this identity; this settles whether the principal
+    # this run is finishing actually has it. Without the check, a redemption
+    # interrupted after step 2 could be finished with a DIFFERENT identity:
+    # the new identity maps to no principal, so the gate passes; the row
+    # exists, so this step reports "already done"; and step 12 then records
+    # the new identity as bound to a principal that never received it.
+    # THE WANTED VALUE IS FOLDED THE WAY THE LOOKUP FOLDS IT - a tailnet login
+    # is compared lower case, an OIDC subject exactly - so this test and
+    # registry_principal_for_identity can never disagree about the same row.
+    local want_id="$val"
+    [ "$src" = "tailscale" ] && want_id="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
+    local have_identity=""
+    if ( registry_principal_load "$p_slug" >/dev/null 2>&1 && \
+         case "$src" in
+           tailscale) case " $PRINCIPAL_TAILSCALE_LOGIN " in *" $want_id "*) true ;; *) false ;; esac ;;
+           *)         case " $PRINCIPAL_OIDC_LOGIN "      in *" $want_id "*) true ;; *) false ;; esac ;;
+         esac ); then
+      have_identity=1
+    fi
+    if [ -z "$have_identity" ]; then
+      _redeem_fail "step 2 (principal): principal '$p_slug' exists with another identity - it does not carry '$identity', and a redemption may not bind an identity to a principal that never received it; repair the principal row or issue the invitation for another principal" 65
+      return 65
+    fi
     _redeem_note 2 principal "already done"
   else
     local idflag="--oidc-login"
@@ -3586,17 +3718,25 @@ cmd_invite_redeem() {
       # WHICH OF THE TWO HAPPENED IS READ OFF THE OUTPUT, because a shell has
       # no other way to ask: sudo passes the command's exit status straight
       # through, so the number alone cannot say whose it is. Every line the
-      # helper prints - receipt and refusal alike - is prefixed "helper: ", and
-      # its usage banner opens "usage: steward-account-helper"; output carrying
-      # neither did not come from the helper.
-      case "$helper_out" in
-        *"helper: "*|*"usage: steward-account-helper"*)
-          _redeem_fail "step 3 (unix account): the account helper ran and refused (rc $rc): $helper_out" 70
-          return 70 ;;
-      esac
+      # helper prints - receipt and refusal alike - is prefixed "helper: ", so
+      # output with no line BEGINNING "helper:" is output the helper never
+      # wrote.
+      #
+      # THE MATCH IS ANCHORED TO THE START OF A LINE, and that anchor is the
+      # whole finding. The helper's binary is called steward-account-HELPER, so
+      # sudo's own "unable to execute /usr/local/sbin/steward-account-helper:
+      # No such file or directory" - the first thing a host without the helper
+      # says, and the exact case rc 77 exists for - contains the substring
+      # "helper: " and used to be reported as a helper that ran and refused,
+      # with the sudoers line never printed.
+      if printf '%s\n' "$helper_out" | grep -q '^helper:'; then
+        _redeem_fail "step 3 (unix account): the account helper ran and refused (rc $rc): $helper_out" 70
+        return 70
+      fi
       # The overwhelmingly likely cause is a host where the estate has not
-      # installed the sudoers line, so the message names the line itself.
-      _redeem_fail "step 3 (unix account) could not run the helper through 'sudo -n'. The estate installs exactly one line for it: steward ALL=(root) NOPASSWD: /usr/local/sbin/steward-account-helper. The command said: $helper_out" 77
+      # installed the sudoers line, so the message names the line itself and
+      # then quotes what sudo actually said, verbatim.
+      _redeem_fail "step 3 (unix account) could not run the helper through 'sudo -n'. The estate installs exactly one line for it: steward ALL=(root) NOPASSWD: /usr/local/sbin/steward-account-helper. sudo said: $helper_out" 77
       return 77
     fi
     home="$(_registry_owner_home "$unix_user" 2>/dev/null)" || home=""
@@ -3622,6 +3762,10 @@ cmd_invite_redeem() {
     *" $p_slug "*) _redeem_note 5 membership "already done" ;;
     *)
       local new_members="${ENTITY_MEMBERS:+$ENTITY_MEMBERS }$p_slug"
+      # WHAT THIS COMPOSITION WAS BUILT FROM, for the under-lock recheck in
+      # _redeem_validate_entity.
+      _REDEEM_ENT_RECHECK="$ent_slug"
+      _REDEEM_ENT_MEMBERS_SEEN="$ENTITY_MEMBERS"
       _REGW_EXPECT_ENT_NAME="$ENTITY_NAME"
       _REGW_EXPECT_ENT_MEMBERS="$new_members"
       _REGW_EXPECT_ENT_MANAGED_BY="$ENTITY_MANAGED_BY"
@@ -3717,14 +3861,36 @@ $ent_line"
       return 70
     fi
     [ -f "$hub_pub" ] || { _redeem_fail "step 8 (bus): the hub has no public key at $hub_pub, so the delivery key cannot be installed" 70; return 70; }
+    # EVERY `sudo -n -u` CALL BELOW KEEPS ITS OUTPUT, so the refusal can say
+    # whether sudo or the command said no - see _redeem_runas_fail.
     if [ -z "$have_key" ]; then
-      sudo -n -u "$unix_user" ssh-keygen -q -t ed25519 -N "" -f "$relay_key" \
-        -C "$host_slug-$unix_user-$sess_slug" >/dev/null 2>&1 \
-        || { _redeem_fail "step 8 (bus): could not generate the relay key at $relay_key" 70; return 70; }
+      runas_out="$(sudo -n -u "$unix_user" ssh-keygen -q -t ed25519 -N "" -f "$relay_key" \
+        -C "$host_slug-$unix_user-$sess_slug" 2>&1)" \
+        || { _redeem_runas_fail "step 8 (bus): could not generate the relay key at $relay_key" "$unix_user" "$runas_out"; return $?; }
     fi
-    local relay_pub
-    relay_pub="$(sudo -n -u "$unix_user" cat "$relay_key.pub" 2>/dev/null)"
-    [ -n "$relay_pub" ] || { _redeem_fail "step 8 (bus): could not read the relay public key at $relay_key.pub" 70; return 70; }
+    local relay_pub relay_err
+    relay_err="$(mktemp)" || { _redeem_fail "step 8 (bus): cannot create a temporary file" 70; return 70; }
+    relay_pub="$(sudo -n -u "$unix_user" cat "$relay_key.pub" 2>"$relay_err")"
+    if [ -z "$relay_pub" ]; then
+      runas_out="$(cat "$relay_err")"; rm -f "$relay_err"
+      _redeem_runas_fail "step 8 (bus): could not read the relay public key at $relay_key.pub" "$unix_user" "$runas_out"
+      return $?
+    fi
+    rm -f "$relay_err"
+    # THE .pub IS READ OUT OF THE NEW ACCOUNT'S HOME, so its owner can write
+    # it - and the next few lines turn it into an authorization record on the
+    # HUB. A second line in that file is a second authorized_keys line without
+    # the forced command, i.e. a shell on the machine that runs the estate; a
+    # first line of another shape is a key nobody meant to trust. The line is
+    # therefore required to be exactly one ed25519 key, with at most a comment
+    # after it, before anything is appended anywhere. This is the one place in
+    # the verb where content from outside the hub's trust boundary becomes an
+    # authorization record.
+    if [ "$(printf '%s\n' "$relay_pub" | wc -l | tr -d ' ')" != "1" ] \
+       || ! printf '%s\n' "$relay_pub" | grep -qE '^ssh-ed25519 [A-Za-z0-9+/]+=*( [^[:space:]]*)?$'; then
+      _redeem_fail "step 8 (bus): the relay public key at $relay_key.pub is not a single 'ssh-ed25519 <key> [comment]' line - refusing to put it in an authorized_keys file" 70
+      return 70
+    fi
     if [ -z "$have_row" ]; then
       # THE LINE CARRIES THE ESTATE ROOT. sshd strips the environment from a
       # forced command, so a relay that resolved recipients through an unset
@@ -3735,10 +3901,15 @@ $ent_line"
         || { _redeem_fail "step 8 (bus): could not append the relay row to $hub_ak" 70; return 70; }
     fi
     if [ -z "$have_deliver" ]; then
-      printf 'restrict,command="%s/scripts/bus/bin/bus-relay-deliver" %s\n' \
-        "$home" "$(cat "$hub_pub")" \
-        | sudo -n -u "$unix_user" tee -a "$acct_ak" >/dev/null \
-        || { _redeem_fail "step 8 (bus): could not install the delivery key in $acct_ak" 70; return 70; }
+      local deliver_err; deliver_err="$(mktemp)" || { _redeem_fail "step 8 (bus): cannot create a temporary file" 70; return 70; }
+      if ! printf 'restrict,command="%s/scripts/bus/bin/bus-relay-deliver" %s\n' \
+             "$home" "$(cat "$hub_pub")" \
+             | sudo -n -u "$unix_user" tee -a "$acct_ak" >/dev/null 2>"$deliver_err"; then
+        runas_out="$(cat "$deliver_err")"; rm -f "$deliver_err"
+        _redeem_runas_fail "step 8 (bus): could not install the delivery key in $acct_ak" "$unix_user" "$runas_out"
+        return $?
+      fi
+      rm -f "$deliver_err"
     fi
     _redeem_note 8 bus "relay key, relay row and delivery key in place for $sid"
   fi
@@ -3750,24 +3921,45 @@ $ent_line"
   # stops there. The step was missing from the manual routine, which is why it
   # is a step here rather than a note in a document.
   local hub_host known_hosts="$home/.ssh/known_hosts" onboarding="$home/onboarding.env"
-  hub_host="$(registry_hub_host)" || return 78
+  hub_host="$(registry_hub_host)" || {
+    _redeem_fail "step 9 (seeds): the estate does not name its hub host, so known_hosts cannot be seeded" 78; return 78; }
   local have_kh="" have_env=""
   grep -q "." "$known_hosts" 2>/dev/null && have_kh=1
   [ -f "$onboarding" ] && have_env=1
   if [ -n "$have_kh" ] && [ -n "$have_env" ]; then
     _redeem_note 9 seeds "already done"
   else
+    local seed_err; seed_err="$(mktemp)" || { _redeem_fail "step 9 (seeds): cannot create a temporary file" 70; return 70; }
     if [ -z "$have_kh" ]; then
-      ssh-keyscan -H "$hub_host" 2>/dev/null | sudo -n -u "$unix_user" tee -a "$known_hosts" >/dev/null \
-        || { _redeem_fail "step 9 (seeds): could not seed $known_hosts with the hub's host key" 70; return 70; }
+      # THE SCAN IS MEASURED BEFORE IT IS WRITTEN. ssh-keyscan exits 0 with
+      # empty output for a host it cannot reach, and the pipeline's status
+      # came from `tee` - so an unreachable hub used to leave known_hosts
+      # empty while the receipt said it had been seeded, and the first ssh
+      # from the new account failed on an unknown host key anyway.
+      local scan
+      scan="$(ssh-keyscan -H "$hub_host" 2>"$seed_err")"
+      if [ -z "$scan" ]; then
+        runas_out="$(cat "$seed_err")"; rm -f "$seed_err"
+        _redeem_fail "step 9 (seeds): ssh-keyscan returned no host key for '$hub_host', so $known_hosts would stay empty and the first ssh from this account would fail on an unknown host key: $runas_out" 70
+        return 70
+      fi
+      if ! printf '%s\n' "$scan" | sudo -n -u "$unix_user" tee -a "$known_hosts" >/dev/null 2>"$seed_err"; then
+        runas_out="$(cat "$seed_err")"; rm -f "$seed_err"
+        _redeem_runas_fail "step 9 (seeds): could not seed $known_hosts with the hub's host key" "$unix_user" "$runas_out"
+        return $?
+      fi
     fi
     if [ -z "$have_env" ]; then
-      local hub_ssh; hub_ssh="$(registry_hub_ssh)" || return 78
-      printf 'STEWARD_ESTATE_ROOT=%s\nSTEWARD_HUB_HOST=%s\nSTEWARD_HUB_SSH=%s\n' \
-        "$(_registry_estate_root)" "$hub_host" "$hub_ssh" \
-        | sudo -n -u "$unix_user" tee "$onboarding" >/dev/null \
-        || { _redeem_fail "step 9 (seeds): could not write $onboarding" 70; return 70; }
+      local hub_ssh; hub_ssh="$(registry_hub_ssh)" || { rm -f "$seed_err"; _redeem_fail "step 9 (seeds): the estate does not name its hub's ssh target" 78; return 78; }
+      if ! printf 'STEWARD_ESTATE_ROOT=%s\nSTEWARD_HUB_HOST=%s\nSTEWARD_HUB_SSH=%s\n' \
+             "$(_registry_estate_root)" "$hub_host" "$hub_ssh" \
+             | sudo -n -u "$unix_user" tee "$onboarding" >/dev/null 2>"$seed_err"; then
+        runas_out="$(cat "$seed_err")"; rm -f "$seed_err"
+        _redeem_runas_fail "step 9 (seeds): could not write $onboarding" "$unix_user" "$runas_out"
+        return $?
+      fi
     fi
+    rm -f "$seed_err"
     _redeem_note 9 seeds "known_hosts and onboarding.env written in $home"
   fi
   _redeem_receipt running
@@ -3812,16 +4004,37 @@ $ent_line"
   # -- STEP 12: close the invitation ----------------------------------------
   _invite_load_expect "$id" >/dev/null 2>&1 || {
     _redeem_fail "step 12 (invitation): '$id' no longer loads" 78; return 78; }
-  if [ "$INVITE_STATE" = "redeemed" ]; then
+  # THE ONE STATE THIS STEP MAY FIND ALREADY DONE is the one it was going to
+  # write: redeemed, by the identity in hand. Step 1 refuses a row that is not
+  # effectively open, so anything else here is a row that MOVED under the run,
+  # and the recheck below is what refuses it.
+  if [ "$INVITE_STATE" = "redeemed" ] && [ "$INVITE_REDEEMED_LOGIN" = "$identity" ]; then
     _redeem_note 12 invitation "already done"
   else
     _REGW_EXPECT_INV_STATE="redeemed"
     _REGW_EXPECT_INV_REDEEMED_LOGIN="$identity"
     _REGW_EXPECT_INV_REDEEMED_AT="$(date -u +%s)"
+    # _invite_load_expect re-took the recheck snapshot from ITS read; the
+    # snapshot that decides this write is step 1's. Overwritten here, after
+    # the loader and before the write, so _invite_validate_row compares the
+    # row it finds under the lock against the row this run was allowed to
+    # open - not against the row it read a moment ago.
+    _REGW_RECHECK_INV_STATE="$inv1_state"
+    _REGW_RECHECK_INV_TOKEN_SHA256="$inv1_digest"
+    _REGW_RECHECK_INV_REDEEMED_LOGIN="$inv1_login"
+    _REGW_RECHECK_INV_REDEEMED_AT="$inv1_at"
     local content
     content="$(_invite_compose "$id")" || { _redeem_fail "step 12 (invitation): a field carries a control character" 64; return 64; }
     out="$(registry_invite_replace "$id" "$content" _invite_validate_row 2>&1)"; rc=$?
-    [ "$rc" -eq 0 ] || { _redeem_fail "step 12 (invitation) failed: $out" "$rc"; return "$rc"; }
+    if [ "$rc" -ne 0 ]; then
+      local now_state
+      now_state="$( registry_invite_load "$id" >/dev/null 2>&1; printf '%s' "$INVITE_STATE" )"
+      if [ "$now_state" != "$inv1_state" ]; then
+        _redeem_fail "step 12 (invitation): the invitation changed while redeeming (STATE=$now_state); nothing further written - the steps already done are left in place and a rerun with a fresh invitation resumes them" 70
+        return 70
+      fi
+      _redeem_fail "step 12 (invitation) failed: $out" "$rc"; return "$rc"
+    fi
     _redeem_note 12 invitation "$id redeemed by $identity"
   fi
   _redeem_receipt done

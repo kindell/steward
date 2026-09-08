@@ -4881,15 +4881,30 @@ registry_invite_mint_id() {
 # like a token, and the digest of a short token is a perfectly valid digest -
 # the weakness would be invisible in the row and in the link. base64 of 32
 # bytes is 44 characters with one '=' of padding, so 43 after stripping it.
+#
+# A TOKEN NEVER BEGINS WITH A HYPHEN. base64url's alphabet contains '-', so
+# one token in sixty-four used to come out looking like a command-line flag -
+# and `steward invite redeem <token>` then refused it with "unknown flag",
+# rc 64, on a link that was perfectly valid. The person could not redeem it,
+# and nobody could tell why from the row. Re-rolling costs a hundredth of a
+# bit of entropy and removes the whole class.
 registry_invite_mint_token() {
-  local raw tok
-  raw="$(head -c 32 /dev/urandom 2>/dev/null | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')"
-  tok="$raw"
-  if [ "${#tok}" -lt 43 ]; then
-    echo "registry: REFUSING - could not read 32 bytes of randomness for an invite token" >&2
-    return 70
-  fi
-  printf '%s\n' "$tok"
+  local raw tok tries=0
+  while [ "$tries" -lt 8 ]; do
+    raw="$(head -c 32 /dev/urandom 2>/dev/null | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')"
+    tok="$raw"
+    if [ "${#tok}" -lt 43 ]; then
+      echo "registry: REFUSING - could not read 32 bytes of randomness for an invite token" >&2
+      return 70
+    fi
+    case "$tok" in
+      -*) tries=$((tries+1)); continue ;;
+    esac
+    printf '%s\n' "$tok"
+    return 0
+  done
+  echo "registry: REFUSING - could not mint an invite token that does not open with a hyphen" >&2
+  return 70
 }
 
 # registry_invite_for_digest <hex> - which invitation a presented token belongs

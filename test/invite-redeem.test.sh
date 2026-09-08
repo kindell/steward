@@ -15,6 +15,9 @@ bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 no()  { case "$2" in *"$3"*) bad "$1" "found '$3' in: $2" ;; *) ok "$1" ;; esac; }
+# an EXACT argv line in the recorded log, field by field - a substring test
+# would pass on an invocation that carried extra words
+argv_has() { if grep -Fxq -- "$3" "$2" 2>/dev/null; then ok "$1"; else bad "$1" "no line exactly '$3'"; fi; }
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 echo "invite-redeem"
 
@@ -23,11 +26,31 @@ mkdir -p "$FX/product/bin" "$FX/product/lib" "$FX/product/linux" "$FX/product/de
 cp "$here/bin/steward"      "$FX/product/bin/steward"
 cp "$here/lib/registry.sh"  "$FX/product/lib/registry.sh"
 chmod 755 "$FX/product/bin/steward"
+# deploy-self: the stub deploys a skeleton into EVERY home that has none, the
+# way the real per-host verb does. It is also THE HOOK the two concurrency
+# tests hang off: a file dropped by the test makes something else change the
+# invitation WHILE this redemption is between step 1 and step 12, which is the
+# only window a shim can reach from outside the process.
 cat > "$FX/product/linux/deploy-self.sh" <<EOF
 #!/bin/bash
 echo "deploy-self \$*" >> "$FX/calls"
-mkdir -p "$FX/home/alice/scripts/lib"
-: > "$FX/home/alice/scripts/lib/registry.sh"
+for h in "$FX"/home/*; do
+  [ -d "\$h" ] || continue
+  mkdir -p "\$h/scripts/lib"
+  : > "\$h/scripts/lib/registry.sh"
+done
+if [ -f "$FX/hook-revoke" ]; then
+  hid="\$(cat "$FX/hook-revoke")"; rm -f "$FX/hook-revoke"
+  bash "$FX/product/bin/steward" invite revoke "\$hid" >/dev/null 2>&1
+fi
+if [ -f "$FX/hook-close" ]; then
+  set -- \$(cat "$FX/hook-close"); rm -f "$FX/hook-close"
+  hconf="\$STEWARD_ESTATE_ROOT/invites.d/\$1.conf"
+  hbody="\$(grep -v '^STATE=' "\$hconf" | grep -v '^REDEEMED_')"
+  { printf '%s\n' "\$hbody"
+    printf 'STATE="redeemed"\nREDEEMED_LOGIN="%s"\nREDEEMED_AT="%s"\n' "\$2" "\$(date -u +%s)"
+  } > "\$hconf"
+fi
 exit 0
 EOF
 cat > "$FX/product/desk/snapshot.sh" <<EOF
@@ -86,12 +109,20 @@ echo "$FX/home/\$1"
 EOF
 chmod 755 "$FX/bin/homelookup"
 
-# sudo: records argv, then EITHER models the helper OR runs the rest of the
-# command locally. Modelling the helper is what makes the account appear, so a
-# second run can find the mark and skip the step.
+# sudo: records argv (once as a line for eyeballing, once pipe-separated so a
+# test can assert one invocation EXACTLY), then EITHER models the helper OR
+# runs the rest of the command locally. Modelling the helper is what makes the
+# account appear, so a second run can find the mark and skip the step.
+#
+# FIX_SUDO_MODE is the fixture's own knob - nothing in the product reads it.
+# It models the four ways this call can go wrong on a real host: sudo cannot
+# execute the helper, sudo wants a password, the helper itself refuses, and
+# sudo declines the -u runas the five in-home writes need.
 cat > "$FX/bin/sudo" <<EOF
 #!/bin/bash
 echo "sudo \$*" >> "$FX/calls"
+line="sudo"; for a in "\$@"; do line="\$line|\$a"; done
+printf '%s\n' "\$line" >> "$FX/argv"
 args=()
 user=""
 while [ \$# -gt 0 ]; do
@@ -101,13 +132,23 @@ while [ \$# -gt 0 ]; do
     *) args+=("\$1"); shift ;;
   esac
 done
+mode="\${FIX_SUDO_MODE:-normal}"
 case "\${args[0]:-}" in
   */steward-account-helper)
+    case "\$mode" in
+      nohelper) echo "sudo: unable to execute \${args[0]}: No such file or directory" >&2; exit 1 ;;
+      password) echo "sudo: a password is required" >&2; exit 1 ;;
+      refuse)   echo "helper: REFUSING - '\${args[2]}' is a reserved account name" >&2; exit 64 ;;
+    esac
     mkdir -p "$FX/home/\${args[2]}/.ssh"
     echo "helper: account \${args[2]} created"
     echo "helper: tmpfiles /etc/tmpfiles.d/steward-rig-\${args[2]}.conf"
     exit 0 ;;
 esac
+if [ -n "\$user" ] && [ "\$mode" = "norunas" ]; then
+  echo "sudo: sorry, this account is not allowed to run that command as \$user" >&2
+  exit 1
+fi
 exec "\${args[@]}"
 EOF
 chmod 755 "$FX/bin/sudo"
@@ -116,19 +157,47 @@ cat > "$FX/bin/ssh-keygen" <<EOF
 echo "ssh-keygen \$*" >> "$FX/calls"
 f=""; prev=""
 for a in "\$@"; do [ "\$prev" = "-f" ] && f="\$a"; prev="\$a"; done
-[ -n "\$f" ] && { mkdir -p "\$(dirname "\$f")"; printf 'PRIVATE\n' > "\$f"; printf 'ssh-ed25519 AAAANEWKEY new\n' > "\$f.pub"; }
+if [ -n "\$f" ]; then
+  mkdir -p "\$(dirname "\$f")"
+  printf 'PRIVATE\n' > "\$f"
+  if [ "\${FIX_PUB_MODE:-}" = "twoline" ]; then
+    printf 'ssh-ed25519 AAAANEWKEY new\nssh-ed25519 AAAAINJECTED elsewhere\n' > "\$f.pub"
+  else
+    printf 'ssh-ed25519 AAAANEWKEY new\n' > "\$f.pub"
+  fi
+fi
 exit 0
 EOF
 chmod 755 "$FX/bin/ssh-keygen"
 cat > "$FX/bin/ssh-keyscan" <<EOF
 #!/bin/bash
 echo "ssh-keyscan \$*" >> "$FX/calls"
+[ "\${FIX_KEYSCAN:-}" = "empty" ] && exit 0
 echo "|1|hashed|hashed ssh-ed25519 AAAAHOSTKEY"
 exit 0
 EOF
 chmod 755 "$FX/bin/ssh-keyscan"
+# mktemp: a pass-through that carries ONE hook. A bare `mktemp` (no template)
+# is what the membership step asks for immediately after it has read the
+# entity and before it takes the register's write lock - the window an entity
+# change has to land in for the under-lock recheck to be the thing that
+# catches it. Every other mktemp in the run passes a template, so the hook
+# cannot fire on the wrong one.
+MKTEMP_REAL="$(command -v mktemp)"
+cat > "$FX/bin/mktemp" <<EOF
+#!/bin/bash
+if [ \$# -eq 0 ] && [ -f "$FX/hook-entity" ]; then
+  hm="\$(cat "$FX/hook-entity")"; rm -f "$FX/hook-entity"
+  printf 'NAME="Acme"\nMEMBERS="%s"\n' "\$hm" > "\$STEWARD_ESTATE_ROOT/entities.d/acme.conf"
+fi
+exec "$MKTEMP_REAL" "\$@"
+EOF
+chmod 755 "$FX/bin/mktemp"
 : > "$FX/calls"
+: > "$FX/argv"
 
+# The fixture's knobs, all read by the shims above and by nothing else.
+FIX_SUDO_MODE=""; FIX_PUB_MODE=""; FIX_KEYSCAN=""; FIX_ENTITY_DIR=""
 run() {
   ( export PATH="$FX/bin:$PATH"
     export HOME="$HUBHOME"
@@ -136,6 +205,12 @@ run() {
     export STEWARD_CONFIG_FILE="$FX/no-such-config"
     export STEWARD_HOME_LOOKUP_CMD="$FX/bin/homelookup"
     export STEWARD_AUTHORIZED_KEYS="$HUBHOME/.ssh/authorized_keys"
+    # THIS MACHINE IS THE HOST THE INVITATIONS NAME. Redemption acts locally -
+    # helper, keys, seeds - so it refuses an invitation for another host, and
+    # without this the fixture's own host slug would never match.
+    export STEWARD_SELF_HOST="host-a"
+    export FIX_SUDO_MODE FIX_PUB_MODE FIX_KEYSCAN
+    [ -n "$FIX_ENTITY_DIR" ] && export STEWARD_ENTITY_DIR="$FIX_ENTITY_DIR"
     bash "$S" "$@" )
 }
 
@@ -149,6 +224,7 @@ INV="$(ls "$ROOT/invites.d" | sed 's/\.conf$//' | head -1)"
 out="$(run invite redeem "$TOKEN" --identity oidc:issuer-a:SUB-1 --email alice@example.test 2>&1)"; rc=$?
 is  "redeem succeeds" "$rc" "0"
 has "step 1 names the invitation" "$out" "1/12"
+has "step 10 names the fragment the helper placed" "$out" "10/12 rig-socket-dir: /etc/tmpfiles.d/steward-rig-alice.conf"
 has "step 12 closes the row" "$out" "12/12"
 
 echo "== the rows redemption wrote =="
@@ -170,6 +246,21 @@ has "and the row carries the estate root" "$(cat "$HUBHOME/.ssh/authorized_keys"
 has "the account carries the delivery key" "$(cat "$FX/home/alice/.ssh/authorized_keys")" "bus-relay-deliver"
 has "and it is the hub's key" "$(cat "$FX/home/alice/.ssh/authorized_keys")" "AAAAHUBKEY"
 has "restrict on both" "$(cat "$FX/home/alice/.ssh/authorized_keys")" "restrict,command="
+# THE HUB'S OWN LINE, READ FROM THE HUB'S OWN FILE. The assertion above reads
+# the account's file, and the line that authorizes something on the machine
+# running this verb is the other one: without `restrict,` it is a shell.
+has "the hub's line opens with restrict" "$(head -1 "$HUBHOME/.ssh/authorized_keys")" "restrict,command=\"STEWARD_ESTATE_ROOT="
+is  "and the hub's file gained exactly one line" "$(wc -l < "$HUBHOME/.ssh/authorized_keys" | tr -d ' ')" "1"
+
+echo "== the five in-home writes went through sudo -n -u, argv for argv =="
+AH="$FX/home/alice"
+argv_has "the helper, as root" "$FX/argv" "sudo|-n|/usr/local/sbin/steward-account-helper|add|alice"
+argv_has "the relay keygen, as the account" "$FX/argv" \
+  "sudo|-n|-u|alice|ssh-keygen|-q|-t|ed25519|-N||-f|$AH/.ssh/id_busrelay_$sid|-C|host-a-alice-acme-alice"
+argv_has "reading the relay public key" "$FX/argv" "sudo|-n|-u|alice|cat|$AH/.ssh/id_busrelay_$sid.pub"
+argv_has "installing the delivery key" "$FX/argv" "sudo|-n|-u|alice|tee|-a|$AH/.ssh/authorized_keys"
+argv_has "seeding known_hosts" "$FX/argv" "sudo|-n|-u|alice|tee|-a|$AH/.ssh/known_hosts"
+argv_has "writing onboarding.env" "$FX/argv" "sudo|-n|-u|alice|tee|$AH/onboarding.env"
 
 echo "== the seeds the first ssh needs =="
 has "the hub's host key is in known_hosts" "$(cat "$FX/home/alice/.ssh/known_hosts")" "AAAAHOSTKEY"
@@ -220,9 +311,269 @@ is  "the resumed redemption succeeds" "$rc" "0"
 has "step 2 was already done" "$out" "2/12 principal: already done"
 has "step 4 was already done" "$out" "4/12 account: already done"
 has "step 5 still ran" "$out" "5/12 membership:"
+has "step 10 is named in this run too" "$out" "10/12 rig-socket-dir: already done"
 has "the entity gained the second member" "$(cat "$ROOT/entities.d/acme.conf")" "bo"
 calls="$(cat "$FX/calls")"
 no  "and nothing re-created the account" "$calls" "steward-account-helper add bo"
+
+# issue <principal> [more issue flags] - one invitation, leaving its token in
+# TOK and its id in INVID. Every scenario below needs its own invitation, and
+# an invitation is consumed by the run that redeems it.
+issue() {
+  local p="$1"; shift
+  local o l
+  o="$(run invite issue --name "$p Example" --principal "$p" --entity acme --host host-a "$@" 2>&1)"
+  l="$(printf '%s\n' "$o" | grep -o 'https://desk.example.test/desk/invite/[A-Za-z0-9_-]*' | head -1)"
+  TOK="${l##*/}"
+  INVID="$(grep -l "PRINCIPAL=\"$p\"" "$ROOT"/invites.d/*.conf | tail -1)"
+  INVID="$(basename "$INVID" .conf)"
+  [ -n "$TOK" ] || bad "the fixture can issue for $p" "no link in: $o"
+}
+
+echo "== a revoke that lands mid-redemption is refused, not overwritten =="
+# THE ROW IS SNAPSHOTTED AT STEP 1 AND THE SNAPSHOT IS WHAT STEP 12 COMPARES
+# AGAINST, under the register's own write lock. Without that, step 12 re-reads
+# the row it is about to close, sees the revoked state, and publishes over it -
+# the verb would report success on an invitation somebody had just withdrawn.
+issue tam
+printf '%s\n' "$INVID" > "$FX/hook-revoke"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-t:SUB-T 2>&1)"; rc=$?
+is  "a revoke landing during the run refuses, rc 70" "$rc" "70"
+has "and says the invitation changed under it" "$out" "changed while redeeming"
+has "the row is still revoked" "$(cat "$ROOT/invites.d/$INVID.conf")" 'STATE="revoked"'
+no  "and no redemption was recorded on it" "$(cat "$ROOT/invites.d/$INVID.conf")" "REDEEMED_"
+
+echo "== a relay .pub that is not one key line never reaches the hub =="
+# The .pub is read out of the NEW account's home - a file that account's owner
+# can write. A second line in it would be a second authorized_keys line on the
+# hub, without the forced command, i.e. a shell on the machine that runs the
+# estate.
+issue rex
+hub_before="$(cat "$HUBHOME/.ssh/authorized_keys")"
+FIX_PUB_MODE="twoline"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-r:SUB-R 2>&1)"; rc=$?
+FIX_PUB_MODE=""
+is  "a two-line public key refuses, rc 70" "$rc" "70"
+has "and names the file it refused" "$out" "id_busrelay_"
+is  "the hub's authorized_keys is byte for byte what it was" "$(cat "$HUBHOME/.ssh/authorized_keys")" "$hub_before"
+no  "and the second key never landed" "$(cat "$HUBHOME/.ssh/authorized_keys")" "AAAAINJECTED"
+
+echo "== rc 77 is 'sudo could not run it', rc 70 is 'it ran and said no' =="
+# The discriminator cannot be the exit status - sudo passes the command's
+# through - so it is the output, and it has to be anchored: the helper's own
+# binary name ENDS in "-helper", so sudo's "unable to execute
+# /usr/local/sbin/steward-account-helper: ..." carries the substring "helper: "
+# without a single line of the helper's in it.
+issue mia
+MR="$HUBHOME/.local/state/fixture-state/invites/$INVID.receipt.json"
+FIX_SUDO_MODE="nohelper"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "sudo that cannot execute the helper is rc 77" "$rc" "77"
+has "and the message names the sudoers line" "$out" "NOPASSWD"
+has "and quotes sudo's own words" "$out" "unable to execute"
+FIX_SUDO_MODE="password"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "sudo that wants a password is rc 77" "$rc" "77"
+has "and quotes sudo's own words" "$out" "a password is required"
+FIX_SUDO_MODE="refuse"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "a helper that ran and refused is rc 70" "$rc" "70"
+has "and quotes the helper's own line" "$out" "helper: REFUSING"
+no  "and does not send the operator to sudoers" "$out" "NOPASSWD"
+
+echo "== the five in-home writes name sudo when sudo is what refused =="
+# The spec's single sudoers line covers the helper and nothing else, so on a
+# host configured to exactly that line every `sudo -n -u <user>` in step 8 and
+# step 9 fails - and the operator used to be told the key could not be
+# generated, with no mention of sudo anywhere.
+FIX_SUDO_MODE="norunas"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "sudo refusing the runas is rc 77" "$rc" "77"
+has "and names the right this host is missing" "$out" "sudo -n -u mia"
+has "and quotes sudo's own words" "$out" "not allowed to run"
+is  "the receipt says the run failed" "$(jq -r .state "$MR")" "failed"
+has "and the receipt names sudo" "$(jq -r '.lines|join(" ")' "$MR")" "sudo"
+
+echo "== a seed step that produced nothing is a failure, not a receipt =="
+FIX_SUDO_MODE=""; FIX_KEYSCAN="empty"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "an ssh-keyscan that answered nothing is rc 70" "$rc" "70"
+has "and names known_hosts" "$out" "known_hosts"
+is  "and known_hosts holds nothing" "$(cat "$FX/home/mia/.ssh/known_hosts" 2>/dev/null | wc -c | tr -d ' ')" "0"
+FIX_KEYSCAN=""
+out="$(run invite redeem "$TOK" --identity oidc:issuer-m:SUB-M 2>&1)"; rc=$?
+is  "the run that follows all of them finishes" "$rc" "0"
+has "step 8 was already done" "$out" "8/12 bus: already done"
+has "step 9 ran this time" "$out" "9/12 seeds:"
+
+echo "== a token is never mistaken for a flag =="
+# base64url's alphabet contains '-', so one minted token in sixty-four used to
+# open with a hyphen - and the verb refused that perfectly valid link with
+# "unknown flag", rc 64. The minter no longer produces one, and `--` is there
+# for the tokens minted before it stopped.
+dashy=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 \
+         33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64; do
+  t="$( . "$here/lib/registry.sh"; registry_invite_mint_token )"
+  case "$t" in -*) dashy=$((dashy+1)) ;; esac
+done
+is  "sixty-four minted tokens, none opening with a hyphen" "$dashy" "0"
+issue tok
+out="$(run invite redeem --identity oidc:issuer-k:SUB-K -- "$TOK" 2>&1)"; rc=$?
+is  "and a token handed over after -- is redeemed" "$rc" "0"
+
+echo "== an invitation for another machine is refused before anything is made =="
+# Steps 3, 8, 9 and 10 all act on the LOCAL machine - the helper through local
+# sudo, the account database, files under the local home - so an invitation
+# naming another host would build the account here and only fall over at the
+# skeleton deploy, with the account, the keys and the seeds already made.
+printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="operator"\n' > "$ROOT/hosts.d/host-b.conf"
+issue fay --host host-b
+: > "$FX/argv"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-f:SUB-F 2>&1)"; rc=$?
+is  "an invitation for another host refuses, rc 65" "$rc" "65"
+has "and names the host it is for" "$out" "host-b"
+is  "and no sudo ran at all" "$(wc -l < "$FX/argv" | tr -d ' ')" "0"
+if [ -e "$ROOT/principals.d/fay.conf" ]; then bad "and no principal row was written" "fay.conf exists"
+else ok "and no principal row was written"; fi
+
+echo "== a principal that exists with ANOTHER identity stops the resumed run =="
+# The identity gate at step 1 answers "does somebody else hold this identity";
+# this is the other half - does the principal this run is finishing actually
+# carry the identity it is about to record in the invitation.
+issue eli
+printf 'NAME="Eli Example"\nOIDC_LOGIN="issuer-e:OTHER"\n' > "$ROOT/principals.d/eli.conf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-e:SUB-E 2>&1)"; rc=$?
+is  "a principal row that does not carry the identity refuses, rc 65" "$rc" "65"
+has "and says which principal and why" "$out" "another identity"
+has "and names the principal" "$out" "eli"
+
+echo "== a membership change that lands mid-step is refused, not lost =="
+# Two redemptions into the same entity, or an operator's own membership edit
+# landing during one, used to end with one of the two memberships silently
+# gone: the staged row was compared only against what THIS run intended.
+issue uli
+mkdir -p "$FX/home/uli/.ssh"
+printf 'NAME="Uli Example"\nOIDC_LOGIN="issuer-u:SUB-U"\n' > "$ROOT/principals.d/uli.conf"
+printf 'PRINCIPAL="uli"\nHOST="host-a"\nUSERNAME="uli"\n' > "$ROOT/accounts.d/uli-host-a.conf"
+members_before="$(sed -n 's/^MEMBERS="\(.*\)"$/\1/p' "$ROOT/entities.d/acme.conf")"
+printf '%s zoe\n' "$members_before" > "$FX/hook-entity"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-u:SUB-U 2>&1)"; rc=$?
+is  "an entity that moved under the run refuses, rc 70" "$rc" "70"
+has "and says the entity changed" "$out" "changed while redeeming"
+has "the concurrent member is still a member" "$(cat "$ROOT/entities.d/acme.conf")" "zoe"
+no  "and this run's member never landed" "$(cat "$ROOT/entities.d/acme.conf")" "uli"
+
+echo "== a run whose every earlier mark is on disk does only step 12 =="
+# The resumption design is "ask the machine, step by step" - so every step
+# needs its already-done branch exercised, and the only way to reach the ones
+# past step 4 is a fixture that places their marks by hand.
+issue cy
+mkdir -p "$FX/home/cy/.ssh" "$FX/home/cy/scripts/lib"
+printf 'NAME="Cy Example"\nOIDC_LOGIN="issuer-c:SUB-C"\n' > "$ROOT/principals.d/cy.conf"
+printf 'PRINCIPAL="cy"\nHOST="host-a"\nUSERNAME="cy"\n' > "$ROOT/accounts.d/cy-host-a.conf"
+cy_members="$(sed -n 's/^MEMBERS="\(.*\)"$/\1/p' "$ROOT/entities.d/acme.conf")"
+printf 'NAME="Acme"\nMEMBERS="%s cy"\n' "$cy_members" > "$ROOT/entities.d/acme.conf"
+run registry login add cy-claude-max --principal cy --account cy@example.test \
+    --provider claude-max --config-dir '~/.claude-logins/claude-max' --legal-owner cy >/dev/null 2>&1
+cy_sess="$(run registry session add --account cy-host-a --entity acme --slug acme-cy \
+           --repo "$FX/home/cy" --host host-a --login cy-claude-max --json 2>/dev/null)"
+csid="$(printf '%s' "$cy_sess" | jq -r '.id // empty' 2>/dev/null)"
+: > "$FX/home/cy/.ssh/id_busrelay_$csid"
+printf 'restrict,command="seeded bus-relay-in %s" ssh-ed25519 AAAACY cy\n' "$csid" >> "$HUBHOME/.ssh/authorized_keys"
+printf 'restrict,command="seeded bus-relay-deliver" ssh-ed25519 AAAAHUBKEY hub\n' > "$FX/home/cy/.ssh/authorized_keys"
+printf 'seeded\n' > "$FX/home/cy/.ssh/known_hosts"
+printf 'STEWARD_ESTATE_ROOT=seeded\n' > "$FX/home/cy/onboarding.env"
+: > "$FX/home/cy/scripts/lib/registry.sh"
+: > "$FX/calls"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-c:SUB-C 2>&1)"; rc=$?
+is  "the fully marked run succeeds" "$rc" "0"
+has "step 2 already done" "$out" "2/12 principal: already done"
+has "step 3 already done" "$out" "3/12 account-unix: already done"
+has "step 4 already done" "$out" "4/12 account: already done"
+has "step 5 already done" "$out" "5/12 membership: already done"
+has "step 6 already done" "$out" "6/12 login: already done"
+has "step 7 already done, by the id it minted last time" "$out" "7/12 session: already done ($csid)"
+has "step 8 already done" "$out" "8/12 bus: already done"
+has "step 9 already done" "$out" "9/12 seeds: already done"
+has "step 10 already done" "$out" "10/12 rig-socket-dir: already done"
+has "step 11 already done" "$out" "11/12 skeleton: already done"
+has "and step 12 still closed the row" "$out" "12/12 invitation: $INVID redeemed"
+no  "and nothing on the host was touched" "$(cat "$FX/calls")" "steward-account-helper add cy"
+
+echo "== an invitation closed under the run BY THIS IDENTITY is already done =="
+issue dee
+printf '%s oidc:issuer-d:SUB-D\n' "$INVID" > "$FX/hook-close"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-d:SUB-D 2>&1)"; rc=$?
+is  "a row that reached the wanted state on its own is rc 0" "$rc" "0"
+has "and step 12 reports already done" "$out" "12/12 invitation: already done"
+
+echo "== every rc 65 this verb can reach =="
+issue gus
+out="$(run invite redeem "$TOK" --identity oidc:issuer-a:SUB-1 2>&1)"; rc=$?
+is  "an identity that belongs to somebody else refuses, rc 65" "$rc" "65"
+has "and names who holds it" "$out" "alice"
+printf 'NAME="One"\nOIDC_LOGIN="issuer-q:DUP"\n' > "$ROOT/principals.d/dup-one.conf"
+printf 'NAME="Two"\nOIDC_LOGIN="issuer-q:DUP"\n' > "$ROOT/principals.d/dup-two.conf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-q:DUP 2>&1)"; rc=$?
+is  "an identity that maps to two principals refuses, rc 65" "$rc" "65"
+has "and refuses to pick" "$out" "more than one"
+rm -f "$ROOT/principals.d/dup-one.conf" "$ROOT/principals.d/dup-two.conf"
+issue hal --runtime codex
+out="$(run invite redeem "$TOK" --identity oidc:issuer-h:SUB-H 2>&1)"; rc=$?
+is  "a runtime the session writer cannot finish refuses, rc 65" "$rc" "65"
+has "and names the runtime" "$out" "codex"
+issue jay
+run invite revoke "$INVID" >/dev/null 2>&1
+out="$(run invite redeem "$TOK" --identity oidc:issuer-j:SUB-J 2>&1)"; rc=$?
+is  "a revoked invitation refuses, rc 65" "$rc" "65"
+has "and says which state it is in" "$out" "revoked"
+issue kip
+kconf="$ROOT/invites.d/$INVID.conf"
+kbody="$(grep -v '^EXPIRES_AT=' "$kconf")"
+{ printf '%s\n' "$kbody"; printf 'EXPIRES_AT="1000000000"\n'; } > "$kconf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-p:SUB-P 2>&1)"; rc=$?
+is  "an expired invitation refuses, rc 65" "$rc" "65"
+has "and says which state it is in" "$out" "expired"
+
+echo "== a register that cannot be read is rc 78, never 'empty' =="
+issue vic
+mkdir -p "$FX/home/vic/.ssh"
+printf 'NAME="Vic Example"\nOIDC_LOGIN="issuer-v:SUB-V"\n' > "$ROOT/principals.d/vic.conf"
+printf 'PRINCIPAL="vic"\nHOST="host-a"\nUSERNAME="vic"\n' > "$ROOT/accounts.d/vic-host-a.conf"
+FIX_ENTITY_DIR="$FX/no-such-entities"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-v:SUB-V 2>&1)"; rc=$?
+FIX_ENTITY_DIR=""
+is  "a missing entity register refuses, rc 78" "$rc" "78"
+has "and names the entity it wanted" "$out" "acme"
+cp "$ROOT/entities.d/acme.conf" "$FX/acme.bak"
+printf 'NAME="Acme"\nMEMBERS="never closed\n' > "$ROOT/entities.d/acme.conf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-v:SUB-V 2>&1)"; rc=$?
+cp "$FX/acme.bak" "$ROOT/entities.d/acme.conf"
+is  "an entity row that does not parse refuses, rc 78" "$rc" "78"
+has "and the refusal is this verb's, prefixed" "$out" "steward invite redeem:"
+cp "$ROOT/estate/steward.conf" "$FX/estate.bak"
+printf 'STATE_DIR_NAME="not a name"\n' >> "$ROOT/estate/steward.conf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-v:SUB-V 2>&1)"; rc=$?
+cp "$FX/estate.bak" "$ROOT/estate/steward.conf"
+is  "an estate value this verb needs and cannot read refuses, rc 78" "$rc" "78"
+has "and that refusal is prefixed too" "$out" "steward invite redeem:"
+
+echo "== --json is exactly one JSON value on stdout, refusal or not =="
+issue eve
+printf 'NAME="Eve Example"\nOIDC_LOGIN="issuer-w:OTHER"\n' > "$ROOT/principals.d/eve.conf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-w:SUB-W --json 2>/dev/null)"; rc=$?
+is  "a refusal after step 1 keeps its rc" "$rc" "65"
+is  "and stdout is one line" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1"
+is  "and it is the refusal shape" "$(printf '%s' "$out" | jq -r .ok 2>/dev/null)" "false"
+has "carrying the reason" "$(printf '%s' "$out" | jq -r .reason 2>/dev/null)" "another identity"
+issue ida
+out="$(run invite redeem "$TOK" --identity oidc:issuer-x:SUB-X --json 2>/dev/null)"; rc=$?
+is  "a --json redemption succeeds" "$rc" "0"
+is  "and stdout is one line, not twelve receipt lines and a value" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1"
+is  "and it names the verb" "$(printf '%s' "$out" | jq -r .kind 2>/dev/null)" "redeem"
+is  "and the receipt still carries all twelve lines" \
+    "$(jq -r '.lines | length' "$HUBHOME/.local/state/fixture-state/invites/$INVID.receipt.json")" "12"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
