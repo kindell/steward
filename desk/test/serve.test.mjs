@@ -1179,12 +1179,33 @@ describe('the front listener', () => {
   // same box have two budgets - which is the whole point of reading x-real-ip
   // rather than the socket peer, since the socket peer is always the box.
   it('rate limits the auth paths per visitor address', async () => {
+    // The PROVIDER REDIRECT, not the bare chooser: the chooser does no work
+    // and is not charged for (see the test below), so a budget measured on it
+    // would be a budget nobody spends.
     let last;
-    for (let i = 0; i < 11; i++) last = await front('GET', '/desk/auth/login', { 'x-real-ip': '203.0.113.77' });
+    for (let i = 0; i < 11; i++) last = await front('GET', '/desk/auth/login?provider=stub', { 'x-real-ip': '203.0.113.77' });
     assert.equal(last.status, 429);
     assert.equal(last.headers['retry-after'], '60');
-    const other = await front('GET', '/desk/auth/login', { 'x-real-ip': '203.0.113.78' });
-    assert.equal(other.status, 200);
+    const other = await front('GET', '/desk/auth/login?provider=stub', { 'x-real-ip': '203.0.113.78' });
+    assert.equal(other.status, 303);
+  });
+
+  // THE PAGE THAT DOES NO WORK IS NOT CHARGED FOR. The sec-fetch-dest lock
+  // above is a second lock and it falls open when the header is absent -
+  // Apple Mail, Outlook desktop and Safari before 16.4 send none - so ten
+  // `<img src="https://.../desk/auth/login">` in an HTML mail still reach the
+  // chooser from the victim's own address. If that page cost a hit, the
+  // victim's own first click would be 429 for a minute, renewably. It costs
+  // nothing, so the budget is whole for the requests that do work: no
+  // sec-fetch header here at all, which is exactly the client the lock above
+  // cannot see.
+  it('the bare chooser page does not spend the auth budget', async () => {
+    for (let i = 0; i < 10; i++) {
+      const r = await front('GET', '/desk/auth/login', visitor(24));
+      assert.equal(r.status, 200, 'the chooser answers, request ' + (i + 1));
+    }
+    const go = await front('GET', '/desk/auth/login?provider=stub', visitor(24));
+    assert.equal(go.status, 303, 'the budget must be untouched by ten chooser views');
   });
 
   // AND THE COOKIE PATH HAS ITS OWN, LARGER BUDGET. The auth limiter guards
@@ -1248,8 +1269,10 @@ describe('the front listener', () => {
         assert.equal(r.status, 405, method + ' on an auth path is 405, never 429 and never 404');
       }
     }
-    const ok = await front('GET', '/desk/auth/login', visitor(15));
-    assert.equal(ok.status, 200, 'the budget must be untouched by the refused methods');
+    // The provider redirect is what a hit buys, so that is what proves the
+    // budget is whole - the bare chooser is free either way.
+    const ok = await front('GET', '/desk/auth/login?provider=stub', visitor(15));
+    assert.equal(ok.status, 303, 'the budget must be untouched by the refused methods');
   });
 
   // NEITHER DOES A PATH THIS DESK DOES NOT ANSWER. GET is reachable from any
@@ -1267,8 +1290,8 @@ describe('the front listener', () => {
     for (let i = 0; i < 10; i++) {
       assert.equal((await front('GET', '/desk/auth/logout', visitor(18))).status, 404);
     }
-    const ok = await front('GET', '/desk/auth/login', visitor(18));
-    assert.equal(ok.status, 200, 'the budget must be untouched by the paths the desk does not answer');
+    const ok = await front('GET', '/desk/auth/login?provider=stub', visitor(18));
+    assert.equal(ok.status, 303, 'the budget must be untouched by the paths the desk does not answer');
   });
 
   // AND THE ROUTES THAT DO EXIST ARE NOT SPENDABLE AS SUBRESOURCES. Closing
@@ -1287,6 +1310,8 @@ describe('the front listener', () => {
     // both still get the page - and the budget is still whole for them.
     assert.equal((await front('GET', '/desk/auth/login', from(19, { 'sec-fetch-dest': 'document' }))).status, 200);
     assert.equal((await front('GET', '/desk/auth/login', visitor(19))).status, 200);
+    assert.equal((await front('GET', '/desk/auth/login?provider=stub', from(19, { 'sec-fetch-dest': 'document' }))).status, 303,
+      'and the budget is still whole for the request that does work');
   });
 
   // The 405 names the one method the path answers, so a client that meets it

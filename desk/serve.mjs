@@ -871,6 +871,24 @@ async function handleFront(req, res) {
     const dest = req.headers['sec-fetch-dest'];
     if (dest !== undefined && dest !== 'document') return send(res, 403, FORBIDDEN, FRONT_HEADERS);
 
+    // AND THE BARE CHOOSER IS NOT WORK, SO IT IS NOT CHARGED FOR. The lock
+    // above is a SECOND lock, and it falls open when the header is absent -
+    // Apple Mail, Outlook desktop and Safari before 16.4 send none - so the
+    // HTML-mail vector above still reaches `GET /desk/auth/login` itself and
+    // still spends the victim's ten hits from the victim's own address, and
+    // the victim's first real click is 429 for a minute, renewably.
+    //
+    // The answer is that this page is not a cost. `GET /desk/auth/login` with
+    // no `provider` lists the providers already held in memory: no bridge is
+    // spawned, no provider is contacted, no file is read, no cookie is minted
+    // and nothing is remembered. The three requests that DO work stay metered
+    // - the provider redirect (discovery, a state cookie), the callback (a
+    // token exchange and the bridge) and the logout - so the budget still
+    // bounds everything it was written to bound.
+    if (req.method === 'GET' && path === '/desk/auth/login' && !url.searchParams.has('provider')) {
+      return authLogin(url, res);
+    }
+
     if (!FRONT.limiter.hit(visitor, Date.now())) {
       return send(res, 429, TOO_MANY, Object.assign({}, FRONT_HEADERS, PLAIN, { 'retry-after': '60' }));
     }
