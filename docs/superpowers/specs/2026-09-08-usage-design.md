@@ -1,6 +1,6 @@
 # Usage - what a subscription window has left, who sees it, and what a turn does when it is empty
 
-**Status:** draft 1, 2026-09-08. Written by the hub session of the first estate on
+**Status:** draft 2, 2026-09-08 (draft 1 + the second advisor review of 21:3xZ: sticky exhaustion, unknown never clears confirmed state, money stays in the estate). Written by the hub session of the first estate on
 the operator's relayed decisions of 2026-09-08 (09:15Z, 11:2xZ) and the advisor
 review of 10:2xZ. Estate specs (desk, ping, ledger, api resources) stay in their
 estates and link here; this is the product's spec.
@@ -147,9 +147,20 @@ calls the seam for the row's login. Then:
 |----------|--------|
 | below threshold | run on `MODEL`. |
 | past threshold, below 100 | run on `MODEL`; the alarm in part 3 says so. **A percentage does not predict the size of the next turn** (advisor), so it is not a reason to switch. |
-| 100 with a fresh measurement (age under the window's own resolution, one minute), OR the provider answered the previous turn with a rate limit | take the first entry of `FALLBACK_MODEL` whose own login's window is not exhausted; run there. |
+| 100 with a fresh measurement (age under the window's own resolution, one minute), OR the provider answered the previous turn with a rate limit | the window is CONFIRMED EXHAUSTED (see below); take the first entry of `FALLBACK_MODEL` whose own login's window is not exhausted; run there. |
 | nothing has capacity | leave the letter STAGED - neither acknowledged nor requeued - log `PAUSED until <earliest resets_at>`, exit 75. Not a failed turn. Resume after that time with jitter and a NEW measurement; a rate-limit `retry-after` wins over the reset time when both exist. |
-| `unknown` | run on `MODEL`. The seam being blind is not a reason to move a person's work to another bill. |
+| `unknown` | run on `MODEL` - unless the primary's window is confirmed exhausted, in which case stay where the last turn ran (reserve, or PAUSED). The seam being blind is not a reason to move a person's work to another bill, and it is not a reason to forget what the seam said last time either. |
+
+**A confirmed exhaustion is STICKY** (advisor; the earlier text let a laggy
+provider flap primary -> rate limit -> reserve -> primary in adjacent turns).
+The adapter remembers, per `budget_id` (falling back to the login slug) and
+window, the `resets_at` or `retry-after` that confirmed it. The primary is
+chosen again only when a NEW measurement, taken after that moment,
+shows a NEW window - `resets_at` has moved past the remembered one - or, for a
+`retry-after` with no reset time, when a fresh measurement after it reads
+below 100. A single below-100 reading inside the remembered window is provider
+lag, not capacity. `unknown` never clears the remembered state - the same rule
+the alarm in part 3 already has.
 
 **Every answer is stamped** with the model that gave it: the last line of the
 reply and the ledger entry. A switch that nobody can see afterwards is a switch
@@ -180,9 +191,14 @@ automatic action - the product only makes the sharing visible.
 ## Non-goals
 
 - Buying capacity, rotating keys, or any provider-side action.
-- Money. Cost in currency is the api-resources work (an estate spec): its
-  monthly `openai-api` rows fit this contract as a fourth source and inherit
-  the alarm and the desk projection unchanged.
+- Money. Cost in currency is the api-resources work (an estate spec). Its
+  `openai-api` rows fit this contract ONLY as a derived monthly percentage
+  against a limit the estate's own measurement has verified: `used_percent`
+  and state, nothing else. Amount, limit and currency stay in the estate's
+  measurement and never ride in `note` - `note` is free text for people, not
+  an unspecified JSON field for machines (advisor). Should anybody need money
+  on the desk, the contract grows typed `used_amount`, `limit_amount` and
+  `unit` fields in a spec revision - not by convention.
 - Predicting whether the next turn fits.
 - Reserve for `claude-code` rows.
 
@@ -201,7 +217,10 @@ automatic action - the product only makes the sharing visible.
 4. **The turn.** `FALLBACK_MODEL` in the registry grammar; the adapters' table
    above with a stubbed seam and a stubbed rate-limit answer; the stamp on the
    reply and in the ledger; exit 75 leaves the letter staged (asserted: not
-   acknowledged, not duplicated); the opencode reconcile-before-retry path.
+   acknowledged, not duplicated); the opencode reconcile-before-retry path;
+   the sticky exhaustion with a fixture where a below-100 reading inside the
+   remembered window keeps the reserve and a moved `resets_at` releases it,
+   and one where `unknown` after a confirmed exhaustion stays put.
 
 Each task is a product change: English, ASCII, no estate or person names, tests
 that never touch a real provider, a real socket or a real home.
