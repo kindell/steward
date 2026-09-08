@@ -4574,3 +4574,300 @@ registry_login_apply() {
   CLAUDE_CONFIG_DIR="$dir"; export CLAUDE_CONFIG_DIR
   return 0
 }
+
+# -- INVITES: THE OPERATOR'S WORD, RECORDED BEFORE THE PERSON EXISTS --------
+#
+# Registration is CLOSED: the invitation is the only door. A row here says a
+# named human may become a principal with an account on one host, and carries
+# the DIGEST of the one-time link token - never the token. A readable register
+# is therefore not an open door, which matters because this register is in git
+# and on every host the deploy reaches.
+#
+# THIS REGISTER IS NEVER SOURCED, for the same reason logins.d is not: the row
+# is a security artifact, and `source` on it means any line can run as the
+# steward account. The parser below is the login reader's, adapted - anchored
+# KEY="VALUE" per line, an allowlist of keys, no substitutions in values.
+_REGISTRY_INVITE_REQUIRED="NAME PRINCIPAL ENTITY HOST RUNTIME PROVIDER TOKEN_SHA256 ISSUED_BY ISSUED_AT EXPIRES_AT STATE"
+_REGISTRY_INVITE_OPTIONAL="REDEEMED_LOGIN REDEEMED_AT"
+# THE STORED VOCABULARY IS THREE, NOT FOUR. `expired` is a MEASUREMENT taken on
+# every read (EXPIRES_AT against the clock), never a written state: a row whose
+# validity ran out while nobody looked at it must read as expired the first
+# time anybody does, and a state that needs a writer to become true is a state
+# that is wrong until somebody runs something.
+_REGISTRY_INVITE_STATES="open redeemed revoked"
+
+registry_invite_dir() {
+  if [ -n "${STEWARD_INVITE_DIR:-}" ]; then
+    printf '%s\n' "$STEWARD_INVITE_DIR"
+  else
+    printf '%s\n' "$(_registry_estate_root)/invites.d"
+  fi
+}
+
+# registry_invite_id_valid <id> - "inv-" and exactly eight hex digits. A random
+# slug, never derived from the person: an id that encoded a name would leak the
+# name into every log line that carries the id.
+registry_invite_id_valid() {
+  case "${1:-}" in inv-*) : ;; *) return 1 ;; esac
+  case "${1#inv-}" in *[!0123456789abcdef]*|"") return 1 ;; esac
+  [ "${#1}" -eq 12 ]
+}
+
+registry_invite_list() {
+  local dir; dir="$(registry_invite_dir)"
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING to list invites - the invite register does not exist: $dir" >&2
+    return 78
+  fi
+  local f
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    basename "$f" .conf
+  done | sort
+}
+
+registry_invite_load() {
+  INVITE_ID=""; INVITE_NAME=""; INVITE_PRINCIPAL=""; INVITE_ENTITY=""; INVITE_HOST=""
+  INVITE_RUNTIME=""; INVITE_PROVIDER=""; INVITE_TOKEN_SHA256=""; INVITE_ISSUED_BY=""
+  INVITE_ISSUED_AT=""; INVITE_EXPIRES_AT=""; INVITE_STATE=""
+  INVITE_REDEEMED_LOGIN=""; INVITE_REDEEMED_AT=""; INVITE_EFFECTIVE_STATE=""
+  local id="${1:-}" dir f
+  if ! registry_invite_id_valid "$id"; then
+    echo "registry: invalid invite id '$(registry_printable "$id")' (expected inv- and eight hex digits)" >&2
+    return 1
+  fi
+  dir="$(registry_invite_dir)" || return 78
+  if [ -L "$dir" ]; then
+    echo "registry: the invite register is a symlink, refusing: $dir" >&2
+    return 78
+  fi
+  f="$dir/$id.conf"
+  if [ -L "$f" ]; then
+    echo "registry: invite '$id' is a symlink, refusing: $f" >&2
+    return 78
+  fi
+  if [ ! -f "$f" ]; then
+    echo "registry: no such invite: $id" >&2
+    return 1
+  fi
+  local mode; mode="$(_registry_mode_of "$f")" || {
+    echo "registry: cannot read the mode of invite '$id': $f" >&2; return 78; }
+  if _registry_group_or_other_writable "$mode"; then
+    echo "registry: invite '$id' is group- or other-writable (mode $mode), refusing: $f" >&2
+    return 78
+  fi
+
+  local lineno=0 line key value seen="" k
+  local v_NAME="" v_PRINCIPAL="" v_ENTITY="" v_HOST="" v_RUNTIME="" v_PROVIDER=""
+  local v_TOKEN_SHA256="" v_ISSUED_BY="" v_ISSUED_AT="" v_EXPIRES_AT="" v_STATE=""
+  local v_REDEEMED_LOGIN="" v_REDEEMED_AT=""
+  local allowed=" $_REGISTRY_INVITE_REQUIRED $_REGISTRY_INVITE_OPTIONAL "
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno+1))
+    case "$line" in
+      *[[:cntrl:]]*)
+        echo "registry: $f:$lineno: control character in the line, refusing" >&2
+        return 1 ;;
+    esac
+    case "$line" in ''|'#'*) continue ;; esac
+    # THE KEY MAY CARRY DIGITS, and the login reader's `[A-Z_]+` may not - the
+    # one character of difference between the two parsers. This register's own
+    # TOKEN_SHA256 is a key with digits in it, so the login pattern refuses
+    # every valid row here on the line that matters most. The shape is still
+    # anchored end to end, and the allowlist below is what actually decides
+    # which keys exist; widening the character class widens nothing else.
+    if ! [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=\"([^\"]*)\"$ ]]; then
+      echo "registry: $f:$lineno: each setting must be written exactly KEY=\"VALUE\" on its own line" >&2
+      return 1
+    fi
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    case "$allowed" in
+      *" $key "*) ;;
+      *) echo "registry: $f:$lineno: unknown key '$key' (allowed:$allowed)" >&2
+         return 1 ;;
+    esac
+    case " $seen " in
+      *" $key "*) echo "registry: $f:$lineno: duplicate key '$key'" >&2; return 1 ;;
+    esac
+    seen="$seen $key"
+    case "$value" in
+      *'$'*|*'`'*|*'\'*)
+        echo "registry: $f:$lineno: '$key' contains a substitution or escape character, refusing" >&2
+        return 1 ;;
+    esac
+    eval "v_$key=\$value"
+  done < "$f"
+
+  for k in $_REGISTRY_INVITE_REQUIRED; do
+    case " $seen " in
+      *" $k "*) ;;
+      *) echo "registry: $f: missing required key '$k'" >&2; return 1 ;;
+    esac
+  done
+
+  # NAME is the display name of a human: free text, non-empty.
+  if [ -z "$v_NAME" ]; then
+    echo "registry: $f: NAME must not be empty (the invited person's display name)" >&2
+    return 1
+  fi
+  # PRINCIPAL is the slug redemption will MINT - the same form as an entity's
+  # MEMBERS entry and a session's OWNER, because the identity gate compares
+  # them directly.
+  if ! [[ "$v_PRINCIPAL" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    echo "registry: $f: invalid PRINCIPAL '$(registry_printable "$v_PRINCIPAL")' (a-z, then a-z 0-9 and hyphen)" >&2
+    return 1
+  fi
+  local nm
+  for nm in ENTITY HOST ISSUED_BY; do
+    eval "value=\$v_$nm"
+    if ! [[ "$value" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      echo "registry: $f: invalid $nm '$(registry_printable "$value")' (a-z 0-9 and hyphen)" >&2
+      return 1
+    fi
+  done
+  # THE RUNTIME VOCABULARY IS registry_load's OWN (lib/registry.sh, the session
+  # reader): an invitation that names a runtime the session register refuses
+  # would be an invitation nobody can redeem.
+  case "$v_RUNTIME" in
+    claude-code|opencode|codex) ;;
+    *) echo "registry: $f: invalid RUNTIME '$(registry_printable "$v_RUNTIME")' (one of: claude-code opencode codex)" >&2
+       return 1 ;;
+  esac
+  # THE PROVIDER VOCABULARY IS THE LOGIN REGISTER'S, for the same reason:
+  # redemption writes a logins.d row carrying this value.
+  case " $_REGISTRY_LOGIN_PROVIDERS " in
+    *" $v_PROVIDER "*) ;;
+    *) echo "registry: $f: invalid PROVIDER '$(registry_printable "$v_PROVIDER")' (one of: $_REGISTRY_LOGIN_PROVIDERS)" >&2
+       return 1 ;;
+  esac
+  if ! [[ "$v_TOKEN_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "registry: $f: TOKEN_SHA256 must be 64 lowercase hex digits" >&2
+    return 1
+  fi
+  for nm in ISSUED_AT EXPIRES_AT; do
+    eval "value=\$v_$nm"
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+      echo "registry: $f: $nm must be epoch seconds, got '$(registry_printable "$value")'" >&2
+      return 1
+    fi
+  done
+  case " $_REGISTRY_INVITE_STATES " in
+    *" $v_STATE "*) ;;
+    *) echo "registry: $f: invalid STATE '$(registry_printable "$v_STATE")' (one of: $_REGISTRY_INVITE_STATES)" >&2
+       return 1 ;;
+  esac
+  if [ -n "$v_REDEEMED_AT" ] && ! [[ "$v_REDEEMED_AT" =~ ^[0-9]+$ ]]; then
+    echo "registry: $f: REDEEMED_AT must be epoch seconds, got '$(registry_printable "$v_REDEEMED_AT")'" >&2
+    return 1
+  fi
+
+  INVITE_ID="$id"; INVITE_NAME="$v_NAME"; INVITE_PRINCIPAL="$v_PRINCIPAL"
+  INVITE_ENTITY="$v_ENTITY"; INVITE_HOST="$v_HOST"; INVITE_RUNTIME="$v_RUNTIME"
+  INVITE_PROVIDER="$v_PROVIDER"; INVITE_TOKEN_SHA256="$v_TOKEN_SHA256"
+  INVITE_ISSUED_BY="$v_ISSUED_BY"; INVITE_ISSUED_AT="$v_ISSUED_AT"
+  INVITE_EXPIRES_AT="$v_EXPIRES_AT"; INVITE_STATE="$v_STATE"
+  INVITE_REDEEMED_LOGIN="$v_REDEEMED_LOGIN"; INVITE_REDEEMED_AT="$v_REDEEMED_AT"
+  # EXPIRY IS MEASURED HERE AND WRITTEN NOWHERE.
+  INVITE_EFFECTIVE_STATE="$v_STATE"
+  if [ "$v_STATE" = "open" ] && [ "$v_EXPIRES_AT" -le "$(date -u +%s)" ]; then
+    INVITE_EFFECTIVE_STATE="expired"
+  fi
+  return 0
+}
+
+registry_invite_write() {
+  local id="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_invite_dir)" || return 78
+  registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_invite_load "invite"
+}
+
+registry_invite_replace() {
+  local id="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_invite_dir)" || return 78
+  registry_row_replace "$dir" "$id" "$content" "$validate_fn" registry_invite_load "invite"
+}
+
+# registry_invite_mint_id - inv- and eight hex, unused in the register. Same
+# shape as the session id minted by the hub's enroll, and minted the same way:
+# read urandom, assert the shape, check the register, retry a bounded number of
+# times, REFUSE rather than return something unchecked.
+registry_invite_mint_id() {
+  local dir cand tries=0
+  dir="$(registry_invite_dir)" || return 78
+  while [ "$tries" -lt 5 ]; do
+    cand="inv-$(head -c 4 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    if registry_invite_id_valid "$cand" && [ ! -e "$dir/$cand.conf" ]; then
+      printf '%s\n' "$cand"; return 0
+    fi
+    tries=$((tries+1))
+  done
+  echo "registry: could not mint a unique invite id" >&2
+  return 70
+}
+
+# registry_invite_mint_token - 32 bytes of /dev/urandom, base64url, unpadded.
+#
+# THE LENGTH IS ASSERTED, not assumed. A short read from urandom (a restricted
+# container, a broken device) would produce a SHORTER token that still looks
+# like a token, and the digest of a short token is a perfectly valid digest -
+# the weakness would be invisible in the row and in the link. base64 of 32
+# bytes is 44 characters with one '=' of padding, so 43 after stripping it.
+registry_invite_mint_token() {
+  local raw tok
+  raw="$(head -c 32 /dev/urandom 2>/dev/null | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')"
+  tok="$raw"
+  if [ "${#tok}" -lt 43 ]; then
+    echo "registry: REFUSING - could not read 32 bytes of randomness for an invite token" >&2
+    return 70
+  fi
+  printf '%s\n' "$tok"
+}
+
+# registry_invite_for_digest <hex> - which invitation a presented token belongs
+# to. The CALLER digests the token; this function never sees one.
+#
+# EVERY ROW IS LOADED IN A SUBSHELL, the same reason the principal lookup gives:
+# a malformed row must not leak its values into this function's locals.
+registry_invite_for_digest() {
+  local want="${1:-}" dir f id hits=""
+  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || return 1
+  dir="$(registry_invite_dir)" || return 78
+  [ -d "$dir" ] || return 1
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || continue
+    id="$(basename "$f" .conf)"
+    if ( registry_invite_load "$id" >/dev/null 2>&1 && [ "$INVITE_TOKEN_SHA256" = "$want" ] ); then
+      hits="$hits $id"
+    fi
+  done
+  set -- $hits
+  case $# in
+    0) return 1 ;;
+    1) printf '%s\n' "$1"; return 0 ;;
+    *) echo "registry: the token digest matches more than one invite:$hits - refusing to pick" >&2; return 65 ;;
+  esac
+}
+
+# registry_invite_open_for_principal <slug> - the OPEN invitation for a
+# principal, if there is one. Expiry counts: an expired row is not open, so a
+# second invitation for the same person is allowed once the first has run out.
+registry_invite_open_for_principal() {
+  local want="${1:-}" dir f id hits=""
+  [ -n "$want" ] || return 1
+  dir="$(registry_invite_dir)" || return 78
+  [ -d "$dir" ] || return 1
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || continue
+    id="$(basename "$f" .conf)"
+    if ( registry_invite_load "$id" >/dev/null 2>&1 \
+         && [ "$INVITE_PRINCIPAL" = "$want" ] && [ "$INVITE_EFFECTIVE_STATE" = "open" ] ); then
+      hits="$hits $id"
+    fi
+  done
+  set -- $hits
+  case $# in
+    0) return 1 ;;
+    1) printf '%s\n' "$1"; return 0 ;;
+    *) echo "registry: more than one open invite for '$want':$hits" >&2; return 65 ;;
+  esac
+}
