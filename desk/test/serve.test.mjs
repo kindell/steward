@@ -1142,14 +1142,31 @@ describe('the front listener', () => {
   });
 
   // A method this desk would refuse anyway must not cost a rate-limit hit:
-  // otherwise a HEAD sweep of the login path locks a visitor out of logging in.
+  // otherwise a HEAD sweep of the login path locks a visitor out of logging
+  // in. HEAD is in the loop because that is exactly what used to happen - it
+  // passed the method gate, spent a hit and 404ed, and the visitor's own next
+  // GET was 429.
   it('a refused method does not spend the auth budget', async () => {
-    for (let i = 0; i < 12; i++) {
-      const r = await front('DELETE', '/desk/auth/login', visitor(15));
-      assert.equal(r.status, 405, 'DELETE on an auth path is 405, never 429');
+    for (const method of ['DELETE', 'HEAD']) {
+      for (let i = 0; i < 12; i++) {
+        const r = await front(method, '/desk/auth/login', visitor(15));
+        assert.equal(r.status, 405, method + ' on an auth path is 405, never 429 and never 404');
+      }
     }
     const ok = await front('GET', '/desk/auth/login', visitor(15));
     assert.equal(ok.status, 200, 'the budget must be untouched by the refused methods');
+  });
+
+  // The 405 names the one method the path answers, so a client that meets it
+  // is told what to do rather than only what not to.
+  it('a HEAD on an auth path names the method that path answers', async () => {
+    assert.equal((await front('HEAD', '/desk/auth/login', visitor(16))).headers.allow, 'GET');
+    assert.equal((await front('HEAD', '/desk/auth/callback', visitor(16))).headers.allow, 'GET');
+    assert.equal((await front('HEAD', '/desk/auth/logout', visitor(16))).headers.allow, 'POST');
+    // The desk's own pages still answer HEAD - the budget is not theirs.
+    const page = await front('HEAD', '/desk/', from(16, { cookie: sessionFor(IDENTITY) }));
+    assert.equal(page.status, 200);
+    assert.equal(page.body, '');
   });
 
   it('refuses to start on a public bind, without a peer, or with a peer off the tailnet', async () => {

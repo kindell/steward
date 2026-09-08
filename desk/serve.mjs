@@ -761,13 +761,26 @@ async function handleFront(req, res) {
 
   // THE METHOD IS CHECKED BEFORE THE BUDGET IS SPENT. A rate-limit hit is a
   // scarce thing a visitor gets ten of per minute, and a method this desk
-  // would refuse anyway must not cost one of them - a HEAD sweep of
-  // /desk/auth/login would otherwise lock a visitor out of logging in. POST
-  // is a method here only for the logout form.
+  // would refuse anyway must not cost one of them. POST is a method here only
+  // for the logout form.
   const readMethod = req.method === 'GET' || req.method === 'HEAD';
   const logoutPost = req.method === 'POST' && path === '/desk/auth/logout';
   if (!readMethod && !logoutPost) {
     return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow: 'GET, HEAD' }));
+  }
+
+  // AND HEAD IS ONE OF THOSE METHODS ON THE AUTH PATHS. Each of the three
+  // answers exactly one method - GET for the login and the callback, POST for
+  // the logout - and every other method was refused above, so HEAD is the one
+  // that used to reach the limiter, spend a hit and 404. Measured on this
+  // branch: ten HEADs of /desk/auth/login then that visitor's own GET of the
+  // same path was 429, which is verbatim the lockout the paragraph above
+  // exists to prevent. It is refused here, BEFORE the budget, naming the one
+  // method the path does answer. The desk's pages keep HEAD: they are pages,
+  // and a HEAD of one costs a snapshot read and nothing scarce.
+  if (path.startsWith('/desk/auth/') && req.method === 'HEAD') {
+    const allow = path === '/desk/auth/logout' ? 'POST' : 'GET';
+    return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow }));
   }
 
   // THE AUTH PATHS ARE THE ONLY ONES A STRANGER CAN REACH, so they are the
@@ -779,6 +792,7 @@ async function handleFront(req, res) {
     if (!FRONT.limiter.hit(visitor, Date.now())) {
       return send(res, 429, TOO_MANY, Object.assign({}, FRONT_HEADERS, PLAIN, { 'retry-after': '60' }));
     }
+    // GET is the only read method left on these paths: HEAD was refused above.
     if (path === '/desk/auth/login' && req.method === 'GET') return authLogin(url, res);
     if (path === '/desk/auth/callback' && req.method === 'GET') return authCallback(url, cookies, res);
     if (logoutPost) return authLogout(req, res);
