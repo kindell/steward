@@ -1082,6 +1082,45 @@ describe('the front listener', () => {
     assert.equal(other.status, 200);
   });
 
+  // THE WHOLE FLOW, AND THE TOKEN IS THE ONLY THING WRONG. Everything up to
+  // the id_token succeeds - the state cookie verifies, the provider echoes
+  // the state, the code is redeemed - and the desk still refuses, because it
+  // verified the token itself rather than trusting the exchange.
+  it('a bad id_token is 403 with no session cookie and the state cookie cleared', async () => {
+    stub.tokenResponse = { id_token: stub.mintIdToken({ aud: 'other' }), token_type: 'Bearer' };
+    const redeemedBefore = stub.tokenCalls.length;
+    try {
+      const go = await front('GET', '/desk/auth/login?provider=stub', visitor(14));
+      assert.equal(go.status, 303);
+      const state = cookieOf(go).find((c) => c.startsWith('__Host-desk-oauth='));
+      assert.ok(state);
+      const back = await fetch(go.headers.location, { redirect: 'manual' });
+      const cb = new URL(back.headers.get('location'));
+      const done = await front('GET', cb.pathname + cb.search, from(14, { cookie: state }));
+      assert.equal(done.status, 403);
+      assert.equal((done.headers['set-cookie'] || []).some((c) => c.startsWith('__Host-desk-session=')), false,
+        'a refused login must set no session cookie');
+      assert.ok((done.headers['set-cookie'] || []).some((c) => c.startsWith('__Host-desk-oauth=') && /Max-Age=0/.test(c)),
+        'the state cookie must be cleared with the refusal');
+      // The code really was redeemed, so the refusal came from verifying the
+      // token here and not from a gate before the exchange.
+      assert.equal(stub.tokenCalls.length, redeemedBefore + 1);
+    } finally {
+      stub.tokenResponse = null;
+    }
+  });
+
+  // A method this desk would refuse anyway must not cost a rate-limit hit:
+  // otherwise a HEAD sweep of the login path locks a visitor out of logging in.
+  it('a refused method does not spend the auth budget', async () => {
+    for (let i = 0; i < 12; i++) {
+      const r = await front('DELETE', '/desk/auth/login', visitor(15));
+      assert.equal(r.status, 405, 'DELETE on an auth path is 405, never 429');
+    }
+    const ok = await front('GET', '/desk/auth/login', visitor(15));
+    assert.equal(ok.status, 200, 'the budget must be untouched by the refused methods');
+  });
+
   it('refuses to start on a public bind, without a peer, or with a peer off the tailnet', async () => {
     for (const over of [
       { STEWARD_DESK_FRONT_LISTEN: '0.0.0.0:18443', STEWARD_DESK_FRONT_PEER: '127.0.0.1' },

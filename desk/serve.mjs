@@ -731,13 +731,37 @@ function authLogout(req, res) {
   }));
 }
 
+// A PEER REFUSAL IS A LINE PER MINUTE, NOT A LINE PER PACKET. Every request
+// from a peer that is not the box is refused before anything is read, so a
+// scan of the port would otherwise write the journal full - and a log a
+// person cannot read is a log nobody reads. The first refusal is logged at
+// once, because the operator wants to know that it started; after that the
+// minute is counted and one line reports the count.
+let refusedPeers = 0;
+let refusedSince = 0;
+const REFUSAL_LOG_MS = 60000;
+function noteRefusedPeer(addr) {
+  const now = Date.now();
+  if (refusedSince === 0) {
+    refusedSince = now;
+    refusedPeers = 0;
+    return console.error('desk front: refused peer ' + addr);
+  }
+  refusedPeers++;
+  if (now - refusedSince < REFUSAL_LOG_MS) return;
+  console.error('desk front: refused ' + refusedPeers + ' connection(s) from peers other than the box in the last minute');
+  refusedSince = now;
+  refusedPeers = 0;
+}
+
 // handleFront - the whole front request, in the order the gates have to run:
-// the peer first (before a header, a cookie or a path is read), then the rate
-// limiter on the auth paths, then the routes, then the cookie.
+// the peer first (before a header, a cookie or a path is read), then the
+// method, then the rate limiter on the auth paths, then the routes, then the
+// cookie.
 async function handleFront(req, res) {
   const visitor = visitorAddress(req, FRONT.peer);
   if (visitor === null) {
-    console.error('desk front: refused peer ' + normalizeAddr(req.socket.remoteAddress));
+    noteRefusedPeer(normalizeAddr(req.socket.remoteAddress));
     return send(res, 403, PEER_FORBIDDEN, Object.assign({}, FRONT_HEADERS, PLAIN));
   }
 
@@ -750,23 +774,34 @@ async function handleFront(req, res) {
   const path = url.pathname;
   const cookies = parseCookies(req.headers.cookie);
 
+  // THE METHOD IS CHECKED BEFORE THE BUDGET IS SPENT. A rate-limit hit is a
+  // scarce thing a visitor gets ten of per minute, and a method this desk
+  // would refuse anyway must not cost one of them - a HEAD sweep of
+  // /desk/auth/login would otherwise lock a visitor out of logging in. POST
+  // is a method here only for the logout form.
+  const readMethod = req.method === 'GET' || req.method === 'HEAD';
+  const logoutPost = req.method === 'POST' && path === '/desk/auth/logout';
+  if (!readMethod && !logoutPost) {
+    return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow: 'GET, HEAD' }));
+  }
+
   // THE AUTH PATHS ARE THE ONLY ONES A STRANGER CAN REACH, so they are the
   // ones that carry a cost: each one spawns a bridge or talks to a provider.
   // Ten per minute per visitor is far above what a person clicking a login
-  // button does and far below what a scan needs to be useful.
+  // button does and far below what a scan needs to be useful. The 429 still
+  // comes before any provider is contacted.
   if (path.startsWith('/desk/auth/')) {
     if (!FRONT.limiter.hit(visitor, Date.now())) {
       return send(res, 429, TOO_MANY, Object.assign({}, FRONT_HEADERS, PLAIN, { 'retry-after': '60' }));
     }
     if (path === '/desk/auth/login' && req.method === 'GET') return authLogin(url, res);
     if (path === '/desk/auth/callback' && req.method === 'GET') return authCallback(url, cookies, res);
-    if (path === '/desk/auth/logout' && req.method === 'POST') return authLogout(req, res);
+    if (logoutPost) return authLogout(req, res);
     return send(res, 404, NOT_FOUND, FRONT_HEADERS);
   }
 
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow: 'GET, HEAD' }));
-  }
+  // Past the auth block the method is a read: logoutPost is the only other
+  // way through the check above, and its path returned inside that block.
 
   // IDENTITY IS THE COOKIE, AND THE ROW MUST STILL BE THERE. No login header
   // is read on this listener, by any path, ever. A visitor without a valid
