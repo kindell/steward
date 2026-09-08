@@ -146,15 +146,27 @@ mcp_render_document() {
     if [ "${BROWSER_RIG:-}" = "shared" ] && [ -n "${BROWSER_RIG_OWNER:-}" ]; then
       local _owner="$BROWSER_RIG_OWNER" _oid _owner_row _owner_rc _owner_slug
       browser_cdp=""
+      # THE SCAN IS QUIET ABOUT THE ROWS IT SKIPS AND LOUD ABOUT THE ONE THAT
+      # STOPS IT. Every other session in the register is read here to find one
+      # slug, so an ordinary malformed row must not put a sentence on stderr of
+      # a document that has nothing to do with it. An invalid ACCOUNT is not
+      # skipped - it refuses the whole render - and a refusal with no sentence
+      # leaves the caller with an exit code and nothing to fix, so that one
+      # row's reason is replayed before the return.
+      local _owner_err; _owner_err="$(mktemp)" || {
+        echo "steward: mcp render: could not create a temporary file" >&2; return 70; }
       for _oid in $(registry_list 2>/dev/null); do
-        _owner_row="$(registry_load "$_oid" >/dev/null 2>&1 && printf '%s|%s' "${SLUG:-}" "${BROWSER_CDP:-}")"; _owner_rc=$?
-        [ "$_owner_rc" -eq 78 ] && return 78
+        _owner_row="$(registry_load "$_oid" >/dev/null 2>"$_owner_err" && printf '%s|%s' "${SLUG:-}" "${BROWSER_CDP:-}")"; _owner_rc=$?
+        if [ "$_owner_rc" -eq 78 ]; then
+          cat "$_owner_err" >&2; rm -f "$_owner_err"; return 78
+        fi
         [ "$_owner_rc" -eq 0 ] || continue
         _owner_slug="${_owner_row%%|*}"
         [ "$_owner_slug" = "$_owner" ] || continue
         browser_cdp="${_owner_row#*|}"
         break
       done
+      rm -f "$_owner_err"
       [ -n "$browser_cdp" ] || echo "steward: mcp render: session '$sid': shares the rig of '$_owner', which has no rig port here" >&2
     fi
   fi

@@ -456,6 +456,23 @@ out="$(run mcp render s-shares 2>/dev/null)"
 has  "22h a borrower gets the owner's port" "$out" "http://127.0.0.1:9327"
 hasnt "22i and no placeholder survives" "$out" "<browser-cdp>"
 
+# THE SCAN THAT FINDS THE OWNER READS EVERY OTHER ROW, and one of them can be
+# an identity the register refuses. That refusal stops the render, and until
+# 2026-09-08 it stopped it in silence: the scan silenced the loader's stderr so
+# an ordinary malformed row would not put a sentence into an unrelated
+# document, and the identity refusal went out with it. An exit code with no
+# sentence names nothing an operator can fix.
+sess s-broken-acct 'ACCOUNT="ghost-h1"
+DOMAIN="rigged"
+RC_LABEL="B"'
+out="$(run mcp render s-shares 2>"$FX/e22j")"; rc22j=$?
+err22j="$(cat "$FX/e22j")"
+is  "22j a foreign row with an unreadable ACCOUNT refuses the render" "$rc22j" "78"
+is  "22k and nothing is written to stdout"                            "$out" ""
+has "22l the account that failed is named"                            "$err22j" "ghost-h1"
+has "22m and the row it sits on"                                      "$err22j" "s-broken-acct"
+rm -f "$SESS/s-broken-acct.conf"
+
 sess s-norig 'DOMAIN="rigged"
 RC_LABEL="R"'
 out="$(run mcp render s-norig 2>/dev/null)"; err="$(run mcp render s-norig 2>&1 >/dev/null)"
