@@ -624,7 +624,7 @@ Create `desk/bin/principal-exists`:
 #
 # THE FRONT'S COOKIE NAMES A PRINCIPAL; THE ROW DECIDES IF IT IS STILL ONE.
 # A session cookie is self-contained (desk/cookie.mjs), so removing a person
-# from the registry must take effect on their next click, not at the cookie's
+# from the registry must take effect within five seconds, not at the cookie's
 # expiry. serve.mjs asks this bridge on every front request. It answers with
 # an exit code and nothing else: 0 the row is there, 1 it is not, 64 the slug
 # is not a slug (a path, an empty string, two arguments), 78 the estate does
@@ -1608,9 +1608,10 @@ What a visitor sees: `/desk/auth/login` lists the providers; after the
 provider's login the desk verifies the `id_token` (signature against the
 provider's JWKS, issuer, audience, expiry, nonce), maps
 `oidc:<slug>:<subject>` to a principal row through `desk/bin/principal-for-login`
-and sets `__Host-desk-session` for 12 hours. Every request re-checks that the
-principal row still exists (`desk/bin/principal-exists`), so removing a row
-logs the person out on their next click. `POST /desk/auth/logout` clears the
+and sets `__Host-desk-session` for 12 hours. Every request re-checks who
+claims that identity through the same bridge, memoised per identity for five
+seconds, so removing a row - or removing the `OIDC_LOGIN` word from it - logs
+the person out within five seconds. `POST /desk/auth/logout` clears the
 cookie. `/desk/auth/*` is rate limited to 10 requests per minute per visitor.
 
 The front never reads the `tailscale-user-login` header; the tailnet socket

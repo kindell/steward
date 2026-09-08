@@ -13,8 +13,11 @@
 // and a row that exists while no longer claiming this identity - the word
 // removed from OIDC_LOGIN, or moved to somebody else - would keep serving the
 // person for the cookie's whole twelve hours. Carrying the identity lets
-// serve.mjs ask the registry the same question the login asked, on every
-// request, and get today's answer.
+// serve.mjs ask the registry the same question the login asked, and get
+// today's answer within five seconds - the answer for one identity is
+// memoised for that long, because the bridge forks a subshell per principal
+// row and asking once per click would put that cost on every page view. Five
+// seconds, not twelve hours, and not zero.
 //
 // THE IDENTITY IS BASE64URL INSIDE THE COOKIE. Its own form is
 // `oidc:<slug>:<sub>` (or `oidc:<slug>:<tid>.<sub>`), which carries both `:`
