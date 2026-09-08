@@ -112,6 +112,15 @@ is  "a sees the own account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|
 is  "c sees nothing" "$(jq '.sessions|length' "$D/c.json")" "0"
 is  "the operator file carries every session" "$(jq '.sessions|length' "$D/_operator.json")" "2"
 
+before_current="$(readlink "$T/desk/current")"
+printf 'OWNER="a"\nHOST="h1"\nACCOUNT="missing-account"\nDOMAIN="team"\nRC_LABEL="Bad"\nREPO_PATH="/tmp/x"\n' \
+  > "$ROOT/sessions.d/account-broken.conf"
+bad_rc="$(run >/dev/null 2>"$T/account-broken.err"; echo $?)"
+is "invalid account identity refuses the snapshot with rc 78" "$bad_rc" "78"
+is "a refused snapshot leaves current on the prior generation" "$(readlink "$T/desk/current")" "$before_current"
+has "the snapshot names the invalid account" "$(cat "$T/account-broken.err")" "missing-account"
+rm -f "$ROOT/sessions.d/account-broken.conf"
+
 # THE SENTINELS ARE THE POINT. Each one is a real registry value the snapshot
 # reads past on its way to something else; a filter that ever grew a passthrough
 # would carry one of them into a viewer's file, and this loop is what notices.

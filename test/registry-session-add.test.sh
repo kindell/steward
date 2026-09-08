@@ -166,8 +166,8 @@ is  "1: account echoed" "$(printf '%s' "$out" | jq -r '.account')" "a-h1"
 is  "1: slug echoed"    "$(printf '%s' "$out" | jq -r '.slug')" "web"
 is  "1: target kind"    "$(printf '%s' "$out" | jq -r '.target.kind')" "project"
 is  "1: target slug"    "$(printf '%s' "$out" | jq -r '.target.slug')" "site"
-is  "1: host defaults to the hub host" "$(printf '%s' "$out" | jq -r '.host')" "h1"
-is  "1: owner is the account's principal" "$(printf '%s' "$out" | jq -r '.owner')" "a"
+is  "1: host defaults to the account host" "$(printf '%s' "$out" | jq -r '.host')" "h1"
+is  "1: owner is the account's Unix username" "$(printf '%s' "$out" | jq -r '.owner')" "a"
 is  "1: repo echoed"    "$(printf '%s' "$out" | jq -r '.repo')" "/tmp/fixture-repo"
 is  "1: file named by the id" "$(printf '%s' "$out" | jq -r '.file')" "$SESS/$ID1.conf"
 if [ -f "$SESS/$ID1.conf" ]; then ok "1: the row exists on disk"; else bad "1: the row exists on disk" "no $SESS/$ID1.conf"; fi
@@ -391,6 +391,19 @@ has "8a: the text receipt names the verb that mints one" "$out" "session-new.sh"
 out="$(run add --account acme-mac --project site --slug mutejson --repo /tmp/fixture-repo --json)"; rc=$?
 is  "8b: rc 0" "$rc" "0"
 is  "8b: --json carries relay_key:false" "$(printf '%s' "$out" | jq -r '.relay_key')" "false"
+
+echo "== 9. OWNER and HOST come from the account's Unix coordinates =="
+printf 'PRINCIPAL="alice"\nUSERNAME="service-a"\nHOST="h2"\n' > "$FX/accounts.d/alice-h2.conf"
+out="$(run add --account alice-h2 --entity alpha --slug remote --repo /tmp/remote --json)"; rc=$?
+is "9a: rc 0" "$rc" "0"
+is "9a: OWNER is ACCOUNT_USERNAME, not PRINCIPAL" "$(printf '%s' "$out" | jq -r '.owner')" "service-a"
+is "9a: omitted --host defaults from ACCOUNT_HOST" "$(printf '%s' "$out" | jq -r '.host')" "h2"
+ID9="$(printf '%s' "$out" | jq -r '.id')"
+is "9a: the strict reader accepts the row" "$(load_session "$ID9")" "alice-h2|remote||alpha|service-a|h2|/tmp/remote"
+before="$(sess_hash)"
+out="$(run add --account alice-h2 --host h1 --entity alpha --slug wronghost --repo /tmp/remote --json)"; rc=$?
+is "9b: an explicit host differing from ACCOUNT_HOST refuses rc 78" "$rc" "78"
+is "9b: the host mismatch writes nothing" "$(sess_hash)" "$before"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

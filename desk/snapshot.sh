@@ -199,8 +199,15 @@ names="$(registry_list)" || exit 78
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   (
-    registry_load "$n" >/dev/null 2>&1 || {
-      echo "desk snapshot: session '$n': the registry refuses the row - skipped" >&2; exit 0; }
+    registry_load "$n" >/dev/null; load_rc=$?
+    if [ "$load_rc" -ne 0 ]; then
+      if [ "$load_rc" -eq 78 ]; then
+        echo "desk snapshot: session '$n': invalid account identity - refusing the snapshot" >&2
+        exit 78
+      fi
+      echo "desk snapshot: session '$n': the registry refuses the row - skipped" >&2
+      exit 0
+    fi
     label="$(registry_session_display "$n" 2>/dev/null)" || label="$n"
     [ -n "$label" ] || label="$n"
     domain="$(registry_session_owning_entity "$n" 2>/dev/null)" || domain=""

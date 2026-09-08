@@ -159,7 +159,7 @@ is "1: AUTO_APPROVE preserved"       "$(load_field "$ID1" AUTO_APPROVE)" "true"
 is "1: CLAUDE_MEMORY_ROOT preserved" "$(load_field "$ID1" CLAUDE_MEMORY_ROOT)" "/m"
 is "1: ASSETS preserved"             "$(load_field "$ID1" ASSETS)" "a b"
 # THE IDENTITY FIELDS, added.
-is "1: OWNER rewritten to the account principal" "$(load_field "$ID1" OWNER)" "a"
+is "1: OWNER rewritten to the account's Unix username" "$(load_field "$ID1" OWNER)" "a"
 is "1: ACCOUNT added"      "$(load_field "$ID1" ACCOUNT)" "a-h1"
 is "1: SLUG added"         "$(load_field "$ID1" SLUG)" "hub"
 is "1: TARGET_ENTITY added" "$(load_field "$ID1" TARGET_ENTITY)" "alpha"
@@ -379,6 +379,31 @@ out="$(run oldlogin-none --account acct-acme-team --entity alpha --slug loginnon
 is "5d: no LOGIN on the old row migrates rc 0, ungated" "$rc" "0"
 ID5D="$(printf '%s' "$out" | jq -r '.id')"
 is "5d: no LOGIN line on the new row" "$(grep -c '^LOGIN=' "$SESS/$ID5D.conf")" "0"
+
+echo "== 6. migration writes the account's Unix username and enforces its host =="
+printf 'PRINCIPAL="alice"\nUSERNAME="service-a"\nHOST="h2"\n' > "$FX/accounts.d/alice-h2.conf"
+cat > "$SESS/old-remote.conf" <<'EOF'
+OWNER="legacy"
+DOMAIN="alpha"
+HOST="h2"
+REPO_PATH="/remote"
+EOF
+out="$(run old-remote --account alice-h2 --entity alpha --slug remote --json)"; rc=$?
+is "6a: rc 0" "$rc" "0"
+ID6="$(printf '%s' "$out" | jq -r '.id')"
+is "6a: OWNER becomes ACCOUNT_USERNAME" "$(load_field "$ID6" OWNER)" "service-a"
+is "6a: matching ACCOUNT_HOST survives" "$(load_field "$ID6" HOST)" "h2"
+cat > "$SESS/old-wrong-host.conf" <<'EOF'
+OWNER="legacy"
+DOMAIN="alpha"
+HOST="h1"
+REPO_PATH="/remote"
+EOF
+before="$(row_count)"
+out="$(run old-wrong-host --account alice-h2 --entity alpha --slug wronghost --json)"; rc=$?
+is "6b: a carried host differing from ACCOUNT_HOST refuses rc 78" "$rc" "78"
+present "6b: the old row remains untouched" "$SESS/old-wrong-host.conf"
+is "6b: no replacement row was written" "$(row_count)" "$before"
 
 echo
 echo "pass=$pass fail=$fail"

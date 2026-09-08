@@ -153,6 +153,15 @@ mates no-such-session
 is "5: rc 1"            "$RC"  "1"
 is "5: nothing printed" "$OUT" ""
 
+row account-broken z 'TARGET_PROJECT="work"'
+printf 'ACCOUNT="missing-account"\n' >> "$SESS/account-broken.conf"
+mates p1
+is "5b: an invalid candidate ACCOUNT refuses the whole set with rc 78" "$RC" "78"
+is "5b: no partial mate set is printed" "$OUT" ""
+mates_line p1
+is "5b: the one-line renderer preserves rc 78" "$RC" "78"
+rm -f "$SESS/account-broken.conf"
+
 echo "== 6. TWO MATES: one per line, sorted by name =="
 # p0 sorts before p2 and is added LAST, so the order in the output cannot come
 # from the order the fixture was written in. p0 carries no RC_LABEL, so its

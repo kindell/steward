@@ -48,6 +48,7 @@
 #                      set could not be known. Both are faults. Printing {}
 #                      for either would report a fault as the configuration
 #                      above, and the reader could not tell them apart.
+#  rc 78, no stdout  — a session row carries invalid ACCOUNT identity.
 #
 # A LEADING ~/ IN A ROW IS ONE HOME AT A TIME — THE RENDERING PROCESS'S OWN.
 # The register is written once and read on every machine that runs a session
@@ -107,6 +108,7 @@ mcp_render_document() {
     echo "steward: mcp render: session '$sid' — a level of the org would not load (the cause is named above), so the granted set is not known; refusing rather than printing a document that would read as what somebody actually granted" >&2
     return 65
   fi
+  [ "$set_rc" -eq 78 ] && return 78
   [ "$set_rc" -eq 0 ] || return 65
 
   # THE `<domain>` THE TEMPLATE SUBSTITUTES IS THE OWNING ENTITY, not the
@@ -123,6 +125,7 @@ mcp_render_document() {
   # empty case, so a future caller order cannot make it fall through.
   local domain domain_rc
   domain="$( registry_session_owning_entity "$sid" )"; domain_rc=$?
+  [ "$domain_rc" -eq 78 ] && return 78
   [ "$domain_rc" -eq 0 ] || domain=""
 
   # THE SESSION'S OWN RIG PORT, for assets that must talk to THIS session's
@@ -141,11 +144,15 @@ mcp_render_document() {
   if registry_load "$sid" >/dev/null 2>&1; then
     browser_cdp="${BROWSER_CDP:-}"
     if [ "${BROWSER_RIG:-}" = "shared" ] && [ -n "${BROWSER_RIG_OWNER:-}" ]; then
-      local _owner="$BROWSER_RIG_OWNER" _oid
+      local _owner="$BROWSER_RIG_OWNER" _oid _owner_row _owner_rc _owner_slug
       browser_cdp=""
       for _oid in $(registry_list 2>/dev/null); do
-        ( registry_load "$_oid" >/dev/null 2>&1 && [ "$SLUG" = "$_owner" ] ) || continue
-        browser_cdp="$( registry_load "$_oid" >/dev/null 2>&1 && printf '%s' "${BROWSER_CDP:-}" )"
+        _owner_row="$(registry_load "$_oid" >/dev/null 2>&1 && printf '%s|%s' "${SLUG:-}" "${BROWSER_CDP:-}")"; _owner_rc=$?
+        [ "$_owner_rc" -eq 78 ] && return 78
+        [ "$_owner_rc" -eq 0 ] || continue
+        _owner_slug="${_owner_row%%|*}"
+        [ "$_owner_slug" = "$_owner" ] || continue
+        browser_cdp="${_owner_row#*|}"
         break
       done
       [ -n "$browser_cdp" ] || echo "steward: mcp render: session '$sid': shares the rig of '$_owner', which has no rig port here" >&2

@@ -39,9 +39,9 @@ _visibility_member_of() {
 }
 
 _visibility_session_snapshot() (
-  registry_load "${1:-}" >/dev/null 2>/dev/null || exit 1
+  registry_load "${1:-}" >/dev/null || exit $?
   local principal="${2:-}"
-  [ -n "$principal" ] || principal="$(_registry_row_principal "${1:-}")"
+  [ -n "$principal" ] || principal="$(_registry_row_principal "${1:-}")" || exit $?
   printf '%s|%s|%s|%s|%s|%s\n' "$principal" "${DOMAIN:-}" \
     "${VISIBILITY:-}" "${VISIBLE_TO:-}" "${TARGET_PROJECT:-}" "${TARGET_ENTITY:-}"
 )
@@ -65,7 +65,9 @@ _session_visible_to() {
   fi
 
   local snapshot domain vis grants target_project target_entity
-  snapshot="$(_visibility_session_snapshot "$session" "$resolved_principal")" || return 1
+  local snapshot_rc
+  snapshot="$(_visibility_session_snapshot "$session" "$resolved_principal")"; snapshot_rc=$?
+  [ "$snapshot_rc" -eq 0 ] || return "$snapshot_rc"
   IFS='|' read -r resolved_principal domain vis grants target_project target_entity <<< "$snapshot"
   [ -n "$resolved_principal" ] || return 1
   _VISIBILITY_PRINCIPAL="$resolved_principal"
@@ -162,7 +164,11 @@ session_visible_to() {
 # visibility_fields <viewer-principal> <session-name>: owner/member/none.
 # Keep the object decision in session_visible_to; isolate its registry globals.
 _visibility_fields_resolved() (
-  if ! _session_visible_to "${1:-}" "${2:-}" "${3:-}"; then
+  local decision_rc
+  _session_visible_to "${1:-}" "${2:-}" "${3:-}"; decision_rc=$?
+  if [ "$decision_rc" -eq 78 ]; then
+    return 78
+  elif [ "$decision_rc" -ne 0 ]; then
     printf 'none\n'
   elif [ "$1" = "$_VISIBILITY_PRINCIPAL" ]; then
     printf 'owner\n'

@@ -57,8 +57,8 @@ printf 'NAME="Homely"\nMEMBERS="a"\nMCP_ASSETS="home-tool"\n'               > "$
 printf 'NAME="Plain"\nMEMBERS="a"\nMCP_ASSETS="plain-tool"\n'               > "$ENT/plain.conf"
 
 # THE ACCOUNTS — personal capability, bound to the human and not to a node.
-printf 'PRINCIPAL="ann"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'              > "$ACC/ann-h1.conf"
-printf 'PRINCIPAL="bo"\nHOST="h1"\nMCP_ASSETS="video-tool"\n'             > "$ACC/bo-h1.conf"
+printf 'PRINCIPAL="ann"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'              > "$ACC/ann-h1.conf"
+printf 'PRINCIPAL="bo"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="video-tool"\n'             > "$ACC/bo-h1.conf"
 
 printf 'MCP_COMMAND="/opt/chat/server"\n'                                   > "$MCPD/chat-tool.conf"
 printf 'MCP_COMMAND="/opt/crm/server"\n'                                    > "$MCPD/crm-tool.conf"
@@ -330,10 +330,11 @@ echo "== 17. an ACCOUNT naming a missing row refuses the render, it does not thi
 # personal set had silently vanished.
 out17="$(run mcp render s-noacct 2>"$FX/e17")"; rc17=$?
 err17="$(cat "$FX/e17")"
-is  "17a rc 65, not 0"                     "$rc17" "65"
+is  "17a rc 78, not 0"                     "$rc17" "78"
 is  "17b and NOTHING on stdout"            "$out17" ""
 has "17c the account that failed is named" "$err17" "ghost-h1"
 has "17d and the session with it"          "$err17" "s-noacct"
+rm -f "$SESS/s-noacct.conf"
 
 echo "== 18. a leading ~/ in a row is expanded against the RENDERING PROCESS's HOME =="
 # `run` never sets HOME itself (section 6 above already proved the suite is

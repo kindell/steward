@@ -3,7 +3,8 @@
 #
 # The watch reads sessions, hosts and the estate through lib/registry.sh, never
 # with a parser of its own: this bridge sources the library and prints what it
-# says. A row the registry refuses is skipped and named, never invented; an
+# says. An ordinary malformed row is skipped and named; invalid account
+# identity refuses the dump rather than publishing an incomplete watch set. An
 # RC-free row and a migrated row without a label line both come out with an
 # empty rcLabel (supervised on the pane); the required estate keys refuse, the
 # optional ones come out empty.
@@ -17,7 +18,7 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 DUMP="$here/watch/bin/registry-dump"
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/reg" "$FX/hosts.d"
+mkdir -p "$FX/reg" "$FX/hosts.d" "$FX/accounts.d"
 cat > "$FX/estate.conf" <<'EOF'
 RC_LABEL_PREFIX="Hub: "
 HUB_SESSION="hub-one"
@@ -36,10 +37,11 @@ EOF
 printf 'REPO_PATH="/tmp/x"\nRC_LABEL="Hub: alpha"\nOWNER="operator-a"\nDOMAIN="entity-one"\n' > "$FX/reg/alpha.conf"
 printf 'REPO_PATH="/tmp/x"\nRC_LABEL=""\nOWNER="operator-m"\nDOMAIN="machine"\nHOST="host-two"\n' > "$FX/reg/machine.conf"
 printf 'ID="s-00000000000000aa"\nSLUG="gamma"\nACCOUNT="operator-a-hub"\nTARGET_ENTITY="e-0000000000000001"\nREPO_PATH="/tmp/x"\nOWNER="operator-a"\nDOMAIN="entity-one"\n' > "$FX/reg/s-00000000000000aa.conf"
+printf 'PRINCIPAL="operator-a"\nUSERNAME="operator-a"\nHOST="host-one"\n' > "$FX/accounts.d/operator-a-hub.conf"
 printf 'RC_LABEL="Hub: broken"\nOWNER="operator-a"\nDOMAIN="d"\n' > "$FX/reg/broken.conf"   # no REPO_PATH: the registry refuses it
 printf 'OWNER="operator-a"\nLEGAL_OWNER="Somebody"\nOPERATOR="hub-one"\n' > "$FX/hosts.d/host-two.conf"
 printf 'OWNER="operator-b"\nLEGAL_OWNER="Somebody"\nOPERATOR="hub-two"\n' > "$FX/hosts.d/host-three.conf"
-run() { STEWARD_ESTATE="$FX/estate.conf" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_HOSTS_DIR="$FX/hosts.d" bash "$DUMP" "$@"; }
+run() { STEWARD_ESTATE="$FX/estate.conf" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_HOSTS_DIR="$FX/hosts.d" STEWARD_ACCOUNT_DIR="$FX/accounts.d" bash "$DUMP" "$@"; }
 
 echo "1. sessions"
 out="$(run sessions 2>"$FX/err")"; rc=$?
@@ -58,6 +60,13 @@ g="$(printf '%s\n' "$out" | jq -c 'select(.name=="s-00000000000000aa")')"
 is  "migrated row: rcLabel empty (no label line, a target instead)" "$(printf '%s' "$g" | jq -r .rcLabel)" ""
 is  "migrated row: slug"  "$(printf '%s' "$g" | jq -r .slug)" "gamma"
 is  "migrated row: id"    "$(printf '%s' "$g" | jq -r .id)" "s-00000000000000aa"
+
+printf 'ACCOUNT="missing-account"\nOWNER="operator-a"\nHOST="host-one"\nDOMAIN="entity-one"\nRC_LABEL="Bad"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/account-broken.conf"
+out="$(run sessions 2>"$FX/account-err")"; rc=$?
+is  "invalid account identity refuses the whole dump with rc 78" "$rc" "78"
+is  "the refused dump prints no partial rows" "$out" ""
+has "the account refusal is diagnosed" "$(cat "$FX/account-err")" "missing-account"
+rm -f "$FX/reg/account-broken.conf"
 
 echo "2. hosts"
 is "hosts.d => {host: OPERATOR}" "$(run hosts 2>/dev/null | jq -Sc .)" '{"host-three":"hub-two","host-two":"hub-one"}'

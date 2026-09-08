@@ -87,7 +87,7 @@ the fields of the sessions it already returned yes for.
 | `id` | string | the session's opaque id. |
 | `slug` | string | the short handle a human types. |
 | `label` | string | the display name the estate renders. |
-| `owner` | string | the principal id of the person the session belongs to. A resolvable `ACCOUNT` makes its registered `PRINCIPAL` authoritative. A row with no `ACCOUNT` falls back silently to legacy `OWNER`; a non-empty unresolved `ACCOUNT` falls back with a diagnostic. That Unix-name fallback can collide with another principal slug and must never be treated as equivalent to successful account resolution. |
+| `owner` | string | the principal id of the person the session belongs to. A row with `ACCOUNT` must resolve to a registered account whose `USERNAME` equals the row's `OWNER` and whose `HOST` equals the row's `HOST`; otherwise the row is refused. Only a legacy row with no `ACCOUNT` uses `OWNER` as its principal. |
 | `mine` | boolean | whether `owner` equals the viewer. |
 | `domain` | string or null | the owning entity. |
 | `project` | string or null | the target project. |

@@ -12,7 +12,8 @@
 # code. Rendering belongs to the cockpit.
 
 # session_assets <session> — one asset per line on stdout.
-# rc 0 ok (including zero assets) · rc 1 the session could not be loaded.
+# rc 0 ok (including zero assets) · rc 1 the session could not be loaded ·
+# rc 78 the session carries an invalid ACCOUNT identity claim.
 session_assets() {
   local s="${1:-}"
   [ -n "$s" ] || { echo "assets: session name required" >&2; return 1; }
@@ -23,8 +24,12 @@ session_assets() {
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || { echo "assets: could not load the registry" >&2; return 1; }
   fi
-  registry_load "$s" >/dev/null 2>&1 || {
-    echo "assets: unknown or unreadable session '$s'" >&2; return 1; }
+  local load_rc
+  registry_load "$s" >/dev/null; load_rc=$?
+  if [ "$load_rc" -ne 0 ]; then
+    echo "assets: unknown or unreadable session '$s'" >&2
+    return "$load_rc"
+  fi
   # SNAPSHOT BEFORE PRINTING. registry_load sets ASSETS in the CALLER's shell,
   # and a later registry_load overwrites it. A caller that loops over this
   # function's output while probing would otherwise read a value that changed

@@ -45,6 +45,7 @@ EOF
 # every claim below - correctly, and uselessly.
 sed -i.bak "s/__HUBHOST__/$(hostname -s)/; s/__HUBUSER__/$(id -un)/" "$ROOT/estate/steward.conf" && rm -f "$ROOT/estate/steward.conf.bak"
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
+printf 'PRINCIPAL="a"\nUSERNAME="%s"\nHOST="%s"\n' "$(id -un)" "$(hostname -s)" > "$ROOT/accounts.d/a-hub.conf"
 ID="s-00000000000000a1"
 cat > "$ROOT/sessions.d/$ID.conf" <<EOF
 ID="$ID"
@@ -67,6 +68,13 @@ has "the row is read and named" "$out" "mute-row"
 has "no hub line is reported as no" "$out" "hub relay line   no"
 has "and the row is called mute" "$out" "can send         NO"
 has "with the way to make a sending session" "$out" "session-new.sh"
+
+cp "$ROOT/sessions.d/$ID.conf" "$ROOT/sessions.d/$ID.conf.good"
+printf 'ACCOUNT="missing-account"\n' >> "$ROOT/sessions.d/$ID.conf"
+bad_account="$(run "$ID" --json)"; bad_account_rc=$?
+is "invalid account identity preserves rc 78" "$bad_account_rc" "78"
+has "the check names the invalid account" "$bad_account" "missing-account"
+mv "$ROOT/sessions.d/$ID.conf.good" "$ROOT/sessions.d/$ID.conf"
 
 # the key IS measurable here: the fixture's owner is this process
 has "the key is measured when the home is readable" "$out" "relay key        no"

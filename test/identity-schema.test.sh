@@ -643,8 +643,8 @@ echo "LOGIN_REQUIRED_FOR — the gate is scoped by principal, not global"
 # only ever bites is indistinguishable from one that refuses everything.
 mkdir -p "$FX/accounts.d"
 acct() { local slug="$1"; shift; printf '%s\n' "$@" > "$FX/accounts.d/$slug.conf"; }
-acct acct-acme-team 'PRINCIPAL="alice"' 'HOST="h1"'
-acct acct-acme-bob   'PRINCIPAL="bob"'   'HOST="h1"'
+acct acct-acme-team 'PRINCIPAL="alice"' 'HOST="hub"'
+acct acct-acme-bob   'PRINCIPAL="bob"'   'HOST="hub"'
 
 full_estate 6 'LOGIN_REQUIRED_FOR="alice"'
 
@@ -658,47 +658,43 @@ rc="$(laddarc bobrow "$FX/accounts.d")"
 [ "$rc" = "0" ] && ok "LOGIN_REQUIRED_FOR=alice: a bob row without LOGIN loads" \
   || bad "LOGIN_REQUIRED_FOR=alice: a bob row without LOGIN loads" "rc=$rc"
 
-# THE PRINCIPAL COMES FROM ACCOUNT, NOT OWNER — a row whose ACCOUNT resolves to
-# a DIFFERENT human than its OWNER is gated on the resolved human. bob's unix
-# OWNER but alice's ACCOUNT must be treated as alice's row.
+# AN ACCOUNT MAY NOT BE BORROWED. Its USERNAME defaults to its principal here,
+# so bob's Unix OWNER cannot claim alice's account row.
 konf mismatch 'REPO_PATH="/srv/homes/bob/x"' 'RC_LABEL="M"' 'OWNER="bob"' 'DOMAIN="acme"' 'ACCOUNT="acct-acme-team"'
 rc="$(laddarc mismatch "$FX/accounts.d")"
-[ "$rc" = "78" ] && ok "the principal is derived from ACCOUNT, not OWNER, when ACCOUNT resolves" \
-  || bad "the principal is derived from ACCOUNT, not OWNER, when ACCOUNT resolves" "rc=$rc"
+[ "$rc" = "78" ] && ok "an ACCOUNT whose USERNAME differs from OWNER is refused" \
+  || bad "an ACCOUNT whose USERNAME differs from OWNER is refused" "rc=$rc"
 
-# THE FALLBACK: a row whose ACCOUNT does not resolve falls back to OWNER, and
-# SAYS SO on stderr — a half-measurement must never look like a measurement.
+# A PRESENT ACCOUNT IS STRICT. If it cannot resolve, no OWNER fallback may turn
+# the broken identity claim into a person.
 konf ghostalice 'REPO_PATH="/srv/homes/alice/x"' 'RC_LABEL="G"' 'OWNER="alice"' 'DOMAIN="acme"' 'ACCOUNT="acct-does-not-exist"'
 rc="$(laddarc ghostalice "$FX/accounts.d")"
-[ "$rc" = "78" ] && ok "an unresolvable ACCOUNT falls back to OWNER=alice, which refuses" \
-  || bad "an unresolvable ACCOUNT falls back to OWNER=alice, which refuses" "rc=$rc"
+[ "$rc" = "78" ] && ok "an unresolvable ACCOUNT is refused" \
+  || bad "an unresolvable ACCOUNT is refused" "rc=$rc"
 err="$(laddaerr ghostalice "$FX/accounts.d")"
-case "$err" in *"could not resolve ACCOUNT"*) ok "the fallback says so on stderr" ;;
-  *) bad "the fallback says so on stderr" "$err" ;; esac
+case "$err" in *"ACCOUNT 'acct-does-not-exist' cannot be read"*) ok "the refusal says so on stderr" ;;
+  *) bad "the refusal says so on stderr" "$err" ;; esac
 
-# THE FALLBACK IS A REAL RESOLUTION, NOT A BLANKET REFUSAL — proved by landing
-# on a principal the allowlist does NOT name.
+# Strictness is independent of LOGIN_REQUIRED_FOR: even a principal outside the
+# allowlist cannot carry an unreadable ACCOUNT.
 konf ghostbob 'REPO_PATH="/srv/homes/bob/x"' 'RC_LABEL="G2"' 'OWNER="bob"' 'DOMAIN="acme"' 'ACCOUNT="acct-does-not-exist"'
 rc="$(laddarc ghostbob "$FX/accounts.d")"
-[ "$rc" = "0" ] && ok "an unresolvable ACCOUNT falls back to OWNER=bob, which loads" \
-  || bad "an unresolvable ACCOUNT falls back to OWNER=bob, which loads" "rc=$rc"
+[ "$rc" = "78" ] && ok "an unresolvable ACCOUNT for bob is refused too" \
+  || bad "an unresolvable ACCOUNT for bob is refused too" "rc=$rc"
 
-# UNSCOPED (LOGIN_REQUIRED_FOR ABSENT): no principal question is ever asked,
-# so the fallback line must never fire, even when ACCOUNT does not resolve.
-# The refusal itself is unchanged -- absent means every principal, so the row
-# refuses regardless of who it belongs to -- but the STDERR must not claim a
-# resolution attempt that never happened.
+# UNSCOPED (LOGIN_REQUIRED_FOR ABSENT): ACCOUNT integrity is checked before the
+# login policy, so the identity refusal is still the first and only cause.
 full_estate 6
 konf ghostunscoped 'REPO_PATH="/srv/homes/alice/x"' 'RC_LABEL="GU"' 'OWNER="alice"' 'DOMAIN="acme"' 'ACCOUNT="acct-does-not-exist"'
 rc="$(laddarc ghostunscoped "$FX/accounts.d")"
 [ "$rc" = "78" ] && ok "unscoped: a LOGIN-less row with an unresolvable ACCOUNT still refuses" \
   || bad "unscoped: a LOGIN-less row with an unresolvable ACCOUNT still refuses" "rc=$rc"
 err="$(laddaerr ghostunscoped "$FX/accounts.d")"
-case "$err" in *"could not resolve ACCOUNT"*)
-    bad "unscoped: the fallback line is NOT printed (no principal question was asked)" "$err" ;;
-  *) ok "unscoped: the fallback line is NOT printed (no principal question was asked)" ;; esac
-case "$err" in *"which model account"*) ok "unscoped: the gate's own refusal text is unchanged" ;;
-  *) bad "unscoped: the gate's own refusal text is unchanged" "$err" ;; esac
+case "$err" in *"ACCOUNT 'acct-does-not-exist' cannot be read"*)
+    ok "unscoped: ACCOUNT integrity is checked before login policy" ;;
+  *) bad "unscoped: ACCOUNT integrity is checked before login policy" "$err" ;; esac
+case "$err" in *"which model account"*) bad "unscoped: login policy does not mask account corruption" "$err" ;;
+  *) ok "unscoped: login policy does not mask account corruption" ;; esac
 
 echo
 echo "the schema gate widens to the job and service loaders"

@@ -213,6 +213,12 @@ session_identity_rows() {
     local _snapshot
     _snapshot="$(_sessions_registry_snapshot "$n" 2>"$_diagfile")"; _lrc=$?
     _cause="$(tr '\n' ' ' < "$_diagfile")"
+    if [ "$_lrc" -eq 78 ]; then
+      [ -n "$_cause" ] || _cause="no reason given (rc 78)"
+      printf 'sessions: REFUSING — %s\n' "$_cause" >&2
+      rm -f "$_diagfile"
+      return 78
+    fi
     if [ "$_lrc" -ne 0 ]; then
       # A SESSION THAT EXISTS BUT WON'T LOAD IS DIAGNOSIS, NOT SILENCE. This
       # layer's contract is data on stdout, diagnosis on stderr, meaning in the

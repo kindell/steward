@@ -59,13 +59,13 @@ printf 'NAME="Delta"\nPARENT="ghost"\nMCP_ASSETS="mail-tool"\n'                >
 # calendar, a note store belong to the person, and two people sitting on the
 # SAME client must not inherit each other's. The entity tree cannot express
 # that difference: it hands both of them the same set by construction.
-printf 'PRINCIPAL="ann"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'            > "$ACC/ann-h1.conf"
-printf 'PRINCIPAL="bo"\nHOST="h1"\nMCP_ASSETS="video-tool"\n'           > "$ACC/bo-h1.conf"
+printf 'PRINCIPAL="ann"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'            > "$ACC/ann-h1.conf"
+printf 'PRINCIPAL="bo"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="video-tool"\n'           > "$ACC/bo-h1.conf"
 # An account that grants nothing: no field at all, which must read as "none
 # declared" and never as the previously loaded account's grant.
-printf 'PRINCIPAL="cy"\nHOST="h1"\n'                                     > "$ACC/cy-h1.conf"
+printf 'PRINCIPAL="cy"\nUSERNAME="a"\nHOST="h1"\n'                                     > "$ACC/cy-h1.conf"
 # An account that grants what its team already grants — the dedup case.
-printf 'PRINCIPAL="di"\nHOST="h1"\nMCP_ASSETS="chat-tool video-tool"\n' > "$ACC/di-h1.conf"
+printf 'PRINCIPAL="di"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="chat-tool video-tool"\n' > "$ACC/di-h1.conf"
 
 # ── THE REGISTER ───────────────────────────────────────────────────────────
 printf 'MCP_COMMAND="/opt/chat/server"\n'                                      > "$MCPD/chat-tool.conf"
@@ -452,7 +452,7 @@ is "25b chat-tool appears ONCE, at the account level that named it first" \
 is "25c counted rather than eyeballed" \
    "$(printf '%s\n' "$out" | grep -c '^chat-tool$')" "1"
 
-echo "== 26. an ACCOUNT naming a missing row is rc 65, NAMED, never a silent drop =="
+echo "== 26. an ACCOUNT naming a missing row is rc 78, NAMED, never partial =="
 # THE FAULT THIS SECTION EXISTS FOR. An account row that is missing or
 # unreadable would otherwise contribute an empty string, and the person's
 # entire personal set would vanish into an rc 0 that reads "nobody granted you
@@ -461,15 +461,14 @@ echo "== 26. an ACCOUNT naming a missing row is rc 65, NAMED, never a silent dro
 # whole grant.
 out="$(registry_session_mcp_assets s-noaccount 2>"$FX/e26")"; rc=$?
 err="$(cat "$FX/e26")"
-is  "26a rc 65 — a fault, not a configuration" "$rc" "65"
+is  "26a rc 78 — invalid identity, not partial resolution" "$rc" "78"
 has "26b the account is NAMED"                 "$err" "ghost-h1"
 has "26c and so is the session"                "$err" "s-noaccount"
-is  "26d the levels that DID load are still on stdout, flagged as partial" \
-    "$out" "$(printf 'chat-tool\nmail-tool')"
+is  "26d no partial organizational grant is printed" "$out" ""
 # And when the org tree grants nothing either, the empty set must STILL not
 # read as rc 0 — that is exactly the silent drop being refused.
 out="$(registry_session_mcp_assets s-noaccount-quiet 2>"$FX/e26b")"; rc=$?
-is  "26e rc 65 even though the set is empty" "$rc" "65"
+is  "26e rc 78 even though the set is empty" "$rc" "78"
 is  "26f nothing was inherited"              "$out" ""
 has "26g the account is still named"         "$(cat "$FX/e26b")" "ghost-h1"
 

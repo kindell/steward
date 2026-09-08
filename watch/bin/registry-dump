@@ -44,21 +44,32 @@ optional() { # <reader> -> the value, or '' when the estate does not name it
 case "${1:-}" in
   sessions)
     names="$(registry_list)" || exit $?
+    rows=""
     while IFS= read -r n; do
       [ -n "$n" ] || continue
       # EACH ROW IN ITS OWN SUBSHELL: registry_load sets globals, and a row that
-      # fails to load must not leave the previous row's values behind. A row the
-      # registry refuses is skipped and named on stderr - the registry's refusal
-      # is the reason, and the watch must not invent supervision for a row the
-      # registry did not approve.
-      (
-        registry_load "$n" >/dev/null 2>&1 || { echo "registry-dump: $n: the registry refuses the row - skipped" >&2; exit 0; }
+      # fails to load must not leave the previous row's values behind. Ordinary
+      # malformed rows are skipped and named; an invalid ACCOUNT refuses the
+      # whole dump because an incomplete watch set must not look authoritative.
+      row="$(
+        registry_load "$n" >/dev/null; load_rc=$?
+        if [ "$load_rc" -ne 0 ]; then
+          [ "$load_rc" -eq 78 ] && exit 78
+          echo "registry-dump: $n: the registry refuses the row - skipped" >&2
+          exit 0
+        fi
         label="$(registry_session_display "$n" 2>/dev/null || printf '%s' "$n")"
         jq -cn --arg name "$n" --arg id "${ID:-$n}" --arg slug "${SLUG:-}" --arg rcLabel "${RC_LABEL:-}" \
                --arg label "$label" --arg host "${HOST:-}" --arg owner "${OWNER:-}" \
                '{name:$name,id:$id,slug:$slug,rcLabel:$rcLabel,label:$label,host:$host,owner:$owner}'
-      )
+      )"; row_rc=$?
+      [ "$row_rc" -eq 78 ] && exit 78
+      [ "$row_rc" -eq 0 ] || continue
+      [ -n "$row" ] || continue
+      if [ -z "$rows" ]; then rows="$row"; else rows="$rows
+$row"; fi
     done <<< "$names"
+    [ -z "$rows" ] || printf '%s\n' "$rows"
     ;;
   hosts)
     dir="$(registry_host_dir)"

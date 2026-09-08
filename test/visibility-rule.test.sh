@@ -70,14 +70,21 @@ sess account-owned service team-a 'ACCOUNT="service"\nVISIBILITY="private"\nview
 yes "the account principal owns private work" carol account-owned
 no  "the raw Unix owner does not become a principal" service account-owned
 no  "a principal slug colliding with OWNER gets no owner grant" service account-owned
+sess wrong-account-user other team-a 'ACCOUNT="service"\nVISIBILITY="private"\n'
+sess wrong-account-host service team-a 'ACCOUNT="service"\nVISIBILITY="private"\nHOST="h2"\n'
+session_visible_to carol wrong-account-user >/dev/null 2>&1; wrong_user_rc=$?
+session_visible_to carol wrong-account-host >/dev/null 2>&1; wrong_host_rc=$?
+if [ "$wrong_user_rc" -eq 78 ]; then ok "an account whose USERNAME differs from OWNER preserves rc 78"
+else bad "an account whose USERNAME differs from OWNER preserves rc 78" "got $wrong_user_rc"; fi
+if [ "$wrong_host_rc" -eq 78 ]; then ok "an account whose HOST differs from the row preserves rc 78"
+else bad "an account whose HOST differs from the row preserves rc 78" "got $wrong_host_rc"; fi
 
 sess unresolved fallback team-a 'ACCOUNT="missing-account"\nVISIBILITY="private"\n'
 fallback_err="$(session_visible_to fallback unresolved 2>&1 >/dev/null)"; fallback_rc=$?
-is_fallback=hidden; [ "$fallback_rc" -eq 0 ] && is_fallback=visible
-if [ "$is_fallback" = visible ]; then ok "an unresolved account falls back to OWNER"
-else bad "an unresolved account falls back to OWNER" "expected VISIBLE"; fi
-case "$fallback_err" in *"could not resolve ACCOUNT 'missing-account'"*) ok "the unresolved account fallback is diagnosed" ;;
-  *) bad "the unresolved account fallback is diagnosed" "$fallback_err" ;; esac
+if [ "$fallback_rc" -eq 78 ]; then ok "an unresolved account preserves rc 78"
+else bad "an unresolved account preserves rc 78" "expected rc 78, got $fallback_rc"; fi
+case "$fallback_err" in *"ACCOUNT 'missing-account' cannot be read"*) ok "the unresolved account refusal is diagnosed" ;;
+  *) bad "the unresolved account refusal is diagnosed" "$fallback_err" ;; esac
 legacy_err="$(session_visible_to alice own 2>&1 >/dev/null)"
 if [ -z "$legacy_err" ]; then ok "an absent ACCOUNT falls back silently"
 else bad "an absent ACCOUNT falls back silently" "$legacy_err"; fi

@@ -196,8 +196,8 @@ absent  "opencode stub did not run"   "$FX/opencode.ran"
 echo "== the default Unix viewer resolves to the account principal =="
 mkdir -p "$FX/accounts.d"
 printf 'PRINCIPAL="a"\nHOST="h1"\nUSERNAME="%s"\n' "$(id -un)" > "$FX/accounts.d/a-h1.conf"
-printf 'HOST="h1"\nOWNER="service"\nACCOUNT="a-h1"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="account-owned"\n' \
-  > "$FX/sessions.d/account-owned.conf"
+printf 'HOST="h1"\nOWNER="%s"\nACCOUNT="a-h1"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="account-owned"\n' \
+  "$(id -un)" > "$FX/sessions.d/account-owned.conf"
 clear_markers
 out="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_ESTATE_ROOT="$FX" \
   STEWARD_CONFIG_FILE="$FX/no-such-operator-config" STEWARD_HOSTNAME_CMD="$hub_host" \

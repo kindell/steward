@@ -42,6 +42,7 @@ OP_TOKEN_FILE_NAME="fixture-token"
 PING_MSG="you have unread mail"
 EOF
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
+printf 'PRINCIPAL="a"\nHOST="h1"\n' > "$ROOT/accounts.d/a-h1.conf"
 
 row() { # <id> <extra lines>
   cat > "$ROOT/sessions.d/$1.conf" <<EOF

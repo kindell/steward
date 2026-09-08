@@ -12,10 +12,9 @@
 # two legacy displays (RC_LABEL verbatim; prefix+name when the conf has no
 # RC_LABEL row at all, exactly the string the supervisor builds today).
 #
-# READING IS LENIENT — the registry doctrine that a gap is not a failure. The
-# identity fields are validated for SHAPE only, and only when non-empty; they
-# are never RESOLVED here (an account or target that does not exist is a gap
-# for the reader — strictness belongs to the writer that will set the fields).
+# ACCOUNT absence is lenient for legacy rows, but a present ACCOUNT is a strict
+# identity claim and must resolve to this row's OWNER and HOST. Target references
+# remain shape-only here and are resolved by the consumers that use them.
 # The one semantic gate is the typed union: TARGET_ENTITY and TARGET_PROJECT
 # both set is two claims about what the session works on, and refuses.
 #
@@ -36,7 +35,7 @@ bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/estate" "$FX/sessions.d" "$FX/entities.d" "$FX/projects.d"
+mkdir -p "$FX/estate" "$FX/sessions.d" "$FX/entities.d" "$FX/projects.d" "$FX/accounts.d"
 SESS="$FX/sessions.d"; ENT="$FX/entities.d"; PROJ="$FX/projects.d"
 
 # The full required-key set — registry_load reads several estate values
@@ -63,6 +62,7 @@ EOF
 
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ENT/alpha.conf"
 printf 'NAME="Site"\nPARENT="alpha"\n' > "$PROJ/site.conf"
+printf 'PRINCIPAL="a"\nHOST="h1"\n' > "$FX/accounts.d/a-h1.conf"
 
 # in_fixture <fn> [args...] — run one library call hermetically inside the
 # fixture estate. OUT carries stdout, RC the exit code; stderr is dropped
@@ -272,14 +272,12 @@ printf 'OWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nSLUG="Alpha"
 fields bad-slug
 is "6e: rc 1" "$RC" "1"
 
-echo "-- 6f: an account that does not EXIST still reads (a gap is not a failure) --"
-# The reader never resolves ACCOUNT/TARGET_* against their registers —
-# accounts.d does not even exist in this fixture, and the load succeeds.
+echo "-- 6f: an account that does not exist is an identity refusal --"
 printf 'OWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nACCOUNT="nobody-nowhere"\n' \
   > "$SESS/gap-account.conf"
 fields gap-account
-is "6f: rc 0"    "$RC"  "0"
-is "6f: fields"  "$OUT" "nobody-nowhere|||"
+is "6f: rc 78"   "$RC"  "78"
+is "6f: no fields" "$OUT" ""
 
 echo "-- 6g: a later load never shows the previous load's identity fields --"
 # The reset-block proof: the identity fields sit in the same reset block as

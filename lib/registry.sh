@@ -585,6 +585,7 @@ registry_printable() {
 # named:
 #   rc 0  — the slug is on stdout.
 #   rc 1  — no owning entity could be derived at all; nothing on stdout.
+#   rc 78 — the session row carries an invalid ACCOUNT identity claim.
 #   rc 65 — one was derived and it is NOT a legal slug; nothing on stdout,
 #           the value named on stderr.
 #
@@ -595,7 +596,7 @@ registry_session_owning_entity() {
   local sid="${1:-}"
   [ -n "$sid" ] || return 1
   (
-    registry_load "$sid" >/dev/null 2>&1 || exit 1
+    registry_load "$sid" >/dev/null || exit $?
     local owning="${DOMAIN:-}"
     if [ -n "${TARGET_ENTITY:-}" ]; then
       owning="$TARGET_ENTITY"
@@ -656,8 +657,10 @@ registry_session_owning_entity() {
 # exist" are different facts:
 #   rc 0 — the set is on stdout. Empty is an answer, and a common one.
 #   rc 1 — the named session's own row would not load. Nothing on stdout.
-# A row OTHER than the named one that will not load is skipped: one unreadable
-# conf must not turn every other session's answer into a refusal.
+#   rc 78 — any row carries an invalid ACCOUNT identity claim. Nothing on stdout.
+# An ordinarily malformed row OTHER than the named one is skipped. Identity
+# corruption is different: omitting that row would make an incomplete answer
+# look complete, so rc 78 refuses the whole enumeration.
 #
 # SORTED BY NAME, IN THE C LOCALE, so the same register renders the same line on
 # every machine that reads it (the hub writes this into a proof, the runtimes
@@ -678,18 +681,19 @@ registry_project_mates() {
   (
     . "$(_registry_self_dir)/visibility.sh" || exit 1
     local subject_snapshot subject_domain subject_vis subject_grants
-    subject_snapshot="$(_visibility_session_snapshot "$sid")" || exit 1
+    subject_snapshot="$(_visibility_session_snapshot "$sid")" || exit $?
     # SNAPSHOTTED BEFORE THE LOOP. The per-row loads below run in their own
     # command substitutions, so they cannot reach these — but the value being
     # compared against must be read off the subject's row before anything else
     # is loaded, or the comparison would drift with the loop.
-    local want_project want_entity viewer field value
+    local want_project want_entity viewer field value own_rc
     IFS='|' read -r viewer subject_domain subject_vis subject_grants want_project want_entity <<< "$subject_snapshot"
     if [ "$level" = mates_team ]; then
       field="team"; value=""
     elif [ "$level" = mates_client ]; then
       field="client"
-      value="$(registry_session_owning_entity "$sid")" || exit 0
+      value="$(registry_session_owning_entity "$sid")"; own_rc=$?
+      [ "$own_rc" -eq 0 ] || { [ "$own_rc" -eq 78 ] && exit 78; exit 0; }
     elif [ -n "$want_project" ]; then
       field="project"; value="$want_project"
     elif [ -n "$want_entity" ]; then
@@ -697,7 +701,7 @@ registry_project_mates() {
     else
       exit 0
     fi
-    local rows row line
+    local rows row line lines=""
     rows="$(registry_list 2>/dev/null)" || exit 1
     while IFS= read -r row; do
       [ -n "$row" ] || continue
@@ -715,25 +719,32 @@ registry_project_mates() {
       # failures arrive as a syntax error on stderr with a successful-looking
       # assignment: a row that was never compared, reported as one that did not
       # match. The second one broke every function further down this file.
+      local line_rc
       line="$(
         local candidate candidate_domain candidate_vis candidate_grants
         local candidate_project candidate_entity candidate_owner candidate_slug
         candidate="$(
-          registry_load "$row" >/dev/null 2>&1 || exit 1
-          candidate_owner="$(_registry_row_principal "$row")" || exit 1
+          registry_load "$row" >/dev/null 2>&1 || exit $?
+          candidate_owner="$(_registry_row_principal "$row")" || exit $?
           printf '%s|%s|%s|%s|%s|%s|%s' "$candidate_owner" "${DOMAIN:-}" \
             "${VISIBILITY:-}" "${VISIBLE_TO:-}" "${TARGET_PROJECT:-}" \
             "${TARGET_ENTITY:-}" "${SLUG:-$row}"
-        )" || exit 1
+        )" || exit $?
         IFS='|' read -r candidate_owner candidate_domain candidate_vis candidate_grants \
           candidate_project candidate_entity candidate_slug <<< "$candidate"
-        _session_visible_to "$viewer" "$row" "$candidate_owner" || exit 1
+        local visible_rc candidate_owning
+        _session_visible_to "$viewer" "$row" "$candidate_owner"; visible_rc=$?
+        [ "$visible_rc" -eq 0 ] || { [ "$visible_rc" -eq 78 ] && exit 78; exit 1; }
         if [ "$field" = "project" ]; then
           [ "$candidate_project" = "$value" ] || exit 1
         elif [ "$field" = "client" ]; then
-          [ "$(registry_session_owning_entity "$row")" = "$value" ] || exit 1
+          candidate_owning="$(registry_session_owning_entity "$row")"; own_rc=$?
+          [ "$own_rc" -eq 0 ] || { [ "$own_rc" -eq 78 ] && exit 78; exit 1; }
+          [ "$candidate_owning" = "$value" ] || exit 1
         elif [ "$field" = "team" ]; then
-          _visibility_member_of "$viewer" "$(registry_session_owning_entity "$row")" || exit 1
+          candidate_owning="$(registry_session_owning_entity "$row")"; own_rc=$?
+          [ "$own_rc" -eq 0 ] || { [ "$own_rc" -eq 78 ] && exit 78; exit 1; }
+          _visibility_member_of "$viewer" "$candidate_owning" || exit 1
         else
           [ "$candidate_entity" = "$value" ] || exit 1
         fi
@@ -759,11 +770,14 @@ registry_project_mates() {
         else
           printf '%s (%s)' "$nm" "$candidate_owner"
         fi
-      )" || continue
-      printf '%s\n' "$line"
-    done <<ROWS | LC_ALL=C sort
+      )"; line_rc=$?
+      [ "$line_rc" -eq 0 ] || { [ "$line_rc" -eq 78 ] && exit 78; continue; }
+      if [ -z "$lines" ]; then lines="$line"; else lines="$lines
+$line"; fi
+    done <<ROWS
 $rows
 ROWS
+    [ -z "$lines" ] || printf '%s\n' "$lines" | LC_ALL=C sort
   )
 }
 
@@ -790,8 +804,9 @@ ROWS
 # convention across the callers, not something this function enforces.
 # rc is registry_project_mates's own, unchanged.
 registry_project_mates_line() {
-  local sid="${1:-}" out line joined=""
-  out="$(registry_project_mates "$sid" "${2:-mates_project}")" || return 1
+  local sid="${1:-}" out line joined="" rc
+  out="$(registry_project_mates "$sid" "${2:-mates_project}")"; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   [ -n "$out" ] || { printf 'none\n'; return 0; }
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -811,10 +826,10 @@ MATES
 registry_mates_summary() (
   local sid="${1:-}" project client team="" people="" parent="" viewer=""
   . "$(_registry_self_dir)/visibility.sh" || exit 1
-  project="$(registry_project_mates_line "$sid")" || exit 1
-  client="$(registry_project_mates_line "$sid" mates_client)" || exit 1
+  project="$(registry_project_mates_line "$sid")" || exit $?
+  client="$(registry_project_mates_line "$sid" mates_client)" || exit $?
   local team_rows team_limit=8 team_total=0 team_shown=0 team_line
-  team_rows="$(registry_project_mates "$sid" mates_team)" || exit 1
+  team_rows="$(registry_project_mates "$sid" mates_team)" || exit $?
   while IFS= read -r team_line; do
     [ -n "$team_line" ] || continue
     team_total=$((team_total + 1))
@@ -830,7 +845,7 @@ TEAM_ROWS
     team="$team; (+$((team_total - team_shown)) more)"
   fi
   local subject_snapshot subject_domain subject_vis subject_grants target_project target_entity
-  subject_snapshot="$(_visibility_session_snapshot "$sid")" || exit 1
+  subject_snapshot="$(_visibility_session_snapshot "$sid")" || exit $?
   IFS='|' read -r viewer subject_domain subject_vis subject_grants target_project target_entity <<< "$subject_snapshot"
   if [ -n "$target_project" ]; then
     parent="$(registry_project_load "$target_project" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}")"
@@ -850,10 +865,12 @@ TEAM_ROWS
 # reason this is not simply "return the union it managed to build":
 #   rc 0  — resolved. The set on stdout is the WHOLE grant; empty means nobody
 #           granted anything, which is a configuration and an honest answer.
-#   rc 65 — at least one level would not LOAD — the ACCOUNT included. The set
+#   rc 65 — at least one organizational level would not LOAD. The set
 #           on stdout is PARTIAL and must never be read as the whole grant;
 #           every failure is named on stderr.
 #   rc 1  — the session's own row would not load. Nothing was resolved.
+#   rc 78 — the session carries an invalid ACCOUNT identity claim. Nothing was
+#           resolved and no partial grant is printed.
 #
 # WITHOUT THE MIDDLE ONE A FAULT READS AS A CONFIGURATION. The stderr sentence
 # is for a person; the exit code is the part a machine reads, and the machine
@@ -904,12 +921,10 @@ TEAM_ROWS
 # alternative is a duplicate key in the rendered document, where the last
 # writer silently wins.
 #
-# AN ACCOUNT THAT WILL NOT LOAD IS THE SAME FAULT AS A TEAM THAT WILL NOT, and
-# it is the fault this level is most likely to hit: an ACCOUNT naming a row
-# that is missing from accounts.d would otherwise contribute an empty string,
-# and the person's entire personal set would disappear into an rc 0 that reads
-# "nobody granted you anything". A machine reads the rc, and rc 0 tells a
-# spawner to start the session as if that were the whole grant.
+# AN ACCOUNT THAT WILL NOT LOAD IS AN IDENTITY REFUSAL, not a partial capability
+# answer. registry_load has already checked it once; the account level checks
+# again because the row can change between those reads. A missing or mismatched
+# account exits 78 before any organizational grant is printed.
 #
 # A LEVEL THAT FAILS TO LOAD CONTRIBUTES NOTHING, IS NAMED, AND MOVES THE RC.
 # The levels that DID load still grant — the partial set is on stdout, because
@@ -934,8 +949,8 @@ registry_session_mcp_assets() {
     return 1
   fi
   (
-    # ONE LOAD, THREE ANSWERS. `out` carries TARGET_PROJECT on line one,
-    # ACCOUNT on line two and a constant on line three — the possibly-empty
+    # ONE LOAD, FIVE ANSWERS. `out` carries TARGET_PROJECT on line one,
+    # ACCOUNT on line two, OWNER and HOST next, and a constant last — the possibly-empty
     # fields FIRST, because command substitution strips every trailing newline
     # and would otherwise collapse them into one field. The same idiom, and
     # the same reasoning, as registry_display_for's entity-chain walk above.
@@ -945,15 +960,20 @@ registry_session_mcp_assets() {
     # already in hand, and asking the register twice would buy a second read
     # for an answer it has just given.
     local out rc
-    out="$( registry_load "$sid" >/dev/null 2>&1 && printf '%s\n%s\n%s\n' "${TARGET_PROJECT:-}" "${ACCOUNT:-}" "ok" )"
+    out="$( registry_load "$sid" >/dev/null && printf '%s\n%s\n%s\n%s\n%s\n' \
+             "${TARGET_PROJECT:-}" "${ACCOUNT:-}" "$OWNER" "$HOST" "ok" )"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "registry: mcp assets for '$sid' — the session's own row would not load; no assets resolved" >&2
-      exit 1
+      exit "$rc"
     fi
-    local target_project="${out%%$'\n'*}" _after_project account
+    local target_project="${out%%$'\n'*}" _after_project account row_owner row_host
     _after_project="${out#*$'\n'}"
     account="${_after_project%%$'\n'*}"
+    _after_project="${_after_project#*$'\n'}"
+    row_owner="${_after_project%%$'\n'*}"
+    _after_project="${_after_project#*$'\n'}"
+    row_host="${_after_project%%$'\n'*}"
 
     # A LEVEL FAILED is carried in a flag rather than returned from where it
     # happened: all four levels may fail independently, every one of them has
@@ -982,26 +1002,37 @@ registry_session_mcp_assets() {
         echo "registry: mcp assets for '$sid' — the owning account resolves to '$(registry_printable "$account")', which is not a legal slug (allowed: a-z 0-9 -); refusing to hand it to anything that builds a path" >&2
         _MCP_LEVEL_FAILED=1
       else
-        local acct_out acct_rc
+        local acct_out acct_rc acct_assets acct_username acct_host acct_rest
         acct_out="$( registry_account_load "$account" >/dev/null \
-                     && printf '%s\n%s\n' "${ACCOUNT_MCP_ASSETS:-}" "ok" )"
+                     && printf '%s\n%s\n%s\n%s\n' "${ACCOUNT_MCP_ASSETS:-}" \
+                          "$ACCOUNT_USERNAME" "$ACCOUNT_HOST" "ok" )"
         acct_rc=$?
         if [ "$acct_rc" -ne 0 ]; then
           # THE LOADER'S OWN STDERR IS LET THROUGH here too, for the reason it
           # is at every other level: it has already said WHICH fault this was
           # — no such row, an unreadable one, a row missing PRINCIPAL — and
           # this sentence adds the session whose grant it cost.
-          echo "registry: mcp assets for '$sid' — the owning account '$account' would not load; it grants nothing here" >&2
-          _MCP_LEVEL_FAILED=1
+          echo "registry: mcp assets for '$sid' — the owning account '$account' would not load; identity cannot be measured" >&2
+          exit 78
         else
-          _registry_mcp_collect "${acct_out%%$'\n'*}" account "$account"
+          acct_assets="${acct_out%%$'\n'*}"; acct_rest="${acct_out#*$'\n'}"
+          acct_username="${acct_rest%%$'\n'*}"; acct_rest="${acct_rest#*$'\n'}"
+          acct_host="${acct_rest%%$'\n'*}"
+        fi
+        if [ "$acct_rc" -eq 0 ] && { [ "$acct_username" != "$row_owner" ] || [ "$acct_host" != "$row_host" ]; }; then
+          echo "registry: mcp assets for '$sid' — the owning account '$account' no longer matches OWNER='$row_owner' and HOST='$row_host'; identity cannot be measured" >&2
+          exit 78
+        elif [ "$acct_rc" -eq 0 ]; then
+          _registry_mcp_collect "$acct_assets" account "$account"
         fi
       fi
     fi
 
     local owning own_rc
     owning="$( registry_session_owning_entity "$sid" )"; own_rc=$?
-    if [ "$own_rc" -eq 65 ]; then
+    if [ "$own_rc" -eq 78 ]; then
+      exit 78
+    elif [ "$own_rc" -eq 65 ]; then
       # NAMED BY registry_session_owning_entity ITSELF, which knows the value;
       # this line adds the session, so the two sentences together say what was
       # refused and whose work it cost.
@@ -2757,14 +2788,16 @@ registry_valid_name() {
 }
 
 registry_validate_runtime_set() {
-  local project port projects seen_ports="" seen_port seen_project
-  projects="$(registry_list)" || return 1
+  local project port projects seen_ports="" seen_port seen_project rc
+  projects="$(registry_list)"; rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   while IFS= read -r project; do
     [ -n "$project" ] || continue
     port="$(
       registry_load "$project" || exit $?
       if [ "$RUNTIME" = "opencode" ]; then printf '%s' "$OPENCODE_PORT"; fi
-    )" || return 1
+    )"; rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
     [ -n "$port" ] || continue
     while IFS=: read -r seen_port seen_project; do
       [ -n "$seen_port" ] || continue
@@ -2788,29 +2821,30 @@ _registry_word_in_list() {
 
 # _registry_row_principal <session> — the HUMAN this row belongs to.
 #
-# ACCOUNT FIRST, OWNER AS A NAMED FALLBACK. The account register is the source
-# of truth for "which human is this"; OWNER is the unix account the process runs
-# as, and the two are allowed to differ. But accounts.d is not readable
-# everywhere the loader runs, and a gate that refuses when it cannot resolve
-# would take down every session that reaches it from such a place.
-#
-# A ROW WITH NO ACCOUNT IS LEGACY, NOT A FAILED LOOKUP, and falls back silently.
-# A non-empty ACCOUNT that does not resolve is a half-measurement and says so on
-# stderr. OWNER lives in the Unix namespace, so this fallback can collide with
-# another person's principal slug; callers must never treat it as equivalent to
-# a successfully resolved account principal.
+# STRICT WHEN ACCOUNT IS PRESENT. Its row must load and describe this session's
+# exact Unix owner and host; otherwise the session is borrowing another
+# account's person and the registry cannot vouch for it. Only a legacy row with
+# no ACCOUNT uses OWNER as the principal.
+_registry_account_principal_for_row() (
+  if ! registry_account_load "${1:-}" >/dev/null 2>&1; then
+    echo "registry: ${4:-session}: ACCOUNT '${1:-}' cannot be read; the row's principal cannot be measured" >&2
+    return 78
+  fi
+  if [ "$ACCOUNT_USERNAME" != "${2:-}" ]; then
+    echo "registry: ${4:-session}: OWNER='${2:-}' does not match ACCOUNT '${1:-}' USERNAME='$ACCOUNT_USERNAME'" >&2
+    return 78
+  fi
+  if [ "$ACCOUNT_HOST" != "${3:-}" ]; then
+    echo "registry: ${4:-session}: HOST='${3:-}' does not match ACCOUNT '${1:-}' HOST='$ACCOUNT_HOST'" >&2
+    return 78
+  fi
+  printf '%s' "$ACCOUNT_PRINCIPAL"
+)
+
 _registry_row_principal() {
-  local s="${1:-}" p=""
-  if declare -F registry_account_load >/dev/null 2>&1 && [ -n "${ACCOUNT:-}" ]; then
-    p="$( registry_account_load "$ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
-  fi
-  if [ -z "$p" ]; then
-    p="${OWNER:-}"
-    if [ -n "${ACCOUNT:-}" ]; then
-      echo "registry: $s: could not resolve ACCOUNT '$ACCOUNT' to a principal; using OWNER='$p' for the schema gate" >&2
-    fi
-  fi
-  printf '%s' "$p"
+  local s="${1:-}" account="${ACCOUNT:-}" owner="${OWNER:-}" host="${HOST:-}"
+  [ -n "$account" ] || { printf '%s' "$owner"; return 0; }
+  _registry_account_principal_for_row "$account" "$owner" "$host" "$s"
 }
 
 # registry_resolve_session <handle> — the row KEY (conf basename) for what a
@@ -2921,14 +2955,12 @@ registry_load() {
   # TARGET_*     what the session works ON — a reference the display is
   #              DERIVED from, never a stored label.
   #
-  # READ LENIENTLY: a gap is not a failure. Every conf that predates the
-  # model omits all four, and omission must read EXACTLY as before — the
-  # fields are validated for SHAPE only, and only when non-empty. They are
-  # never RESOLVED here: an account or target that does not exist in its
-  # register is a gap for the reader, and strictness belongs to the writer
-  # that sets the fields. (The composite (ACCOUNT, SLUG) uniqueness gate,
-  # registry_account_slug_available above, stays unwired for the same
-  # reason — it is the writer's gate, not the reader's.)
+# ACCOUNT ABSENCE IS LENIENT; ACCOUNT PRESENCE IS STRICT. Rows predating the
+# model omit it and keep OWNER as their principal. Once present, ACCOUNT is an
+# identity claim and must resolve to this exact OWNER and HOST on every read.
+# SLUG and TARGET_* remain shape-checked references whose existence is enforced
+# by the consumers that need those joins. The composite (ACCOUNT, SLUG)
+# uniqueness gate remains a writer concern.
   #
   # The shape refused here is refused for the same reason OWNER's is: these
   # values index other registers, so a path escape or a control byte would
@@ -2954,6 +2986,15 @@ registry_load() {
       return 1
     fi
   done
+  # ACCOUNT IS AN IDENTITY CLAIM, NOT A BEST-EFFORT JOIN. A present row must
+  # describe this exact Unix owner on this exact host; otherwise no caller may
+  # treat the session as loadable, including supervisors and runtimes that do
+  # not render visibility at all.
+  if [ -n "$ACCOUNT" ]; then
+    local _account_principal
+    _account_principal="$(_registry_row_principal "$project")" || return 78
+    [ -n "$_account_principal" ] || return 78
+  fi
   # AT SCHEMA 6 THE FIELD IS REQUIRED. Below it, absence is the transition.
   #
   # THE ESTATE'S OWN VERSION DECIDES, not a flag and not a date: one register
@@ -2994,7 +3035,7 @@ registry_load() {
     # though no principal question was asked. The line's whole reason to exist
     # is to say which question the fallback answered when the answer mattered.
     if [ -n "$_req" ]; then
-      _who="$(_registry_row_principal "$project")"
+      _who="$(_registry_row_principal "$project")" || return 78
     fi
     if [ -z "$_req" ] || _registry_word_in_list "$_who" "$_req"; then
       echo "registry: $project.conf REFUSING — no LOGIN: nothing states which model account pays" >&2
@@ -3353,7 +3394,7 @@ registry_session_display() {
   # by BUILDING the label as prefix+name, and this projection must match it
   # byte-for-byte. Detected the same way both registry_load and the
   # supervisor detect the label line: the LINE's presence, not the value.
-  if ! grep -q -e '^RC_LABEL=' -e '^TARGET_ENTITY=' -e '^TARGET_PROJECT=' "$conf" 2>/dev/null; then
+  if ! grep -q -e '^ACCOUNT=' -e '^RC_LABEL=' -e '^TARGET_ENTITY=' -e '^TARGET_PROJECT=' "$conf" 2>/dev/null; then
     local _prefix
     _prefix="$(registry_rc_label_prefix)" || return 78
     printf '%s\n' "$_prefix$slug"
@@ -3403,7 +3444,7 @@ registry_session_display() {
 
 registry_render_plist() {
   local project="${1:-}"
-  registry_load "$project" || return 1
+  registry_load "$project" || return $?
   cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

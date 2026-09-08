@@ -2503,26 +2503,34 @@ cmd_registry_session_add() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
-  # 1. THE ACCOUNT — required, must RESOLVE, and its PRINCIPAL is the OWNER.
+  # 1. THE ACCOUNT — required and resolved once. PRINCIPAL authorizes the
+  # human; USERNAME and HOST are the session row's Unix identity.
   [ -n "$account" ] || { _reg_fail "$want_json" "steward registry session add: --account is required" 64; return 64; }
   if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry session add: invalid --account '$account' (allowed: a-z0-9-, must start a-z0-9)" 64
     return 64
   fi
-  # SUBSHELLED, and the principal SNAPSHOTTED out through the substitution —
+  # SUBSHELLED, and all three fields SNAPSHOTTED out through the substitution —
   # the load's own stdout (including anything a hostile conf prints) goes to
   # /dev/null; only the loader's validated ACCOUNT_PRINCIPAL crosses back.
-  local principal
-  principal="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
-  if [ -z "$principal" ]; then
+  local account_data principal account_username account_host account_rest account_rc
+  account_data="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s\n%s\n%s\nok\n' "$ACCOUNT_PRINCIPAL" "$ACCOUNT_USERNAME" "$ACCOUNT_HOST" )"; account_rc=$?
+  if [ "$account_rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry session add: --account '$account' does not resolve to a known account" 78
     return 78
   fi
+  principal="${account_data%%$'\n'*}"; account_rest="${account_data#*$'\n'}"
+  account_username="${account_rest%%$'\n'*}"; account_rest="${account_rest#*$'\n'}"
+  account_host="${account_rest%%$'\n'*}"
   # Belt on the snapshot: the loader validated this form already, but the
   # value crossed a process boundary and becomes the row's OWNER — re-check.
   if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry session add: account '$account' carries an invalid principal" 70
     return 70
+  fi
+  if ! [[ "$account_username" =~ ^[a-z][a-z0-9-]*$ ]] || ! [[ "$account_host" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session add: account '$account' carries an invalid username or host" 78
+    return 78
   fi
 
   # 1b. THE LOGIN — GATE 1: the login's PRINCIPAL must be the SAME HUMAN as the
@@ -2620,17 +2628,18 @@ cmd_registry_session_add() {
       return 64 ;;
   esac
 
-  # 5. THE HOST — default is the estate's hub; an explicit one is checked
-  # for form (the same shape registry_load enforces on every read).
+  # 5. THE HOST — the account's host. An explicit different host would create
+  # a row that the strict reader immediately refuses.
   if [ -z "$host" ]; then
-    host="$(registry_hub_host)" || {
-      _reg_fail "$want_json" "steward registry session add: the estate declares no usable HUB_HOST to default --host from" 78
-      return 78
-    }
+    host="$account_host"
   fi
   if ! [[ "$host" =~ ^[a-z][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry session add: invalid --host '$host' (allowed: a-z, then a-z0-9-)" 64
     return 64
+  fi
+  if [ "$host" != "$account_host" ]; then
+    _reg_fail "$want_json" "steward registry session add: --host '$host' does not match account '$account' host '$account_host'" 78
+    return 78
   fi
 
   # 6. MINT THE ID — opaque, immutable, and NEVER derived from account or
@@ -2687,7 +2696,7 @@ cmd_registry_session_add() {
   # it). `migrate-session` writes the same derived value, so the two verbs agree.
   [ "$rc" -eq 0 ] && { kv_domain="$(_registry_emit_kv DOMAIN "$tslug" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_host="$(_registry_emit_kv HOST "$host" 2>"$kv_err")"; rc=$?; }
-  [ "$rc" -eq 0 ] && { kv_owner="$(_registry_emit_kv OWNER "$principal" 2>"$kv_err")"; rc=$?; }
+  [ "$rc" -eq 0 ] && { kv_owner="$(_registry_emit_kv OWNER "$account_username" 2>"$kv_err")"; rc=$?; }
   [ "$rc" -eq 0 ] && { kv_pm="$(_registry_emit_kv PERMISSION_MODE "bypassPermissions" 2>"$kv_err")"; rc=$?; }
   # EMPTY SLUG => NO LINE. `_registry_emit_kv LOGIN ""` would write LOGIN="",
   # and an EMPTY row is not the same as a MISSING one: registry_load reads
@@ -2714,7 +2723,7 @@ cmd_registry_session_add() {
   fi
   _REGW_EXPECT_HOST="$host"
   _REGW_EXPECT_REPO_PATH="$repo"
-  _REGW_EXPECT_OWNER="$principal"
+  _REGW_EXPECT_OWNER="$account_username"
   _REGW_EXPECT_PERMISSION_MODE="bypassPermissions"
   _REGW_EXPECT_LOGIN="$login"
   local rw_err; rw_err="$(mktemp)" || {
@@ -2754,12 +2763,12 @@ cmd_registry_session_add() {
     if [ -n "$login" ]; then
       jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
         --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
-        --arg owner "$principal" --arg repo "$repo" --arg file "$file" --arg login "$login" \
+        --arg owner "$account_username" --arg repo "$repo" --arg file "$file" --arg login "$login" \
         '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file,login:$login,relay_key:false}'
     else
       jq -cn --arg id "$id" --arg account "$account" --arg slug "$slug" \
         --arg tkind "$tkind" --arg tslug "$tslug" --arg host "$host" \
-        --arg owner "$principal" --arg repo "$repo" --arg file "$file" \
+        --arg owner "$account_username" --arg repo "$repo" --arg file "$file" \
         '{ok:true,kind:"session",id:$id,account:$account,slug:$slug,target:{kind:$tkind,slug:$tslug},host:$host,owner:$owner,repo:$repo,file:$file,relay_key:false}'
     fi
   else
@@ -2797,11 +2806,20 @@ cmd_registry_session_check() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
-  local conf conf_state="missing" owner="" slug="" host=""
+  local conf conf_state="missing" owner="" slug="" host="" load_err="" load_rc=0 load_errf=""
   conf="$(registry_dir)/$id.conf"
   if [ -f "$conf" ]; then
-    if registry_load "$id" >/dev/null 2>&1; then
+    load_errf="$(mktemp 2>/dev/null)" || {
+      _reg_fail "$want_json" "steward registry session check: cannot create a temporary file" 70
+      return 70
+    }
+    registry_load "$id" >/dev/null 2>"$load_errf"; load_rc=$?
+    load_err="$(cat "$load_errf" 2>/dev/null)"; rm -f "$load_errf"
+    if [ "$load_rc" -eq 0 ]; then
       conf_state="ok"; owner="$OWNER"; slug="$SLUG"; host="$HOST"
+    elif [ "$load_rc" -eq 78 ]; then
+      _reg_fail "$want_json" "steward registry session check: $load_err" 78
+      return 78
     else
       conf_state="unreadable"
     fi
@@ -5206,22 +5224,29 @@ cmd_registry_migrate_session() {
     esac
   done
 
-  # 2. THE ACCOUNT — required, must RESOLVE, and its PRINCIPAL becomes OWNER.
-  # SUBSHELLED, principal SNAPSHOTTED out through the substitution.
+  # 2. THE ACCOUNT — required and resolved once. PRINCIPAL authorizes the
+  # human; USERNAME and HOST become the migrated row's Unix identity.
   [ -n "$account" ] || { _reg_fail "$want_json" "steward registry migrate-session: --account is required" 64; return 64; }
   if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry migrate-session: invalid --account '$account' (allowed: a-z0-9-, must start a-z0-9)" 64
     return 64
   fi
-  local principal
-  principal="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
-  if [ -z "$principal" ]; then
+  local account_data principal account_username account_host account_rest account_rc
+  account_data="$( registry_account_load "$account" >/dev/null 2>&1 && printf '%s\n%s\n%s\nok\n' "$ACCOUNT_PRINCIPAL" "$ACCOUNT_USERNAME" "$ACCOUNT_HOST" )"; account_rc=$?
+  if [ "$account_rc" -ne 0 ]; then
     _reg_fail "$want_json" "steward registry migrate-session: --account '$account' does not resolve to a known account" 78
     return 78
   fi
+  principal="${account_data%%$'\n'*}"; account_rest="${account_data#*$'\n'}"
+  account_username="${account_rest%%$'\n'*}"; account_rest="${account_rest#*$'\n'}"
+  account_host="${account_rest%%$'\n'*}"
   if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry migrate-session: account '$account' carries an invalid principal" 70
     return 70
+  fi
+  if ! [[ "$account_username" =~ ^[a-z][a-z0-9-]*$ ]] || ! [[ "$account_host" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry migrate-session: account '$account' carries an invalid username or host" 78
+    return 78
   fi
 
   # 3. THE TARGET — a TYPED UNION: exactly one of --project/--entity, and it
@@ -5263,18 +5288,20 @@ cmd_registry_migrate_session() {
     return 65
   fi
 
-  # 5. THE HOST — carried from the old row when present, else the estate hub
-  # (registry_load's own default), and form-checked either way.
+  # 5. THE HOST — carried when present, else inherited from the account. A
+  # different host would make the migrated row unreadable under the identity
+  # contract, so refuse before writing it.
   local host="$old_host"
   if [ -z "$host" ]; then
-    host="$(registry_hub_host)" || {
-      _reg_fail "$want_json" "steward registry migrate-session: the estate declares no usable HUB_HOST to default HOST from" 78
-      return 78
-    }
+    host="$account_host"
   fi
   if ! [[ "$host" =~ ^[a-z][a-z0-9-]*$ ]]; then
     _reg_fail "$want_json" "steward registry migrate-session: '$old' carries an invalid HOST '$host'" 65
     return 65
+  fi
+  if [ "$host" != "$account_host" ]; then
+    _reg_fail "$want_json" "steward registry migrate-session: '$old' HOST '$host' does not match account '$account' host '$account_host'" 78
+    return 78
   fi
 
   # 6. MINT THE ID — opaque, immutable, NEVER derived from account or slug.
@@ -5296,7 +5323,7 @@ cmd_registry_migrate_session() {
   # 7. SERIALIZE — every value through _registry_emit_kv (escaping); its
   # refusal is captured to a temp file, never leaked to real stderr. The
   # carry set is registry_load's field-reset list MINUS what this verb
-  # replaces: OWNER (rewritten to the principal), RC_LABEL (removed), DOMAIN
+  # replaces: OWNER (rewritten to the account username), RC_LABEL (removed), DOMAIN
   # (derived to the target slug), and the identity fields (added below).
   # REPO_PATH and HOST are always emitted; the rest only when the old row
   # carried them.
@@ -5337,7 +5364,7 @@ cmd_registry_migrate_session() {
   # target slug — a FRESH session has no credential history to preserve.
   local old_domain; old_domain="$(_migrate_snap "$old_conf" DOMAIN)"
   _mig_add DOMAIN "${old_domain:-$tslug}" required
-  _mig_add OWNER "$principal" required
+  _mig_add OWNER "$account_username" required
   _mig_add REPO_PATH "$old_repo" required
   _mig_add HOST "$host" required
   # THE CARRIED OPERATIONAL FIELDS — every one registry_load resets and reads,
@@ -5391,7 +5418,7 @@ cmd_registry_migrate_session() {
   fi
   _REGW_EXPECT_HOST="$host"
   _REGW_EXPECT_REPO_PATH="$old_repo"
-  _REGW_EXPECT_OWNER="$principal"
+  _REGW_EXPECT_OWNER="$account_username"
   _REGW_EXPECT_PERMISSION_MODE="$carried_pm"
   # LOGIN IS CARRIED, NOT MINTED — this verb migrates a row's SHAPE, never
   # its identity, and a LOGIN the old conf already carried (hand-added, or a
@@ -6326,11 +6353,16 @@ _doctor_probe_registry() {
     return 78
   fi
 
-  local total=0 unreadable=0 name
+  local total=0 unreadable=0 name load_err load_rc
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     total=$((total+1))
-    ( registry_load "$name" >/dev/null 2>&1 ) || unreadable=$((unreadable+1))
+    load_err="$(registry_load "$name" 2>&1 >/dev/null)"; load_rc=$?
+    if [ "$load_rc" -eq 78 ]; then
+      printf 'FAIL %s\n' "$(_doctor_oneline "$load_err")"
+      return 78
+    fi
+    [ "$load_rc" -eq 0 ] || unreadable=$((unreadable+1))
   done <<EOF
 $list
 EOF
@@ -6795,7 +6827,7 @@ cmd_login() {
     fi
     [ -z "$username" ] || viewer="$(registry_principal_for_username "$username" "$viewer_host")" || viewer=""
   fi
-  owner_principal="$(_registry_row_principal "$key")"
+  owner_principal="$(_registry_row_principal "$key")" || return 78
   # AN EMPTY VIEWER MATCHES NO ONE. registry_load already guarantees a
   # non-empty, regex-validated OWNER, so empty==empty cannot happen today —
   # but that guarantee lives in another file, and this comparison must not

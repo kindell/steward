@@ -261,6 +261,15 @@ case "$hout" in
 esac
 has "but the diagnosis survives — on stderr" "$herrtext" "skipping 'broken'"
 
+echo "== a present but unreadable ACCOUNT is a fleet refusal, not a skipped row =="
+printf 'HOST="h1"\nOWNER="a"\nACCOUNT="missing-account"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="bad-account"\n' \
+  > "$FX/sessions.d/bad-account.conf"
+bad_account="$(run --json)"; bad_account_rc=$?
+is "account-integrity failure preserves rc 78" "$bad_account_rc" "78"
+is "account-integrity failure returns a JSON refusal" "$(printf '%s' "$bad_account" | jq -r '.ok')" "false"
+has "the refusal names the broken account" "$(printf '%s' "$bad_account" | jq -r '.reason')" "missing-account"
+rm -f "$FX/sessions.d/bad-account.conf"
+
 # AN UNREADABLE REGISTRY REFUSES, in both forms, and the json form must still be
 # json — a consumer that gets a bare error string on stdout cannot parse it.
 echo "== an unreadable registry refuses in both forms =="

@@ -14,13 +14,15 @@ bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 check(){ local d="$1"; shift; if "$@"; then ok; else bad "$d"; fi; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d"
+mkdir -p "$FX/estate" "$FX/sessions.d"
+printf 'ESTATE_NAME="fixture"\nLABEL_PREFIX="com.fixture"\nHUB_HOST="h"\nOP_TOKEN_FILE_NAME="token"\n' > "$FX/estate/steward.conf"
 printf 'HOST="h"\nOWNER="alice"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="with-assets"\nASSETS="mail:kindell chromium-rig slack:acme"\n' \
   > "$FX/sessions.d/with-assets.conf"
 printf 'HOST="h"\nOWNER="alice"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="no-assets"\n' \
   > "$FX/sessions.d/no-assets.conf"
 
-export STEWARD_REGISTRY_DIR="$FX/sessions.d"
+export STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+       STEWARD_CONFIG_FILE="$FX/no-such-config"
 # shellcheck source=/dev/null
 . "$here/lib/assets.sh"
 
@@ -46,6 +48,13 @@ check "no-assets prints nothing" [ -z "$out2" ]
 echo "== an unknown session refuses, never prints empty =="
 out3="$(session_assets does-not-exist 2>/dev/null)"; rc3=$?
 check "unknown session rc non-zero" [ "$rc3" -ne 0 ]
+
+printf 'HOST="h"\nOWNER="alice"\nACCOUNT="missing-account"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
+  > "$FX/sessions.d/bad-account.conf"
+bad_assets="$(session_assets bad-account 2>/dev/null)"; bad_assets_rc=$?
+check "invalid account identity preserves rc 78" [ "$bad_assets_rc" -eq 78 ]
+check "invalid account identity prints no asset set" [ -z "$bad_assets" ]
+rm -f "$FX/sessions.d/bad-account.conf"
 
 # THE RESET GUARANTEE. Loading a session WITHOUT assets after one WITH them must
 # not inherit the previous value. The reset lines in registry_load are what make
