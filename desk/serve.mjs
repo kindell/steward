@@ -105,9 +105,13 @@
 // forward bytes and nothing more. The identity the provider proves is
 // resolved to a principal by the registry's own bridge, exactly as a tailnet
 // login is - and the cookie carries that IDENTITY rather than the principal,
-// so the same question is asked of the registry again on EVERY front request.
-// Removing a person's OIDC word, or moving it to somebody else, therefore
-// takes effect on their next click and not at their cookie's expiry.
+// so the same question is asked of the registry again on every front request,
+// through a memo that holds each identity's answer - a slug, or nobody - for
+// at most five seconds. Removing a person's OIDC word, or moving it to
+// somebody else, therefore takes effect within five seconds and not at their
+// cookie's expiry twelve hours later. The memo exists because the bridge
+// forks a subshell per principal row and execFileSync blocks both listeners;
+// see principalForIdentityCached.
 //
 // EXIT CODES
 //   64  A setting that cannot be honoured: STEWARD_DESK_MAX_AGE that is not a
@@ -304,7 +308,17 @@ if (FRONT_LISTEN_RAW || FRONT_PEER_RAW) {
   // once at the top of this file for both.
   FRONT = {
     listen: frontListen, peer: frontPeer, origin: p.origin, key: sessionKey,
-    providers, limiter: new RateLimiter(10, 60000)
+    providers, limiter: new RateLimiter(10, 60000),
+    // THE COOKIE PATH HAS ITS OWN, GENEROUS BUDGET. The limiter above guards
+    // the three auth paths; every other path on the front resolves a cookie
+    // to a principal, and that is the expensive question (a process per
+    // principal row). The memo holds the answer for five seconds, so a single
+    // visitor cannot make the desk ask more than that - but a request that
+    // does not ask the bridge still reads a snapshot and renders a page, and
+    // both listeners share one event loop. Two a second, sustained, is far
+    // above a person reading their desk and far below what it takes to
+    // occupy the process.
+    cookieLimiter: new RateLimiter(120, 60000)
   };
 }
 
@@ -500,6 +514,46 @@ function principalForIdentity(source, value) {
   return { slug: null, outage: true };
 }
 
+// THE ANSWER IS REMEMBERED FOR FIVE SECONDS, BECAUSE ASKING COSTS A PROCESS.
+// The bridge forks a subshell per principal row, so the question is O(rows):
+// measured in review 2026-09-08 at 33.8 ms for five rows, 99.7 ms for twenty
+// and 223.5 ms for fifty - and execFileSync blocks the event loop, which both
+// listeners share. Asked once per front request, that is a ceiling of a few
+// requests a second for the whole desk, the operator's tailnet view included,
+// and anybody holding a valid cookie could sit at it with one loop.
+//
+// Five seconds is short enough that revocation is still a thing that happens
+// while the operator is watching, and long enough that a person clicking
+// around their desk asks once rather than once a click.
+//
+// A NEGATIVE ANSWER IS CACHED TOO. A removed word must stay removed for the
+// same five seconds a granted one stays granted; caching only the yes would
+// mean every refused request pays the process, which is the cost this exists
+// to bound - and the refused are exactly who would send the most of them.
+// AN OUTAGE IS NOT CACHED: it is not an answer, and the next request is the
+// one that finds the bridge working again.
+const IDENTITY_CACHE_MS = 5000;
+const IDENTITY_CACHE_MAX = 1000;
+const identityCache = new Map();
+function principalForIdentityCached(source, value) {
+  const key = source + ' ' + value;
+  const now = Date.now();
+  const hit = identityCache.get(key);
+  if (hit && now - hit.at < IDENTITY_CACHE_MS) return { slug: hit.slug, outage: false };
+  const answer = principalForIdentity(source, value);
+  if (answer.outage) return answer;
+  // The map is bounded like the rate limiter's: only identities carried by a
+  // cookie this host signed reach here, but a bound that is never tested is
+  // not a bound. Stale entries first, and a clear if that was not enough -
+  // the cost of a clear is a re-ask, never a wrong answer.
+  if (identityCache.size >= IDENTITY_CACHE_MAX) {
+    for (const [k, v] of identityCache) if (now - v.at >= IDENTITY_CACHE_MS) identityCache.delete(k);
+    if (identityCache.size >= IDENTITY_CACHE_MAX) identityCache.clear();
+  }
+  identityCache.set(key, { slug: answer.slug, at: now });
+  return answer;
+}
+
 // loadSnapshot - the viewer's file out of the CURRENT generation, or null.
 //
 // null means missing, malformed, of an unknown schema, or stale, and the caller
@@ -685,11 +739,12 @@ async function authCallback(url, cookies, res) {
     return refuse();
   }
   const identity = identityOf(provider, claims);
-  const { slug, outage } = principalForIdentity('oidc', identity.slice('oidc:'.length));
+  const { slug, outage } = principalForIdentityCached('oidc', identity.slice('oidc:'.length));
   if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
   if (!slug) return refuse(); // invitation binding attaches here (services plan)
   // THE COOKIE CARRIES THE IDENTITY, NOT THE SLUG THIS LOGIN RESOLVED TO. The
-  // slug is today's answer and it is asked again on every request; minting it
+  // slug is today's answer and it is asked again on every request, at most
+  // five seconds old (principalForIdentityCached); minting it
   // into the cookie would freeze it for twelve hours. It is resolved here only
   // so that an identity no row claims never gets a session at all.
   return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
@@ -837,13 +892,25 @@ async function handleFront(req, res) {
   // The cookie proves an identity a provider signed for; it does not prove a
   // principal, and it is not allowed to. So the same bridge the callback asked
   // is asked again here, with the same argument: nobody claims this identity
-  // any more (rc 1), or two rows do (rc 65), and the session is over on this
-  // click rather than at the cookie's expiry twelve hours later.
+  // any more (rc 1), or two rows do (rc 65), and the session is over within
+  // five seconds rather than at the cookie's expiry twelve hours later. Five
+  // and not zero because the question costs a process per row - see
+  // principalForIdentityCached, and the limiter just below, which is the
+  // other half of the same bound.
   const identity = verifySession(FRONT.key, cookies.get(SESSION_COOKIE), nowSec());
   if (!identity) {
     return send(res, 303, '', Object.assign({}, FRONT_HEADERS, { location: '/desk/auth/login' }));
   }
-  const { slug, outage } = principalForIdentity('oidc', identity.slice('oidc:'.length));
+  // THE BUDGET IS SPENT WHERE THE WORK IS, and past this line the work is a
+  // bridge (or a memo of one), a snapshot read and a rendered page. A visitor
+  // without a cookie never reaches here - they were redirected above, which
+  // costs nothing - so this budget belongs to the people who are logged in,
+  // one per visitor address, and a stolen cookie is worth no more of the
+  // desk's time than the person it was stolen from has.
+  if (!FRONT.cookieLimiter.hit(visitor, Date.now())) {
+    return send(res, 429, TOO_MANY, Object.assign({}, FRONT_HEADERS, PLAIN, { 'retry-after': '60' }));
+  }
+  const { slug, outage } = principalForIdentityCached('oidc', identity.slice('oidc:'.length));
   if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
   if (!slug) {
     return send(res, 403, FORBIDDEN, Object.assign({}, FRONT_HEADERS, {

@@ -1091,33 +1091,60 @@ describe('the front listener', () => {
   // every test after it would fail for a reason that is not its own.
   const restoreRowE = () => writeFileSync(ROW_E(), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
 
-  it('removing the OIDC word revokes the session on the next request', async () => {
-    const cookie = sessionFor(IDENTITY);
-    assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
+  // WITHIN FIVE SECONDS, NOT AT EXPIRY. The registry's answer is memoised per
+  // identity for five seconds, because asking costs a process per principal
+  // row, so an edit to the rows reaches a live cookie on the click after the
+  // memo goes stale rather than on the very next one. That is what these two
+  // tests measure now: not "immediately", and not "in twelve hours".
+  const REVOKE_CAP_MS = 7000;
+  const pollFront = async (want, headers) => {
+    const started = Date.now();
+    let res = await front('GET', '/desk/', headers);
+    while (res.status !== want && Date.now() - started < REVOKE_CAP_MS) {
+      await sleep(250);
+      res = await front('GET', '/desk/', headers);
+    }
+    return { res, waited: Date.now() - started };
+  };
+
+  it('removing the OIDC word revokes the session within the memo, not at expiry', async () => {
+    const headers = from(20, { cookie: sessionFor(IDENTITY) });
+    assert.equal((await front('GET', '/desk/', headers)).status, 200);
+    const primed = Date.now();
     try {
       // The row stays and keeps a tailnet login: only the front's word goes,
       // which is the natural edit for "off the front, still on the tailnet".
       writeFileSync(ROW_E(), 'NAME="Eve"\nTAILSCALE_LOGIN="eve@example.test"\n');
-      const gone = await front('GET', '/desk/', { cookie });
-      assert.equal(gone.status, 403);
+      const first = await front('GET', '/desk/', headers);
+      // The answer measured a moment ago is still the answer: that is the memo,
+      // and it is the whole reason the desk does not fork a subshell per click.
+      // The claim is only made when it is measurable - a box that took two
+      // seconds to send one request has nothing to say about a five-second memo.
+      if (Date.now() - primed < 2000) {
+        assert.equal(first.status, 200, 'an answer measured a moment ago must be remembered, not re-asked per request');
+      }
+      const { res: gone, waited } = await pollFront(403, headers);
+      assert.equal(gone.status, 403, 'the removal must reach the cookie within ' + REVOKE_CAP_MS + ' ms (waited ' + waited + ')');
       assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
     } finally {
       restoreRowE();
     }
-    assert.equal((await front('GET', '/desk/', { cookie })).status, 200, 'the word back is the session back');
+    const back = await pollFront(200, headers);
+    assert.equal(back.res.status, 200, 'the word back is the session back, within the same five seconds');
   });
 
-  it('deleting the row revokes the session on the next request', async () => {
-    const cookie = sessionFor(IDENTITY);
-    assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
+  it('deleting the row revokes the session within the memo too', async () => {
+    const headers = from(21, { cookie: sessionFor(IDENTITY) });
+    assert.equal((await front('GET', '/desk/', headers)).status, 200);
     try {
       unlinkSync(ROW_E());
-      const gone = await front('GET', '/desk/', { cookie });
-      assert.equal(gone.status, 403);
+      const { res: gone, waited } = await pollFront(403, headers);
+      assert.equal(gone.status, 403, 'the deletion must reach the cookie within ' + REVOKE_CAP_MS + ' ms (waited ' + waited + ')');
       assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
     } finally {
       restoreRowE();
     }
+    assert.equal((await pollFront(200, headers)).res.status, 200, 'the row back is the session back');
   });
 
   it('an identity no row claims is refused even with a cookie this host minted', async () => {
@@ -1158,6 +1185,27 @@ describe('the front listener', () => {
     assert.equal(last.headers['retry-after'], '60');
     const other = await front('GET', '/desk/auth/login', { 'x-real-ip': '203.0.113.78' });
     assert.equal(other.status, 200);
+  });
+
+  // AND THE COOKIE PATH HAS ITS OWN, LARGER BUDGET. The auth limiter guards
+  // three paths; every other path on the front resolves a cookie, reads a
+  // snapshot and renders - and both listeners share one event loop, so a
+  // single logged-in visitor (or one stolen cookie) could otherwise hold the
+  // whole desk, the operator's tailnet view included, at whatever rate one
+  // loop can drive. 120 a minute is far above a person reading their desk.
+  it('the cookie path is rate limited per visitor, not per cookie', async () => {
+    const cookie = sessionFor(IDENTITY);
+    for (let i = 0; i < 120; i++) {
+      const r = await front('GET', '/desk/', from(22, { cookie }));
+      assert.equal(r.status, 200, 'request ' + (i + 1) + ' is inside the budget');
+    }
+    const over = await front('GET', '/desk/', from(22, { cookie }));
+    assert.equal(over.status, 429, 'the 121st request in a minute is over the budget');
+    assert.equal(over.headers['retry-after'], '60');
+    // The same cookie from another address is another visitor: the budget is
+    // the address's, the way the auth budget is, so one person behind the box
+    // cannot spend everybody else's.
+    assert.equal((await front('GET', '/desk/', from(23, { cookie }))).status, 200);
   });
 
   // THE WHOLE FLOW, AND THE TOKEN IS THE ONLY THING WRONG. Everything up to

@@ -118,8 +118,12 @@ Node 22 standard library only, like the rest of the Desk.
    SameSite=Lax, Path=/, 12 hours, value = `<base64url(identity)>.<issued>.<hmac>` (the identity `oidc:<slug>:<sub>`, not the principal it resolved to: a cookie that named the principal would survive the removal of the person's `OIDC_LOGIN` word until it expired - measured in review 2026-09-08)
    with the HMAC key from a 0600 file the estate generates once. No server
    side session store: the cookie is self-contained and the principal is
-   re-resolved on every request, so a removed principal is out on the next
-   click, not at expiry.
+   re-resolved on every request through a five-second memo of the registry's
+   answer (`IDENTITY_CACHE_MS`, negative answers included), so a removed
+   principal is out within five seconds, not at expiry. The memo is there
+   because the bridge forks a subshell per principal row and the call is
+   synchronous - measured in review 2026-09-08 at 34 ms for five rows and
+   224 ms for fifty, on the event loop both listeners share.
 6. `POST /desk/auth/logout` clears it.
 
 Provider configuration lives in the estate: `desk/providers.d/<slug>.conf`

@@ -266,10 +266,14 @@ provider's JWKS, issuer, audience, expiry, nonce), maps
 and sets `__Host-desk-session` for 12 hours. **The cookie carries that
 identity, not the principal**, and every request resolves it through
 `desk/bin/principal-for-login` again - so removing the person's `OIDC_LOGIN`
-word, moving it to another row, or deleting the row all log them out on their
-next click rather than at the cookie's expiry. `POST /desk/auth/logout` clears
-the cookie. `/desk/auth/*` is rate limited to 10 requests per minute per
-visitor.
+word, moving it to another row, or deleting the row all log them out within
+five seconds rather than at the cookie's expiry. Five and not zero: the
+bridge forks a subshell per principal row, so the answer for one identity -
+a slug, or nobody - is remembered for five seconds and the desk asks once per
+identity per five seconds instead of once per click. `POST /desk/auth/logout`
+clears the cookie. `/desk/auth/*` is rate limited to 10 requests per minute
+per visitor, and every other path on the front - the ones that resolve a
+cookie, read a snapshot and render - to 120 per minute per visitor.
 
 The front never reads the `tailscale-user-login` header; the tailnet socket
 never reads a cookie.
