@@ -51,21 +51,41 @@ PAUSED_DIR_NAME="acme-paused"
 JOB_LOG_DIR="acme-jobs"
 TMUX_SOCKET="acme.sock"
 EOF
-# THE DECLARED SOCKET MUST EXIST for it to be used — an estate file may name a
-# socket its machinery never created, and asking a server that is not there
-# would report a healthy home as dead.
+
+# A SECOND ESTATE THAT NAMES NO STATE DIRECTORY. Everything else is identical,
+# so exactly one fact differs between the two runs. A codex row's thread and
+# ledger live under that directory, so an estate that does not name it makes the
+# row UNMEASURABLE - and the answerer must say so rather than probe a path with
+# a hole where the name should be.
+mkdir -p "$T/nameless/estate"
+grep -v '^STATE_DIR_NAME=' "$T/estate/steward.conf" > "$T/nameless/estate/steward.conf"
+# A REAL UNIX SOCKET, not an empty file. Every socket probe in the answerer
+# tests for a socket (-S), and a fixture that put a regular file there would
+# prove only that a path exists - the exact confusion those checks exist to
+# prevent.
 #
-# A REAL UNIX SOCKET, not an empty file. The probe tests for a socket (-S), and
-# a fixture that put a regular file there would prove only that the path exists
-# — which is the exact confusion the existence check was added to prevent.
-if ! python3 - "$T/home/.tmux/acme.sock" <<'PY' 2>/dev/null
+# BOUND FROM INSIDE ITS OWN DIRECTORY, BY THE RELATIVE NAME. The kernel caps a
+# unix socket path near a hundred characters, and the temporary root plus the
+# runtime's default control path below is already past that cap on this host.
+# Binding by basename keeps the fixture working wherever mktemp puts it.
+mk_sock() { # mk_sock <path>
+  local d b
+  d="$(dirname "$1")"; b="$(basename "$1")"
+  mkdir -p "$d"
+  if ! ( cd "$d" && python3 - "$b" <<'PY' 2>/dev/null
 import socket, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sys.argv[1])
 PY
-then
-  echo "  FAIL could not create a unix socket for the fixture (python3?)" >&2
-  exit 1
-fi
+  ); then
+    echo "  FAIL could not create a unix socket for the fixture: $1 (python3?)" >&2
+    exit 1
+  fi
+}
+
+# THE DECLARED SOCKET MUST EXIST for it to be used - an estate file may name a
+# socket its machinery never created, and asking a server that is not there
+# would report a healthy home as dead.
+mk_sock "$T/home/.tmux/acme.sock"
 
 # Four rows for alice on h1, each exercising a different combination, plus two
 # rows that must not be answered for at all.
@@ -91,17 +111,27 @@ mk s-e5 bob   h1 handle-five
 # NOT THIS HOST. Another machine answers for it.
 mk s-f6 alice h2 handle-six
 
-# THREE CODEX ROWS. A codex row is a thread, not a pane: it is supervised by
+# FIVE CODEX ROWS. A codex row is a thread, not a pane: it is supervised by
 # its own timer, it has no tmux session by design, and whether it can work is
 # decided by the owner's daemon socket and by having a thread to speak into.
 # The three probes written for a pane row answer three different wrong
-# questions about it, so each of these rows pins one of the three answers.
+# questions about it, so each of these rows pins one of the answers.
 # timer armed, a thread on disk, a ledger of answered letters, daemon socket up
 mk s-g7 alice h1 handle-seven 'RUNTIME="codex"'
 # NOTHING: no timer, no thread, no ledger. Every field must still be measured.
 mk s-h8 alice h1 handle-eight 'RUNTIME="codex"'
 # timer armed and a thread on disk, but the owner's daemon is not listening.
 mk s-i9 alice h1 handle-nine  'RUNTIME="codex"'
+# THE PRODUCTION DEFAULTS, with no override set anywhere. Run with neither
+# the socket knob nor the runtime home set, this row is measured at the two
+# paths the adapter itself writes to. Nothing else pins those literals, so a
+# rename on either side would otherwise pass every test and report a whole
+# fleet of healthy rows as not-running.
+mk s-j0 alice h1 handle-ten   'RUNTIME="codex"'
+# A ZERO-BYTE THREAD FILE: the file was created and nothing was ever written to
+# it, which is not a thread to speak into. This is the row that distinguishes
+# "exists" from "has content".
+mk s-k1 alice h1 handle-eleven 'RUNTIME="codex"'
 
 # THE CODEX RUNTIME'S OWN STATE DIRECTORY, named by the adapter's existing
 # production knob. No test-only door is opened in the answerer for this.
@@ -121,18 +151,19 @@ printf 'letter-one\n' > "$CX/s-g7.codex-answered"
 touch_at 1756540800 "$CX/s-g7.codex-thread"
 touch_at 1756542000 "$CX/s-g7.codex-answered"
 printf 'thread-i9\n' > "$CX/s-i9.codex-thread"
+# CREATED AND EMPTY. A file that exists is not a thread; only content is.
+: > "$CX/s-k1.codex-thread"
 
-# THE OWNER'S DAEMON CONTROL SOCKET - a REAL unix socket, for the same reason
-# the tmux one above is real: the probe tests for a socket, and a regular file
-# there would prove only that a path exists.
-if ! python3 - "$T/codex-daemon.sock" <<'PY' 2>/dev/null
-import socket, sys
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sys.argv[1])
-PY
-then
-  echo "  FAIL could not create a codex daemon socket for the fixture (python3?)" >&2
-  exit 1
-fi
+# THE OWNER'S DAEMON CONTROL SOCKET, at the knob the adapter reads.
+mk_sock "$T/codex-daemon.sock"
+
+# THE TWO PRODUCTION DEFAULTS, for the one run that sets no knob at all: the
+# control socket under the runtime home, and the state directory named by the
+# estate under the home's state tree. Both are written here EXACTLY as the
+# adapter spells them, because that is the whole value of the run below.
+mkdir -p "$T/home/.local/state/acme-supervisor"
+printf 'thread-j0\n' > "$T/home/.local/state/acme-supervisor/s-j0.codex-thread"
+mk_sock "$T/home/.codex/app-server-control/app-server-control.sock"
 
 # ── stubs ────────────────────────────────────────────────────────────────────
 # systemd: only s-a1, s-c3 and s-d4 have an armed timer.
@@ -150,7 +181,7 @@ for a in "$@"; do
       case "$inst" in s-a1|s-c3|s-d4) exit 0 ;; esac ;;
     agent-codex@*)
       inst="${a#*@}"; inst="${inst%.timer}"
-      case "$inst" in s-g7|s-i9) exit 0 ;; esac ;;
+      case "$inst" in s-g7|s-i9|s-j0|s-k1) exit 0 ;; esac ;;
   esac
 done
 exit 3
@@ -158,6 +189,13 @@ EOF
 
 # tmux on the declared socket: s-a1, s-b2 and s-d4 are live. s-c3 is not.
 # `session_activity` is epoch seconds, which is where lastActivity comes from.
+#
+# s-g7 IS LISTED TOO, AND IT IS A CODEX ROW. A stub that never named a codex
+# session could not tell a branch that skips the pane walk from a branch that
+# reached it and found nothing - the proof further down would pass against the
+# code that had the fault. Listing it, and giving it a pane, makes the two
+# claims real: no list-panes call may target it, and its lastActivity must be
+# its own ledger's stamp rather than the one tmux is offering here.
 cat > "$T/bin/tmux" <<'EOF'
 #!/bin/bash
 echo "$@" >> "${TMUX_LOG:?}"
@@ -170,12 +208,13 @@ for a in "$@"; do
 done
 case "$mode" in
   list-sessions)
-    printf 's-a1 1756540800\ns-b2 1756540900\ns-d4 1756541000\n' ;;
+    printf 's-a1 1756540800\ns-b2 1756540900\ns-d4 1756541000\ns-g7 1756541100\n' ;;
   list-panes)
     case "$target" in
       s-a1) echo 100 ;;
       s-b2) echo 200 ;;
       s-d4) echo 400 ;;
+      s-g7) echo 700 ;;
       *) exit 1 ;;
     esac ;;
   *) exit 0 ;;
@@ -198,7 +237,7 @@ for a in "$@"; do
 done
 case "$pid" in
   101) echo 100 ;;  201) echo 200 ;;  999) echo 1 ;;
-  100|200|400) echo 50 ;;
+  100|200|400|700) echo 50 ;;
   50) echo 1 ;;
   *) exit 1 ;;
 esac
@@ -319,11 +358,64 @@ eq "daemon is still loaded"  "$(printf '%s' "$out4" | jq -r '.sessions["s-i9"].d
 eq "but the agent is not-running" \
    "$(printf '%s' "$out4" | jq -r '.sessions["s-i9"].agent')" "not-running"
 
+echo "== a thread file that exists but is empty is not a thread =="
+# The file was created and nothing was ever written into it. Existence is not
+# the question; content is - and the two are one character apart in the probe.
+eq "daemon is loaded"   "$(printf '%s' "$out" | jq -r '.sessions["s-k1"].daemon')" "loaded"
+eq "agent is not-running" "$(printf '%s' "$out" | jq -r '.sessions["s-k1"].agent')" "not-running"
+
 echo "== no pane is ever walked for a codex row =="
 # The pane walk is the third wrong question. A row with no tmux session must
-# not be asked which runtime descends from panes it does not have.
+# not be asked which runtime descends from panes it does not have - and the
+# stub above OFFERS s-g7 a live tmux session with a pane, so this claim now
+# fails against code that lets a codex row fall into the pane branch.
 eq "list-panes never targets a codex id" \
-   "$(grep -cE 'list-panes.*=s-(g7|h8|i9)' "$T/tmuxlog" | tr -d ' ')" "0"
+   "$(grep -cE 'list-panes.*=s-(g7|h8|i9|j0|k1)' "$T/tmuxlog" | tr -d ' ')" "0"
+# NOR IS TMUX'S ACTIVITY STAMP BORROWED. tmux is offering 1756541100 for s-g7;
+# the row's own ledger says 1756542000, and the row is measured by its own
+# machinery or it is not measured by machinery that fits it.
+eq "lastActivity is the ledger's, never the tmux server's" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-g7"].lastActivity')" \
+   "2025-08-30T08:20:00.000Z"
+
+echo "== the production default paths, with no knob set anywhere =="
+# NEITHER OVERRIDE IS SET here: no daemon socket knob, no runtime home, no
+# state directory knob. The socket is found at the runtime home's default
+# control path and the thread under the state directory the estate names. These
+# two literals live in the adapter; nothing else in this suite pins them, so a
+# rename on either side would report a fleet of healthy rows as not-running and
+# every other case here would stay green.
+out5="$( env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
+          STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+          STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+          TMUX_LOG="$T/tmuxlog5" bash "$CMD" 2>/dev/null )"
+eq "the daemon socket is found at the runtime home's default path" \
+   "$(printf '%s' "$out5" | jq -r '.sessions["s-j0"].agent')" "running"
+
+echo "== an estate that names no state directory makes a codex row unmeasurable =="
+# The thread and the ledger live under a directory the ESTATE names. With no
+# name there is no directory, and a path built around the hole would be probed,
+# found absent, and written into `sessions` as not-running - a guess wearing a
+# measurement's clothes, which is the one thing this file promises never to do.
+# The row is omitted with the sentence instead.
+out6="$( env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
+          STEWARD_ESTATE_ROOT="$T/nameless" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+          STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+          TMUX_LOG="$T/tmuxlog6" bash "$CMD" 2>/dev/null )"
+eq "the codex row is not measured" \
+   "$(printf '%s' "$out6" | jq -r '.sessions | has("s-g7")')" "false"
+eq "it is omitted with the reason, named" \
+   "$(printf '%s' "$out6" | jq -r '.omitted["s-g7"]')" \
+   "cannot probe on h1: the estate does not name a state directory"
+eq "every codex row is omitted" \
+   "$(printf '%s' "$out6" | jq -r '.omitted | length')" "5"
+# THE PANE ROWS ARE UNTOUCHED. A missing state directory name says nothing
+# about a row measured by tmux and a process tree, and an omission that spread
+# past its own cause would hide four healthy rows.
+eq "the pane rows are still measured" \
+   "$(printf '%s' "$out6" | jq -r '.sessions | length')" "4"
+eq "and measured as before" \
+   "$(printf '%s' "$out6" | jq -r '.sessions["s-a1"].tmux')" "up"
 
 echo "== another account's row leaves the answer entirely =="
 eq "it is not measured" "$(printf '%s' "$out" | jq -r '.sessions | has("s-e5")')" "false"
@@ -336,8 +428,8 @@ echo "== another host's row leaves the answer entirely =="
 eq "it is not measured" "$(printf '%s' "$out" | jq -r '.sessions | has("s-f6")')" "false"
 eq "and not excused either" "$(printf '%s' "$out" | jq -r '.omitted | has("s-f6")')" "false"
 
-echo "== exactly seven rows are answered for =="
-eq "seven measured rows" "$(printf '%s' "$out" | jq -r '.sessions | length')" "7"
+echo "== exactly nine rows are answered for =="
+eq "nine measured rows" "$(printf '%s' "$out" | jq -r '.sessions | length')" "9"
 
 echo "== the tmux probe asks the DECLARED socket, not the default one =="
 # Measured on a live fleet: a bare `tmux ls` asks the default socket while every
@@ -364,12 +456,33 @@ eq "the answer is still valid JSON" \
    "$(printf '%s' "$out2" | jq -r '.sessions | type')" "object"
 eq "nothing is measured" \
    "$(printf '%s' "$out2" | jq -r '.sessions | length')" "0"
-eq "all seven own rows are omitted" \
-   "$(printf '%s' "$out2" | jq -r '.omitted | length')" "7"
+eq "all nine own rows are omitted" \
+   "$(printf '%s' "$out2" | jq -r '.omitted | length')" "9"
 eq "and the reason names the missing tool" \
    "$(printf '%s' "$out2" | jq -r '.omitted["s-a1"] | test("systemctl")')" "true"
 eq "the neighbour is still not in the answer" \
    "$(printf '%s' "$out2" | jq -r '.omitted | has("s-e5")')" "false"
+
+echo "== stat is one of those tools, and its absence is named too =="
+# A codex row's lastActivity IS an mtime, and an mtime comes from stat. A host
+# without it cannot look; writing null into `sessions` there would say "never
+# ran" about a row nobody managed to ask. The directory below is every command
+# on this machine EXCEPT that one, so the rest of the fixture still runs.
+mkdir -p "$T/bin3"
+ln -s /usr/bin/* "$T/bin3/" 2>/dev/null
+ln -s /bin/*     "$T/bin3/" 2>/dev/null
+rm -f "$T/bin3/stat"
+for f in systemctl tmux pgrep ps; do rm -f "$T/bin3/$f"; cp "$T/bin/$f" "$T/bin3/$f"; done
+out3="$( env -i HOME="$T/home" PATH="$T/bin3" \
+          STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+          STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+          STEWARD_CODEX_STATE_DIR="$CX" \
+          STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
+          TMUX_LOG="$T/tmuxlog7" bash "$CMD" 2>/dev/null )"
+eq "nothing is measured" \
+   "$(printf '%s' "$out3" | jq -r '.sessions | length')" "0"
+eq "and the reason names the tool" \
+   "$(printf '%s' "$out3" | jq -r '.omitted["s-a1"] | test("stat")')" "true"
 
 echo "== no argument is taken: the contract is the whole home in one call =="
 env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \

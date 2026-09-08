@@ -103,6 +103,11 @@ MISSING=""
 have systemctl || MISSING="${MISSING:+$MISSING, }systemctl"
 have pgrep     || MISSING="${MISSING:+$MISSING, }pgrep"
 have ps        || MISSING="${MISSING:+$MISSING, }ps"
+# `stat` IS ONE OF THEM. A codex row's lastActivity IS an mtime, and an mtime
+# comes from stat. Without it that field could only be reported as null, which
+# reads as "this row never ran" - a sentence about the row, invented on a host
+# that never managed to look. Named, like every other tool that is not there.
+have stat      || MISSING="${MISSING:+$MISSING, }stat"
 
 # THE DECLARED SOCKET, WHEN IT EXISTS. Measured on a live fleet: a bare
 # `tmux ls` asks the DEFAULT socket while every supervised session lives on the
@@ -142,6 +147,37 @@ RUNTIME_PAT='(^|[ /])(claude|opencode)'
 RUNTIME_PIDS=""
 if [ -z "$MISSING" ]; then
   RUNTIME_PIDS="$(pgrep -u "$(id -u)" -f "$RUNTIME_PAT" 2>/dev/null || true)"
+fi
+
+# -- the codex runtime's two paths, derived ONCE for the whole home ----------
+# A codex row is measured at a control socket and inside a state directory, and
+# both are the same for every row in this home. Deriving them per row would fork
+# a subshell and re-read the estate file once per session - the cost model the
+# two probes above exist to avoid, in a file whose whole promise is that the
+# fleet's size does not enter the price of asking about it.
+#
+# BOTH ARE THE ADAPTER'S OWN PRODUCTION KNOBS, spelled the way it spells them. A
+# third name invented here would keep measuring a home that has moved either
+# path at the place it no longer is.
+CODEX_SOCK="${STEWARD_CODEX_DAEMON_SOCK:-${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock}"
+CODEX_STATE_DIR=""
+CODEX_STATE_REASON=""
+if [ -n "${STEWARD_CODEX_STATE_DIR:-}" ]; then
+  CODEX_STATE_DIR="$STEWARD_CODEX_STATE_DIR"
+else
+  # THE RETURN CODE IS KEPT, and that is the entire reason this is not one
+  # expansion. Inside a `${x:-default}` the refusal of this call is invisible:
+  # the estate names no state directory, the answer is empty, the path becomes a
+  # state tree with a hole where the name should be, and every codex row is
+  # probed there, found absent, and written into `sessions` as not-running. That
+  # is a guess wearing a measurement's clothes - the one thing this file
+  # promises never to produce. A row that cannot be probed is NAMED instead.
+  _cx_name="$(registry_state_dir_name 2>/dev/null)"; _cx_rc=$?
+  if [ "$_cx_rc" -eq 0 ] && [ -n "$_cx_name" ]; then
+    CODEX_STATE_DIR="$HOME/.local/state/$_cx_name"
+  else
+    CODEX_STATE_REASON="the estate does not name a state directory"
+  fi
 fi
 
 # Is $1 equal to or a descendant of $2? Climb ppid until the target, init (1) or
@@ -216,6 +252,15 @@ for conf in "$RDIR"/*.conf; do
     # creates, and the pane walk asks which runtime process descends from panes
     # that do not exist. Three wrong answers about one healthy row.
 
+    # A ROW WHOSE STATE DIRECTORY HAS NO NAME CANNOT BE PROBED AT ALL. The
+    # thread and the ledger both live inside it, so without the name there is
+    # nothing to look at and nothing true to say about this row except that. It
+    # goes to `omitted` with the sentence, and never into `sessions`.
+    if [ -z "$CODEX_STATE_DIR" ]; then
+      add_omit "$id" "cannot probe on $SELF_HOST: $CODEX_STATE_REASON"
+      continue
+    fi
+
     # DAEMON. The unit template that actually supervises a codex row. Same word
     # pair as every other row: an armed timer is `loaded`, a stopped or absent
     # one is `missing`, and that is a MEASUREMENT.
@@ -243,11 +288,9 @@ for conf in "$RDIR"/*.conf; do
     # existence test is also EXACTLY what the thread client itself uses to
     # decide whether the daemon is up, so the two agree by construction rather
     # than by anybody remembering to keep them in step.
-    _cx_sock="${STEWARD_CODEX_DAEMON_SOCK:-${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock}"
-    _cx_state="${STEWARD_CODEX_STATE_DIR:-$HOME/.local/state/$(registry_state_dir_name)}"
-    _cx_thread="$_cx_state/$id.codex-thread"
+    _cx_thread="$CODEX_STATE_DIR/$id.codex-thread"
     agent="not-running"
-    if [ -S "$_cx_sock" ] && [ -s "$_cx_thread" ]; then agent="running"; fi
+    if [ -S "$CODEX_SOCK" ] && [ -s "$_cx_thread" ]; then agent="running"; fi
 
     # LAST ACTIVITY. The newest mtime of the two files this runtime writes: the
     # ledger of answered letters, and the thread id. Neither present is a row
@@ -256,7 +299,7 @@ for conf in "$RDIR"/*.conf; do
     # second; `ls` output is a rendering, not a field, and is never parsed.
     last="null"
     _cx_newest=""
-    for _cx_f in "$_cx_state/$id.codex-answered" "$_cx_thread"; do
+    for _cx_f in "$CODEX_STATE_DIR/$id.codex-answered" "$_cx_thread"; do
       [ -e "$_cx_f" ] || continue
       _cx_m="$(stat -c %Y "$_cx_f" 2>/dev/null || stat -f %m "$_cx_f" 2>/dev/null || true)"
       case "$_cx_m" in ''|*[!0123456789]*) continue ;; esac
