@@ -4787,13 +4787,34 @@ registry_invite_load() {
     echo "registry: $f: REDEEMED_AT must be epoch seconds, got '$(registry_printable "$v_REDEEMED_AT")'" >&2
     return 1
   fi
-  # REDEEMED_LOGIN NAMES A ROW IN THE LOGIN REGISTER, so it carries that
-  # register's own slug shape (registry_login_load's). Empty stays legal: an
-  # invitation nobody has redeemed has nothing to name, and the STATE
-  # vocabulary above is what says whether a redemption happened.
-  if [ -n "$v_REDEEMED_LOGIN" ] && ! [[ "$v_REDEEMED_LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    echo "registry: $f: invalid REDEEMED_LOGIN '$(registry_printable "$v_REDEEMED_LOGIN")' (a login slug: a-z 0-9 and hyphen)" >&2
-    return 1
+  # REDEEMED_LOGIN NAMES WHAT THE REDEMPTION BOUND, IN ONE OF TWO SHAPES.
+  #
+  # The design's shape is the IDENTITY - "<source>:<value>", tailscale or oidc -
+  # because that is the one thing a redemption actually decides: which entrance
+  # this human comes through. `steward invite redeem` writes exactly that, and
+  # the value is validated by the SAME two functions the principal register
+  # validates its own identity fields with, so a row can never carry an identity
+  # the principal register would refuse.
+  #
+  # A BARE LOGIN SLUG STAYS LEGAL, as the row's older shape: rows written before
+  # the identity form existed name a logins.d row instead, and a reader that
+  # refused them would make a redeemed invitation unreadable - history that
+  # cannot be read is history that gets deleted. Empty stays legal too: an
+  # invitation nobody has redeemed has nothing to name, and the STATE vocabulary
+  # above is what says whether a redemption happened.
+  if [ -n "$v_REDEEMED_LOGIN" ]; then
+    local rl_ok=1 rl_rest
+    case "$v_REDEEMED_LOGIN" in
+      tailscale:*) rl_rest="${v_REDEEMED_LOGIN#tailscale:}"
+                   _registry_login_valid "$rl_rest" || rl_ok="" ;;
+      oidc:*)      rl_rest="${v_REDEEMED_LOGIN#oidc:}"
+                   _registry_oidc_login_valid "$rl_rest" || rl_ok="" ;;
+      *)           [[ "$v_REDEEMED_LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]] || rl_ok="" ;;
+    esac
+    if [ -z "$rl_ok" ]; then
+      echo "registry: $f: invalid REDEEMED_LOGIN '$(registry_printable "$v_REDEEMED_LOGIN")' (a bound identity 'tailscale:<user@domain>' or 'oidc:<issuer>:<subject>', or a login slug: a-z 0-9 and hyphen)" >&2
+      return 1
+    fi
   fi
 
   INVITE_ID="$id"; INVITE_NAME="$v_NAME"; INVITE_PRINCIPAL="$v_PRINCIPAL"
