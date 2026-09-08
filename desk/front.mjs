@@ -37,11 +37,19 @@ export function normalizeAddr(raw) {
 // in digits: `100.64.999.999` is three digits per field and is not an
 // address, and a check that says yes to it says yes about something the rest
 // of this file will then compare, bind or log.
+//
+// AND AN OCTET MUST BE SPELLED THE ONE WAY THE KERNEL SPELLS IT. A numeric
+// range check alone says yes to `100.064.0.1`, and parseFrontPeer then keeps
+// that string verbatim while the socket layer reports the peer as
+// `100.64.0.1` - so the two never compare equal, visitorAddress returns null
+// for every visitor, and the whole front answers "Forbidden: not the front
+// peer" for ever, one log line a minute, from a setting that looks right.
+// node:net's own parser refuses the padded form too (isIP returns 0), and it
+// is the parser the rest of this file already trusts.
 export function isCgnat(addr) {
-  const m = String(addr).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const octets = m.slice(1).map(Number);
-  if (octets.some((n) => n > 255)) return false;
+  const s = String(addr);
+  if (isIP(s) !== 4) return false;
+  const octets = s.split('.').map(Number);
   return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 

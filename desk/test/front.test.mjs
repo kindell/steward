@@ -29,6 +29,23 @@ test('isCgnat is exactly 100.64.0.0/10', () => {
   assert.equal(isCgnat('999.64.0.1'), false);
 });
 
+// AN OCTET HAS ONE SPELLING. A padded octet passes a range check and is not
+// the address the kernel will report: `100.064.0.1` is kept verbatim by
+// parseFrontPeer, the socket layer says `100.64.0.1`, the two never compare
+// equal, and every visitor is told they are not the front peer - for ever,
+// from a setting that reads as correct. It has to fail where it is written.
+test('a padded octet is not an address, in the range check or in either setting', () => {
+  for (const padded of ['100.064.0.1', '100.64.00.1', '0100.64.0.1', '100.64.0.01']) {
+    assert.equal(isCgnat(padded), false, padded);
+    assert.throws(() => parseFrontPeer(padded), /^Error: STEWARD_DESK_FRONT_PEER/, padded);
+    assert.throws(() => parseFrontListen(padded + ':8443'), /^Error: STEWARD_DESK_FRONT_LISTEN/, padded);
+  }
+  // The canonical spelling of the same address is still accepted, so the
+  // check refuses the padding and not the address.
+  assert.equal(isCgnat('100.64.0.1'), true);
+  assert.equal(parseFrontPeer('100.64.0.1'), '100.64.0.1');
+});
+
 test('isLoopback accepts the two literal spellings only', () => {
   assert.equal(isLoopback('127.0.0.1'), true);
   assert.equal(isLoopback('::1'), true);
