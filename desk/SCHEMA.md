@@ -11,10 +11,14 @@ into a fresh generation directory and then points `current` at it:
 (`$HOME/.local/state/<STATE_DIR_NAME>/desk`). The two newest generations are
 kept; older ones are removed at the end of a run.
 
-**`desk/filter.jq` is the source of truth for this document, not this file.**
-The filter is a positive allowlist: a key it does not name does not exist in the
-output, whatever the raw snapshot carried. What follows is that allowlist read
-back in prose, and if the two ever disagree the filter is right.
+**The rule and the field table live in `lib/visibility.sh`; `desk/filter.jq`
+only projects them.** `session_visible_to` decides who may see a session and
+`visibility_field_list` enumerates what each of the two sights receives, both
+in shell, once, for every renderer the product has. The filter is still a
+positive projection - a key neither list names does not exist in the output,
+whatever the raw snapshot carried - but it no longer holds a rule of its own.
+What follows is those two functions read back in prose, and if the prose and
+the code ever disagree the code is right.
 
 ## Top level
 
@@ -32,12 +36,18 @@ back in prose, and if the two ever disagree the filter is right.
 
 ## One visibility rule
 
-Everywhere an entity decides what a viewer sees, the question is the same one:
-**an entity is visible when the viewer is a member of it, or a member of the
-entity that manages it** - one hop, no chain. What hangs under a visible entity
-follows it: its projects, the sessions working in it, and the grants those two
-levels made. `readAll` short-circuits all of it, and an unknown axis is still
-dropped.
+Everywhere an **entity** decides what a viewer sees, the question is the same
+one: **an entity is visible when the viewer is a member of it, or a member of
+the entity that manages it** - one hop, no chain. Its projects follow it.
+
+**A SESSION is not decided that way.** Whether a session travels is
+`lib/visibility.sh`'s `session_visible_to` and nothing else - owner, group
+grant, `private`, the entity hop and the one `MANAGED_BY` hop, all of it in one
+function - and the snapshot asks it once per principal per session and carries
+the answer here as `sight`. A renderer that re-derived any part of it in `jq`
+would be a second copy of the rule, which is how the desk once let a `private`
+row reach a viewer the one rule had already said no to. `readAll`
+short-circuits both questions, and an unknown MCP axis is still dropped.
 
 **Decided 2026-09-08: read-all wins over `private`.** A `readAll` viewer is the
 operator's own eye on the estate, and it short-circuits a `private` row the
@@ -64,10 +74,12 @@ everything.
 
 ## `projects[]`
 
-A project is present when the entity it hangs under is visible, when the viewer
-owns a session whose target is this project, or when the viewer reads
-everything. The own-session clause is what keeps a session page's `project` link
-from being a 404 for the person sitting in that session.
+A project is present when the entity it hangs under is visible, when it is the
+target of a session already in this document, or when the viewer reads
+everything. The session clause is what keeps a `project` link from being a 404:
+a row the viewer may see names a project, so the name that row points at has to
+be resolvable. It follows the session decision rather than repeating it - the
+projects that appear are the ones `sessions[]` already reached.
 
 | key | type | meaning |
 |-----|------|---------|
@@ -95,7 +107,8 @@ the fields of the sessions it already returned yes for.
 | `host` | string | the machine the session lives on. |
 | `repo` | string | the repository's **name** - never its path. |
 | `liveness` | object | `state`, `measuredAt`, `ageSeconds` (below). |
-| `mcp` | array | the granted assets the viewer may see (below). |
+| `sight` | string | `owner` or `member` - which of the two field sets this row was projected through, said out loud so a view never has to infer it from which keys arrived. A `readAll` viewer reads `owner` on every row. |
+| `mcp` | array | the granted assets, present only on an `owner` row (below). |
 
 ### `sessions[].liveness`
 
@@ -114,16 +127,28 @@ the fields of the sessions it already returned yes for.
 | `axis` | string | `account`, `entity` or `project` - which level granted it. |
 | `source` | string | the row on that level that did the granting. |
 
-The axis decides who sees the asset at all:
+**The whole array is an owner field.** `lib/visibility.sh`'s
+`visibility_field_list` names `mcp.*` under `owner` and not under `member`, so
+a colleague who can see a session sees its identity, its work location and its
+liveness and no `mcp` key at all - not an empty array, which would read as
+"granted nothing". A `readAll` viewer is projected through the owner set and
+sees it.
 
-- **account** - the person's own credential. Only the session's owner, or a
-  `readAll` viewer, ever sees it.
-- **entity** - travels when the entity named in `source` is visible, or to the
-  session's owner (a principal).
-- **project** - travels when the entity the project in `source` hangs under is
-  visible, or to the session's owner (a principal).
-- anything else - dropped. A new axis has to be granted deliberately in
-  `filter.jq`; it is never inherited.
+**Decided 2026-09-08, and it narrowed the answer.** The rule used to be
+per-axis: an account-axis asset to the owner alone, an entity- or project-axis
+asset to anyone the granting entity was visible to. Two rules for one question
+is how a renderer drifts from the gate, and the axis half was the copy that
+would drift - it re-derived entity visibility in `jq` beside the shell function
+that already owns that decision. One field table, asked once, is the shape the
+branch settled on; a member who needs to know what a colleague's session is
+wired to asks the register, not the desk.
+
+**The axis vocabulary is still checked, and that check is not about who sees
+what.** `account`, `entity` and `project` are the complete known set, and an
+asset carrying anything else is dropped even from an owner's document: an axis
+the policy cannot interpret must never become an implicit grant the day the
+schema grows. A new axis has to be admitted deliberately in `filter.jq`; it is
+never inherited.
 
 ## Operating the desk on a session host
 

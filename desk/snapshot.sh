@@ -74,7 +74,10 @@ else
   exit 78
 fi
 command -v jq >/dev/null 2>&1 || { echo "desk snapshot: jq is required" >&2; exit 69; }
-. "$lib_dir/visibility.sh" || exit 78
+# THE FIELD TABLE IS READ OUT OF THE LIBRARY, NOT RESTATED HERE. lib/visibility.sh
+# is the one enumeration of what an owner and a member may receive; a second
+# copy in this producer would drift, and the copy that drifted would be the one
+# deciding what leaves the machine.
 owner_fields="$(visibility_field_list owner | jq -Rn '[inputs]')" || exit 78
 member_fields="$(visibility_field_list member | jq -Rn '[inputs]')" || exit 78
 steward="$here/../bin/steward"
@@ -234,9 +237,11 @@ while IFS= read -r n; do
     # person the session as `mine`, its account-axis assets (their colleague's
     # own credentials) and the project it works on. The account register is
     # what knows which human is behind a unix account, and this is the
-    # product's one function for asking it - ACCOUNT through
-    # registry_account_load to ACCOUNT_PRINCIPAL, OWNER only when the row
-    # carries no resolvable ACCOUNT, with a line on stderr saying so.
+    # product's one function for asking it: a row carrying an ACCOUNT resolves
+    # through registry_account_load to ACCOUNT_PRINCIPAL and is REFUSED if that
+    # account does not describe this row's own OWNER and HOST; only a legacy row
+    # with no ACCOUNT at all uses OWNER as its principal. A refusal stops the
+    # whole snapshot rather than writing one file with a guessed owner in it.
     owner="$(_registry_row_principal "$n")" || exit 78
     sid="${ID:-$n}"; session_slug="${SLUG:-$n}"
     session_project="${TARGET_PROJECT:-}"; session_runtime="${RUNTIME:-claude-code}"
