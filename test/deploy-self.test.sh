@@ -49,6 +49,7 @@ cat > "$FX/repo/bin/steward" <<EOF
 #!/bin/bash
 echo "\$*" >> "$FX/steward.calls"
 echo "env STEWARD_ESTATE_ROOT=\$STEWARD_ESTATE_ROOT" >> "$FX/steward.calls"
+echo "env STEWARD_ESTATE=\${STEWARD_ESTATE-<unset>}" >> "$FX/steward.calls"
 exit "\${STEWARD_STUB_RC:-0}"
 EOF
 chmod 755 "$FX/repo/bin/steward"
@@ -56,6 +57,23 @@ chmod 755 "$FX/repo/bin/steward"
 cat > "$FX/repo/linux/deploy-manifest" <<'EOF'
 linux/tool-a  bin/tool-a  755  bin
 EOF
+
+# THE REAL BRIDGE, FOR THE CASES BELOW THAT DO NOT OVERRIDE STEWARD_DESK_DIR.
+# Most cases stub the desk resolution away with STEWARD_DESK_DIR, but a case
+# that wants to prove the ACTUAL desk-paths call works has to carry the real
+# bridge and the library it sources - desk-paths reads lib/registry.sh two
+# hops up from itself, and that library reads STATE_DIR_NAME out of an estate
+# file, so both are copied into the fixture repo and a minimal estate file is
+# written for it. They are committed with the fixture's init commit like
+# everything else in the repo; neither is a manifest source, and the
+# provenance and cleanliness gates under test read manifest sources only, so
+# their presence changes nothing those gates measure.
+mkdir -p "$FX/repo/desk/bin" "$FX/repo/estate"
+cp "$here/desk/bin/desk-paths" "$FX/repo/desk/bin/desk-paths"
+chmod 755 "$FX/repo/desk/bin/desk-paths"
+cp "$here/lib/registry.sh" "$FX/repo/lib/registry.sh"
+STATE_DIR_NAME_FX="fixture-state"
+printf 'STATE_DIR_NAME="%s"\n' "$STATE_DIR_NAME_FX" > "$FX/repo/estate/steward.conf"
 ( cd "$FX/repo" && git init -q -b main \
     && git add -A \
     && git -c user.email=t@t -c user.name=t commit -qm init )
@@ -110,7 +128,17 @@ run() {  # run <hostname answer> <host argument>
     [ -n "${NO_SYSTEMCTL_STUB:-}" ] || _rp="$FX/binsys:$_rp"
     export PATH="$_rp"
     export HOME="$FX/home"
-    export STEWARD_DESK_DIR="${STEWARD_DESK_DIR:-}"
+    # LEFT UNSET UNLESS THE CALLER SET IT. Production reads this with
+    # ${STEWARD_DESK_DIR:-}, so unset and empty behave identically to the code
+    # under test - but a case that wants to exercise the REAL desk-paths
+    # bridge needs the fixture's environment to look like a real deploy's,
+    # where nobody sets this variable at all unless overriding the default.
+    # A prefix assignment on the call (STEWARD_DESK_DIR="$X" run ...) is
+    # visible here only for the duration of this function call and never
+    # leaks to a later run() that does not set it.
+    if [ -n "${STEWARD_DESK_DIR+x}" ]; then
+      export STEWARD_DESK_DIR
+    fi
     export STEWARD_REGISTRY_DIR="$FX/reg"
     # THE ESTATE IS EXPLICIT IN THE FIXTURE TOO. deploy-self.sh refuses (78)
     # without an estate, by design — so a fixture that omits it measures the
@@ -183,6 +211,15 @@ estate_root_expect="$(CDPATH= cd -- "$FX/repo" && pwd)"
 case "$(cat "$FX/steward.calls")" in
   *"env STEWARD_ESTATE_ROOT=$estate_root_expect"*) ok ;;
   *) bad "the desk snapshot call did not carry the canonical estate root ($estate_root_expect): '$(cat "$FX/steward.calls")'" ;;
+esac
+# THE OPERATOR'S STEWARD_ESTATE (a directory, to this script) MUST NOT REACH
+# THE CHILD - lib/registry.sh reads a variable of the same name as the estate
+# FILE, and an inherited directory makes it refuse. run() exports
+# STEWARD_ESTATE as the fixture repo for every case (line ~119 above), so this
+# proves the deploy strips it before calling the steward stub.
+case "$(cat "$FX/steward.calls")" in
+  *"env STEWARD_ESTATE=<unset>"*) ok ;;
+  *) bad "STEWARD_ESTATE reached the steward stub instead of being stripped: '$(cat "$FX/steward.calls")'" ;;
 esac
 
 # A FAILED APPLY MUST NOT PUBLISH A NEW GENERATION. What went onto the disk is
@@ -342,6 +379,47 @@ rm -rf "$corelessdir"
 echo "== policy: the entry point's transport is LOCAL =="
 if grep -vE '^\s*#' "$S" | grep -Eq '(^|[^a-z])(ssh|scp)($|[^a-z])'; then
   bad "the whole point of the host entry point is to avoid ssh — it calls ssh/scp"; else ok; fi
+
+echo "== the REAL desk-paths bridge, exercised with no STEWARD_DESK_DIR override =="
+# Every case above stubs the desk resolution away with STEWARD_DESK_DIR. This
+# case does not - it proves the ACTUAL bridge deploy-self.sh falls back to
+# (desk/bin/desk-paths, reading the fixture's own estate/steward.conf through
+# STEWARD_ESTATE_ROOT) resolves a real directory and the snapshot runs against
+# it. Placed LAST, after every other case, so the state directory it creates
+# cannot change what an earlier case above observed.
+STATEDIR="$FX/home/.local/state/$STATE_DIR_NAME_FX/desk"; mkdir -p "$STATEDIR"
+: > "$FX/steward.calls"
+u="$(SUDO_RC=0 run testhost testhost)"; rc=$?
+check "the real bridge: a successful apply still exits 0" [ "$rc" -eq 0 ]
+case "$(cat "$FX/steward.calls")" in
+  *"desk snapshot"*) ok ;;
+  *) bad "the real bridge did not resolve a directory the deploy could take a snapshot in: '$(cat "$FX/steward.calls")'" ;;
+esac
+estate_root_expect="$(CDPATH= cd -- "$FX/repo" && pwd)"
+case "$(cat "$FX/steward.calls")" in
+  *"env STEWARD_ESTATE_ROOT=$estate_root_expect"*) ok ;;
+  *) bad "the real-bridge snapshot call did not carry the canonical estate root ($estate_root_expect): '$(cat "$FX/steward.calls")'" ;;
+esac
+case "$u" in
+  *"could not be resolved"*) bad "the real bridge worked but the deploy still reported it could not resolve the desk: $u" ;;
+  *) ok ;;
+esac
+
+echo "== the bridge refusing (estate file unreadable): rc 70, diagnosis printed =="
+# STEWARD_DESK_DIR stays unset here too, so resolution falls through to the
+# real bridge - and the bridge refuses because its estate file is gone. This
+# is the case a STEWARD_ESTATE directory leaking into the library used to
+# produce silently (rc 0, snapshot skipped, nothing on stderr).
+mv "$FX/repo/estate/steward.conf" "$FX/repo/estate/steward.conf.bak"
+: > "$FX/steward.calls"
+u="$(SUDO_RC=0 run testhost testhost)"; rc=$?
+check "the bridge refusing: rc 70" [ "$rc" -eq 70 ]
+case "$u" in *"could not be resolved"*) ok ;; *) bad "no diagnosis for the unresolved desk directory: $u" ;; esac
+case "$(cat "$FX/steward.calls")" in
+  *"desk snapshot"*) bad "the snapshot ran despite the bridge refusing" ;;
+  *) ok ;;
+esac
+mv "$FX/repo/estate/steward.conf.bak" "$FX/repo/estate/steward.conf"
 
 rm -rf "$FX"
 echo "pass=$pass fail=$fail"

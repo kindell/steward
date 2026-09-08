@@ -292,15 +292,36 @@ fi
 # resolve the registry root the same way (lib/registry.sh's
 # _registry_estate_root), so both need the same value. NOT exported for the
 # whole script: the sudo apply step above must not see it change.
+#
+# STEWARD_ESTATE ITSELF MUST NOT REACH EITHER CALL. The name carries two
+# meanings in this file's own lifetime: to deploy-self.sh, at the top of this
+# file, it is the estate CHECKOUT, a directory. To lib/registry.sh
+# (registry_estate_file, read by both desk-paths and the snapshot through
+# registry_state_dir_name) a variable of the same name is the estate FILE,
+# .../estate/steward.conf. This script exports nothing named STEWARD_ESTATE
+# itself, but the documented invocation is
+# `STEWARD_ESTATE=<estate checkout> bash linux/deploy-self.sh <host>`, so the
+# operator's own exported variable is inherited by every child regardless of
+# who set it. Left alone, that inherited directory reaches the library as if
+# it were the file, and the library refuses (rc 78, "the estate file is
+# missing: <the directory>"). MEASURED 2026-09-08: both children below ran
+# with the operator's STEWARD_ESTATE still in their environment, the
+# desk-paths call hid the refusal behind `2>/dev/null`, desk_dir came back
+# empty, and the deploy printed "the desk directory could not be resolved -
+# snapshot skipped" with rc 0 - a deploy-time snapshot lost, silently, on
+# every host where the invoking account's home is not the estate checkout.
+# `env -u STEWARD_ESTATE` below removes the inherited directory from each
+# child's own environment, so only STEWARD_ESTATE_ROOT - the name the library
+# actually reads for this purpose - reaches it.
 if [ "$rc" -eq 0 ]; then
   desk_dir="${STEWARD_DESK_DIR:-}"
   if [ -z "$desk_dir" ] && [ -x "$PRODUCT/desk/bin/desk-paths" ]; then
-    desk_dir="$(STEWARD_ESTATE_ROOT="$ESTATE_ROOT" "$PRODUCT/desk/bin/desk-paths" 2>/dev/null | sed -n 's/^dir=//p')"
+    desk_dir="$(env -u STEWARD_ESTATE STEWARD_ESTATE_ROOT="$ESTATE_ROOT" "$PRODUCT/desk/bin/desk-paths" | sed -n 's/^dir=//p')"
   fi
   if [ -n "$desk_dir" ] && [ -d "$desk_dir" ]; then
     # bin/steward is a manifest source now (linux/deploy-manifest), so the
     # cleanliness/provenance gate above already covers the file this line runs.
-    STEWARD_ESTATE_ROOT="$ESTATE_ROOT" bash "$PRODUCT/bin/steward" desk snapshot
+    env -u STEWARD_ESTATE STEWARD_ESTATE_ROOT="$ESTATE_ROOT" bash "$PRODUCT/bin/steward" desk snapshot
     snap_rc=$?
     if [ "$snap_rc" -ne 0 ]; then
       echo "deploy-self: desk snapshot failed (rc $snap_rc) - the desk shows the previous generation until the timer runs" >&2
@@ -309,7 +330,13 @@ if [ "$rc" -eq 0 ]; then
   elif [ -n "$desk_dir" ]; then
     echo "deploy-self: no desk on this host (no $desk_dir) - snapshot skipped"
   else
-    echo "deploy-self: no desk on this host (the desk directory could not be resolved) - snapshot skipped"
+    # THE BRIDGE EXISTED AND RAN (the -x check above passed) but named no
+    # directory - unlike the branch above, this is not "no desk here", it is
+    # "could not find out". A deploy that promised a snapshot and could not
+    # even resolve the desk did not keep that promise, so this is a failure
+    # of the rollout, not a silent skip, and its diagnosis belongs on stderr.
+    echo "deploy-self: the desk directory could not be resolved - the bridge (desk/bin/desk-paths) ran but named no directory; snapshot skipped" >&2
+    rc=70
   fi
 fi
 exit "$rc"
