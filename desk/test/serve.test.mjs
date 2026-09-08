@@ -1041,6 +1041,40 @@ describe('the front listener', () => {
     assert.equal(cookieOf(r2).some((c) => c.startsWith('__Host-desk-session=')), false);
   });
 
+  // THE STATE COMPARE IS ITS OWN LOCK, AND THIS TEST HOLDS ONLY IT. The test
+  // above refuses a callback with a foreign state, but it never drives
+  // /authorize - so with the state compare deleted the flow still stops at the
+  // nonce, and the assertion passes for a reason that has nothing to do with
+  // the state. Measured: that mutation left the suite fully green. Here the
+  // whole login is driven, so the nonce in the token is this login's own and
+  // would verify; the ONLY thing wrong is the state the provider echoed. The
+  // refusal must therefore come from the state compare, and it must come
+  // before the code is redeemed.
+  it('a callback whose state does not match the state cookie is refused before the exchange', async () => {
+    const go = await front('GET', '/desk/auth/login?provider=stub', visitor(17));
+    assert.equal(go.status, 303);
+    const state = cookieOf(go).find((c) => c.startsWith('__Host-desk-oauth='));
+    assert.ok(state);
+    const back = await fetch(go.headers.location, { redirect: 'manual' });
+    const cb = new URL(back.headers.get('location'));
+    const echoed = cb.searchParams.get('state');
+    assert.ok(echoed);
+    const redeemedBefore = stub.tokenCalls.length;
+    cb.searchParams.set('state', 'not-the-state-this-browser-began-with');
+    const done = await front('GET', cb.pathname + cb.search, from(17, { cookie: state }));
+    assert.equal(done.status, 403);
+    assert.equal(cookieOf(done).some((c) => c.startsWith('__Host-desk-session=')), false,
+      'a callback with the wrong state must mint no session');
+    assert.equal(stub.tokenCalls.length, redeemedBefore,
+      'the refusal must come before the code is redeemed, not from verifying what came back');
+    // The control: the same cookie, the same code, the state put back - and it
+    // is a session. So the state is the only difference between the two.
+    cb.searchParams.set('state', echoed);
+    const ok = await front('GET', cb.pathname + cb.search, from(17, { cookie: state }));
+    assert.equal(ok.status, 303);
+    assert.ok(cookieOf(ok).some((c) => c.startsWith('__Host-desk-session=')));
+  });
+
   it('an unknown provider is the same 404 as an unknown route', async () => {
     const bad = await front('GET', '/desk/auth/login?provider=nope', visitor(12));
     const nowhere = await front('GET', '/desk/auth/nothing', visitor(12));
