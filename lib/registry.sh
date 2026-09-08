@@ -846,7 +846,7 @@ registry_session_mcp_assets() {
 
 # registry_session_mcp_surface <sid> — the same walk as
 # registry_session_mcp_assets, but prints `name<TAB>axis<TAB>source` rows (axis
-# ∈ account|entity|project, source = the granting row's own slug) instead of
+# is one of account, entity, project; source = the granting row's own slug) instead of
 # the bare asset list — one row per asset in the granted set, naming the axis
 # it CAME IN ON. Same rc contract, same four levels, same
 # first-collected-wins precedence as _MCP_OUT — it is the SAME collector run

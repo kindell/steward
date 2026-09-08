@@ -57,6 +57,24 @@ hasnt "no command leaks" "$out" "/usr/bin/"
 hasnt "no argument leaks" "$out" "SECRETVALUE"
 hasnt "no env file leaks" "$out" ".env"
 is  "only the four allowed keys" "$(printf '%s' "$out" | jq -r '.assets[0]|keys|join(",")')" "axis,id,name,source"
+
+echo "== the verb's own refusals =="
+out="$(bash "$here/bin/steward" mcp surface s-does-not-exist --json 2>"$T/err")"; rc=$?
+is  "an unknown session refuses" "$rc" "65"
+is  "ok is false on stdout" "$(printf '%s' "$out" | jq -r .ok)" "false"
+
+out="$(bash "$here/bin/steward" mcp surface "$SID" 2>"$T/err")"; rc=$?
+is  "surface without --json is a usage error" "$rc" "64"
+is  "and nothing on stdout" "$out" ""
+
+out="$(bash "$here/bin/steward" mcp surface --json 2>"$T/err")"; rc=$?
+is  "surface --json without a session id is a usage error" "$rc" "64"
+is  "and nothing on stdout" "$out" ""
+
+out="$(bash "$here/bin/steward" mcp surface "$SID" --json --bogus 2>"$T/err")"; rc=$?
+is  "an unknown flag is a usage error" "$rc" "64"
+is  "and nothing on stdout" "$out" ""
+
 printf 'NAME="Work"\nPARENT="missing"\n' > "$ROOT/projects.d/work.conf"
 out="$(bash "$here/bin/steward" mcp surface "$SID" --json 2>/dev/null)"; rc=$?
 is  "a level that will not load refuses" "$rc" "65"

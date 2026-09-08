@@ -23,6 +23,7 @@
 #   steward assets <session> [--json]
 #   steward sessions [--json] [--sort name|slug|display|owner|host|lineage]
 #   steward mcp render <session-id>
+#   steward mcp surface <session-id> --json
 #   steward doctor
 #   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
 #   steward config set KEY /abs/value
