@@ -907,13 +907,12 @@ ureq w4 ann DDDDDDDDDDDDDDDDDDDDDDDDDD
 urun spaced "$UREQ"
 is "U4: an indented OWNER line still owns the row" "$URC" "0"
 
-# U5. THE STRICT SHAPE. This row carries the account's PRINCIPAL as its OWNER -
-# legible to the loader, and the shape mcp assets already withhold the account
-# axis for, because a principal id and a unix login are two namespaces nothing
-# keeps disjoint. Enrolment stamps a row under the account it resolves, so the
-# stronger verb must not credit a principal the account does not name the row
-# by. The request names a third person, so the gate refuses either way; what is
-# measured is what the refusal says the row is.
+# U5. THE LENIENT SHAPE, REFUSED. This row carries the account's PRINCIPAL as
+# its OWNER - legible to the loader, and the shape mcp assets already withhold
+# the account axis for, because a principal id and a unix login are two
+# namespaces nothing keeps disjoint. Enrolment STAMPS a row under the account
+# it resolves, so a row it cannot measure through its own account does not
+# enrol at all; the refusal names the verb that ends the ambiguity.
 cat > "$UFX/sessions.d/legacyowner.conf" <<'CONF'
 HOST="farhost"
 OWNER="ann"
@@ -925,12 +924,38 @@ ID="legacyowner"
 CONF
 ureq w5 zoe EEEEEEEEEEEEEEEEEEEEEEEEEE
 urun legacyowner "$UREQ"
-is  "U5: a request naming somebody else is refused"  "$URC" "65"
-has "U5: and the row is named by its OWNER"          "$UOUT" "owned by 'ann'"
-case "$UOUT" in
-  *principal*) bad "U5: no principal is resolved for a row the account names only by PRINCIPAL" "got: $UOUT" ;;
-  *)           ok  "U5: no principal is resolved for a row the account names only by PRINCIPAL" ;;
-esac
+is  "U5: a row its own account names only by PRINCIPAL is refused" "$URC" "65"
+has "U5: and the refusal quotes the OWNER the loader reads"  "$UOUT" "OWNER='ann'"
+has "U5: and the USERNAME the account actually names"        "$UOUT" "svc-ann"
+has "U5: and points at the verb that ends the ambiguity"     "$UOUT" "registry session realign"
+
+# U6. THE COLLISION, WHOLE. Account A is PRINCIPAL="ann" USERNAME="svc-ann";
+# account B is PRINCIPAL="bob" USERNAME="ann". The row above is A's row - it
+# names A as its ACCOUNT - while OWNER="ann" is B's unix login, so it runs as
+# bob and claims ann. A request naming person=ann satisfied the raw
+# OWNER-equals-person arm and stamped a new session for ann out of bob's
+# session. The two namespaces are not required to be disjoint and nothing in
+# the string tells them apart, so the account decides or nothing does.
+cat > "$UFX/accounts.d/bob-farhost.conf" <<'CONF'
+PRINCIPAL="bob"
+USERNAME="ann"
+HOST="farhost"
+CONF
+ureq w6 ann FFFFFFFFFFFFFFFFFFFFFFFFFF
+urun legacyowner "$UREQ"
+is  "U6: the raw OWNER string no longer admits a row that carries an ACCOUNT" "$URC" "65"
+has "U6: and the refusal is the account one, not a person mismatch" \
+    "$UOUT" "registry session realign"
+
+# U7. THE LEGACY ROW THAT STILL ENROLS. No ACCOUNT line at all, so there is
+# nothing to resolve through and OWNER is the only human this row can name.
+# Refusing these would take down every conf written before the identity model,
+# which is the fault the loader's lenient read exists to avoid.
+printf 'HOST="farhost"\nOWNER="ann"\nDOMAIN="acme"\nRC_LABEL="NoAcct"\nREPO_PATH="/tmp/x"\nID="noacct"\n' \
+  > "$UFX/sessions.d/noacct.conf"
+ureq w7 ann GGGGGGGGGGGGGGGGGGGGGGGGGG
+urun noacct "$UREQ"
+is "U7: an account-less legacy row still enrols on its raw OWNER" "$URC" "0"
 rm -rf "$UFX"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
