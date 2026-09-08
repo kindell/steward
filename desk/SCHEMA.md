@@ -271,9 +271,21 @@ five seconds rather than at the cookie's expiry. Five and not zero: the
 bridge forks a subshell per principal row, so the answer for one identity -
 a slug, or nobody - is remembered for five seconds and the desk asks once per
 identity per five seconds instead of once per click. `POST /desk/auth/logout`
-clears the cookie. `/desk/auth/*` is rate limited to 10 requests per minute
-per visitor, and every other path on the front - the ones that resolve a
-cookie, read a snapshot and render - to 120 per minute per visitor.
+clears the cookie.
+
+**The budgets are per ADDRESS, and the address is the one the proxy box
+reported.** `/desk/auth/*` is rate limited to 10 requests per minute per
+visitor address: that is the provider redirect, the callback and the logout,
+the three that spawn a bridge or talk to a provider. `GET /desk/auth/login`
+with no `provider` is the chooser page - it reads nothing, spawns nothing and
+contacts nobody - so it costs no hit at all. Every other path on the front -
+the ones that resolve a cookie, read a snapshot and render - gets 120 per
+minute per visitor address. Every page carries
+`<link rel="icon" href="data:,">`, so the browser asks for no favicon and a
+page view is one hit rather than two: about 120 page views a minute per
+address. A team behind one NAT shares one address and therefore shares one
+budget - which is the cost of measuring the visitor rather than the cookie,
+and is deliberate: a budget per cookie is a budget anybody can mint more of.
 
 The front never reads the `tailscale-user-login` header; the tailnet socket
 never reads a cookie.

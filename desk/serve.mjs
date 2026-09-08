@@ -416,7 +416,14 @@ const HEADERS = {
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
   'referrer-policy': 'no-referrer',
-  'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+  // `img-src data:` IS NOT A LOOSENING OF `default-src 'none'` IN ANY
+  // DIRECTION THAT MATTERS: no origin is named, so an image can still come
+  // from nowhere on the network. It is here for the one image the pages
+  // declare, the empty `data:` icon in desk/render.mjs, which exists so the
+  // browser does not go and ask for /favicon.ico with the session cookie on
+  // it. Without this the icon would be refused by the page's own policy and
+  // the operator's console would carry a violation on every page view.
+  'content-security-policy': "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 };
 
 const send = (res, status, body, extra) => {

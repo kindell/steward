@@ -19,8 +19,10 @@
 //      document accidentally carried - cannot reach a page by being present.
 //      The test fixture carries an `extra` sentinel to prove it.
 //
-// No page emits a <script> tag and no link leaves the /desk/ prefix, so the
-// server's `default-src 'none'` policy costs the view nothing.
+// No page emits a <script> tag and no link leaves the /desk/ prefix - the one
+// href that is not a path is the empty `data:` icon below, which fetches
+// nothing - so the server's `default-src 'none'` policy costs the view
+// nothing.
 
 export function escapeHtml(s) {
   if (s === null || s === undefined) return '';
@@ -40,6 +42,8 @@ const h = escapeHtml;
 const NONE = '-';
 const orNone = (v) => (v === null || v === undefined || v === '' ? NONE : String(v));
 
+const ICON = '<link rel="icon" href="data:,">';
+
 const CSS = [
   'body{font:15px/1.5 system-ui,sans-serif;margin:2rem auto;max-width:52rem;padding:0 1rem;color:#111}',
   'h1{font-size:1.4rem;margin:0 0 .2rem}h2{font-size:1.05rem;margin:1.6rem 0 .4rem}',
@@ -51,6 +55,16 @@ const CSS = [
   'footer{margin-top:2.5rem;color:#666;font-size:.85rem;border-top:1px solid #e4e4e4;padding-top:.5rem}',
   'p.empty{color:#666}'
 ].join('');
+
+// THE PAGE NAMES ITS OWN ICON SO THE BROWSER DOES NOT GO LOOKING FOR ONE.
+// A page with no <link rel=icon> makes the browser ask for /favicon.ico on its
+// own, and on the public front that request carries the session cookie - so
+// every page view was TWO requests against a budget that is one per address,
+// and a team behind one NAT shares that address. An empty data: URL is a
+// declared icon the browser never fetches: no request, no second hit, and no
+// bytes on the page beyond this line. serve.mjs names `img-src data:` in the
+// policy for exactly this one image, which allows no origin and therefore no
+// network fetch of any kind - see the comment on that header.
 
 // LAYOUT - the only place a document shell is written. `title` is the heading
 // this page carries; the <title> element is the same on every page so a browser
@@ -72,6 +86,7 @@ function LAYOUT(title, body, snap) {
     '<meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<title>Steward Desk</title>' +
+    ICON +
     '<style>' + CSS + '</style>' +
     '<h1>' + h(title) + '</h1>' +
     body +

@@ -107,6 +107,23 @@ test('every page is a document with one title', () => {
   }
 });
 
+// THE ICON IS THE ONE HREF THAT IS NOT A PATH, and it is named here by its
+// exact value rather than waved through as a scheme: `data:,` fetches
+// nothing, from nobody, ever. A second off-prefix link - a real data: image,
+// a CDN, an avatar - still fails this test, which is the point of listing the
+// exception instead of loosening the rule to "or a data: URL".
+const ICON_HREF = 'data:,';
+
+// AND EVERY PAGE NAMES ITS OWN ICON. Without this line the browser asks for
+// /favicon.ico by itself, with the session cookie on it, so one page view
+// costs two of the front's per-address rate-limit hits instead of one. The
+// href is empty on purpose: a declared icon the browser never fetches.
+test('every page declares an icon, so no page view costs a second request', () => {
+  for (const h of allPages()) {
+    assert.ok(h.includes('<link rel="icon" href="' + ICON_HREF + '">'), h.slice(0, 200));
+  }
+});
+
 test('the footer names the measurement, not the reading', () => {
   for (const h of allPages()) {
     assert.ok(h.includes('measured at 2026-09-08T00:00:00Z on h1'), h.slice(-200));
@@ -116,6 +133,7 @@ test('the footer names the measurement, not the reading', () => {
 test('no link leaves the desk prefix', () => {
   for (const h of allPages()) {
     for (const m of h.matchAll(/href="([^"]*)"/g)) {
+      if (m[1] === ICON_HREF) continue;
       assert.ok(m[1].startsWith('/desk/'), 'link outside the prefix: ' + m[1]);
     }
   }
