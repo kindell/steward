@@ -1015,6 +1015,33 @@ _json() { # <k> <v> [<k> <v> ...]  — bools are the literals true/false
   jq -cn "${args[@]}" '$ARGS.named'
 }
 
+# _json_secret <secret-key> <secret-value> <k> <v> [...] - _json's object, plus
+# ONE value that must never appear in a process's command line.
+#
+# ARGV IS NOT A PRIVATE CHANNEL. Every `--arg k v` pair _json builds becomes a
+# word in jq's argv, and on the multi-user hosts this product exists for any
+# local account can read another process's argv (/proc/<pid>/cmdline is
+# world-readable, and `ps` prints it). A one-time invitation link handed to jq
+# that way is a credential published to everybody on the machine for as long as
+# the process lives - and a redemption by the wrong reader is indistinguishable
+# from the right one, because the digest still matches.
+#
+# The environment is the narrow channel next door: /proc/<pid>/environ is
+# readable only by the owner, and the assignment below applies to THIS jq alone,
+# never to the shell that runs it. Every non-secret value keeps _json's --arg
+# path, so only the value that needs the narrow door goes through it.
+_json_secret() {
+  local skey="$1" sval="$2"; shift 2
+  local args=() k v
+  while [ "$#" -ge 2 ]; do
+    k="$1"; v="$2"; shift 2
+    case "$v" in true|false) args+=(--argjson "$k" "$v") ;; *) args+=(--arg "$k" "$v") ;; esac
+  done
+  args+=(--arg _secret_key "$skey")
+  _STEWARD_JSON_SECRET="$sval" jq -cn "${args[@]}" \
+    '($ARGS.named | del(._secret_key)) + {($ARGS.named._secret_key): $ENV._STEWARD_JSON_SECRET}'
+}
+
 # `steward scaffold <dir> org=... team=... owner=... session=... [assets=...] [--json]`
 # runs the local scaffold engine (lib/scaffold.sh) — no ssh, no remote estate;
 # this is the command that BUILDS an estate, as opposed to the verbs above
@@ -2869,6 +2896,32 @@ cmd_registry_session_check() {
 # see. Same technique as _registry_validate_login_stage.
 _invite_validate_row() {
   local file="$1" dir rc=0
+  # THE ROW ON DISK IS RE-READ HERE, AND ONLY HERE. Every in-place update
+  # (revoke today, redeem next) reads the row, recomposes all thirteen fields
+  # from that read, and only then asks for the write lock - so a change that
+  # lands in between is invisible to the caller and would be published straight
+  # over. The validate_fn is the one place that runs INSIDE the lock while the
+  # current bytes are still on disk, which makes it the only place that can
+  # compare against them. A row that moved is refused, never merged: the caller
+  # measured its decision against a state that no longer exists, so the right
+  # answer is to run the verb again, not to guess which half to keep.
+  #
+  # Empty _REGW_INV_RECHECK_ID means "this row is new" (registry_invite_write's
+  # path) - there is nothing on disk to compare against, and the writer already
+  # refuses a destination that exists.
+  local rid="${_REGW_INV_RECHECK_ID:-}"
+  if [ -n "$rid" ]; then
+    local rk rvar rgot rwant
+    for rk in STATE TOKEN_SHA256 REDEEMED_LOGIN REDEEMED_AT; do
+      rvar="INVITE_$rk"
+      rgot="$( registry_invite_load "$rid" >/dev/null 2>&1; printf '%s' "${!rvar}" )"
+      eval "rwant=\"\${_REGW_RECHECK_INV_$rk:-}\""
+      if [ "$rgot" != "$rwant" ]; then
+        echo "registry: invitation '$rid' changed on disk while this update was being prepared - $rk is now '$rgot', was '$rwant'; refusing to overwrite it, run the verb again" >&2
+        return 70
+      fi
+    done
+  fi
   dir="$(mktemp -d)" || { echo "registry: cannot stage-validate an invite row" >&2; return 70; }
   cp "$file" "$dir/inv-00000000.conf" || { rm -rf "$dir"; return 70; }
   chmod 600 "$dir/inv-00000000.conf"
@@ -2924,6 +2977,13 @@ _invite_compose() { # <id>
 # _invite_load_expect <id> - load a row and copy every field into the
 # _REGW_EXPECT_INV_* values, so a caller can change ONE of them and recompose
 # the whole row without retyping the rest.
+#
+# IT ALSO RECORDS WHAT IT SAW, in _REGW_INV_RECHECK_ID and the
+# _REGW_RECHECK_INV_* snapshot. This read happens outside the write lock, so
+# _invite_validate_row re-takes it under the lock and refuses if the row moved
+# in between. Recording it HERE rather than in each verb means every future
+# in-place update inherits the guard by using the loader, instead of having to
+# remember it.
 _invite_load_expect() { # <id>
   registry_invite_load "$1" || return $?
   _REGW_EXPECT_INV_NAME="$INVITE_NAME"
@@ -2939,30 +2999,70 @@ _invite_load_expect() { # <id>
   _REGW_EXPECT_INV_STATE="$INVITE_STATE"
   _REGW_EXPECT_INV_REDEEMED_LOGIN="$INVITE_REDEEMED_LOGIN"
   _REGW_EXPECT_INV_REDEEMED_AT="$INVITE_REDEEMED_AT"
+  # The snapshot the under-lock recheck compares against. STATE and the
+  # REDEEMED pair are what a concurrent redemption moves; TOKEN_SHA256 is what
+  # a re-issue would move, and it is the field that decides whose link opens
+  # this row.
+  _REGW_INV_RECHECK_ID="$1"
+  _REGW_RECHECK_INV_STATE="$INVITE_STATE"
+  _REGW_RECHECK_INV_TOKEN_SHA256="$INVITE_TOKEN_SHA256"
+  _REGW_RECHECK_INV_REDEEMED_LOGIN="$INVITE_REDEEMED_LOGIN"
+  _REGW_RECHECK_INV_REDEEMED_AT="$INVITE_REDEEMED_AT"
   return 0
 }
 
 # _invite_self_principal - which principal is running this verb, measured from
 # the register rather than typed. The unix account this process runs as is
-# matched against accounts.d on this machine; its PRINCIPAL is the answer. rc 1
-# and nothing when no row matches - the caller turns that into a refusal that
-# names --issued-by, because guessing who signed an invitation is exactly the
-# kind of guess this register exists to prevent.
+# matched against accounts.d; its PRINCIPAL is the answer.
+#
+# A UNIX USERNAME IS UNIQUE ON A HOST, NEVER ACROSS AN ESTATE. `alice` on two
+# machines is two accounts.d rows and may be two different humans, so matching
+# on the username alone leaves a set, and taking the first member of that set
+# means taking whichever slug sorts first. ISSUED_BY is the only record of who
+# let a stranger into the estate; a field that can name the wrong human is worse
+# than no field. So the set is narrowed by ACCOUNT_HOST against this machine,
+# and an answer that is still not unique is REFUSED - the same shape every other
+# lookup in this register uses (registry_invite_for_digest,
+# registry_invite_open_for_principal, registry_principal_for_login all refuse
+# rather than choose).
+#
+#   rc 0  - the principal, on stdout
+#   rc 1  - no account row names this unix username
+#   rc 2  - more than one does, and this machine's host row does not separate
+#           them; the candidates are on stdout, one per line, so the caller's
+#           refusal can name them next to --issued-by
+#   rc 78 - the account register cannot be resolved
 _invite_self_principal() {
-  local me d f slug u p
+  local me self d f slug u h p cands="" hits=0 last_p="" here_p="" here_n=0
   me="$(id -un)"
+  self="$(_registry_self_host)"
   d="$(registry_account_dir)" || return 78
   [ -d "$d" ] || return 1
   for f in "$d"/*.conf; do
     [ -e "$f" ] || continue
     slug="$(basename "$f" .conf)"
+    # ONE SUBSHELLED LOAD PER FIELD. The loader sources the row, so a hostile
+    # accounts.d file gets a child process of its own and only the one named
+    # value crosses back into these locals.
     u="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )"
     [ "$u" = "$me" ] || continue
     p="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
     [ -n "$p" ] || continue
-    printf '%s\n' "$p"; return 0
+    h="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_HOST" )"
+    hits=$((hits+1)); last_p="$p"
+    cands="$cands$p (account $slug on host $h)
+"
+    if [ -n "$self" ] && [ "$h" = "$self" ]; then here_p="$p"; here_n=$((here_n+1)); fi
   done
-  return 1
+  [ "$hits" -gt 0 ] || return 1
+  # ONE MATCH NEEDS NO HOST. A single account for this unix username is not
+  # ambiguous whatever the machine is called, and requiring the host to agree
+  # would refuse every estate whose hosts.d slug is not this machine's
+  # hostname - a naming choice, not a safety property.
+  if [ "$hits" -eq 1 ]; then printf '%s\n' "$last_p"; return 0; fi
+  if [ "$here_n" -eq 1 ]; then printf '%s\n' "$here_p"; return 0; fi
+  printf '%s' "$cands"
+  return 2
 }
 
 cmd_invite_issue() {
@@ -3034,7 +3134,13 @@ cmd_invite_issue() {
     return 65
   fi
   if [ -z "$issued_by" ]; then
-    issued_by="$(_invite_self_principal)" || issued_by=""
+    local self_out self_rc
+    self_out="$(_invite_self_principal)"; self_rc=$?
+    if [ "$self_rc" -eq 2 ]; then
+      _reg_fail "$want_json" "steward invite issue: more than one account names the unix user running this verb and none of them belongs to this machine, so who is issuing cannot be measured - pass --issued-by <slug>; candidates: $(printf '%s' "$self_out" | tr '\n' ' ')"
+      return 65
+    fi
+    if [ "$self_rc" -eq 0 ]; then issued_by="$self_out"; else issued_by=""; fi
   fi
   if [ -z "$issued_by" ]; then
     _reg_fail "$want_json" "steward invite issue: could not resolve which principal is issuing this invitation from the account register - pass --issued-by <slug>"
@@ -3044,7 +3150,18 @@ cmd_invite_issue() {
     _reg_fail "$want_json" "steward invite issue: invalid --issued-by '$issued_by'"; return 64
   fi
 
-  local origin; origin="$(registry_desk_origin)" || return 78
+  # THE LIBRARY'S MESSAGE, IN THIS VERB'S SHAPE. A missing DESK_ORIGIN is the
+  # refusal a fresh estate is most likely to hit, and it used to be the one
+  # refusal a --json caller got as rc 78 with an empty stdout - a front end
+  # parsing that gets a parse error where every other refusal hands it
+  # {ok:false,reason}. The reason text stays the library's; only the envelope
+  # is this verb's.
+  local origin oerr
+  oerr="$(mktemp)" || { _reg_fail "$want_json" "steward invite issue: cannot create a temporary file"; return 70; }
+  origin="$(registry_desk_origin 2>"$oerr")" || {
+    _reg_fail "$want_json" "steward invite issue: $(tr '\n' ' ' < "$oerr")"
+    rm -f "$oerr"; return 78; }
+  rm -f "$oerr"
 
   local id token digest now expires
   id="$(registry_invite_mint_id)" || return 70
@@ -3066,6 +3183,10 @@ cmd_invite_issue() {
   _REGW_EXPECT_INV_STATE="open"
   _REGW_EXPECT_INV_REDEEMED_LOGIN=""
   _REGW_EXPECT_INV_REDEEMED_AT=""
+  # NOTHING TO RECHECK: this row does not exist yet, and the writer refuses a
+  # destination that does. Set explicitly rather than left unset, so the
+  # validator's guard is off by decision and not by accident.
+  _REGW_INV_RECHECK_ID=""
 
   local content rc rw_err
   content="$(_invite_compose "$id")" || {
@@ -3083,8 +3204,11 @@ cmd_invite_issue() {
   # there is no path in the product that can print this string a second time.
   local link="$origin/desk/invite/$token"
   if [ -n "$want_json" ]; then
-    _json ok true kind invite id "$id" principal "$principal" entity "$entity" host "$host" \
-      runtime "$runtime" provider "$provider" expires "$expires" link "$link"
+    # _json_secret, NOT _json: the link is the one value in this object that
+    # must not reach jq's argv, where every account on the host could read it.
+    _json_secret link "$link" \
+      ok true kind invite id "$id" principal "$principal" entity "$entity" host "$host" \
+      runtime "$runtime" provider "$provider" expires "$expires"
   else
     printf 'steward: invitation %s for %s (%s) on %s, valid %s day(s)\n' \
       "$id" "$principal" "$name" "$host" "$days"
@@ -3092,6 +3216,18 @@ cmd_invite_issue() {
     printf '%s\n' "$link"
   fi
   return 0
+}
+
+# _invite_ls_unreadable <id> <errfile> - one stderr line for a row the register
+# lists but its reader refuses. The reader's own words are carried through
+# (folded to one line), because "not owned by the current user" and "missing
+# required key" call for different repairs.
+_invite_ls_unreadable() {
+  local id="$1" ef="$2" why=""
+  [ -f "$ef" ] && why="$(tr '\n' ' ' < "$ef")"
+  [ -n "$why" ] || why="the register's own reader refused it"
+  printf 'steward invite ls: invitation %s could not be read and is NOT listed above as a normal row: %s\n' \
+    "$id" "$why" >&2
 }
 
 # cmd_invite_ls - the register, as columns or as JSON.
@@ -3108,43 +3244,75 @@ cmd_invite_issue() {
 # NAME IS LAST because it is the one free-text field: a display name carries
 # spaces, and a column of them anywhere but the end would break every column
 # after it.
+#
+# A ROW THE READER REFUSES IS NAMED, NEVER DROPPED. registry_invite_list globs
+# the register, so this verb KNOWS the row is there; printing nothing about it
+# is the worst of the three options. That row is a live invitation - its digest
+# still matches, so redemption may still find it and the open-invite gate skips
+# it, which lets issue mint a SECOND invitation for the same person - and the
+# operator's only enumeration verb would show neither the row nor a hint that
+# anything was skipped. There would be nothing to revoke and nothing to repair.
+# The listing still prints every row it CAN read, and the run ends rc 78.
 cmd_invite_ls() {
+  # --json IS SETTLED BEFORE ANY REFUSAL. The scan below can itself refuse, and
+  # a refusal that answers in prose because it had not reached the --json
+  # argument yet is a refusal in the wrong shape. issue and revoke pre-scan for
+  # the same reason.
   local want_json="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
   for a in "$@"; do
     case "$a" in
-      --json) want_json=1 ;;
-      *) _reg_fail "" "steward invite ls: unexpected argument '$a'"; return 64 ;;
+      --json) ;;
+      *) _reg_fail "$want_json" "steward invite ls: unexpected argument '$a'"; return 64 ;;
     esac
   done
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
-  local ids rc=0
-  ids="$(registry_invite_list)" || return $?
+  local ids rc=0 lerr bad=0
+  lerr="$(mktemp)" || { _reg_fail "$want_json" "steward invite ls: cannot create a temporary file"; return 70; }
+  ids="$(registry_invite_list 2>"$lerr")" || {
+    rc=$?
+    _reg_fail "$want_json" "steward invite ls: $(tr '\n' ' ' < "$lerr")"
+    rm -f "$lerr"; return "$rc"; }
   if [ -n "$want_json" ]; then
-    local tmp; tmp="$(mktemp)" || return 70
+    local tmp; tmp="$(mktemp)" || { rm -f "$lerr"; return 70; }
     local id
     for id in $ids; do
-      ( registry_invite_load "$id" >/dev/null 2>&1 || exit 0
+      ( registry_invite_load "$id" >/dev/null 2>"$lerr" || exit 78
         _json id "$INVITE_ID" name "$INVITE_NAME" principal "$INVITE_PRINCIPAL" \
           entity "$INVITE_ENTITY" host "$INVITE_HOST" runtime "$INVITE_RUNTIME" \
           provider "$INVITE_PROVIDER" state "$INVITE_EFFECTIVE_STATE" \
           issuedBy "$INVITE_ISSUED_BY" issuedAt "$INVITE_ISSUED_AT" \
           expiresAt "$INVITE_EXPIRES_AT" redeemedLogin "$INVITE_REDEEMED_LOGIN" ) >> "$tmp"
+      if [ $? -ne 0 ]; then bad=1; _invite_ls_unreadable "$id" "$lerr"; fi
     done
     jq -s . < "$tmp"; rc=$?
-    rm -f "$tmp"
-    return "$rc"
+    rm -f "$tmp" "$lerr"
+    [ "$rc" -eq 0 ] || return "$rc"
+    [ "$bad" -eq 0 ] || return 78
+    return 0
   fi
   printf '%-12s %-12s %-10s %-10s %-12s %-14s %-9s %-12s %s\n' \
     ID PRINCIPAL ENTITY HOST RUNTIME PROVIDER STATE EXPIRES NAME
   local id
   for id in $ids; do
-    ( registry_invite_load "$id" >/dev/null 2>&1 || exit 0
+    ( registry_invite_load "$id" >/dev/null 2>"$lerr" || exit 78
       printf '%-12s %-12s %-10s %-10s %-12s %-14s %-9s %-12s %s\n' \
         "$INVITE_ID" "$INVITE_PRINCIPAL" "$INVITE_ENTITY" "$INVITE_HOST" \
         "$INVITE_RUNTIME" "$INVITE_PROVIDER" "$INVITE_EFFECTIVE_STATE" \
         "$INVITE_EXPIRES_AT" "$INVITE_NAME" )
+    if [ $? -ne 0 ]; then
+      bad=1
+      _invite_ls_unreadable "$id" "$lerr"
+      # A PLACEHOLDER ROW, so the count of lines on stdout still matches the
+      # count of rows in the register: a listing that is silently one short is
+      # the defect this branch exists to end.
+      printf '%-12s %-12s %-10s %-10s %-12s %-14s %-9s %-12s %s\n' \
+        "$id" "?" "?" "?" "?" "?" "?" "?" "?"
+    fi
   done
+  rm -f "$lerr"
+  [ "$bad" -eq 0 ] || return 78
   return 0
 }
 
