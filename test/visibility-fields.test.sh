@@ -2,7 +2,8 @@
 # test/visibility-fields.test.sh — the two fields that carry a visibility
 # declaration, read and validated like every other registry field.
 #
-# THIS FILE TESTS THE DECLARATION, NOT THE RULE. Whether a given person may see
+# This tests both declarations and the shared field projection contract.
+# Whether a given person may see
 # a given session is decided in lib/visibility.sh and tested there. Here the
 # only question is whether the registry reads these two fields honestly and
 # refuses a malformed one — a conf that declares something the loader silently
@@ -35,7 +36,7 @@ conf() { # <name> <extra lines>
   # sourced line would silently misparse. %b interprets \n in the argument
   # the way every call site below assumes. Verified against the bash on this
   # box (3.2.57): %s left literal "\n" in the file; %b did not.
-  printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="%s"\n%b' \
+  printf 'HOST="h1"\nOWNER="a"\nDOMAIN="team"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="%s"\n%b' \
     "$1" "$2" > "$FX/sessions.d/$1.conf"
 }
 
@@ -122,6 +123,35 @@ echo "== a legitimate multi-group list survives =="
 conf many 'VISIBLE_TO="board audit-2026 steering"\n'
 ( registry_load many >/dev/null 2>&1; printf '%s' "$VISIBLE_TO" ) > "$FX/out"
 is "three groups, intact" "$(cat "$FX/out")" "board audit-2026 steering"
+
+echo "== shared field authority =="
+. "$here/lib/visibility.sh"
+mkdir -p "$FX/entities.d"
+printf 'NAME="Team"\nMEMBERS="a b"\n' > "$FX/entities.d/team.conf"
+printf 'NAME="Board"\nMEMBERS="c"\n' > "$FX/entities.d/board.conf"
+is "owner sees a private row" "$(visibility_fields a both)" owner
+is "team member sees ordinary work" "$(visibility_fields b plain)" member
+is "private withdraws team sight" "$(visibility_fields b both)" none
+is "explicit grant precedes private" "$(visibility_fields c both)" member
+is "outsider sees nothing" "$(visibility_fields c plain)" none
+is "empty viewer sees nothing" "$(visibility_fields '' plain)" none
+is "missing row sees nothing" "$(visibility_fields a missing)" none
+registry_load plain >/dev/null 2>&1
+visibility_fields c both >/dev/null
+is "field decision preserves caller row" "$VISIBILITY" ""
+member_fields="$(visibility_field_list member)"
+owner_fields="$(visibility_field_list owner)"
+for field in id slug label owner domain project runtime host repo liveness.state liveness.measuredAt; do
+  is "member allows $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 1
+done
+for field in mcp.id mcp.axis mcp.source liveness.ageSeconds mail repoPath; do
+  is "member excludes $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 0
+done
+for field in mcp.id mcp.name mcp.axis mcp.source liveness.ageSeconds; do
+  is "owner retains $field" "$(printf '%s\n' "$owner_fields" | grep -Fxc "$field")" 1
+done
+is "none has no fields" "$(visibility_field_list none)" ""
+is "unknown field level refuses" "$(visibility_field_list other >/dev/null; printf '%s' "$?")" 1
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"

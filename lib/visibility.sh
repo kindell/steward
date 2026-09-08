@@ -144,3 +144,32 @@ session_visible_to() {
 
   return 1
 }
+
+# visibility_fields <viewer-owner> <session-name>: owner/member/none.
+# Keep the object decision in session_visible_to; isolate its registry globals.
+visibility_fields() (
+  if ! session_visible_to "${1:-}" "${2:-}"; then
+    printf 'none\n'
+  elif [ "$1" = "$OWNER" ]; then
+    printf 'owner\n'
+  else
+    printf 'member\n'
+  fi
+)
+
+# Field table (the executable allowlist below is its only enumeration):
+# member gets identity, work location (repo basename only), coarse liveness;
+# owner additionally gets activity age and the existing four-key MCP surface.
+# mine and sight are derived presentation markers, not additional registry data.
+# Dotted keywords name nested JSON fields; arrays project each element using
+# the same suffixes. Unknown keys, mail and raw registry data never travel.
+# An operator/read-all desk uses the owner field set, not an unfiltered row.
+# visibility_field_list <owner|member>: one JSON field keyword per line.
+visibility_field_list() {
+  case "${1:-}" in owner|member) ;; *) return 1 ;; esac
+  printf '%s\n' id slug label owner domain project runtime host repo mine sight \
+    liveness.state liveness.measuredAt
+  if [ "$1" = owner ]; then
+    printf '%s\n' liveness.ageSeconds mcp.id mcp.name mcp.axis mcp.source
+  fi
+}
