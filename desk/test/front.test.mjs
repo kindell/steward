@@ -102,6 +102,33 @@ test('RateLimiter frees room again once a window has passed', () => {
   assert.equal(rl.hits.has('b'), false);
 });
 
+// A FULL MAP MUST NOT SWEEP ITSELF ON EVERY CALL. The sweep walks the whole
+// map, so a cap that triggers one per call makes every request cost the map -
+// the amortization undone at exactly the moment it matters, since a full map
+// is when a sweep is most expensive and a flood of fresh keys is what fills
+// it. Only the sweep count shows it: the return values are the same either
+// way, which is why this test counts rather than measures.
+test('RateLimiter sweeps a full map at most once per window', () => {
+  class Counting extends RateLimiter {
+    constructor(...a) { super(...a); this.prunes = 0; }
+    prune(now) { this.prunes++; super.prune(now); }
+  }
+  const rl = new Counting(10, 60000, 50);
+  for (let i = 0; i < 50; i++) assert.equal(rl.hit('k' + i, 1000), true);
+  assert.equal(rl.hits.size, 50);
+  const before = rl.prunes;
+  // Two hundred calls with a full map, all inside one window: each new key is
+  // refused, and refusing it costs no sweep.
+  for (let i = 0; i < 200; i++) assert.equal(rl.hit('new' + i, 1001 + i), false);
+  assert.ok(rl.prunes - before <= 1, 'a full map was swept ' + (rl.prunes - before) + ' times inside one window');
+  assert.equal(rl.hits.size, 50);
+  // A key already in the map still has its own budget while the map is full.
+  assert.equal(rl.hit('k0', 1300), true);
+  // A window later the sweep is due again, and the room comes back with it.
+  assert.equal(rl.hit('new-late', 62000), true);
+  assert.equal(rl.prunes - before, 2);
+});
+
 test('RateLimiter counts only the trailing window even when no prune has swept', () => {
   // The prune runs every 256th call, so between sweeps a key's own list can
   // hold entries older than the window; the count must not include them.
