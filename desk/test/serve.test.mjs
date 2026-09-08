@@ -117,6 +117,18 @@ const childEnv = (over) => Object.assign({
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// HOW LONG A SERVER IS GIVEN TO COME UP, AND WHY IT IS NOT FIVE SECONDS.
+// Every readiness wait below is a 25 ms POLL, so a server that is up in 40 ms
+// is waited for for 40 ms and this number costs nothing on a quiet box - it
+// is the ceiling before the wait is called a failure, not a sleep. What has
+// to fit under it is a full node spawn plus an estate load plus a bridge that
+// forks a subshell per principal row, on a box that may be running several
+// sibling suites at once. Five seconds is inside the range that machine
+// actually takes, which is why this suite failed sometimes and passed
+// sometimes with nothing wrong; twenty is far outside it. A real hang still
+// ends here, with the same message, twenty seconds later.
+const UP_CAP_MS = 20000;
+
 async function waitForSocket(path, capMs) {
   const until = Date.now() + capMs;
   while (Date.now() < until) {
@@ -191,7 +203,7 @@ function spawnUp(env, sockPath) {
     p.stderr.setEncoding('utf8');
     p.stderr.on('data', (c) => { err += c; });
     (async () => {
-      const up = await waitForSocket(sockPath, 5000);
+      const up = await waitForSocket(sockPath, UP_CAP_MS);
       if (!up) {
         try { p.kill('SIGKILL'); } catch { /* already gone */ }
         reject(new Error('server never bound ' + sockPath + '; stderr so far: ' + err));
@@ -250,7 +262,7 @@ function spawnDesk(env) {
 // readiness is "a request got a response at all" instead.
 async function spawnUpTcp(env, host, port, capMs) {
   const handle = spawnDesk(env);
-  const until = Date.now() + (capMs || 5000);
+  const until = Date.now() + (capMs || UP_CAP_MS);
   while (Date.now() < until) {
     if (handle.proc.exitCode !== null) {
       throw new Error('server exited before answering; code ' + handle.proc.exitCode + '; stderr: ' + handle.getErr());
@@ -302,7 +314,7 @@ before(async () => {
   child = spawn(process.execPath, [SERVE], { env: childEnv(), stdio: ['ignore', 'ignore', 'pipe'] });
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (c) => { childErr += c; });
-  const up = await waitForSocket(SOCK, 5000);
+  const up = await waitForSocket(SOCK, UP_CAP_MS);
   assert.ok(up, 'the server never created its socket; stderr: ' + childErr);
 });
 
@@ -501,7 +513,7 @@ test('the default paths come from the bridge, not from a literal', async () => {
   p.stderr.on('data', (c) => { err += c; });
   const want = join(HOME, '.local', 'state', 'fixture-supervisor', 'desk.sock');
   try {
-    const until = Date.now() + 5000;
+    const until = Date.now() + UP_CAP_MS;
     while (Date.now() < until && !existsSync(want)) await sleep(25);
     assert.ok(existsSync(want), 'the bridge s socket was never created; stderr: ' + err);
     assert.equal(statSync(want).mode & 0o777, 0o600);
@@ -783,7 +795,7 @@ test('a stale socket file is replaced, and the server binds behind it', async ()
   p.stderr.on('data', (c) => { err += c; });
   try {
     let r = null;
-    const until = Date.now() + 5000;
+    const until = Date.now() + UP_CAP_MS;
     while (Date.now() < until) {
       try {
         r = await reqTo(sock2, 'GET', '/desk/', B);
@@ -858,7 +870,7 @@ test('STEWARD_DESK_LISTEN accepts the spelling localhost and binds it literally 
   delete env.STEWARD_DESK_SOCK;
   const handle = spawnDesk(env);
   try {
-    const until = Date.now() + 5000;
+    const until = Date.now() + UP_CAP_MS;
     while (Date.now() < until && !/listening on/.test(handle.getErr())) {
       if (handle.proc.exitCode !== null) break;
       await sleep(25);
@@ -875,7 +887,7 @@ test('a free loopback port serves the same gate over TCP, and creates no socket 
   const env = childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_SOCK: sock2 });
   let handle;
   try {
-    handle = await spawnUpTcp(env, '127.0.0.1', port, 5000);
+    handle = await spawnUpTcp(env, '127.0.0.1', port, UP_CAP_MS);
     const withLogin = await reqHttp('127.0.0.1', port, 'GET', '/desk/', B);
     assert.equal(withLogin.status, 200);
     assert.ok(withLogin.body.includes('work-a'));
@@ -895,7 +907,7 @@ test('a pre-existing file at STEWARD_DESK_SOCK survives a loopback server on SIG
   const env = childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_SOCK: sock2 });
   let handle;
   try {
-    handle = await spawnUpTcp(env, '127.0.0.1', port, 5000);
+    handle = await spawnUpTcp(env, '127.0.0.1', port, UP_CAP_MS);
     await stopSpawned(handle);
     assert.ok(existsSync(sock2), 'a loopback server must never unlink a file at STEWARD_DESK_SOCK on exit');
   } finally {
@@ -909,7 +921,7 @@ test('loopback mode starts with STEWARD_DESK_SOCK unset entirely', async () => {
   delete env.STEWARD_DESK_SOCK;
   let handle;
   try {
-    handle = await spawnUpTcp(env, '127.0.0.1', port, 5000);
+    handle = await spawnUpTcp(env, '127.0.0.1', port, UP_CAP_MS);
     assert.equal((await reqHttp('127.0.0.1', port, 'GET', '/desk/', B)).status, 200);
   } finally {
     if (handle) await stopSpawned(handle);
@@ -965,7 +977,7 @@ describe('the front listener', () => {
     port = await freePort();
     peerHandle = await spawnUpTcp(frontEnv({
       STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_FRONT_PEER: '127.0.0.1'
-    }), '127.0.0.1', port, 5000);
+    }), '127.0.0.1', port, UP_CAP_MS);
   });
 
   after(async () => {
@@ -1367,7 +1379,7 @@ describe('the front peer gate', () => {
       STEWARD_DESK_SOCK: join(T, 'peer-gate.sock'),
       STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port,
       STEWARD_DESK_FRONT_PEER: '100.64.0.9'
-    }), '127.0.0.1', port, 5000);
+    }), '127.0.0.1', port, UP_CAP_MS);
     try {
       const r = await reqHttp('127.0.0.1', port, 'GET', '/desk/auth/login');
       assert.equal(r.status, 403);
