@@ -124,6 +124,7 @@ err="$(bus_fraga_tillatet ghostrow stewa 2>&1 >/dev/null)"; rc=$?
 [ -n "$err" ] && ok "...and the reason reached stderr" \
   || bad "...and the reason reached stderr" "stderr was empty"
 case "$err" in *cannot*) ok "...naming the cause" ;; *) bad "...naming the cause" "$err" ;; esac
+case "$err" in *ghostrow.conf*) ok "...naming the conf" ;; *) bad "...naming the conf" "$err" ;; esac
 
 # CASE 4: the group grant's MEMBERS names PRINCIPALS, never accounts.
 printf 'NAME="Group"\nMEMBERS="alice"\n' > "$FX/entities.d/grp.conf"
@@ -144,6 +145,7 @@ err="$(bus_fraga_tillatet work-a ghostrow 2>&1 >/dev/null)"; rc=$?
 [ -n "$err" ] && ok "...and the reason reached stderr" \
   || bad "...and the reason reached stderr" "stderr was empty"
 case "$err" in *cannot*) ok "...naming the cause" ;; *) bad "...naming the cause" "$err" ;; esac
+case "$err" in *ghostrow.conf*) ok "...naming the conf" ;; *) bad "...naming the conf" "$err" ;; esac
 # The machine session belongs to everyone on the machine - but not when its own
 # row cannot be vouched for.
 refused askerrow ghostmac "machine session whose account does not load, same host: refused"

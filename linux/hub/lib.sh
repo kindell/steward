@@ -222,9 +222,13 @@ bus_home() {
 # THE RULE: one person's own sessions may ask each other, and sessions working on
 # the same ENTITY may ask each other even across people.
 #
-#   same OWNER   -> yes  (one person's own sessions are a team)
+#   same PERSON  -> yes  (one person's own sessions are a team)
 #   same DOMAIN  -> yes  (the entity: two people's sessions in it share the work)
 #   otherwise    -> no
+#
+# PERSON IS THE ACCOUNT'S PRINCIPAL (bus_recipient_principal), or the row's
+# own OWNER when the row names no account. See divergence 5 below for how this
+# differs from the visibility rule, which still compares OWNER alone.
 #
 # WHY A GATE AT ALL. FRAGA was built with no authorisation model, and so gave
 # every session the right to ask the hub about the WHOLE registry — an inventory
@@ -236,11 +240,11 @@ bus_home() {
 # on the same entity need each other's state, and that is exactly the case the
 # rule exists for.
 #
-# REFUSAL IS THE DEFAULT. If owner or domain cannot be read for either party, the
-# function answers NO. An unreadable registry must never become a permit. The
-# The hub is a session with a row like every other (bus_valid_recipient), so it
-# is a FRAGA recipient on the same terms: its row carries the owner to compare
-# against.
+# REFUSAL IS THE DEFAULT. If the person or the domain cannot be read for either
+# party, the function answers NO. An unreadable registry must never become a
+# permit. The hub is a session with a row like every other (bus_valid_recipient),
+# so it is a FRAGA recipient on the same terms: its row carries the person (see
+# divergence 5 below) to compare against.
 bus_fraga_falt() { # <session> <FIELD> -> the value, or empty
   local s="${1:-}" f="${2:-}" c
   # THE SAME RESOLUTION AS THE DELIVERY (bus_resolve_recipient): a FRAGA at a
@@ -1515,7 +1519,7 @@ EOF
   # up in the peer-sender branch, before the recipient is resolved.
   if [ "${BUS_KLASS:-}" = "FRAGA" ] && ! bus_fraga_tillatet "$from" "$to"; then
     echo "bus: '$from' may not put a FRAGA to '$to'." >&2
-    echo "     The rule: same OWNER, or same DOMAIN (the entity being worked on)." >&2
+    echo "     The rule: same PERSON (the account's principal; the OWNER when the row names no account), or same DOMAIN (the entity being worked on)." >&2
     echo "     Ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected." >&2
     return 1
   fi

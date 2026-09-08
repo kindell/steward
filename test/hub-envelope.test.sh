@@ -151,7 +151,7 @@ has "the class is passed to bus_parked as an ARGUMENT, not read from an inherite
 echo "9. a FRAGA goes to the hub only"
 # The fixture's estate names hub-one as the hub; give it a row so it resolves.
 printf 'HOST="host-one"\nOWNER="operator-a"\nDOMAIN="entity-one"\nRC_LABEL="H"\nREPO_PATH="/tmp/h"\nID="hub-one"\nSLUG="hub-one"\n' > "$FX/reg/hub-one.conf"
-# The sender needs a row too: the hub's own FRAGA gate (same owner or domain) runs after this guard.
+# The sender needs a row too: the hub's own FRAGA gate (same person or domain) runs after this guard.
 printf 'HOST="host-one"\nOWNER="operator-a"\nDOMAIN="entity-one"\nRC_LABEL="S"\nREPO_PATH="/tmp/s"\nID="sender"\nSLUG="sender"\n' > "$FX/reg/sender.conf"
 fraga() { ( export STEWARD_BUS_HOME="$FX/bh9"; bus_send "$1" sender "$2" noop_ping >"$FX/out" 2>"$FX/err" ); echo $?; }
 written9() { find "$FX/bh9" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
@@ -162,6 +162,14 @@ is  "...and nothing was written"                 "$(written9)" "0"
 is  "a FRAGA to the hub by its word: rc 0"       "$(fraga hub-one 'FRAGA topic: status')" "0"
 is  "a SAMORDNING to a session still passes"     "$(fraga rcpt 'SAMORDNING topic: a question for a person')" "0"
 is  "a DRIFT to a session still passes"          "$(fraga rcpt 'DRIFT topic: news')" "0"
+# A FRAGA TO THE HUB FROM A DIFFERENT PERSON, DIFFERENT ENTITY: the hub's own
+# FRAGA gate (bus_fraga_tillatet) refuses it on the send path, and the refusal
+# states the rule in the same words as the answerer's own (bus-fraga-svar).
+printf 'HOST="host-one"\nOWNER="operator-z"\nDOMAIN="entity-nine"\nRC_LABEL="O"\nREPO_PATH="/tmp/o"\nID="outsider"\nSLUG="outsider"\n' > "$FX/reg/outsider.conf"
+( export STEWARD_BUS_HOME="$FX/bh9"; bus_send hub-one outsider 'FRAGA topic: status' noop_ping >/dev/null 2>"$FX/err9" ); rc9=$?
+is  "a FRAGA to the hub from a different person and entity: refused" "$rc9" "1"
+has "...and the refusal states the PERSON rule" "$(cat "$FX/err9")" "same PERSON (the account's principal"
+rm -f "$FX/reg/outsider.conf"
 rm -f "$FX/reg/hub-one.conf"
 is  "a FRAGA when the hub has no row: rc 65 (no guess)" "$(fraga rcpt 'FRAGA topic: status')" "65"
 rm -f "$FX/reg/sender.conf"
