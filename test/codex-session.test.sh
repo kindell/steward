@@ -258,5 +258,33 @@ is  "both letters stay staged" "$(ls "$T/state/$CODEX_ID.codex-pending" | grep -
 is  "nothing was sent" "$(cat "$T/bus-send.log" | wc -c | tr -d ' ')" "0"
 rm -f "$T/daemon-down"
 
+# 16. the standing instructions name the other sessions on this project.
+# The thread is durable and the instructions are rewritten before every round,
+# so this is the one line that can carry a changed register into a session that
+# already exists. It has to be a reading, not a cache: the second run below
+# removes the mate and the file must say so.
+printf 'TARGET_PROJECT="work"\n' >> "$ROOT/sessions.d/$CODEX_ID.conf"
+cat > "$ROOT/sessions.d/mate-work.conf" <<EOF
+OWNER="ben"
+HOST="h1"
+DOMAIN="alpha"
+REPO_PATH="$HOMEDIR/Projects/repo"
+ID="mate-work"
+TARGET_PROJECT="work"
+EOF
+INSTR="$T/state/$CODEX_ID.codex-instructions.md"
+rc="$(run "$CODEX_ID")"
+has "the instructions name the session on the same project" \
+    "$(cat "$INSTR" 2>/dev/null)" "Sessions on the same project: mate-work (ben)"
+has "and say how to reach it" "$(cat "$INSTR" 2>/dev/null)" 'bash ~/bin/bus-send'
+has "and that the first line of a message is the envelope" \
+    "$(cat "$INSTR" 2>/dev/null)" "CLASS subject: heading"
+rm -f "$ROOT/sessions.d/mate-work.conf"
+rc="$(run "$CODEX_ID")"
+has "rewritten every round: with the mate gone the line says none" \
+    "$(cat "$INSTR" 2>/dev/null)" "Sessions on the same project: none"
+hasnt "and the departed mate is not left behind in the file" \
+    "$(cat "$INSTR" 2>/dev/null)" "mate-work"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

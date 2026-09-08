@@ -109,6 +109,24 @@ if [ -n "$BASE_INSTRUCTIONS" ]; then
     "the estate names AGENT_INSTRUCTIONS=$BASE_INSTRUCTIONS but no such file exists at $BASE_INSTRUCTIONS_PATH"
 fi
 
+# ── WHO ELSE WORKS ON THIS PROJECT ─────────────────────────────────────────
+# A session could always write to another one on the bus and was never told
+# there WAS another one, so the fact lived in whichever human remembered it.
+#
+# READ FROM THE REGISTER ON EVERY RUN, NEVER CACHED. This file is rewritten
+# each time the adapter starts, so the list a session reads is the register as
+# it stood at that moment. A stored copy would go stale in exactly the case
+# that matters — a colleague joining the project after this session did.
+#
+# THE LIMIT IS HONEST RATHER THAN HIDDEN: a session that is already running
+# sees a new mate at its NEXT start, because that is when this file is written.
+# Nothing here refreshes a live session.
+#
+# THE HELPER IS SUBSHELLED, so the row this adapter has loaded — REPO_PATH,
+# MODEL, the port it is about to bind — survives the call intact.
+PROJECT_MATES="$(registry_project_mates_line "$NAME")" \
+  || PROJECT_MATES="unknown - the register could not be read back"
+
 cat > "$INSTRUCTIONS_FILE" <<EOF
 You are the OpenCode Steward bootstrap session named $SESSION_NAME.
 Read the memory snapshot supplied in OpenCode instructions before planning work.
@@ -117,6 +135,8 @@ Snapshot: $SNAPSHOT_DIR
 Write durable-memory proposals as separate Markdown files in the configured memory-proposals directory.
 Memory proposals: $PROPOSALS_DIR
 Work only in the current git worktree; never switch another agent's checkout.
+Sessions on the same project: $PROJECT_MATES
+Reach one with: bash ~/bin/bus-send <slug> "CLASS subject: heading" (first line is the envelope; body follows)
 EOF
 chmod 600 "$INSTRUCTIONS_FILE" || refuse 70 "could not secure OpenCode instructions"
 

@@ -284,5 +284,34 @@ check_eq "a binary that is not the row's version is refused" "$pin_rc" 78
 check_file_contains "and the refusal names the row's version" "$fx/pin.err" "1.18.29"
 check_file_contains "and the binary's version" "$fx/pin.err" "1.18.14"
 
+# ── THE INSTRUCTIONS NAME THE OTHER SESSIONS ON THIS PROJECT ───────────────
+# A session could always reach another one on the bus and was never told there
+# WAS another one. The name and the way to reach it belong in the standing
+# instructions, which this adapter rewrites on every run — so the answer is a
+# reading of the register at start time and never a cached list. The second half
+# of this case is the one that matters: the same file, run again with the mate
+# removed, must say so rather than keep yesterday's name.
+write_conf "openai/gpt-5.3-codex" "$memory"
+printf 'TARGET_PROJECT="work"\n' >> "$estate/sessions.d/steward-opencode.conf"
+cat > "$estate/sessions.d/mate-work.conf" <<EOF
+REPO_PATH="$repo"
+OWNER="ben"
+DOMAIN="steward"
+TARGET_PROJECT="work"
+EOF
+run_adapter >/dev/null 2>&1
+check_file_contains "instructions name the session on the same project" \
+  "$instructions_file" "Sessions on the same project: mate-work (ben)"
+check_file_contains "instructions say how to reach it" "$instructions_file" 'bash ~/bin/bus-send'
+check_file_contains "and that the first line of a message is the envelope" \
+  "$instructions_file" "CLASS subject: heading"
+rm -f "$estate/sessions.d/mate-work.conf"
+run_adapter >/dev/null 2>&1
+check_file_contains "re-rendered every run: with the mate gone the line says none" \
+  "$instructions_file" "Sessions on the same project: none"
+if grep -F "mate-work" "$instructions_file" >/dev/null 2>&1; then
+  bad "the departed mate is still named in the rewritten instructions"
+else ok; fi
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

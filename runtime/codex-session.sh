@@ -127,6 +127,19 @@ fi
 LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 [ -n "$LABEL" ] || LABEL="$SESSION_NAME"
 
+# WHO ELSE WORKS ON THIS PROJECT. A session could always write to another one
+# on the bus and was never told there WAS another one, so the fact lived in
+# whichever human remembered it. Read from the register here, on every round,
+# for the same reason the rest of this block is rewritten every round: a stored
+# copy would go stale in exactly the case that matters, a colleague joining the
+# project after this thread was created. A live thread therefore learns of a new
+# mate at its NEXT turn, which is when this file is written.
+#
+# THE HELPER IS SUBSHELLED, so the row this adapter has loaded - ID, REPO_PATH,
+# the inbox it is about to read - survives the call intact.
+PROJECT_MATES="$(registry_project_mates_line "$NAME")" \
+  || PROJECT_MATES="unknown - the register could not be read back"
+
 # The thread's standing instructions. Rewritten every run so a changed row
 # reaches the thread on its next turn; the thread itself is never recreated.
 {
@@ -138,6 +151,9 @@ LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
   printf -- '  so write it as a message, not as a report about a message.\n'
   printf -- '- Secrets never travel on the bus. A pointer to where a key lives is fine;\n'
   printf -- '  the value never is.\n'
+  printf -- '- Sessions on the same project: %s\n' "$PROJECT_MATES"
+  printf -- '- Reach one with: bash ~/bin/bus-send <slug> "CLASS subject: heading"\n'
+  printf -- '  (first line is the envelope; body follows).\n'
 } > "$INSTRUCTIONS_FILE" || refuse 70 "could not write the instructions file"
 
 json_field() { # <file> <field>  -> raw string on stdout
