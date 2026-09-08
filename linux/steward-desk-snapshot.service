@@ -14,12 +14,19 @@
 # command) and a round that must not take its own children with it is the
 # cheaper default.
 #
-# NO ENVIRONMENT LINES. The directory comes from desk/bin/desk-paths, the same
-# bridge the server reads. See steward-desk.service.
+# NO ENVIRONMENT LINE NAMES A DESK PATH. The directory comes from
+# desk/bin/desk-paths, the same bridge the server reads. See
+# steward-desk.service.
+#
+# PATH IS NOT CONFIGURATION, it is how a program is found: a systemd user
+# manager's PATH does not include ~/.local/bin or ~/bin, and this round shells
+# out to jq, to git and to the estate's own liveness command. The server unit
+# carries the same line for the same reason.
 [Unit]
 Description=steward desk snapshot - rebuild the per-principal files
 
 [Service]
 Type=oneshot
 KillMode=process
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/bin/bash %h/scripts/desk/snapshot.sh

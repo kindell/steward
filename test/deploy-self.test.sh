@@ -73,8 +73,17 @@ EOF
 chmod 755 "$FX/bin/sudo"
 printf 'HOST="testhost"\nOWNER="alfa"\nDOMAIN="d"\n' > "$FX/reg/a.conf"
 
+# THE DESK DIRECTORY IS THE HOST'S ANSWER TO "IS THERE A DESK HERE". The
+# producer already honours STEWARD_DESK_DIR as the operator's override, so the
+# deploy's presence check honours the same variable rather than inventing a
+# second opinion - which is also what makes the two cases below measurable
+# without a registry, an estate or a real state directory.
+DESKDIR="$FX/desk"; mkdir -p "$DESKDIR"
+NODESKDIR="$FX/no-such-desk"    # deliberately never created
+
 run() {  # run <hostname answer> <host argument>
   ( export PATH="$FX/bin:$PATH"
+    export STEWARD_DESK_DIR="${STEWARD_DESK_DIR:-}"
     export STEWARD_REGISTRY_DIR="$FX/reg"
     # THE ESTATE IS EXPLICIT IN THE FIXTURE TOO. deploy-self.sh refuses (78)
     # without an estate, by design — so a fixture that omits it measures the
@@ -133,25 +142,42 @@ echo "== the deploy REGENERATES THE DESK, and only after an apply that worked ==
 # writes it: seconds after the rollout, the desk shows the estate the rollout
 # installed. The refresh timer exists for liveness, not for this.
 : > "$FX/steward.calls"
-u="$(SUDO_RC=0 run testhost testhost)"; rc=$?
+u="$(SUDO_RC=0 STEWARD_DESK_DIR="$DESKDIR" run testhost testhost)"; rc=$?
 check "a successful apply still exits 0" [ "$rc" -eq 0 ]
 case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) ok ;; *) bad "the deploy did not regenerate the desk after a successful apply: '$(cat "$FX/steward.calls")'" ;; esac
 
 # A FAILED APPLY MUST NOT PUBLISH A NEW GENERATION. What went onto the disk is
 # then unknown, and a desk regenerated from a half-applied rollout describes an
 # estate that does not exist on that host.
+# WITH THE DESK DIRECTORY PRESENT, so what stops the producer here is the
+# failed apply and not the desk-presence check one line below it.
 : > "$FX/steward.calls"
-u="$(SUDO_RC=1 run testhost testhost)"; rc=$?
+u="$(SUDO_RC=1 STEWARD_DESK_DIR="$DESKDIR" run testhost testhost)"; rc=$?
 case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) bad "the desk was regenerated after an apply that FAILED" ;; *) ok ;; esac
 
 # A SNAPSHOT THAT FAILED IS NOT A CLEAN DEPLOY. The files landed, so the run is
 # not a refusal - but the desk is now describing the previous generation, and a
 # green exit code would hide that until somebody happened to read a page.
 : > "$FX/steward.calls"
-u="$(SUDO_RC=0 STEWARD_STUB_RC=3 run testhost testhost)"; rc=$?
+u="$(SUDO_RC=0 STEWARD_STUB_RC=3 STEWARD_DESK_DIR="$DESKDIR" run testhost testhost)"; rc=$?
 check "apply 0, snapshot 3: rc 70" [ "$rc" -eq 70 ]
 case "$u" in *desk*) ok ;; *) bad "the failure text does not name the desk: $u" ;; esac
 case "$u" in *SUDO-CALL*) ok ;; *) bad "the apply itself never ran, so the case measures the wrong failure: $u" ;; esac
+
+# A HOST WITH NO DESK MUST NOT BE MADE TO TAKE ONE. Every home on every host
+# receives the desk's files and units, and only the hub account ever enables
+# them; the desk directory is created by the first snapshot that account's own
+# timer runs. So on every other account - and on the hub account before the
+# operator has turned the desk on - there is no desk, and a deploy that ran the
+# producer anyway would mint a generation nobody serves, in a directory nobody
+# asked for, and would fail the whole rollout (rc 70) the day the producer
+# refused for a reason that has nothing to do with the rollout.
+: > "$FX/steward.calls"
+u="$(SUDO_RC=0 STEWARD_DESK_DIR="$NODESKDIR" run testhost testhost)"; rc=$?
+check "no desk on this host: a successful apply still exits 0" [ "$rc" -eq 0 ]
+case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) bad "the producer ran on a host with no desk" ;; *) ok ;; esac
+case "$u" in *"no desk on this host"*) ok ;; *) bad "the skip is silent - nothing says why no snapshot was taken: $u" ;; esac
+case "$u" in *"$NODESKDIR"*) ok ;; *) bad "the skip line does not name the directory it looked for: $u" ;; esac
 
 echo "== the stage gets an UNPREDICTABLE name — measured on the BEHAVIOUR =="
 # The old variant looked for the string 'mktemp' on a non-comment line in the

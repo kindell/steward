@@ -150,6 +150,12 @@ REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/install-user-jobs.sh"
 REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/desk/snapshot.sh scripts/desk/serve.mjs"
 REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/desk/bin/desk-paths scripts/desk/bin/principal-for-login"
 REQUIRED_TARGETS="$REQUIRED_TARGETS .config/systemd/user/steward-desk.service .config/systemd/user/steward-desk-snapshot.timer"
+# The rest of the desk fails the same quiet way. A timer whose service is gone
+# fails every five minutes in the journal only; a server without render.mjs
+# cannot import the pages it serves and dies on start; and filter.jq is the
+# security boundary itself - a home running an older one, or none, writes files
+# that carry more than the current rules allow, and nothing downstream notices.
+REQUIRED_TARGETS="$REQUIRED_TARGETS .config/systemd/user/steward-desk-snapshot.service scripts/desk/render.mjs scripts/desk/filter.jq"
 # The producer calls the client for the mcp surface; without scripts/bin/steward
 # in the deployed home, that call fails and the desk's mcp section goes quietly
 # null on every principal.
@@ -193,6 +199,25 @@ done < "$M"
 leaked="${leaked# }"
 [ -z "$leaked" ] && ok || bad "a desk test file is a manifest source: $leaked"
 
+# 8d. THE DESK'S UNITS FIND THEIR OWN PROGRAMS.
+#
+# A systemd user manager's PATH is a short system list; it does not carry
+# ~/.local/bin or ~/bin, which is where a version manager puts a runtime and
+# where this product's own bridges land. The server unit has always carried the
+# PATH line for that reason, and the producer unit needs it just as much: the
+# round shells out to jq, to git and to the estate's liveness command, and a
+# producer that cannot find one of them writes a snapshot that says the whole
+# fleet is unknown - on a timer, every five minutes, into the journal only.
+# This is how a program is FOUND, not configuration: nothing here names a
+# directory the desk owns.
+for unit in steward-desk.service steward-desk-snapshot.service; do
+  if grep -q '^Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin$' "$here/linux/$unit"; then
+    ok
+  else
+    bad "linux/$unit carries no Environment=PATH line - the round cannot find its own programs"
+  fi
+done
+
 # 9. THE TOOLS ARE NEVER PART OF WHAT THEY WRITE.
 #
 # The hub's same-machine check protects the hub from becoming a victim of its own
@@ -203,6 +228,11 @@ leaked="${leaked# }"
 # The hub's entry point is ESTATE code and is named by the estate, not here.
 # It joins the list when STEWARD_HUB_ENTRY points at it; the product's own four
 # are always checked.
+# bin/steward IS NOT IN THIS LIST, and the difference is the one the check is
+# about: deploy-self.sh runs it from $PRODUCT after the apply has finished,
+# while the manifest carries it to scripts/bin/steward - a different path, in a
+# home, never the file the running deploy is reading - so no rollout can
+# overwrite the copy its own run depends on, which is the class forbidden here.
 TOOLS="lib/deploy-core.sh linux/deploy-self.sh linux/deploy-apply.sh linux/deploy-manifest"
 [ -n "${STEWARD_HUB_ENTRY:-}" ] && TOOLS="$STEWARD_HUB_ENTRY $TOOLS"
 for t in $TOOLS; do

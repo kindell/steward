@@ -191,14 +191,41 @@ esac
 # the desk is now serving the PREVIOUS generation while claiming to be current,
 # and a green exit code hides that until somebody happens to read a page. Rc 70
 # says: the rollout happened, the view of it did not.
+#
+# ONLY ON A HOST THAT HAS A DESK. Every home on every host gets the desk's
+# files and its unit files; only ONE account per host ever enables them, and
+# the desk directory comes into being when that account's first enabled round
+# runs. So on every other account, and on the hub account before the operator
+# has turned the desk on, the directory is simply not there - and a deploy that
+# ran the producer anyway would create a desk nobody serves and, worse, could
+# fail the whole rollout with rc 70 for a producer fault that has nothing to do
+# with what was rolled out. The directory existing is the host saying yes; from
+# then on every deploy refreshes it, and a withdrawal lands in seconds.
+#
+# THE DIRECTORY IS ASKED FOR THE WAY THE PRODUCER ASKS FOR IT: the operator's
+# STEWARD_DESK_DIR first, otherwise the product's own desk/bin/desk-paths. The
+# product's bridge and not a deployed home's, because it is the product's
+# snapshot.sh that the line below runs, and that script resolves the bridge
+# beside itself - a check reading any other copy would be answering about a
+# directory this run is not going to write.
 if [ "$rc" -eq 0 ]; then
-  # bin/steward is a manifest source now (linux/deploy-manifest), so the
-  # cleanliness/provenance gate above already covers the file this line runs.
-  bash "$PRODUCT/bin/steward" desk snapshot
-  snap_rc=$?
-  if [ "$snap_rc" -ne 0 ]; then
-    echo "deploy-self: desk snapshot failed (rc $snap_rc) - the desk shows the previous generation until the timer runs" >&2
-    rc=70
+  desk_dir="${STEWARD_DESK_DIR:-}"
+  if [ -z "$desk_dir" ] && [ -x "$PRODUCT/desk/bin/desk-paths" ]; then
+    desk_dir="$("$PRODUCT/desk/bin/desk-paths" 2>/dev/null | sed -n 's/^dir=//p')"
+  fi
+  if [ -n "$desk_dir" ] && [ -d "$desk_dir" ]; then
+    # bin/steward is a manifest source now (linux/deploy-manifest), so the
+    # cleanliness/provenance gate above already covers the file this line runs.
+    bash "$PRODUCT/bin/steward" desk snapshot
+    snap_rc=$?
+    if [ "$snap_rc" -ne 0 ]; then
+      echo "deploy-self: desk snapshot failed (rc $snap_rc) - the desk shows the previous generation until the timer runs" >&2
+      rc=70
+    fi
+  elif [ -n "$desk_dir" ]; then
+    echo "deploy-self: no desk on this host (no $desk_dir) - snapshot skipped"
+  else
+    echo "deploy-self: no desk on this host (the desk directory could not be resolved) - snapshot skipped"
   fi
 fi
 exit "$rc"

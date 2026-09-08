@@ -125,8 +125,14 @@ watch/bin/restart-session.sh     scripts/watch/bin/restart-session.sh 755  scrip
 # the one process here that a network reaches, and it runs from the deployed
 # home like everything else a unit starts - the unit's ExecStart names
 # %h/scripts/desk/serve.mjs, so a home without these two files has a service
-# that fails to start on every boot. package.json travels with them because it
-# is what makes the directory an ES-module package for the runtime.
+# that fails to start on every boot.
+#
+# NO package.json ROW. A .mjs file is an ES module by its extension, so nothing
+# in a deployed home needs one to load these two: the desk directory holds no
+# .js file for a `type` field to speak for, and the only other thing the file
+# carries is a test script naming desk/test, which this manifest deliberately
+# does not deploy. The row shipped a file with no reader in the home it landed
+# in - measured 2026-09-08.
 #
 # THE BRIDGES ARE 755 BECAUSE THEY ARE SPAWNED, not sourced. desk-paths answers
 # "where does the desk live" for both languages, and principal-for-login is the
@@ -143,13 +149,17 @@ watch/bin/restart-session.sh     scripts/watch/bin/restart-session.sh 755  scrip
 # call fails, the RAW document falls back to its default, and nothing marks
 # the page as degraded. It resolves lib/ and desk/ relative to its own parent,
 # so the deployed layout (scripts/bin/steward beside scripts/lib and
-# scripts/desk) is the layout it already expects.
+# scripts/desk) is the layout it already expects. This is the FIRST row that
+# puts the command-line client into other people's homes, and it grants nobody
+# anything: the client reads the registry and spawns as whoever invokes it, so
+# a home that now holds it can do exactly what that account could already do
+# by other means - what the row buys is that the producer's `steward mcp
+# surface` call resolves instead of failing silently.
 bin/steward                      scripts/bin/steward                  755  scripts
 desk/snapshot.sh                 scripts/desk/snapshot.sh             755  scripts
 desk/filter.jq                   scripts/desk/filter.jq               644  scripts
 desk/serve.mjs                   scripts/desk/serve.mjs               644  scripts
 desk/render.mjs                  scripts/desk/render.mjs              644  scripts
-desk/package.json                scripts/desk/package.json            644  scripts
 desk/SCHEMA.md                   scripts/desk/SCHEMA.md               644  scripts
 desk/bin/desk-paths              scripts/desk/bin/desk-paths          755  scripts
 desk/bin/principal-for-login     scripts/desk/bin/principal-for-login 755  scripts

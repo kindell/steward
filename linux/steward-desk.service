@@ -8,8 +8,9 @@
 # would fight it). This unit owns something itself: the listening socket. There
 # is no other process to hand it to and no round that could re-check it, so a
 # server that died must come back, which is what Restart=on-failure is for.
-# RestartSec keeps a server that refuses its configuration (rc 64, rc 78) from
-# spinning the journal while it does so.
+# RestartSec keeps a server that refuses its configuration (rc 78) from
+# spinning the journal while it does so - rc 64 is excluded from restart
+# altogether, further down.
 #
 # NO STEWARD_DESK_DIR, NO STEWARD_DESK_SOCK. Both default to what
 # desk/bin/desk-paths prints, which reads the estate's own STATE_DIR_NAME - the
