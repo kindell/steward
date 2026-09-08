@@ -43,6 +43,33 @@ conf far-b    operator-b  entity-two  host-two  'RC_LABEL="D"'
 conf machine  operator-c  entity-mac  host-one  'RC_LABEL=""'
 conf machine2 operator-c  entity-mac  host-two  'RC_LABEL=""'
 
+# PRINCIPAL FIXTURES: accounts.d rows and the session rows that name them, for
+# the cases below where the gate must compare the PERSON, not the account.
+mkdir -p "$FX/accounts.d" "$FX/entities.d"
+export STEWARD_ACCOUNT_DIR="$FX/accounts.d"
+export STEWARD_ENTITY_DIR="$FX/entities.d"
+
+acct() { # <slug> <principal> <username> <host>
+  printf 'PRINCIPAL="%s"\nUSERNAME="%s"\nHOST="%s"\n' "$2" "$3" "$4" > "$FX/accounts.d/$1.conf"
+}
+
+# One person, two accounts: alice runs one session under her own name and one
+# under the steward account, both on host-a.
+acct acct-sa alice  steward host-a
+acct acct-al alice  alice   host-a
+# The same unix account, bob, naming two DIFFERENT principals - not a real
+# shape, but the gate must not open on OWNER alone any more.
+acct acct-ba alice  bob     host-a
+acct acct-bb bob    bob     host-a
+
+printf 'OWNER="steward"\nACCOUNT="acct-sa"\nDOMAIN="entity-one"\nHOST="host-a"\nRC_LABEL="P1"\n'   > "$FX/reg/stewa.conf"
+printf 'OWNER="alice"\nACCOUNT="acct-al"\nDOMAIN="entity-two"\nHOST="host-a"\nRC_LABEL="P2"\n'     > "$FX/reg/alicer.conf"
+printf 'OWNER="bob"\nACCOUNT="acct-ba"\nDOMAIN="entity-three"\nHOST="host-a"\nRC_LABEL="P3"\n'     > "$FX/reg/samea.conf"
+printf 'OWNER="bob"\nACCOUNT="acct-bb"\nDOMAIN="entity-four"\nHOST="host-a"\nRC_LABEL="P4"\n'      > "$FX/reg/sameb.conf"
+printf 'OWNER="steward"\nACCOUNT="ghost"\nDOMAIN="entity-one"\nHOST="host-a"\nRC_LABEL="P5"\n'     > "$FX/reg/ghostrow.conf"
+printf 'OWNER="bob"\nDOMAIN="entity-five"\nHOST="host-a"\nVISIBLE_TO="grp"\nRC_LABEL="P6"\n'       > "$FX/reg/grptarget.conf"
+printf 'OWNER="steward"\nACCOUNT="acct-sa"\nDOMAIN="entity-six"\nHOST="host-a"\nRC_LABEL="P7"\n'   > "$FX/reg/askerrow.conf"
+
 export STEWARD_REGISTRY_DIR="$FX/reg"
 # shellcheck source=/dev/null
 source "$here/linux/hub/lib.sh"
@@ -65,6 +92,32 @@ refused work-a far-b     "different owner and entity: refused"
 refused work-a machine2  "machine session on another host: refused"
 refused work-a nosuch    "recipient with no conf: refused"
 refused ""     work-b    "empty sender: refused"
+
+echo "FRAGA gate - the principal, not the account"
+# CASE 1: different unix accounts, one PRINCIPAL - allowed. Before this change
+# the gate compared OWNER directly (steward != alice) and refused this pair.
+allowed stewa alicer "same principal across different accounts: allowed"
+
+# CASE 2: the SAME unix account naming two DIFFERENT principals, with
+# different domains too - refused. The gate must not open on OWNER alone.
+refused samea sameb "same owner, different principals, different domains: refused"
+
+# CASE 3: a row naming an ACCOUNT that does not load is a row this hub cannot
+# vouch for - refused, and nothing on the gate's own stderr. The account
+# loader's own explanation is written for the ones who can see it (the peer
+# link, where the sender reads it); here the asker gets only the gate's
+# refusal, and a row this hub cannot vouch for opens nothing.
+err="$(bus_fraga_tillatet ghostrow stewa 2>&1 >/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] && ok "a row naming an account that does not load: refused" \
+  || bad "a row naming an account that does not load: refused" "allowed ghostrow -> stewa"
+[ -z "$err" ] && ok "...and the gate itself wrote nothing to stderr" \
+  || bad "...and the gate itself wrote nothing to stderr" "$err"
+
+# CASE 4: the group grant's MEMBERS names PRINCIPALS, never accounts.
+printf 'NAME="Group"\nMEMBERS="alice"\n' > "$FX/entities.d/grp.conf"
+allowed askerrow grptarget "group grant: asker's principal is a member: allowed"
+printf 'NAME="Group"\nMEMBERS="steward"\n' > "$FX/entities.d/grp.conf"
+refused askerrow grptarget "group grant: MEMBERS names principals, not accounts: refused"
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"

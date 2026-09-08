@@ -268,8 +268,18 @@ bus_fraga_tillatet() {
   local from_="${1:-}" to_="${2:-}"
   [ -n "$from_" ] && [ -n "$to_" ] || return 1
   local fo ft do_ dt
-  fo="$(bus_fraga_falt "$from_" OWNER)"  || return 1
-  ft="$(bus_fraga_falt "$to_" OWNER)"  || return 1
+  # THE ASKER AND THE ASKED ARE COMPARED AS PEOPLE, not as unix accounts: a
+  # person may run one session under their own account and another under a
+  # machine's steward account, and the two must answer the same way this
+  # gate's sibling, the hub peer link, already answers them (bus_recipient_
+  # principal). 2>/dev/null on purpose: bus_recipient_principal's own stderr
+  # is written for a caller who can show it to the sender (the link); here
+  # the asker only ever sees this gate's own refusal, and a row this hub
+  # cannot vouch for (rc 65 ambiguous, rc 78 broken or unvouched) opens
+  # nothing, exactly like rc 1 (no such row) - refusal-as-default does not
+  # distinguish the reasons, only the caller of the gate does that.
+  fo="$(bus_recipient_principal "$from_" 2>/dev/null)" || return 1
+  ft="$(bus_recipient_principal "$to_" 2>/dev/null)"  || return 1
   do_="$(bus_fraga_falt "$from_" DOMAIN)" || return 1
   dt="$(bus_fraga_falt "$to_" DOMAIN)" || return 1
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
@@ -285,11 +295,15 @@ bus_fraga_tillatet() {
   # client therefore cannot offer an `ask` this gate then refuses. It was false
   # in both directions. A later fix claimed instead that only the group grant
   # is shared and counted three divergences — that missed that the owner path
-  # above (fo = ft) is the same test as the visibility rule's "viewer = OWNER"
-  # under the mapping the rest of this comment already uses (the asker's owner
+  # above (fo = ft) is the same test as the visibility rule's "viewer = PRINCIPAL"
+  # under the mapping the rest of this comment already uses (the asker's principal
   # := the viewer), same outcome including under `private` — and it missed a
   # fourth divergence. Measured 2026-08-28 by running session_visible_to and
   # this function over one fixture registry:
+  #
+  # 2026-09-08: fo/ft are the principals now, through bus_recipient_principal;
+  # a row with no ACCOUNT still yields its OWNER, so every legacy fixture
+  # answers as before.
   #
   #   target OWNER=b DOMAIN=cust, cust MANAGED_BY=mgr, mgr MEMBERS=a
   #     visibility rule: VISIBLE     this gate: refused
@@ -370,6 +384,10 @@ bus_fraga_tillatet() {
     # A SUBSHELL, the pattern the visibility rule uses and documents: the load
     # sets ENTITY_* globals, and letting those escape into a caller that is
     # mid-decision answers the next question with the previous entity's members.
+    #
+    # $fo IS THE ASKER'S PRINCIPAL HERE, not an account: MEMBERS names people,
+    # which was the intent all along, and comparing it against an account name
+    # would refuse the very case the group grant exists for.
     if ( registry_entity_load "$g" >/dev/null 2>&1 || exit 1
          case " ${ENTITY_MEMBERS:-} " in *" $fo "*) exit 0 ;; *) exit 1 ;; esac ); then
       return 0
