@@ -35,8 +35,14 @@ export function serializeCookie(name, value, { maxAge }) {
 
 const b64u = (buf) => Buffer.from(buf).toString('base64url');
 
-function mac(key, data) {
-  return b64u(createHmac('sha256', key).update(data).digest());
+// ONE KEY, TWO PURPOSES, AND THE MAC SAYS WHICH. The session cookie and the
+// state cookie are signed under the same host key, so without a label a value
+// minted for one would verify as the other - and a state body is chosen in
+// part by the flow, while a session body is a principal slug. The label is
+// part of the MAC input, never of the cookie, so nothing on the wire changes
+// and a value from the wrong purpose simply fails the mac.
+function mac(key, label, body) {
+  return b64u(createHmac('sha256', key).update(label + ' ' + body).digest());
 }
 
 function macEquals(a, b) {
@@ -56,7 +62,7 @@ export function loadSessionKey(path) {
 
 export function mintSession(key, principal, issuedAt) {
   const body = principal + '.' + issuedAt;
-  return body + '.' + mac(key, body);
+  return body + '.' + mac(key, 'session', body);
 }
 
 export function verifySession(key, value, now, maxAgeSec = 43200) {
@@ -64,7 +70,7 @@ export function verifySession(key, value, now, maxAgeSec = 43200) {
   if (parts.length !== 3) return null;
   const [principal, issuedRaw, sig] = parts;
   if (!SLUG_RE.test(principal) || !/^[0-9]+$/.test(issuedRaw)) return null;
-  if (!macEquals(sig, mac(key, principal + '.' + issuedRaw))) return null;
+  if (!macEquals(sig, mac(key, 'session', principal + '.' + issuedRaw))) return null;
   const age = now - Number(issuedRaw);
   if (age < 0 || age > maxAgeSec) return null;
   return principal;
@@ -72,14 +78,14 @@ export function verifySession(key, value, now, maxAgeSec = 43200) {
 
 export function mintState(key, fields) {
   const body = b64u(JSON.stringify(fields));
-  return body + '.' + mac(key, body);
+  return body + '.' + mac(key, 'state', body);
 }
 
 export function verifyState(key, value, now, maxAgeSec = 600) {
   const parts = String(value || '').split('.');
   if (parts.length !== 2) return null;
   const [body, sig] = parts;
-  if (!macEquals(sig, mac(key, body))) return null;
+  if (!macEquals(sig, mac(key, 'state', body))) return null;
   let fields;
   try { fields = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return null; }
   if (!fields || typeof fields.issuedAt !== 'number') return null;

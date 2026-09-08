@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHmac } from 'node:crypto';
 import { parseCookies, serializeCookie, loadSessionKey, mintSession, verifySession, mintState, verifyState } from '../cookie.mjs';
 
 const KEY = Buffer.from('0123456789abcdef0123456789abcdef');
@@ -43,6 +44,22 @@ test('a state cookie carries its fields and expires in ten minutes', () => {
   assert.equal(verifyState(KEY, v, 5601), null);
   assert.equal(verifyState(OTHER, v, 5100), null);
   assert.equal(verifyState(KEY, v.slice(0, -2) + 'xx', 5100), null);
+});
+
+test('a session and a state are not each other, even under the same key', () => {
+  // Both cookies are signed under the one host key, so the MAC input carries
+  // a label. Without it a body that parses as the other shape would verify.
+  const session = mintSession(KEY, 'alice', 1000);
+  assert.equal(verifyState(KEY, session.split('.').slice(1).join('.'), 1000), null);
+  const state = mintState(KEY, { state: 's1', nonce: 'n1', verifier: 'v1', provider: 'stub', issuedAt: 1000 });
+  assert.equal(verifySession(KEY, state, 1000), null);
+  // And the label is what does it: a MAC over the same body under the wrong
+  // label - or under no label, the way it was signed before - is refused.
+  const rawMac = (data) => createHmac('sha256', KEY).update(data).digest('base64url');
+  assert.equal(verifySession(KEY, 'alice.1000.' + rawMac('alice.1000'), 1000), null);
+  const stateBody = state.split('.')[0];
+  assert.equal(verifyState(KEY, stateBody + '.' + rawMac('session ' + stateBody), 1000), null);
+  assert.equal(verifyState(KEY, stateBody + '.' + rawMac('state ' + stateBody), 1000).provider, 'stub');
 });
 
 test('loadSessionKey insists on a private, long enough file', () => {
