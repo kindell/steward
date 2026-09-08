@@ -166,6 +166,18 @@ document already applies to `entities[]` and `projects[]`; it is the entity
 rule applied to an asset's source, not a second copy of the axis policy, and it
 can only ever narrow the table, never widen it.
 
+**One entry per asset here, and `source` is a source the reader can see.** More
+than one level may grant the same asset - a managing team and the client it
+manages both declaring it is ordinary - so `steward mcp surface` carries one
+row per GRANT, closest level first. The rule above is applied to each of those
+rows and the survivors are deduplicated by `id` afterwards, so this array
+carries each asset once, attributed to the nearest granting level that is
+visible to this viewer. Deduplicating first is what made the promise above
+false: the asset was named after the manager alone, and a member of the managed
+client - not a member of its manager - lost what their own entity had granted
+them. An asset every granting level withholds from this viewer is still absent,
+which is the rule doing its job.
+
 **Decided 2026-09-08, reversed 2026-09-08.** For one branch the whole array was
 an owner field, on the argument that two rules for one question is how a
 renderer drifts from the gate. That argument was for MOVING the axis rule out

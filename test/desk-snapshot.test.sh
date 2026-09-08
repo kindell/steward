@@ -356,6 +356,57 @@ is  "b's project asset source is work only - other is dropped" \
 is  "a (readAll) still sees the other-project asset" \
     "$(printf '%s' "$out4a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.source)|sort|join(" ")')" \
      "other team work"
+
+echo "== filter.jq: an asset two levels granted reaches the level the viewer sees =="
+# THE FINDING. The surface used to name an asset after the level that granted
+# it FIRST - the managing team, which is furthest from the session. A member of
+# the managed CLIENT is not a member of its manager, so the asset their own
+# entity had explicitly granted them was dropped: SCHEMA.md promises "anyone
+# the granting entity is visible to", and the manager was not the only granting
+# entity. Now every granting level has a row, the rule decides each one, and
+# the survivors are deduplicated by id afterwards.
+#
+# THE FIXTURE IS THE SHAPE THAT BREAKS: viewer `d` is a member of the CLIENT
+# only, and `shared` is declared on both the manager and the client.
+cat > "$T/raw5.json" <<'EOF'
+{"host":"h","generatedAt":"g","registryRevision":"r",
+ "principals":[{"id":"a","name":"A","readAll":false},{"id":"d","name":"D","readAll":false}],
+ "entities":[{"id":"mgr","name":"Mgr","managedBy":null,"members":["a"]},
+             {"id":"client","name":"Client","managedBy":"mgr","members":["d"]}],
+ "projects":[],
+ "sessions":[{"id":"s1","slug":"work-a","label":"Work A","owner":"a","domain":"client","project":null,
+               "runtime":"claude-code","host":"h","repo":"repo","sight":{"d":"member","a":"owner"},
+               "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
+               "mcp":[{"id":"shared","name":"shared","axis":"entity","source":"mgr"},
+                      {"id":"shared","name":"shared","axis":"entity","source":"client"},
+                      {"id":"mgr-only","name":"mgr-only","axis":"entity","source":"mgr"}]}]}
+EOF
+out5d="$(jq --arg viewer d --argjson readAll false --argjson memberOf '["client"]' \
+            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
+            -f "$here/desk/filter.jq" "$T/raw5.json")"
+is  "the asset the viewer's own entity granted is present" \
+    "$(printf '%s' "$out5d" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.id)|join(" ")')" \
+    "shared"
+is  "and it is attributed to the source the viewer can see" \
+    "$(printf '%s' "$out5d" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp[]|select(.id=="shared")|.source')" \
+    "client"
+is  "one entry per asset survives the dedup" \
+    "$(printf '%s' "$out5d" | jq '.sessions[]|select(.slug=="work-a")|.mcp|length')" "1"
+# AND THE RULE STILL DENIES. `mgr-only` is granted by the manager alone, and a
+# member of the managed client is not a member of the manager.
+is  "an asset only the invisible level granted is still dropped" \
+    "$(printf '%s' "$out5d" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(select(.id=="mgr-only"))|length')" \
+    "0"
+# THE MANAGER'S OWN MEMBER STILL GETS THE CLOSEST-FIRST ATTRIBUTION: `a` is a
+# member of mgr and not of client, so the manager row is the one that survives.
+out5a="$(jq --arg viewer a --argjson readAll false --argjson memberOf '["mgr"]' \
+            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
+            -f "$here/desk/filter.jq" "$T/raw5.json")"
+is  "the owner keeps the first row that survives, in collection order" \
+    "$(printf '%s' "$out5a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.id+"@"+.source)|join(" ")')" \
+    "shared@mgr mgr-only@mgr"
 for sentinel in SENTINEL_MAIL SENTINEL_LIVE SENTINEL_CMD; do
   is "extra field $sentinel is absent for both levels" \
     "$(printf '%s\n%s' "$out4a" "$out4b" | grep -Fc "$sentinel")" 0

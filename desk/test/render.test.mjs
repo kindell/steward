@@ -94,6 +94,32 @@ test('unknown ids are null, not a page', () => {
   assert.equal(pageProject(snap, 'x'), null);
 });
 
+// A LINK PROMISES A PAGE. The session row carries `domain` and `project` as
+// its own fields, while the DESCRIPTORS in entities[]/projects[] are filtered
+// on their own rule - so an explicit-grant view sees a colleague's session and
+// none of the org around it. Linking regardless produced 404s on exactly the
+// views the withholding exists for. The name is still shown; only the promise
+// is dropped.
+test('a session names a withheld team or project without linking to it', () => {
+  const withheld = {
+    ...snap,
+    entities: [],
+    projects: [],
+    sessions: [snap.sessions[0]]
+  };
+  const h = pageSession(withheld, 's-1');
+  assert.ok(h.includes('team'), 'the team name is still shown');
+  assert.ok(h.includes('work'), 'the project name is still shown');
+  assert.ok(!h.includes('/desk/team/team'), 'but there is no link to the withheld team');
+  assert.ok(!h.includes('/desk/project/work'), 'nor to the withheld project');
+});
+
+test('a session still links a team and project the viewer can see', () => {
+  const h = pageSession(snap, 's-1');
+  assert.ok(h.includes('/desk/team/team'));
+  assert.ok(h.includes('/desk/project/work'));
+});
+
 test('the session page names axis, never a command', () => {
   const h = pageSession(snap, 's-1');
   assert.ok(h.includes('entity'));

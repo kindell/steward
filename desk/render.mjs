@@ -399,8 +399,20 @@ export function pageSession(snap, id) {
     row('handle', orNone(s.slug)),
     row('label', orNone(s.label)),
     row('owner', orNone(s.owner) + (s.mine ? ' (you)' : '')),
-    rawRow('team', s.domain ? link('team', s.domain, s.domain) : h(NONE)),
-    rawRow('project', s.project ? link('project', s.project, s.project) : h(NONE)),
+    // A LINK IS A PROMISE THAT THE PAGE EXISTS. A session's `domain` and
+    // `project` are the row's own fields and travel with it; the DESCRIPTORS
+    // in entities[]/projects[] are filtered separately and are deliberately
+    // withheld when the viewer may not see the node. Linking regardless
+    // produced a page of 404s on exactly the views the withholding is for -
+    // an explicit grant, where the viewer sees a colleague's session and none
+    // of the org around it. The name is still shown, because the row already
+    // carries it; only the promise is dropped.
+    rawRow('team', s.domain
+      ? (v.entities.some((e) => e.id === s.domain) ? link('team', s.domain, s.domain) : h(s.domain))
+      : h(NONE)),
+    rawRow('project', s.project
+      ? (v.projects.some((p) => p.id === s.project) ? link('project', s.project, s.project) : h(s.project))
+      : h(NONE)),
     row('runtime', orNone(s.runtime)),
     row('host', orNone(s.host)),
     row('repository', orNone(s.repo)),

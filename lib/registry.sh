@@ -1149,20 +1149,40 @@ registry_session_mcp_assets() {
 
 # registry_session_mcp_surface <sid> — the same walk as
 # registry_session_mcp_assets, but prints `name<TAB>axis<TAB>source` rows (axis
-# is one of account, entity, project; source = the granting row's own slug) instead of
-# the bare asset list — one row per asset in the granted set, naming the axis
-# it CAME IN ON. Same rc contract, same four levels, same
-# first-collected-wins precedence as _MCP_OUT — it is the SAME collector run
-# with a flag set, not a second walk that could drift from the first.
+# is one of account, entity, project; source = the granting row's own slug)
+# instead of the bare asset list. Same rc contract, same four levels — it is
+# the SAME collector run with a flag set, not a second walk that could drift.
+#
+# ONE ROW PER GRANT, NOT PER ASSET, AND THAT IS THE DIFFERENCE FROM _MCP_OUT.
+# The asset LIST is deduplicated: a server named by two levels is one server to
+# spawn, and a second entry would be a duplicate key in the rendered document.
+# The SURFACE is a different question - who handed this session this asset -
+# and it has more than one honest answer, so every level that granted the slug
+# gets a row, closest level first.
+#
+# WHY IT CANNOT KEEP ONLY THE FIRST. The desk hands each row to a viewer rule
+# that asks whether the SOURCE is visible to the reader. An asset declared on
+# both a managing team and the entity it manages was attributed to the manager
+# alone, so a member of the managed entity - who is not a member of its manager
+# - lost an asset their OWN entity had explicitly granted them. The attribution
+# is decided here, so the fix belongs here; the reader picks the row it can
+# see, and deduplicates after it has chosen (desk/filter.jq).
 registry_session_mcp_surface() { _REGISTRY_MCP_WANT=surface registry_session_mcp_assets "$@"; }
 
 # _registry_mcp_collect <assets-string> <axis> <source> — appends the string's
-# words to the accumulator (_MCP_OUT), skipping any slug already collected,
-# and appends one `word<TAB>axis<TAB>source` row to _MCP_SURFACE for each word
-# newly collected — the same first-collected-wins gate _MCP_OUT uses, so every
-# id that reaches _MCP_OUT has exactly one row in _MCP_SURFACE naming the axis
-# it was FIRST granted on (the level closest to the session), and one already
-# seen at an earlier, closer level is not re-attributed to a farther one.
+# words to the SET (_MCP_OUT), skipping any slug already collected, and appends
+# a `word<TAB>axis<TAB>source` row to _MCP_SURFACE for EVERY word, collected or
+# not.
+#
+# THE TWO ACCUMULATORS ANSWER TWO QUESTIONS, so they dedup differently. _MCP_OUT
+# answers "what does this session run" - one server per slug, named at the level
+# closest to the session, because a duplicate key in a rendered document is a
+# silent last-writer-wins. _MCP_SURFACE answers "who granted this" - and when a
+# managing team and the entity it manages both declare the same asset, both DID,
+# and a reader that can only see one of them must still be able to find its own.
+# Rows keep collection order, so the closest granting level is first and a
+# consumer that wants one answer takes the first row it accepts.
+#
 # axis/source are ignored when a caller omits them. Called only from inside
 # registry_session_mcp_assets' subshell, which owns both globals.
 #
@@ -1174,10 +1194,13 @@ _registry_mcp_collect() {
   _registry_words "${1:-}"
   local w
   for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    # THE SURFACE ROW IS WRITTEN FIRST AND UNCONDITIONALLY - a repeat grant is
+    # a second true statement about who handed this session the asset, and the
+    # set below is what dedups.
+    _MCP_SURFACE="$_MCP_SURFACE$w"$'\t'"$_axis"$'\t'"$_source"$'\n'
     case " $_MCP_SEEN " in *" $w "*) continue ;; esac
     _MCP_SEEN="$_MCP_SEEN $w"
     _MCP_OUT="$_MCP_OUT$w"$'\n'
-    _MCP_SURFACE="$_MCP_SURFACE$w"$'\t'"$_axis"$'\t'"$_source"$'\n'
   done
 }
 

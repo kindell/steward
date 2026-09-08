@@ -41,13 +41,15 @@ def isVisibleEntity($id; $managerOf):
 # entities[] and projects[] use two rules below, not a second copy of the axis
 # policy - and it can only ever narrow the axis table, never widen it.
 #
-# THE `source` READ HERE IS ONE HOP, NOT THE WHOLE CHAIN THAT GRANTED IT.
-# registry_session_mcp_surface attributes an entity-axis asset to the level it
-# found it at, so an asset declared on BOTH a manager and the entity it manages
-# arrives named after the manager alone; a member of the managed entity is then
-# not a member of the source and the asset is dropped. That only ever DENIES.
-# Worth fixing in the surface, where the attribution is decided; nothing here
-# can, because the second granting level never reaches this file.
+# THE SURFACE CARRIES ONE ROW PER GRANT, AND THE DEDUP HAPPENS AFTER THIS.
+# It used to carry one row per asset, named after the level that granted it
+# first - so an asset declared on BOTH a managing team and the entity it
+# manages arrived named after the manager alone, and a member of the managed
+# entity, who is not a member of its manager, lost an asset their own entity
+# had explicitly granted them. SCHEMA.md promises the opposite. Now every
+# granting level has its own row, this rule decides each one, and the survivors
+# are deduplicated below by id - so a viewer keeps the closest source they can
+# actually see, and the document still carries one entry per asset.
 def keepAsset($sight; $own; $parentOf; $managerOf):
   # THE AXIS IS BOUND BEFORE THE LOOKUP. `index(.axis)` reads `.` as the axis
   # ARRAY the pipe just handed it, not as this asset - jq raises "cannot index
@@ -68,7 +70,11 @@ def keepAsset($sight; $own; $parentOf; $managerOf):
     | .mine = (.owner == $viewer)
     | .sight as $sight
     | .mine as $own
-    | .mcp = [(.mcp // [])[] | select(keepAsset($sight; $own; $parentOf; $managerOf))]
+    # DEDUP AFTER THE RULE, NEVER BEFORE IT. `group_by` sorts, which would
+    # lose the closest-first order the surface emits, so the first surviving
+    # row per id is picked by walking the list once and keeping what is new.
+    | .mcp = ([(.mcp // [])[] | select(keepAsset($sight; $own; $parentOf; $managerOf))]
+              | reduce .[] as $a ([]; if any(.[]; .id == $a.id) then . else . + [$a] end))
     | projectFields((if .sight == "owner" then $ownerFields else $memberFields end) | map(split(".")))
   ] as $sessions
 | {schemaVersion: 1, host, generatedAt, registryRevision,
