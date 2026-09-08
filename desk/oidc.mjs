@@ -118,25 +118,31 @@ export async function exchangeCode(provider, doc, { code, verifier, redirectUri 
 
 const jwksCache = new Map(); // slug + '::' + jwks_uri -> { keys: Map<kid, KeyObject>, at }
 
+// A cache younger than this is trusted even on an unknown kid: an unknown
+// kid this soon after the last fetch is a bad token, not a rotation, and
+// refetching on every bad kid would let a single forged token drive
+// unlimited JWKS requests.
+const JWKS_MIN_REFRESH_MS = 60000;
+
 async function jwksFor(provider, doc, kid, fetchImpl) {
   const cacheKey = provider.slug + '::' + doc.jwks_uri;
-  let entry = jwksCache.get(cacheKey);
-  if (!entry || !entry.keys.has(kid)) {
-    // Refresh once on an unknown kid (rotation), never more: a second miss is
-    // a token this provider did not sign, not a cache that is behind.
-    const res = await timedFetch(fetchImpl, doc.jwks_uri, { headers: { accept: 'application/json' } });
-    if (!res.ok) throw new Error('jwks for ' + provider.slug + ' answered ' + res.status);
-    const body = await res.json();
-    const keys = new Map();
-    for (const k of (body.keys || [])) {
-      if (k.kty !== 'RSA' || !k.kid) continue;
-      if (k.use && k.use !== 'sig') continue;
-      keys.set(k.kid, createPublicKey({ key: k, format: 'jwk' }));
-    }
-    entry = { keys, at: Date.now() };
-    jwksCache.set(cacheKey, entry);
+  const entry = jwksCache.get(cacheKey);
+  const stale = !entry || (!entry.keys.has(kid) && Date.now() - entry.at >= JWKS_MIN_REFRESH_MS);
+  if (!stale) return entry.keys.get(kid) || null;
+  // Refresh on a cache miss, or on an unknown kid once the cache is at
+  // least a minute old (rotation) - at most once per verification either way.
+  const res = await timedFetch(fetchImpl, doc.jwks_uri, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error('jwks for ' + provider.slug + ' answered ' + res.status);
+  const body = await res.json();
+  const keys = new Map();
+  for (const k of (body.keys || [])) {
+    if (k.kty !== 'RSA' || !k.kid) continue;
+    if (k.use && k.use !== 'sig') continue;
+    keys.set(k.kid, createPublicKey({ key: k, format: 'jwk' }));
   }
-  return entry.keys.get(kid) || null;
+  const fresh = { keys, at: Date.now() };
+  jwksCache.set(cacheKey, fresh);
+  return fresh.keys.get(kid) || null;
 }
 
 const fromB64u = (s) => Buffer.from(s, 'base64url');
@@ -150,9 +156,19 @@ export async function verifyIdToken(provider, doc, token, { nonce, now = Math.fl
     header = JSON.parse(fromB64u(parts[0]).toString('utf8'));
     claims = JSON.parse(fromB64u(parts[1]).toString('utf8'));
   } catch { refuse('malformed'); }
-  if (!header || header.alg !== 'RS256') refuse('alg');
+  if (!header || typeof header !== 'object') refuse('malformed');
+  if (!claims || typeof claims !== 'object') refuse('malformed');
+  if (header.alg !== 'RS256') refuse('alg');
   if (typeof header.kid !== 'string') refuse('kid');
-  const key = await jwksFor(provider, doc, header.kid, fetchImpl);
+  let key;
+  try {
+    key = await jwksFor(provider, doc, header.kid, fetchImpl);
+  } catch {
+    // A JWKS fetch can fail (non-2xx) or time out (the bounded signal
+    // aborts it); either way the caller gets the same id_token: prefix as
+    // every other refusal, never a raw endpoint error or an AbortError.
+    refuse('jwks unavailable');
+  }
   if (!key) refuse('kid unknown');
   const ok = createVerify('RSA-SHA256').update(parts[0] + '.' + parts[1]).verify(key, fromB64u(parts[2]));
   if (!ok) refuse('signature');
@@ -165,13 +181,14 @@ export async function verifyIdToken(provider, doc, token, { nonce, now = Math.fl
   } else if (claims.iss !== provider.issuer) refuse('iss');
   const aud = Array.isArray(claims.aud) ? (claims.aud.length === 1 ? claims.aud[0] : null) : claims.aud;
   if (aud !== provider.clientId) refuse('aud');
-  if (typeof claims.exp !== 'number' || claims.exp <= now) refuse('exp');
-  if (typeof claims.iat !== 'number' || Math.abs(claims.iat - now) > 300) refuse('iat');
+  if (!Number.isFinite(claims.exp) || claims.exp <= now) refuse('exp');
+  if (!Number.isFinite(claims.iat) || Math.abs(claims.iat - now) > 300) refuse('iat');
   if (claims.nonce !== nonce) refuse('nonce');
   if (typeof claims.sub !== 'string' || !claims.sub) refuse('sub');
   return { sub: claims.sub, tid, email: typeof claims.email === 'string' ? claims.email : null };
 }
 
 export function identityOf(provider, claims) {
-  return 'oidc:' + provider.slug + ':' + (claims.tid ? claims.tid + '.' : '') + claims.sub;
+  const tenant = provider.issuerTemplate && claims.tid ? claims.tid + '.' : '';
+  return 'oidc:' + provider.slug + ':' + tenant + claims.sub;
 }

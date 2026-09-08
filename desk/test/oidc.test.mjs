@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createHash, generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync, createSign } from 'node:crypto';
 import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from '../oidc.mjs';
 import { startStub } from './oidc-stub.mjs';
 
@@ -86,6 +86,18 @@ async function loginFixture(stubOpts = {}, provOver = {}) {
   return { stub, prov, doc, begun, code: back.searchParams.get('code'), state: back.searchParams.get('state') };
 }
 
+// Build a JWT by hand, the way the stub does, but with a payload segment
+// that is exact literal text rather than the output of JSON.stringify - so
+// a case can carry a value (a bare "1e999", or the bare literal "null")
+// that JSON.stringify would never produce from a JS object.
+function craftToken(stub, payloadText, opts = {}) {
+  const b64u = (s) => Buffer.from(s).toString('base64url');
+  const header = Object.assign({ alg: 'RS256', typ: 'JWT', kid: stub.kid }, opts.header || {});
+  const signingInput = b64u(JSON.stringify(header)) + '.' + b64u(payloadText);
+  const sig = createSign('RSA-SHA256').update(signingInput).sign(opts.key || stub.keyPair.privateKey);
+  return signingInput + '.' + sig.toString('base64url');
+}
+
 test('exchangeCode posts the form with the secret from the file and returns the id_token', async () => {
   const f = await loginFixture();
   const tok = await exchangeCode(f.prov, f.doc, { code: f.code, verifier: f.begun.verifier, redirectUri: 'https://desk.example.test/desk/auth/callback' });
@@ -118,13 +130,37 @@ test('every refusal the spec lists is a refusal', async () => {
     ['wrong nonce', f.stub.mintIdToken({ nonce: 'other' }), /id_token: nonce/],
     ['unknown kid', f.stub.mintIdToken({}, { kid: 'k9' }), /id_token: kid/],
     ['no sub', f.stub.mintIdToken({ sub: undefined }), /id_token: sub/],
-    ['not a jwt', 'abc.def', /id_token: malformed/]
+    ['not a jwt', 'abc.def', /id_token: malformed/],
+    ['garbage segments', 'a.b.c', /id_token: malformed/],
+    ['wrong alg', f.stub.mintIdToken({}, { alg: 'none' }), /id_token: alg/]
   ];
   const other = generateKeyPairSync('rsa', { modulusLength: 2048 });
   cases.push(['bad signature', f.stub.mintIdToken({}, { key: other.privateKey }), /id_token: signature/]);
+  // JSON permits a numeric literal so large it can only parse to Infinity;
+  // JSON.stringify(Infinity) collapses back to null, so this payload has to
+  // be written as literal text to reach the parser as the number it is.
+  const infPayload = '{"iss":"' + f.stub.issuer + '","aud":"' + f.prov.clientId + '","iat":' + now +
+    ',"exp":1e999,"sub":"sub-1","email":"alice@example.test","nonce":"' + f.begun.nonce + '"}';
+  cases.push(['infinite exp', craftToken(f.stub, infPayload), /id_token: exp/]);
+  cases.push(['payload is JSON null', craftToken(f.stub, 'null'), /id_token: malformed/]);
   for (const [name, tok, re] of cases) {
     await assert.rejects(verifyIdToken(f.prov, f.doc, tok, { nonce: f.begun.nonce }), re, name);
   }
+  await f.stub.close();
+});
+
+test('identityOf does not tenant-scope a plain provider even if claims carry a tid', () => {
+  const prov = { slug: 'p', issuerTemplate: null };
+  assert.equal(identityOf(prov, { sub: 'sub-1', tid: 'tenant-x' }), 'oidc:p:sub-1');
+});
+
+test('a JWKS fetch failure refuses with the id_token prefix, not the raw endpoint error', async () => {
+  const f = await loginFixture();
+  const tok = await exchangeCode(f.prov, f.doc, { code: f.code, verifier: f.begun.verifier, redirectUri: 'https://desk.example.test/desk/auth/callback' });
+  // A jwks_uri the stub answers 404 for: a fresh cache key (the URL differs
+  // from the fixture's real one), so this is a genuine fetch, not a hit.
+  const brokenDoc = Object.assign({}, f.doc, { jwks_uri: f.stub.origin + '/jwks-does-not-exist' });
+  await assert.rejects(verifyIdToken(f.prov, brokenDoc, tok, { nonce: f.begun.nonce }), /id_token: jwks/);
   await f.stub.close();
 });
 

@@ -14,7 +14,7 @@ export async function startStub(opts = {}) {
 
   stub.mintIdToken = (claims = {}, o = {}) => {
     const now = Math.floor(Date.now() / 1000);
-    const header = { alg: 'RS256', typ: 'JWT', kid: o.kid || kid };
+    const header = { alg: o.alg || 'RS256', typ: 'JWT', kid: o.kid || kid };
     const payload = Object.assign({
       iss: stub.issuer, aud: stub.lastAuthorize ? stub.lastAuthorize.get('client_id') : 'cid',
       iat: now, exp: now + 300, sub: 'sub-1', email: 'alice@example.test',
