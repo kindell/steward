@@ -1117,6 +1117,19 @@ _registry_validate_account_stage() {
 # account validators above: re-reads the STAGED file and confirms NAME,
 # TAILSCALE_LOGIN and DESK_READ_ALL equal what cmd_registry_principal_add
 # meant to write, byte for byte.
+#
+# THEN ASKS THE REGISTER-WIDE QUESTION, UNDER THE LOCK — same shape as
+# _registry_validate_session_stage's (ACCOUNT,SLUG) recheck above. The verb's
+# own pre-check (registry_principal_for_login, called before any lock is
+# taken) is a FAST PATH ONLY: two concurrent `principal add` calls for the
+# SAME NEW login can both pass it before either has staged anything. This is
+# the GUARANTEE — it runs after registry_row_write has taken
+# principals.d/.write.lock, so a concurrent winner's row (if any) is
+# guaranteed to already be on disk by the time this runs: the winner cannot
+# release the lock until AFTER its own publish completes (registry_row_write
+# steps 6-8). The staged file's name is `.stage.XXXXXX`, never `<slug>.conf`,
+# so registry_principal_for_login's *.conf scan never matches the row being
+# written — any hit it finds here is necessarily some OTHER principal.
 _principal_validate_row() {
   local file="$1" NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL=""
   # shellcheck source=/dev/null
@@ -1133,6 +1146,18 @@ _principal_validate_row() {
     echo "registry: staged principal file's DESK_READ_ALL does not match what was written: $file" >&2
     return 70
   fi
+  local other rc2
+  other="$(registry_principal_for_login "$TAILSCALE_LOGIN" 2>/dev/null)"; rc2=$?
+  case "$rc2" in
+    0)
+      echo "registry: the login already belongs to principal '$other' — one login, one human — refusing" >&2
+      return 70
+      ;;
+    65)
+      echo "registry: the login already maps to more than one principal — refusing to add a third — one login, one human" >&2
+      return 70
+      ;;
+  esac
   return 0
 }
 
@@ -1694,15 +1719,24 @@ cmd_registry_account_add() {
 # a thin wrapper over the ONE writer core (registry_row_write, lib/registry.sh),
 # not a second implementation.
 #
-# THE LOGIN MUST BE UNIQUE ACROSS THE REGISTER, CHECKED BEFORE THE WRITE. Two
-# principal rows sharing one tailnet login is exactly the ambiguity
-# registry_principal_for_login refuses at lookup time (rc 65) — catching it
-# here, before a second row is ever staged, means the caller sees which
-# principal already holds the login instead of a row that then has to be
-# torn down. registry_row_write's own lock still closes the race between
-# this check and the publish; this check exists so the ORDINARY case (no
-# race, just a duplicate) is refused with a useful message instead of a
-# generic "already exists".
+# THE LOGIN MUST BE UNIQUE ACROSS THE REGISTER. Two principal rows sharing
+# one tailnet login is exactly the ambiguity registry_principal_for_login
+# refuses at lookup time (rc 65) — checking it HERE, before anything is
+# staged, means the ORDINARY case (no race, just a duplicate) is refused
+# with a useful message naming the other principal instead of a generic
+# "already exists".
+#
+# THIS CHECK IS THE FAST PATH, NOT THE GUARANTEE. It runs before
+# registry_row_write ever takes principals.d/.write.lock, so two concurrent
+# `principal add` calls for the SAME NEW login can both pass it before
+# either has staged anything. THE GUARANTEE is `_principal_validate_row`
+# (above), the validate_fn registry_principal_write calls WHILE THE LOCK IS
+# HELD — see its own comment for why that timing makes the recheck
+# reliable, not merely "narrower window". registry_row_write maps every
+# validate_fn failure to rc 70 regardless of why it refused; the case below
+# re-maps THIS refusal (recognised by its shared wording) back to 65 so a
+# race caught under the lock is indistinguishable, to the caller, from the
+# ordinary duplicate this pre-check catches.
 cmd_registry_principal_add() {
   local want_json="" slug="" name="" login="" read_all="" a
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
@@ -1786,6 +1820,14 @@ cmd_registry_principal_add() {
   rc=$?
   local rw_msg; rw_msg="$(cat "$rw_err")"; rm -f "$rw_err"
   if [ "$rc" -ne 0 ]; then
+    # registry_row_write hardcodes rc 70 for every validate_fn refusal — see
+    # its step 4. _principal_validate_row's duplicate-login refusal (caught
+    # under the lock) and this function's own pre-check above share the
+    # phrase "one login, one human"; re-map on it so both paths report the
+    # SAME rc for the SAME kind of refusal.
+    case "$rw_msg" in
+      *"one login, one human"*) rc=65 ;;
+    esac
     _reg_fail "$want_json" "steward registry principal add: $rw_msg" "$rc"
     return "$rc"
   fi
