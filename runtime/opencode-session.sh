@@ -125,7 +125,7 @@ fi
 #
 # THE HELPER IS SUBSHELLED, so the row this adapter has loaded — REPO_PATH,
 # MODEL, the port it is about to bind — survives the call intact.
-PROJECT_MATES="$(registry_project_mates_line "$NAME")" \
+PROJECT_MATES="$(registry_mates_summary "$NAME")" \
   || PROJECT_MATES="unknown - the register could not be read back"
 
 cat > "$INSTRUCTIONS_FILE" <<EOF
@@ -136,7 +136,7 @@ Snapshot: $SNAPSHOT_DIR
 Write durable-memory proposals as separate Markdown files in the configured memory-proposals directory.
 Memory proposals: $PROPOSALS_DIR
 Work only in the current git worktree; never switch another agent's checkout.
-Sessions on the same project: $PROJECT_MATES
+$PROJECT_MATES
 Reach one with: bash ~/bin/bus-send <slug> "CLASS subject: heading" (first line is the envelope; body follows)
 EOF
 chmod 600 "$INSTRUCTIONS_FILE" || refuse 70 "could not secure OpenCode instructions"

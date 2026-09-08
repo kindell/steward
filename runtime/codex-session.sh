@@ -137,7 +137,7 @@ LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 #
 # THE HELPER IS SUBSHELLED, so the row this adapter has loaded - ID, REPO_PATH,
 # the inbox it is about to read - survives the call intact.
-PROJECT_MATES="$(registry_project_mates_line "$NAME")" \
+PROJECT_MATES="$(registry_mates_summary "$NAME")" \
   || PROJECT_MATES="unknown - the register could not be read back"
 
 # The thread's standing instructions. Rewritten every run so a changed row
@@ -151,7 +151,7 @@ PROJECT_MATES="$(registry_project_mates_line "$NAME")" \
   printf -- '  so write it as a message, not as a report about a message.\n'
   printf -- '- Secrets never travel on the bus. A pointer to where a key lives is fine;\n'
   printf -- '  the value never is.\n'
-  printf -- '- Sessions on the same project: %s\n' "$PROJECT_MATES"
+  printf '%s\n' "$PROJECT_MATES"
   printf -- '- Reach one with: bash ~/bin/bus-send <slug> "CLASS subject: heading"\n'
   printf -- '  (first line is the envelope; body follows).\n'
 } > "$INSTRUCTIONS_FILE" || refuse 70 "could not write the instructions file"

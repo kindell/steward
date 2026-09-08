@@ -59,7 +59,7 @@ BROWSER_LABEL_PREFIX="com.fixture.browser"
 OP_TOKEN_FILE_NAME="fixture-token"
 EOF
 
-printf 'NAME="Team"\n' > "$ENT/team.conf"
+printf 'NAME="Team"\nMEMBERS="a b c"\n' > "$ENT/team.conf"
 # BOTH PROJECTS HANG UNDER THE SAME ENTITY. That is what makes the entity
 # fallback worth measuring: a rule that walked the PARENT join would report the
 # project rows as mates of the entity rows, and the case below would pass by
@@ -103,7 +103,7 @@ mates() {
            STEWARD_ENTITY_DIR="$ENT" STEWARD_PROJECT_DIR="$PROJ" \
            STEWARD_CONFIG_FILE="$FX/no-such-config"
     . "$here/lib/registry.sh"
-    registry_project_mates "$1" 2>/dev/null
+    registry_project_mates "$1" "${2:-mates_project}" 2>/dev/null
   )"
   RC=$?
 }
@@ -224,6 +224,45 @@ mates slugsubj2
 is "11: rc 0"                                                       "$RC"  "0"
 is "11: the slug-less candidate is named by its row name, never the subject's slug" \
    "$OUT" "barecand (b)"
+
+echo "== visibility and all relationship levels =="
+row hidden b 'TARGET_PROJECT="work"'
+printf 'VISIBILITY="private"\n' >> "$SESS/hidden.conf"
+mates p1
+hasnt "private project mate is hidden" "$OUT" "hidden"
+printf 'VISIBLE_TO="team"\n' >> "$SESS/hidden.conf"
+mates p1
+is "explicit grant restores private mate" "$(printf '%s\n' "$OUT" | grep -c '^hidden ')" 1
+printf 'NAME="Client"\nMEMBERS="c"\nMANAGED_BY="team"\n' > "$ENT/client.conf"
+printf 'NAME="Client work"\nPARENT="client"\n' > "$PROJ/client-work.conf"
+printf 'NAME="Sibling"\nPARENT="client"\n' > "$PROJ/sibling.conf"
+row cp c 'TARGET_PROJECT="client-work"'
+row peer b 'TARGET_PROJECT="client-work"'
+row sibling b 'TARGET_PROJECT="sibling"'
+row parent b 'TARGET_ENTITY="client"'
+row private-peer b 'TARGET_PROJECT="client-work"'
+printf 'VISIBILITY="private"\n' >> "$SESS/private-peer.conf"
+mates cp
+is "client member sees project peer" "$(printf '%s\n' "$OUT" | grep -c '^peer ')" 1
+hasnt "private peer is hidden" "$OUT" private-peer
+mates cp mates_client
+for name in peer sibling parent; do
+  is "client level includes $name" "$(printf '%s\n' "$OUT" | grep -c "^$name ")" 1
+done
+hasnt "client level excludes unrelated team rows" "$OUT" 'p1 '
+hasnt "client level filters private rows" "$OUT" private-peer
+mates p1 mates_team
+is "team includes entity own rows" "$(printf '%s\n' "$OUT" | grep -c '^e1 ')" 1
+is "team includes other projects under membership" "$(printf '%s\n' "$OUT" | grep -c '^p3 ')" 1
+hasnt "team excludes entities without direct membership" "$OUT" 'peer '
+OUT="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$SESS" STEWARD_CONFIG_FILE="$FX/no-such-config"
+  . "$here/lib/registry.sh"
+  registry_mates_summary cp
+)"
+for heading in 'Same project:' 'Same client:' 'Same team:' 'People on this project: c'; do
+  is "summary includes $heading" "$(printf '%s\n' "$OUT" | grep -Fc "$heading")" 1
+done
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

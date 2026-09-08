@@ -124,6 +124,7 @@ exit 0
 EOF
 chmod 755 "$BIN"/bus-read "$BIN"/bus-send "$BIN"/thread-client
 cp "$here/lib/registry.sh" "$LIBS/registry.sh"
+cp "$here/lib/visibility.sh" "$LIBS/visibility.sh"
 
 run() { # run the adapter against a session name
   HOME="$HOMEDIR" \
@@ -275,14 +276,17 @@ EOF
 INSTR="$T/state/$CODEX_ID.codex-instructions.md"
 rc="$(run "$CODEX_ID")"
 has "the instructions name the session on the same project" \
-    "$(cat "$INSTR" 2>/dev/null)" "Sessions on the same project: mate-work (ben)"
+    "$(cat "$INSTR" 2>/dev/null)" "Same project: mate-work (ben)"
+for heading in 'Same client:' 'Same team:' 'People on this project:'; do
+  has "instructions include $heading" "$(cat "$INSTR")" "$heading"
+done
 has "and say how to reach it" "$(cat "$INSTR" 2>/dev/null)" 'bash ~/bin/bus-send'
 has "and that the first line of a message is the envelope" \
     "$(cat "$INSTR" 2>/dev/null)" "CLASS subject: heading"
 rm -f "$ROOT/sessions.d/mate-work.conf"
 rc="$(run "$CODEX_ID")"
 has "rewritten every round: with the mate gone the line says none" \
-    "$(cat "$INSTR" 2>/dev/null)" "Sessions on the same project: none"
+    "$(cat "$INSTR" 2>/dev/null)" "Same project: none"
 hasnt "and the departed mate is not left behind in the file" \
     "$(cat "$INSTR" 2>/dev/null)" "mate-work"
 

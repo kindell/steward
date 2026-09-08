@@ -616,7 +616,8 @@ registry_session_owning_entity() {
   )
 }
 
-# registry_project_mates <session-name> — the OTHER sessions that work on the
+# registry_project_mates <session-name> [mates_project|mates_client|mates_team]
+# The OTHER visible sessions that work on the
 # same thing this one does, one `<slug> (<OWNER>) <Display>` per line on
 # stdout - the first field is the row's SLUG when it carries one, its
 # registry NAME otherwise (every row born before the identity model, which
@@ -632,7 +633,7 @@ registry_session_owning_entity() {
 # the SESSION's side of the same truth, and it has to be derived from the
 # register on every read rather than written into a list somebody maintains.
 #
-# THE MATCH IS ON WHAT THE ROW ITSELF NAMES:
+# The default project-level match is on what the row itself names:
 #   TARGET_PROJECT set  — the rows whose own TARGET_PROJECT is the same.
 #   otherwise           — the rows whose own TARGET_ENTITY is this row's.
 #   neither             — nothing. A row that names no target is nobody's mate.
@@ -662,7 +663,7 @@ registry_session_owning_entity() {
 # every machine that reads it (the hub writes this into a proof, the runtimes
 # into a session's standing instructions, and the two must agree). lib/sort.sh's
 # helper is not used: it reorders delimited TABLE rows by field number, this is
-# one whole line per row, and lib/registry.sh sources no other library.
+# one whole line per row.
 #
 # SUBSHELLED WHOLE, for the reason registry_session_owning_entity is — and here
 # it is load-bearing rather than tidy: every consumer calls this while holding
@@ -671,17 +672,24 @@ registry_session_owning_entity() {
 # subshell an adapter that asked who else was on its project would come back
 # with somebody else's OWNER and REPO_PATH in its own.
 registry_project_mates() {
-  local sid="${1:-}"
+  local sid="${1:-}" level="${2:-mates_project}"
   [ -n "$sid" ] || return 1
+  case "$level" in mates_project|mates_client|mates_team) ;; *) return 1 ;; esac
   (
+    . "$(_registry_self_dir)/visibility.sh" || exit 1
     registry_load "$sid" >/dev/null 2>&1 || exit 1
     # SNAPSHOTTED BEFORE THE LOOP. The per-row loads below run in their own
     # command substitutions, so they cannot reach these — but the value being
     # compared against must be read off the subject's row before anything else
     # is loaded, or the comparison would drift with the loop.
     local want_project="${TARGET_PROJECT:-}" want_entity="${TARGET_ENTITY:-}"
-    local field value
-    if [ -n "$want_project" ]; then
+    local viewer="$OWNER" field value
+    if [ "$level" = mates_team ]; then
+      field="team"; value=""
+    elif [ "$level" = mates_client ]; then
+      field="client"
+      value="$(registry_session_owning_entity "$sid")" || exit 0
+    elif [ -n "$want_project" ]; then
       field="project"; value="$want_project"
     elif [ -n "$want_entity" ]; then
       field="entity";  value="$want_entity"
@@ -707,9 +715,13 @@ registry_project_mates() {
       # assignment: a row that was never compared, reported as one that did not
       # match. The second one broke every function further down this file.
       line="$(
-        registry_load "$row" >/dev/null 2>&1 || exit 1
+        session_visible_to "$viewer" "$row" || exit 1
         if [ "$field" = "project" ]; then
           [ "${TARGET_PROJECT:-}" = "$value" ] || exit 1
+        elif [ "$field" = "client" ]; then
+          [ "$(registry_session_owning_entity "$row")" = "$value" ] || exit 1
+        elif [ "$field" = "team" ]; then
+          _visibility_member_of "$viewer" "$(registry_session_owning_entity "$row")" || exit 1
         else
           [ "${TARGET_ENTITY:-}" = "$value" ] || exit 1
         fi
@@ -767,7 +779,7 @@ ROWS
 # rc is registry_project_mates's own, unchanged.
 registry_project_mates_line() {
   local sid="${1:-}" out line joined=""
-  out="$(registry_project_mates "$sid")" || return 1
+  out="$(registry_project_mates "$sid" "${2:-mates_project}")" || return 1
   [ -n "$out" ] || { printf 'none\n'; return 0; }
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -777,6 +789,28 @@ $out
 MATES
   printf '%s\n' "$joined"
 }
+
+# registry_mates_summary <session-name>: shared instructions/proof rendering.
+# Levels overlap deliberately: project is the existing exact-target contract;
+# client includes sibling projects and the parent entity's own rows; team
+# includes work owned by entities whose MEMBERS name the subject's owner.
+# Every candidate, at every level, must pass session_visible_to first.
+# People are the project's parent MEMBERS, not inferred from live sessions.
+registry_mates_summary() (
+  local sid="${1:-}" project client team people="" parent=""
+  project="$(registry_project_mates_line "$sid")" || exit 1
+  client="$(registry_project_mates_line "$sid" mates_client)" || exit 1
+  team="$(registry_project_mates_line "$sid" mates_team)" || exit 1
+  registry_load "$sid" >/dev/null 2>&1 || exit 1
+  if [ -n "${TARGET_PROJECT:-}" ]; then
+    parent="$(registry_project_load "$TARGET_PROJECT" >/dev/null 2>&1 && printf '%s' "$PROJECT_PARENT")"
+    if [ -n "$parent" ]; then
+      people="$(registry_entity_load "$parent" >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS")"
+    fi
+  fi
+  printf 'Same project: %s\nSame client: %s\nSame team: %s\nPeople on this project: %s\n' \
+    "$project" "$client" "$team" "${people:-none}"
+)
 
 # registry_session_mcp_assets <session-id> — the session's EFFECTIVE set, one
 # asset slug per line on stdout.

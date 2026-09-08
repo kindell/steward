@@ -344,6 +344,9 @@ check_file_contains "and the binary's version" "$fx/pin.err" "1.18.14"
 # removed, must say so rather than keep yesterday's name.
 write_conf "openai/gpt-5.3-codex" "$memory"
 printf 'TARGET_PROJECT="work"\n' >> "$estate/sessions.d/steward-opencode.conf"
+mkdir -p "$estate/entities.d" "$estate/projects.d"
+printf 'NAME="Team"\nMEMBERS="tester"\n' > "$estate/entities.d/team.conf"
+printf 'NAME="Work"\nPARENT="team"\n' > "$estate/projects.d/work.conf"
 cat > "$estate/sessions.d/mate-work.conf" <<EOF
 REPO_PATH="$repo"
 OWNER="ben"
@@ -352,14 +355,17 @@ TARGET_PROJECT="work"
 EOF
 run_adapter >/dev/null 2>&1
 check_file_contains "instructions name the session on the same project" \
-  "$instructions_file" "Sessions on the same project: mate-work (ben)"
+  "$instructions_file" "Same project: mate-work (ben)"
+for heading in 'Same client:' 'Same team:' 'People on this project: tester'; do
+  check_file_contains "instructions include $heading" "$instructions_file" "$heading"
+done
 check_file_contains "instructions say how to reach it" "$instructions_file" 'bash ~/bin/bus-send'
 check_file_contains "and that the first line of a message is the envelope" \
   "$instructions_file" "CLASS subject: heading"
 rm -f "$estate/sessions.d/mate-work.conf"
 run_adapter >/dev/null 2>&1
 check_file_contains "re-rendered every run: with the mate gone the line says none" \
-  "$instructions_file" "Sessions on the same project: none"
+  "$instructions_file" "Same project: none"
 if grep -F "mate-work" "$instructions_file" >/dev/null 2>&1; then
   bad "the departed mate is still named in the rewritten instructions"
 else ok; fi

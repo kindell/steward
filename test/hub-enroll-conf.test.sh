@@ -322,6 +322,7 @@ echo "nav-enroll — the default RC label"
 # own entity row) so the project-display branch has something real to derive.
 cat > "$FX/entities.d/team.conf" <<'CONF'
 NAME="Team"
+MEMBERS="someone"
 CONF
 cat > "$FX/projects.d/work.conf" <<'CONF'
 NAME="Work"
