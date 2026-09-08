@@ -1128,13 +1128,22 @@ describe('the front listener', () => {
       // which is the natural edit for "off the front, still on the tailnet".
       writeFileSync(ROW_E(), 'NAME="Eve"\nTAILSCALE_LOGIN="eve@example.test"\n');
       const first = await front('GET', '/desk/', headers);
-      // The answer measured a moment ago is still the answer: that is the memo,
+      const gap = Date.now() - primed;
+      // THE ANSWER MEASURED A MOMENT AGO IS STILL THE ANSWER: that is the memo,
       // and it is the whole reason the desk does not fork a subshell per click.
-      // The claim is only made when it is measurable - a box that took two
-      // seconds to send one request has nothing to say about a five-second memo.
-      if (Date.now() - primed < 2000) {
-        assert.equal(first.status, 200, 'an answer measured a moment ago must be remembered, not re-asked per request');
-      }
+      //
+      // THIS ASSERTION IS UNCONDITIONAL ON PURPOSE. It used to sit under
+      // `if (elapsed < 2000)`, which meant a machine slow enough to miss the
+      // window retired the only positive claim about the memo in the suite -
+      // silently, and green, so nobody would ever be told the coverage had
+      // gone. What is between `primed` and here is one file write and one
+      // loopback round trip; the memo is five seconds. A red here is a box
+      // that stalled for five seconds between two localhost requests, which
+      // is the same class of thing UP_CAP_MS is sized for and rarer, and the
+      // message says so rather than leaving the reader to guess.
+      assert.equal(first.status, 200,
+        'an answer measured ' + gap + ' ms ago must be remembered, not re-asked per request ' +
+        '(if that gap is near the five-second memo, the box stalled - it is not the memo)');
       const { res: gone, waited } = await pollFront(403, headers);
       assert.equal(gone.status, 403, 'the removal must reach the cookie within ' + REVOKE_CAP_MS + ' ms (waited ' + waited + ')');
       assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
