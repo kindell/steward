@@ -30,10 +30,19 @@ back in prose, and if the two ever disagree the filter is right.
 | `projects` | array | see below. |
 | `sessions` | array | see below. |
 
+## One visibility rule
+
+Everywhere an entity decides what a viewer sees, the question is the same one:
+**an entity is visible when the viewer is a member of it, or a member of the
+entity that manages it** - one hop, no chain. What hangs under a visible entity
+follows it: its projects, the sessions working in it, and the grants those two
+levels made. `readAll` short-circuits all of it, and an unknown axis is still
+dropped.
+
 ## `entities[]`
 
-An entity is present when the viewer is a member of it, is a member of the team
-that manages it, or reads everything.
+An entity is present when it is visible to the viewer, or the viewer reads
+everything.
 
 | key | type | meaning |
 |-----|------|---------|
@@ -45,8 +54,10 @@ that manages it, or reads everything.
 
 ## `projects[]`
 
-A project is present when the viewer is a member of the entity it hangs under,
-or reads everything.
+A project is present when the entity it hangs under is visible, when the viewer
+owns a session whose target is this project, or when the viewer reads
+everything. The own-session clause is what keeps a session page's `project` link
+from being a 404 for the person sitting in that session.
 
 | key | type | meaning |
 |-----|------|---------|
@@ -56,8 +67,8 @@ or reads everything.
 
 ## `sessions[]`
 
-A session is present when the viewer owns it, is a member of its owning entity,
-or reads everything.
+A session is present when the viewer owns it, when its owning entity is visible,
+or when the viewer reads everything.
 
 | key | type | meaning |
 |-----|------|---------|
@@ -95,9 +106,9 @@ The axis decides who sees the asset at all:
 
 - **account** - the person's own credential. Only the session's owner, or a
   `readAll` viewer, ever sees it.
-- **entity** - visible to a member of the entity named in `source`.
-- **project** - visible to a member of the entity the project in `source` hangs
-  under.
+- **entity** - travels when the entity named in `source` is visible.
+- **project** - travels when the entity the project in `source` hangs under is
+  visible.
 - anything else - dropped. A new axis has to be granted deliberately in
   `filter.jq`; it is never inherited.
 

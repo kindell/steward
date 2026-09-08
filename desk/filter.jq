@@ -21,7 +21,23 @@
 # isMember - membership of the viewer in an entity id. NULL IS NOT A MATCH: a
 # session with no owning entity, or an entity with no manager, must never come
 # out as "everybody is a member of it" because two absent values compared equal.
+# Every lookup below inherits that property, because every one of them can be
+# handed the null a registry row leaves behind when a relation is absent.
 def isMember($x): $x != null and (($memberOf | index($x)) != null);
+
+# isVisibleEntity - ONE RULE, AND EVERY PLACE AN ENTITY DECIDES VISIBILITY ASKS
+# IT. An entity is visible to the viewer when the viewer is a member of it, or a
+# member of the entity that manages it - one hop, no chain.
+#
+# THIS FILE ONCE HAD TWO RULES AND THE SECOND ONE WAS THE BUG. The entity list
+# widened through the manager while everything hanging under an entity - its
+# projects, its sessions, its project-axis grants - asked only about direct
+# membership. Measured on a real estate: a viewer saw the client their team
+# manages and not the delivery their own colleagues were running for it, so the
+# desk answered "this client exists" and "that project does not". An entity is
+# either the viewer's business or it is not, and what hangs under it follows the
+# entity; anything else is two different answers to one question.
+def isVisibleEntity($id; $managerOf): $id != null and (isMember($id) or isMember($managerOf[$id]));
 
 # keepAsset - the axis rule, applied to ONE asset of ONE session.
 #
@@ -33,34 +49,52 @@ def isMember($x): $x != null and (($memberOf | index($x)) != null);
 # member of the entity the project hangs under. An axis this file does not know
 # is dropped, not passed through: a new axis must be granted deliberately here,
 # never inherited by an `else`.
-def keepAsset($own; $parentOf):
+#
+# THE TWO ORG AXES ASK isVisibleEntity, not isMember: an asset the entity level
+# granted travels exactly as far as the entity itself does.
+def keepAsset($own; $parentOf; $managerOf):
   if   .axis == "account" then ($readAll or $own)
-  elif .axis == "entity"  then ($readAll or $own or isMember(.source))
-  elif .axis == "project" then ($readAll or $own or isMember($parentOf[.source]))
+  elif .axis == "entity"  then ($readAll or $own or isVisibleEntity(.source; $managerOf))
+  elif .axis == "project" then ($readAll or $own or isVisibleEntity($parentOf[.source]; $managerOf))
   else false
   end;
 
-# The project -> parent-entity map, built once from the raw document, so the
-# project axis can be resolved without a second pass per asset.
+# ownsSessionOn - the viewer runs a session whose target is this project. A
+# person always sees the project their own session works on, whoever the
+# project hangs under: the alternative is a session page whose `project` link is
+# a 404 for the very person sitting in that session.
+def ownsSessionOn($id; $ownProjects): $id != null and (($ownProjects | index($id)) != null);
+
+# THREE MAPS, BUILT ONCE FROM THE RAW DOCUMENT so no rule needs a second pass:
+# project -> parent entity, entity -> its manager, and the projects the viewer's
+# own sessions work on.
 ( [ (.projects // [])[] | { key: .id, value: .parent } ] | from_entries ) as $parentOf
+| ( [ (.entities // [])[] | { key: .id, value: .managedBy } ] | from_entries ) as $managerOf
+| ( [ (.sessions // [])[] | select(.owner == $viewer) | .project | select(. != null) ] ) as $ownProjects
 | { schemaVersion: 1,
     host, generatedAt, registryRevision,
     viewer: $viewer,
     readAll: $readAll,
 
-    # An entity travels when the viewer is a member of it, or a member of the
-    # team that manages it. `member` says which of the two it was, so a view
-    # can tell "my team" from "a team my team works for" without a second file.
+    # An entity travels when it is visible - the one rule above. `member` says
+    # which of the two halves of that rule let it through, so a view can tell
+    # "my team" from "a team my team works for" without a second file.
     entities: [ (.entities // [])[]
-                | select($readAll or isMember(.id) or isMember(.managedBy))
+                | select($readAll or isVisibleEntity(.id; $managerOf))
                 | { id, name, managedBy, members, member: isMember(.id) } ],
 
+    # A project travels when the entity it hangs under is visible, or when the
+    # viewer's own session works on it.
     projects: [ (.projects // [])[]
-                | select($readAll or isMember(.parent))
+                | select($readAll or isVisibleEntity(.parent; $managerOf)
+                         or ownsSessionOn(.id; $ownProjects))
                 | { id, name, parent } ],
 
+    # A session travels to its owner, and to anyone the session's owning entity
+    # is visible to - the same one hop, so a team member sees what the client
+    # their team manages is running.
     sessions: [ (.sessions // [])[]
-                | select(.owner == $viewer or isMember(.domain) or $readAll)
+                | select(.owner == $viewer or isVisibleEntity(.domain; $managerOf) or $readAll)
                 | (.owner == $viewer) as $own
                 | { id, slug, label, owner,
                     mine: $own,
@@ -74,5 +108,5 @@ def keepAsset($own; $parentOf):
                                 measuredAt: .liveness.measuredAt,
                                 ageSeconds: .liveness.ageSeconds },
                     mcp: [ (.mcp // [])[]
-                           | select(keepAsset($own; $parentOf))
+                           | select(keepAsset($own; $parentOf; $managerOf))
                            | { id, name, axis, source } ] } ] }

@@ -316,6 +316,75 @@ is  "a (readAll) still sees the other-project asset" \
     "$(printf '%s' "$out4a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.source)|sort|join(" ")')" \
     "other team work"
 
+echo "== one visibility rule: what hangs under a visible entity is visible =="
+# THE DEFECT THIS SECTION WAS WRITTEN AGAINST, measured on a real estate. A
+# viewer who belongs to `team` reached `client` - the entity `team` manages -
+# and then reached NOTHING under it: the project their own team is delivering
+# was absent from the file and a 404 on the desk. Two rules had grown where
+# there is one question: an entity was visible through its manager, and
+# everything below it was visible only through direct membership.
+#
+# A SECOND ESTATE, NOT AN EDIT TO THE FIRST. The rule under test is about the
+# manager hop, and the fixture above deliberately has none; growing one into it
+# would change what every assertion up to here is measuring.
+ROOT2="$T/estate2"
+mkdir -p "$ROOT2"/{estate,sessions.d,entities.d,projects.d,accounts.d,mcp.d,hosts.d,principals.d}
+sed 's/"fixture"/"fixture2"/' "$ROOT/estate/steward.conf" > "$ROOT2/estate/steward.conf"
+printf 'OWNER="a"\nOPERATOR="hub"\n' > "$ROOT2/hosts.d/h1.conf"
+printf 'NAME="Team"\nMEMBERS="b"\nMCP_ASSETS="shared"\n'   > "$ROOT2/entities.d/team.conf"
+printf 'NAME="Client"\nMANAGED_BY="team"\n'                > "$ROOT2/entities.d/client.conf"
+printf 'NAME="E1"\n'                                       > "$ROOT2/entities.d/e1.conf"
+printf 'NAME="Work"\nPARENT="client"\nMCP_ASSETS="tool"\n' > "$ROOT2/projects.d/work.conf"
+printf 'NAME="Other"\nPARENT="e1"\n'                       > "$ROOT2/projects.d/other.conf"
+printf 'PRINCIPAL="a"\nHOST="h1"\n' > "$ROOT2/accounts.d/a-h1.conf"
+for m in shared tool; do
+  printf 'MCP_COMMAND="/usr/bin/%s"\n' "$m" > "$ROOT2/mcp.d/$m.conf"
+done
+printf 'NAME="Ann"\nTAILSCALE_LOGIN="a@example.com"\n' > "$ROOT2/principals.d/a.conf"
+printf 'NAME="Ben"\nTAILSCALE_LOGIN="b@example.com"\n' > "$ROOT2/principals.d/b.conf"
+printf 'NAME="Cy"\nTAILSCALE_LOGIN="c@example.com"\n'  > "$ROOT2/principals.d/c.conf"
+SID_W="s-0000000000000031"
+cat > "$ROOT2/sessions.d/$SID_W.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="client"
+REPO_PATH="$T/repo"
+ID="$SID_W"
+SLUG="work-a"
+ACCOUNT="a-h1"
+TARGET_PROJECT="work"
+KIND="work"
+EOF
+D6="$T/desk6"
+rc="$(env -u STEWARD_LIVENESS_CMD STEWARD_ESTATE_ROOT="$ROOT2" STEWARD_DESK_DIR="$D6" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err6"; echo $?)"
+is  "the second estate snapshots" "$rc" "0"
+[ "$rc" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err6")"
+is  "Ben reaches the client his team manages, and it is not his membership" \
+    "$(jq -r '.entities|map(.id+":"+(.member|tostring))|sort|join(" ")' "$D6/current/b.json")" \
+    "client:false team:true"
+is  "and the project that hangs under that client" \
+    "$(jq -r '.projects|map(.id)|sort|join(" ")' "$D6/current/b.json")" "work"
+is  "and the session working on it" \
+    "$(jq -r '.sessions|map(.slug)|join(" ")' "$D6/current/b.json")" "work-a"
+is  "and the project-axis grant that project made" \
+    "$(jq -r '.sessions[]|.mcp|map(select(.axis=="project")|.source)|join(" ")' "$D6/current/b.json")" \
+    "work"
+# THE RULE WIDENS ONE HOP, NOT ALL OF THEM. `e1` is managed by nobody Ben
+# belongs to, so neither it nor what hangs under it may follow the client in.
+is  "a project under an unrelated entity stays absent for Ben" \
+    "$(jq -r '[.projects[]|select(.id=="other")]|length' "$D6/current/b.json")" "0"
+is  "and so does that entity" \
+    "$(jq -r '[.entities[]|select(.id=="e1")]|length' "$D6/current/b.json")" "0"
+# THE OWN-SESSION CLAUSE. Ann belongs to no entity at all; the project her own
+# session works on is still hers to see, or her own session's page names a
+# project that is a 404 for her.
+is  "Ann is a member of nothing and still sees the project her own session works on" \
+    "$(jq -r '.projects|map(.id)|join(" ")' "$D6/current/a.json")" "work"
+is  "a viewer who is a member of nothing and owns nothing still sees nothing" \
+    "$(jq -r '[(.entities|length),(.projects|length),(.sessions|length)]|join(" ")' "$D6/current/c.json")" \
+    "0 0 0"
+
 echo "== the verb's own refusals =="
 out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?
 is  "desk without a verb is a usage error" "$rc" "64"
