@@ -212,12 +212,15 @@ check_eq "rerun with the same model archives nothing new" "$archived_count_after
 curl_after_same="$(grep -c '/session' "$capture_curl" 2>/dev/null)"
 check_eq "rerun with the same model never calls the session creation route" "$curl_after_same" "$curl_before_same"
 
+archived_count_before_missing="$(ls "$state"/steward-opencode.opencode-session.[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
 rm -f "$model_file"
 missing_record_err="$(FAKE_SESSION_ID=ses_should_not_be_used run_adapter 2>&1 >/dev/null)"
 missing_record_rc=$?
 check_eq "rerun with the record missing succeeds" "$missing_record_rc" 0
 check_eq "rerun with the record missing keeps the session id" "$(cat "$session_file" 2>/dev/null)" "ses_second999"
 check_eq "the record is recreated with the row's model" "$(cat "$model_file" 2>/dev/null)" "openai/gpt-5.4"
+archived_count_after_missing="$(ls "$state"/steward-opencode.opencode-session.[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "rerun with the record missing archives nothing new" "$archived_count_after_missing" "$archived_count_before_missing"
 case "$missing_record_err" in
   *"no model record"*) ok ;;
   *) bad "stderr does not mention the missing model record" "$missing_record_err" ;;
@@ -268,7 +271,7 @@ check_arg "TUI receives exact session" "ses_second999"
 check_arg "TUI receives auto approval" "--auto"
 check_arg "TUI receives loopback hostname" "127.0.0.1"
 check_arg "TUI receives registry port" "4097"
-check_arg "TUI receives first model" "openai/gpt-5.4"
+check_arg "TUI receives the row's current model" "openai/gpt-5.4"
 check_file_contains "TUI receives generated config environment" "$capture_tui" "OPENCODE_CONFIG=$config_file"
 check_file_contains "curl uses stdin config" "$capture_curl" "--config"
 if grep -Ex -- '-u|--user' "$capture_curl" >/dev/null 2>&1; then
