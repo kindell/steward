@@ -43,19 +43,41 @@
 // written and generatedAt says when the estate was measured - and those differ
 // exactly when it matters, e.g. a file copied or restored. See loadSnapshot.
 //
+// THE SOCKET IS THE DEFAULT, AND IT IS THE OWNER'S ALONE - see below. On a
+// host whose serve tool runs inside a sandbox that cannot dial a filesystem
+// socket at all, no amount of retrying fixes that: every request lands as a
+// dead 502 no matter the socket's path or its mode, while the same tool
+// aimed at a loopback address gets a normal 200 with the identity header
+// still attached. STEWARD_DESK_LISTEN exists for exactly that host, and only
+// for it. Choosing it costs something the socket gave for free: a socket's
+// permission bits refuse every other local account before a byte of HTTP is
+// parsed, and a loopback port refuses nobody local - any account on the same
+// machine can connect and set the same header itself. So loopback mode is
+// for a host where every local account already belongs to the one person
+// this desk is for, and the socket stays the answer everywhere the serve
+// tool can reach it.
+//
 // ENVIRONMENT
 //   STEWARD_DESK_DIR    the desk directory. Unset -> the `dir=` line from
 //                       desk/bin/desk-paths.
 //   STEWARD_DESK_SOCK   the unix socket to listen on, chmod 0600 after listen.
 //                       Unset -> the `sock=` line from desk/bin/desk-paths.
+//                       Not consulted at all when STEWARD_DESK_LISTEN is set.
+//   STEWARD_DESK_LISTEN  opt-in loopback TCP mode, as `<host>:<port>`. Unset
+//                       -> the unix socket above, unchanged. See the operator
+//                       note next to "THE SOCKET IS THE OWNER'S ALONE" for
+//                       when this is the right choice, and bindSocket for why
+//                       the socket is the default everywhere else.
 //   STEWARD_DESK_MAX_AGE  seconds before a snapshot is stale. Unset -> 900.
 //
 // EXIT CODES
 //   64  A setting that cannot be honoured: STEWARD_DESK_MAX_AGE that is not a
 //       positive number (a silent fallback there would serve a stale desk
 //       forever), a socket path the kernel would truncate (see below), a bind
-//       failure on the socket, or a socket path another live desk already
-//       holds (never stolen - see bindSocket below).
+//       failure on the socket or the loopback address, a socket path another
+//       live desk already holds (never stolen - see bindSocket below), or a
+//       STEWARD_DESK_LISTEN value that does not name a loopback host with a
+//       usable port (see parseListen below).
 //   78  desk/bin/desk-paths could not answer, or desk/bin/principal-for-login
 //       is not runnable (checked once at startup with accessSync). A guessed
 //       path, or a gate nobody could even ask, is a second desk nobody is
@@ -120,10 +142,44 @@ function deskPaths() {
   return found;
 }
 
+// parseListen - STEWARD_DESK_LISTEN as a loopback host and a port, or a
+// refusal before a single socket call is made. The host must be exactly one
+// of the three spellings loopback actually has; anything else would let a
+// request from elsewhere on the network reach a desk whose only gate is a
+// header a loopback-only bind would have made unreachable to begin with. The
+// port must be a real, singular port: 0 means "let the kernel pick", which is
+// useless here because nothing outside this process could ever be told what
+// it picked.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+function parseListen(raw) {
+  const i = raw.lastIndexOf(':');
+  const host = i === -1 ? raw : raw.slice(0, i);
+  const portRaw = i === -1 ? '' : raw.slice(i + 1);
+  if (!LOOPBACK_HOSTS.has(host)) {
+    console.error('desk: STEWARD_DESK_LISTEN must name a loopback host (127.0.0.1, ::1, or localhost), got ' +
+      JSON.stringify(raw));
+    process.exit(64);
+  }
+  const port = Number(portRaw);
+  if (!/^[0-9]+$/.test(portRaw) || port < 1 || port > 65535) {
+    console.error('desk: STEWARD_DESK_LISTEN port must be an integer from 1 to 65535, got ' + JSON.stringify(raw));
+    process.exit(64);
+  }
+  return { host, port };
+}
+
 const MAX_AGE = maxAge();
+const LISTEN_RAW = process.env.STEWARD_DESK_LISTEN;
+const LISTEN = LISTEN_RAW ? parseListen(LISTEN_RAW) : null;
+
 let DIR = process.env.STEWARD_DESK_DIR;
 let SOCK = process.env.STEWARD_DESK_SOCK;
-if (!DIR || !SOCK) {
+if (LISTEN) {
+  // Loopback mode touches no socket path at all: no desk-paths call for
+  // `sock=`, no length check, no chmod, no unlink. desk-paths may still be
+  // asked for `dir=` when that alone is missing.
+  if (!DIR) DIR = deskPaths().dir;
+} else if (!DIR || !SOCK) {
   const p = deskPaths();
   DIR = DIR || p.dir;
   SOCK = SOCK || p.sock;
@@ -134,9 +190,10 @@ if (!DIR || !SOCK) {
 // fail: measured 2026-09-08, a 110-byte path listened as its own first 107
 // bytes, so `ls` showed a socket with a chopped-off name, every client got
 // ENOENT on the real path, and the only symptom was a desk nobody could reach.
-// A refusal at startup is what this file's exit codes exist for.
+// A refusal at startup is what this file's exit codes exist for. Loopback
+// mode never touches a socket path, so it never hits this either.
 const SOCK_MAX = 103;
-if (Buffer.byteLength(SOCK) > SOCK_MAX) {
+if (!LISTEN && Buffer.byteLength(SOCK) > SOCK_MAX) {
   console.error('desk: the socket path is ' + Buffer.byteLength(SOCK) + ' bytes, over the kernel limit of ' +
     SOCK_MAX + ', and would be silently truncated: ' + SOCK);
   process.exit(64);
@@ -278,21 +335,37 @@ const server = http.createServer((req, res) => {
   send(res, 200, html);
 });
 
-const cleanUp = () => { try { unlinkSync(SOCK); } catch { /* already gone */ } };
+// cleanUp only ever touches SOCK, so in loopback mode - where SOCK is never
+// even resolved - it has nothing to do.
+const cleanUp = () => {
+  if (!SOCK) return;
+  try { unlinkSync(SOCK); } catch { /* already gone */ }
+};
+
+// listenTarget - what to name in a bind failure or the startup log line: the
+// socket path in the default mode, the host and port in loopback mode.
+const listenTarget = () => (LISTEN ? LISTEN.host + ':' + LISTEN.port : SOCK);
 
 server.on('error', (e) => {
-  console.error('desk: could not bind ' + SOCK + ': ' + (e && e.code ? e.code : e));
+  console.error('desk: could not bind ' + listenTarget() + ': ' + (e && e.code ? e.code : e));
   process.exit(64);
 });
 
-function listen() {
+function listenSocket() {
   server.listen(SOCK, () => {
-    // THE SOCKET IS THE OWNER'S ALONE. Tailscale Serve runs as the same account;
-    // every other account on the machine is refused by the filesystem, before a
-    // single byte of HTTP is parsed. The umask is set before this call, so
-    // there is no window where the socket exists at a wider mode.
+    // THE SOCKET IS THE OWNER'S ALONE. The serve tool that fronts this desk
+    // runs as the same account; every other account on the machine is
+    // refused by the filesystem, before a single byte of HTTP is parsed. The
+    // umask is set before this call, so there is no window where the socket
+    // exists at a wider mode.
     chmodSync(SOCK, 0o600);
     console.error('desk: listening on ' + SOCK);
+  });
+}
+
+function listenTcp() {
+  server.listen(LISTEN.port, LISTEN.host, () => {
+    console.error('desk: listening on ' + LISTEN.host + ':' + LISTEN.port);
   });
 }
 
@@ -306,7 +379,7 @@ function listen() {
 // live.
 function bindSocket() {
   mkdirSync(dirname(SOCK), { recursive: true });
-  if (!existsSync(SOCK)) return listen();
+  if (!existsSync(SOCK)) return listenSocket();
   const probe = net.connect(SOCK);
   probe.on('connect', () => {
     probe.destroy();
@@ -316,12 +389,16 @@ function bindSocket() {
   probe.on('error', () => {
     // Not live: an unlink here races nothing, because nothing was listening.
     try { unlinkSync(SOCK); } catch { /* already gone */ }
-    listen();
+    listenSocket();
   });
 }
 
 process.umask(0o077);
-bindSocket();
+if (LISTEN) {
+  listenTcp();
+} else {
+  bindSocket();
+}
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => { server.close(); cleanUp(); process.exit(0); });

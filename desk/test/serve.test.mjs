@@ -18,6 +18,7 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -177,6 +178,62 @@ async function stopSpawned(handle) {
   handle.proc.kill('SIGTERM');
   await Promise.race([done, sleep(2000)]);
   if (handle.proc.exitCode === null) handle.proc.kill('SIGKILL');
+}
+
+// freePort - listen on port 0 with a throwaway server, read back what the
+// kernel picked, close it, and hand the number to a test. There is a race
+// between the close and the desk's own listen, the same race any test that
+// picks "a free port" runs; it is not reproducible any other way.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+function reqHttp(host, port, method, path, headers) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host, port, path, method, headers: headers || {} }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+function spawnDesk(env) {
+  const p = spawn(process.execPath, [SERVE], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = '';
+  p.stderr.setEncoding('utf8');
+  p.stderr.on('data', (c) => { err += c; });
+  return { proc: p, getErr: () => err };
+}
+
+// spawnUpTcp - like spawnUp, but there is no socket file to poll for, so
+// readiness is "a request got a response at all" instead.
+async function spawnUpTcp(env, host, port, capMs) {
+  const handle = spawnDesk(env);
+  const until = Date.now() + (capMs || 5000);
+  while (Date.now() < until) {
+    if (handle.proc.exitCode !== null) {
+      throw new Error('server exited before answering; code ' + handle.proc.exitCode + '; stderr: ' + handle.getErr());
+    }
+    try {
+      await reqHttp(host, port, 'GET', '/desk/', {});
+      return handle;
+    } catch {
+      await sleep(25);
+    }
+  }
+  try { handle.proc.kill('SIGKILL'); } catch { /* already gone */ }
+  throw new Error('server never answered on ' + host + ':' + port + '; stderr: ' + handle.getErr());
 }
 
 function reqTo(sockPath, method, path, headers) {
@@ -561,6 +618,62 @@ test('the pages never name a path from the machine', async () => {
   assert.ok(!r.body.includes(T));
   assert.ok(!r.body.includes('/usr/bin'));
   assert.ok(!/<script/i.test(r.body));
+});
+
+// ---------------------------------------------------------------------------
+// STEWARD_DESK_LISTEN - the opt-in loopback TCP mode for a host whose serve
+// tool cannot dial a filesystem socket. Every test here spawns its own
+// server; the shared `child` above stays on the unix socket for every test
+// above and below this block.
+
+test('STEWARD_DESK_LISTEN with port 0 is refused, port 0 means any', async () => {
+  const r = await runToExit(childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:0' }));
+  assert.equal(r.code, 64);
+});
+
+test('STEWARD_DESK_LISTEN refuses a host that is not loopback', async () => {
+  for (const bad of ['0.0.0.0:8090', '100.64.0.1:8090']) {
+    const r = await runToExit(childEnv({ STEWARD_DESK_LISTEN: bad }));
+    assert.equal(r.code, 64, bad);
+    assert.ok(/loopback/.test(r.err), bad + ': ' + r.err);
+  }
+});
+
+test('STEWARD_DESK_LISTEN without a port is refused', async () => {
+  const r = await runToExit(childEnv({ STEWARD_DESK_LISTEN: 'localhost' }));
+  assert.equal(r.code, 64, r.err);
+});
+
+test('a free loopback port serves the same gate over TCP, and creates no socket file', async () => {
+  const port = await freePort();
+  const sock2 = join(T, 'loop-ok.sock');
+  const env = childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_SOCK: sock2 });
+  let handle;
+  try {
+    handle = await spawnUpTcp(env, '127.0.0.1', port, 5000);
+    const withLogin = await reqHttp('127.0.0.1', port, 'GET', '/desk/', B);
+    assert.equal(withLogin.status, 200);
+    assert.ok(withLogin.body.includes('work-a'));
+    const noLogin = await reqHttp('127.0.0.1', port, 'GET', '/desk/', {});
+    assert.equal(noLogin.status, 403);
+    assert.ok(!existsSync(sock2), 'loopback mode must not create a socket file');
+    assert.ok(new RegExp('listening on 127\\.0\\.0\\.1:' + port).test(handle.getErr()), handle.getErr());
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+test('loopback mode starts with STEWARD_DESK_SOCK unset entirely', async () => {
+  const port = await freePort();
+  const env = childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:' + port });
+  delete env.STEWARD_DESK_SOCK;
+  let handle;
+  try {
+    handle = await spawnUpTcp(env, '127.0.0.1', port, 5000);
+    assert.equal((await reqHttp('127.0.0.1', port, 'GET', '/desk/', B)).status, 200);
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
 });
 
 // Read back the file only after everything above has finished with it, so the
