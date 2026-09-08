@@ -39,6 +39,16 @@ follows it: its projects, the sessions working in it, and the grants those two
 levels made. `readAll` short-circuits all of it, and an unknown axis is still
 dropped.
 
+**Decided 2026-09-08: read-all wins over `private`.** A `readAll` viewer is the
+operator's own eye on the estate, and it short-circuits a `private` row the
+same way it short-circuits everything else - a row nobody but its owner and a
+grantee should see is still shown to a viewer whose row carries
+`DESK_READ_ALL`. This was weighed, not overlooked: a future reader finding a
+`private` row inside a read-all response should read it as the decided shape,
+not a leak to fix. For every other viewer, whether a row marked `private` is
+visible is `lib/visibility.sh`'s `session_visible_to` and nothing else - the
+one rule this document already names above.
+
 ## `entities[]`
 
 An entity is present when it is visible to the viewer, or the viewer reads
