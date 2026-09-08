@@ -616,6 +616,121 @@ registry_session_owning_entity() {
   )
 }
 
+# registry_project_mates <session-name> — the OTHER sessions that work on the
+# same thing this one does, one `<name> (<OWNER>)` per line on stdout.
+#
+# WHY THE REGISTER ANSWERS THIS. Two sessions aimed at the same project can
+# already reach each other on the bus, and until now nothing told either of them
+# that the other existed. The desk shows a HUMAN the project's sessions; this is
+# the SESSION's side of the same truth, and it has to be derived from the
+# register on every read rather than written into a list somebody maintains.
+#
+# THE MATCH IS ON WHAT THE ROW ITSELF NAMES:
+#   TARGET_PROJECT set  — the rows whose own TARGET_PROJECT is the same.
+#   otherwise           — the rows whose own TARGET_ENTITY is this row's.
+#   neither             — nothing. A row that names no target is nobody's mate.
+#
+# THE ENTITY FALLBACK IS DELIBERATELY NARROW, and this is the part that would be
+# wrong if it were written the obvious way. Every project hangs under an entity,
+# so resolving each row's project to its PARENT and comparing THAT would make
+# "the sessions on your entity" mean "every session in the org" — the widest
+# possible answer to a question asked in order to find who is NEAR. A session
+# reads this list and writes to what is on it; the same limit the visibility and
+# capability rules draw one hop from the row applies here for the same reason.
+#
+# TWO EXIT CODES, because "nobody else works here" and "this session does not
+# exist" are different facts:
+#   rc 0 — the set is on stdout. Empty is an answer, and a common one.
+#   rc 1 — the named session's own row would not load. Nothing on stdout.
+# A row OTHER than the named one that will not load is skipped: one unreadable
+# conf must not turn every other session's answer into a refusal.
+#
+# SORTED BY NAME, IN THE C LOCALE, so the same register renders the same line on
+# every machine that reads it (the hub writes this into a proof, the runtimes
+# into a session's standing instructions, and the two must agree). lib/sort.sh's
+# helper is not used: it reorders delimited TABLE rows by field number, this is
+# one whole line per row, and lib/registry.sh sources no other library.
+#
+# SUBSHELLED WHOLE, for the reason registry_session_owning_entity is — and here
+# it is load-bearing rather than tidy: every consumer calls this while holding
+# its own loaded row (the hub mid-enrolment, both runtime adapters mid-render),
+# and registry_load SOURCES a conf into the caller's variables. Without the
+# subshell an adapter that asked who else was on its project would come back
+# with somebody else's OWNER and REPO_PATH in its own.
+registry_project_mates() {
+  local sid="${1:-}"
+  [ -n "$sid" ] || return 1
+  (
+    registry_load "$sid" >/dev/null 2>&1 || exit 1
+    # SNAPSHOTTED BEFORE THE LOOP. The per-row loads below run in their own
+    # command substitutions, so they cannot reach these — but the value being
+    # compared against must be read off the subject's row before anything else
+    # is loaded, or the comparison would drift with the loop.
+    local want_project="${TARGET_PROJECT:-}" want_entity="${TARGET_ENTITY:-}"
+    local field value
+    if [ -n "$want_project" ]; then
+      field="project"; value="$want_project"
+    elif [ -n "$want_entity" ]; then
+      field="entity";  value="$want_entity"
+    else
+      exit 0
+    fi
+    local rows row line
+    rows="$(registry_list 2>/dev/null)" || exit 1
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      [ "$row" != "$sid" ] || continue
+      # THE ROW'S LOAD IS ITS OWN SUBSHELL and its stdout is thrown away: a conf
+      # is sourced here, and a row that printed on load would otherwise splice
+      # itself into the set being built.
+      #
+      # TWO BASH 3.2 RULES GOVERN WHAT MAY BE WRITTEN INSIDE THAT SUBSTITUTION,
+      # and both were measured here rather than remembered. Its scanner looks
+      # for the closing parenthesis without understanding the shell inside, so
+      # a `case` arm's pattern parenthesis ENDS THE SUBSTITUTION EARLY — hence
+      # if/elif below, which says the same thing — and a parenthesis in a
+      # COMMENT does the same, which is why the comments live out here. Both
+      # failures arrive as a syntax error on stderr with a successful-looking
+      # assignment: a row that was never compared, reported as one that did not
+      # match. The second one broke every function further down this file.
+      line="$(
+        registry_load "$row" >/dev/null 2>&1 || exit 1
+        if [ "$field" = "project" ]; then
+          [ "${TARGET_PROJECT:-}" = "$value" ] || exit 1
+        else
+          [ "${TARGET_ENTITY:-}" = "$value" ] || exit 1
+        fi
+        printf '%s (%s)' "$row" "$OWNER"
+      )" || continue
+      printf '%s\n' "$line"
+    done <<ROWS | LC_ALL=C sort
+$rows
+ROWS
+  )
+}
+
+# registry_project_mates_line <session-name> — the same answer as one line:
+# `<name> (<owner>), <name> (<owner>)`, or the word `none`.
+#
+# ONE SPELLING OF THE JOIN, AND ONE OF THE EMPTY ANSWER. Three consumers print
+# this string — the hub's ENROLL-PROOF and both runtime adapters' rendered
+# instructions — and three hand-written joins would drift: one of them would say
+# "none", another "-", a third an empty value after the `=`, and a session
+# reading its own instructions could not tell "nobody" from "the line broke".
+# rc is registry_project_mates's own, unchanged.
+registry_project_mates_line() {
+  local sid="${1:-}" out line joined=""
+  out="$(registry_project_mates "$sid")" || return 1
+  [ -n "$out" ] || { printf 'none\n'; return 0; }
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ -z "$joined" ]; then joined="$line"; else joined="$joined, $line"; fi
+  done <<MATES
+$out
+MATES
+  printf '%s\n' "$joined"
+}
+
 # registry_session_mcp_assets <session-id> — the session's EFFECTIVE set, one
 # asset slug per line on stdout.
 #
