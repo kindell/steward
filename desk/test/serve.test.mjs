@@ -19,6 +19,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -136,6 +137,24 @@ function req(method, path, headers) {
 const get = (path, headers) => req('GET', path, headers);
 const B = { 'tailscale-user-login': 'b@example.com' };
 const A = { 'tailscale-user-login': 'a@example.com' };
+
+// SELF_ORIGIN_BODY - the exact refusal text a self-origin request gets. Kept
+// as one constant so a typo in the production string shows up as a failing
+// equality, not a passing substring match.
+const SELF_ORIGIN_BODY = "a request from the desk's own host cannot be attributed to a person";
+
+// firstSelfAddr - one non-internal address of the test host itself, the same
+// set serve.mjs collects at startup. Used to prove the gate refuses a real
+// forwarded-address collision, not just a hand-picked STEWARD_DESK_SELF_ADDRS
+// value.
+function firstSelfAddr() {
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const iface of ifaces || []) {
+      if (!iface.internal) return iface.address;
+    }
+  }
+  return null;
+}
 
 // runToExit - start serve.mjs with an env that should make it refuse, and
 // collect how it refused. Used for the two startup refusals (64 and 78). A
@@ -501,6 +520,69 @@ test('the server writes nothing but one startup line to stderr on the silent 403
   assert.equal(childErr.trim().split('\n').length, 1, childErr);
   assert.ok(childErr.includes(SOCK));
   assert.ok(!/SENTINEL|Error|error:/.test(childErr), childErr);
+});
+
+// ---------------------------------------------------------------------------
+// A REQUEST FROM THE DESK'S OWN HOST CANNOT BE ATTRIBUTED TO A PERSON. The
+// tailnet client identifies the node, not the local account, so traffic the
+// desk host originates toward its own socket carries the node owner's login
+// no matter which local account actually sent it. These come after the
+// stderr-line pin above (the shared child now logs an extra refusal line for
+// each test that hits it), and before the outage block, which needs the
+// shared child to stay on the silent 403 path for ITS OWN assertions too -
+// none of those are stderr line counts, so the extra lines here do not
+// disturb them.
+
+test('a request forwarded from the desk own host is refused', async (t) => {
+  const addr = firstSelfAddr();
+  if (!addr) {
+    t.skip('no non-internal interface address on this host');
+    return;
+  }
+  const r = await get('/desk/', Object.assign({ 'x-forwarded-for': addr }, B));
+  assert.equal(r.status, 403);
+  assert.equal(r.body, SELF_ORIGIN_BODY);
+  assert.ok(!r.body.includes('work-a'), 'no desk content must leak into a self-origin refusal');
+});
+
+test('STEWARD_DESK_SELF_ADDRS extends what counts as the desk s own host', async () => {
+  const sock2 = join(T, 'self-addrs.sock');
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '192.0.2.7' });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '192.0.2.7' }, B));
+    assert.equal(r.status, 403);
+    assert.equal(r.body, SELF_ORIGIN_BODY);
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+test('a forwarded address that is not self does not affect the gate', async () => {
+  const r = await get('/desk/', Object.assign({ 'x-forwarded-for': '198.51.100.9' }, B));
+  assert.equal(r.status, 200);
+  assert.ok(r.body.includes('work-a'));
+});
+
+test('no x-forwarded-for header at all is unaffected', async () => {
+  const r = await get('/desk/', B);
+  assert.equal(r.status, 200);
+  assert.ok(r.body.includes('work-a'));
+});
+
+test('the forwarded address is normalized: first entry wins, mapped IPv4 form stripped', async () => {
+  const sock2 = join(T, 'self-norm.sock');
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '192.0.2.7' });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '::ffff:192.0.2.7, 198.51.100.9' }, B));
+    assert.equal(r.status, 403);
+    assert.equal(r.body, SELF_ORIGIN_BODY);
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
 });
 
 // ---------------------------------------------------------------------------

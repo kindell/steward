@@ -74,6 +74,9 @@
 //                       describes, and bindSocket for why the socket is the
 //                       default everywhere else.
 //   STEWARD_DESK_MAX_AGE  seconds before a snapshot is stale. Unset -> 900.
+//   STEWARD_DESK_SELF_ADDRS  extra addresses that count as this host
+//                            (space-separated); the interfaces' own
+//                            addresses are always included.
 //
 // EXIT CODES
 //   64  A setting that cannot be honoured: STEWARD_DESK_MAX_AGE that is not a
@@ -91,6 +94,7 @@
 
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
 import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync, accessSync, constants } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -211,6 +215,65 @@ if (!LISTEN && Buffer.byteLength(SOCK) > SOCK_MAX) {
   process.exit(64);
 }
 
+// normalizeAddr - lowercase, and drop a trailing `%zone` suffix (an IPv6
+// link-local address carries the interface it was seen on, and that suffix
+// is local to this process, never something a forwarded header would
+// reproduce the same way twice).
+function normalizeAddr(raw) {
+  let a = String(raw).trim().toLowerCase();
+  const zone = a.indexOf('%');
+  if (zone !== -1) a = a.slice(0, zone);
+  return a;
+}
+
+// SELF_ADDRS - every address this host answers to, collected once at
+// startup, never per request: the interfaces' own non-internal addresses
+// (loopback excluded on purpose - the serve tool forwards the tailnet
+// address, never 127.0.0.1, so a bare loopback hit without the header is the
+// existing gate's business, not this one), plus whatever
+// STEWARD_DESK_SELF_ADDRS names for a host where that is not the whole
+// picture (a second tailnet interface, a container's own address).
+const SELF_ADDRS = new Set();
+for (const ifaces of Object.values(os.networkInterfaces())) {
+  for (const iface of ifaces || []) {
+    if (!iface.internal) SELF_ADDRS.add(normalizeAddr(iface.address));
+  }
+}
+for (const extra of (process.env.STEWARD_DESK_SELF_ADDRS || '').split(/\s+/)) {
+  if (extra) SELF_ADDRS.add(normalizeAddr(extra));
+}
+
+// A NODE CANNOT VOUCH FOR A PERSON WHEN IT IS THE ONE ASKING. Measured on a
+// two-account host: the tailnet client identifies the NODE, and a node is
+// registered to one login - so a request the desk's own host sends toward
+// this desk's own socket carries the node owner's login header and
+// `x-forwarded-for: <the node's own tailnet address>`, no matter which local
+// account on that host actually made the request. For that request the
+// header is not forged and still names the wrong person: the server has no
+// way to tell which local account sent it, so refusing is the only honest
+// answer. The host's own outbound firewall rule is the first line of
+// defense against this; this check is the second, so a host without that
+// rule is not left open. It matters only in the socket mode, where the
+// socket's permission bits mean only the serve tool can reach this server in
+// the first place - the loopback-listen mode already accepts that any local
+// process can set its own headers, and this check adds nothing to a cost
+// already paid there.
+const SELF_ORIGIN_FORBIDDEN = "a request from the desk's own host cannot be attributed to a person";
+
+// selfOriginAddr - the address a forwarded-for header names, normalized the
+// way SELF_ADDRS is: the FIRST comma-separated entry (the chain's origin,
+// closest to the actual sender), trimmed, lowercased, `%zone` stripped, and
+// with a leading `::ffff:` (the IPv4-mapped IPv6 form some platforms use)
+// removed so a mapped and a bare form of the same address compare equal.
+function selfOriginAddr(req) {
+  const raw = req.headers['x-forwarded-for'];
+  if (!raw) return null;
+  const first = String(Array.isArray(raw) ? raw[0] : raw).split(',')[0];
+  let addr = normalizeAddr(first);
+  if (addr.startsWith('::ffff:')) addr = addr.slice(7);
+  return addr;
+}
+
 const HEADERS = {
   'content-type': 'text/html; charset=utf-8',
   'cache-control': 'no-store',
@@ -314,6 +377,15 @@ const ROUTES = [
 
 const server = http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, '', { allow: 'GET, HEAD' });
+
+  // A NODE CANNOT VOUCH FOR A PERSON. Checked before the login header is even
+  // read - see SELF_ORIGIN_FORBIDDEN above for why a self-origin request's
+  // login header is true and still names the wrong person.
+  const selfAddr = selfOriginAddr(req);
+  if (selfAddr !== null && SELF_ADDRS.has(selfAddr)) {
+    console.error('desk: refused self-origin request from ' + selfAddr);
+    return send(res, 403, SELF_ORIGIN_FORBIDDEN, { 'content-type': 'text/plain; charset=utf-8' });
+  }
 
   // ONLY THE HEADER TAILSCALE SERVE SETS. It strips a client-sent copy before
   // forwarding, so this value came from the tailnet's own identity and not from

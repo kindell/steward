@@ -167,6 +167,21 @@ prints - with no path prefix. The invocation has the shape:
 the operator's business; the desk only requires that what arrives at the socket
 is the path the reader typed.
 
+**The desk must never be reached from its own node.** Measured on a
+two-account host: a request the desk's own host sends toward its own socket
+carries the node owner's login header, because the tailnet client
+identifies the node rather than the local account that made the
+request - so any local account on that host could otherwise read the node
+owner's view. The desk refuses this: a request whose forwarded address is the
+host's own is answered with 403, whatever login header it carries. The host's
+own uid-gated egress rule is the first line of defense against this and the
+server's refusal is the second, so a host without that rule is not left open.
+This check matters on the socket mode above, where only the serve tool can
+reach the server at all; it adds nothing on top of `serve.mjs`'s
+loopback-listen mode (`STEWARD_DESK_LISTEN`), which already accepts, as its
+own documented cost, that any local process there can set the same headers
+itself.
+
 **How quickly a change reaches a desk.** Different answers for different
 changes, and confusing them is the trap:
 
