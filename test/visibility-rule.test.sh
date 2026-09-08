@@ -73,11 +73,29 @@ no  "a principal slug colliding with OWNER gets no owner grant" service account-
 sess wrong-account-user other team-a 'ACCOUNT="service"\nVISIBILITY="private"\n'
 sess wrong-account-host service team-a 'ACCOUNT="service"\nVISIBILITY="private"\nHOST="h2"\n'
 session_visible_to carol wrong-account-user >/dev/null 2>&1; wrong_user_rc=$?
-session_visible_to carol wrong-account-host >/dev/null 2>&1; wrong_host_rc=$?
 if [ "$wrong_user_rc" -eq 78 ]; then ok "an account whose USERNAME differs from OWNER preserves rc 78"
 else bad "an account whose USERNAME differs from OWNER preserves rc 78" "got $wrong_user_rc"; fi
-if [ "$wrong_host_rc" -eq 78 ]; then ok "an account whose HOST differs from the row preserves rc 78"
-else bad "an account whose HOST differs from the row preserves rc 78" "got $wrong_host_rc"; fi
+
+# READ LENIENTLY, WRITE STRICTLY. A HOST the account row does not name is a
+# session living on a machine the hub only deploys to - it says nothing about
+# WHICH HUMAN the row belongs to, and the principal does not depend on it. So
+# the row reads, the mismatch is named on stderr, and the writer is where the
+# host is forced to the account's own.
+wrong_host_err="$(session_visible_to carol wrong-account-host 2>&1 >/dev/null)"; wrong_host_rc=$?
+if [ "$wrong_host_rc" -eq 0 ]; then ok "an account whose HOST differs from the row still resolves its principal"
+else bad "an account whose HOST differs from the row still resolves its principal" "got $wrong_host_rc"; fi
+case "$wrong_host_err" in *"is not ACCOUNT 'service' HOST="*) ok "and the host mismatch is said out loud" ;;
+  *) bad "and the host mismatch is said out loud" "$wrong_host_err" ;; esac
+
+# THE OLD SHAPE STILL READS. `session add` and `migrate-session` wrote OWNER as
+# the account's PRINCIPAL before the identity model landed; a loader that only
+# accepted today's USERNAME shape would refuse every row the product wrote
+# itself, and only on the estates where the two names differ - which is exactly
+# where the account model was needed.
+sess old-shape carol team-a 'ACCOUNT="service"\nVISIBILITY="private"\n'
+old_shape_err="$(session_visible_to carol old-shape 2>&1 >/dev/null)"; old_shape_rc=$?
+if [ "$old_shape_rc" -eq 0 ]; then ok "a row whose OWNER is the account's PRINCIPAL still reads (the old shape)"
+else bad "a row whose OWNER is the account's PRINCIPAL still reads (the old shape)" "rc=$old_shape_rc $old_shape_err"; fi
 
 sess unresolved fallback team-a 'ACCOUNT="missing-account"\nVISIBILITY="private"\n'
 fallback_err="$(session_visible_to fallback unresolved 2>&1 >/dev/null)"; fallback_rc=$?

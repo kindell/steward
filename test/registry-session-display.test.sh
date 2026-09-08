@@ -12,9 +12,14 @@
 # two legacy displays (RC_LABEL verbatim; prefix+name when the conf has no
 # RC_LABEL row at all, exactly the string the supervisor builds today).
 #
-# ACCOUNT absence is lenient for legacy rows, but a present ACCOUNT is a strict
-# identity claim and must resolve to this row's OWNER and HOST. Target references
-# remain shape-only here and are resolved by the consumers that use them.
+# READING IS LENIENT ABOUT SHAPE AND STRICT ABOUT THE PERSON. ACCOUNT absence
+# is the legacy row; a present ACCOUNT must load and must name THIS row's human,
+# but it may do so in either shape the product's own writers have emitted
+# (OWNER = the account's USERNAME today, its PRINCIPAL before the identity
+# model), and a HOST the account does not name is a gap rather than a fault.
+# Strictness belongs to the writer, which forces both fields; `registry session
+# realign` is how an old row catches up. Target references remain shape-only
+# here and are resolved by the consumers that use them.
 # The one semantic gate is the typed union: TARGET_ENTITY and TARGET_PROJECT
 # both set is two claims about what the session works on, and refuses.
 #
@@ -273,11 +278,46 @@ fields bad-slug
 is "6e: rc 1" "$RC" "1"
 
 echo "-- 6f: an account that does not exist is an identity refusal --"
+# THIS ONE IS NOT A GAP. Every shape the product's own writers ever emitted
+# names an account that IS in the register; a dangling ACCOUNT is a claim that
+# cannot be measured at all, and falling back to OWNER there is how a Unix name
+# stands in for somebody else's principal.
 printf 'OWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nACCOUNT="nobody-nowhere"\n' \
   > "$SESS/gap-account.conf"
 fields gap-account
 is "6f: rc 78"   "$RC"  "78"
 is "6f: no fields" "$OUT" ""
+
+echo "-- 6f2: the OLD row shape still reads (a gap is not a failure) --"
+# READ LENIENTLY, WRITE STRICTLY. `registry session add` and `migrate-session`
+# wrote OWNER as the account's PRINCIPAL and HOST as the estate's HUB_HOST
+# before the identity model landed; they write the account's USERNAME and HOST
+# today. A reader that accepted only today's shape would refuse every row the
+# product wrote itself - and only on the estates where USERNAME and PRINCIPAL
+# differ, which are exactly the estates the account model exists for.
+printf 'PRINCIPAL="ann"\nUSERNAME="a"\nHOST="h1"\n' > "$FX/accounts.d/ann-h1.conf"
+printf 'OWNER="ann"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nACCOUNT="ann-h1"\n' \
+  > "$SESS/old-shape.conf"
+fields old-shape
+is "6f2: rc 0"   "$RC"  "0"
+is "6f2: fields" "$OUT" "ann-h1|||"
+
+echo "-- 6f3: a HOST the account does not name is a gap, not a refusal --"
+# A session may live on a host the hub only deploys to. The account row says
+# where the human's login is, not where their work runs, and the principal does
+# not depend on the host at all - so the row reads and the mismatch is said.
+printf 'OWNER="a"\nHOST="h9"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nACCOUNT="ann-h1"\n' \
+  > "$SESS/other-host.conf"
+fields other-host
+is "6f3: rc 0"   "$RC"  "0"
+is "6f3: fields" "$OUT" "ann-h1|||"
+
+echo "-- 6f4: an OWNER that is neither the username nor the principal refuses --"
+printf 'OWNER="stranger"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nACCOUNT="ann-h1"\n' \
+  > "$SESS/borrowed.conf"
+fields borrowed
+is "6f4: rc 78"   "$RC"  "78"
+is "6f4: no fields" "$OUT" ""
 
 echo "-- 6g: a later load never shows the previous load's identity fields --"
 # The reset-block proof: the identity fields sit in the same reset block as

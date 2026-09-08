@@ -1439,7 +1439,8 @@ cmd_registry() {
       case "${1:-}" in
         add) shift; cmd_registry_session_add "$@" ;;
         check) shift; cmd_registry_session_check "$@" ;;
-        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check)" 64 ;;
+        realign) shift; cmd_registry_session_realign "$@" ;;
+        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check, realign)" 64 ;;
       esac ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
     *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, principal, project, session, migrate-session)" 64 ;;
@@ -5122,6 +5123,146 @@ _migrate_snap() {
   ( eval "$__name=''"; unset "$__name" 2>/dev/null; eval "$__name=''"
     # shellcheck source=/dev/null
     source "$__conf" 2>/dev/null; printf '%s' "${!__name}" )
+}
+
+# cmd_registry_session_realign <handle> [--json] — rewrite ONE row from the old
+# identity shape to the one today's writers emit, and say what changed.
+#
+# THE TWO SHAPES, AND WHY THERE ARE TWO. `registry session add` and
+# `registry migrate-session` wrote OWNER as the account's PRINCIPAL and HOST as
+# the estate's HUB_HOST until the identity model landed; they write the
+# account's USERNAME and its own HOST today. lib/registry.sh reads both - a
+# reader that refused yesterday's rows would take down every session the
+# product wrote itself, on exactly the estates where USERNAME and PRINCIPAL
+# differ. This verb is the other half of that: the way a row stops being
+# yesterday's without anyone editing a conf by hand.
+#
+# IT CHANGES TWO FIELDS AND NOTHING ELSE. OWNER and HOST are taken from the
+# account the row already names; the ACCOUNT itself is never chosen here, so
+# this verb cannot move a session to another human. Everything else in the conf
+# is carried through byte for byte, comments included.
+#
+# IT VERIFIES BEFORE IT KEEPS. The rewritten conf is read back through
+# registry_load, and a row that would not load is put back exactly as it was -
+# a realign that leaves an unreadable row behind is worse than the old shape it
+# replaced.
+#
+# THE RECEIPT IS THE POINT. A migration nobody can see afterwards is a
+# migration nobody can audit: the verb prints the before and after of both
+# fields, and writes the same sentence into the conf as a comment line, so the
+# next reader of that file learns why OWNER changed without reading this code.
+cmd_registry_session_realign() {
+  local want_json="" args=() a
+  for a in "$@"; do
+    case "$a" in --json) want_json=1 ;; *) args+=("$a") ;; esac
+  done
+  local handle="${args[0]:-}"
+  [ -n "$handle" ] || { _reg_fail "$want_json" "steward registry session realign: needs a session handle" 64; return 64; }
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  local key
+  key="$(registry_resolve_session "$handle" 2>/dev/null)" || {
+    _reg_fail "$want_json" "steward registry session realign: no such session '$handle'" 78; return 78; }
+  local conf; conf="$(registry_dir)/$key.conf"
+
+  # THE ROW IS SOURCED, SO IT IS SOURCED IN A CHILD. Same containment
+  # `migrate-session` uses: only the three named values cross back.
+  local snap snap_rc
+  snap="$( registry_load "$key" >/dev/null 2>&1 \
+           && printf '%s\n%s\n%s\n' "${ACCOUNT:-}" "${OWNER:-}" "${HOST:-}" )"; snap_rc=$?
+  if [ "$snap_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry session realign: '$key' does not load; realigning an unreadable row would only hide the cause" "$snap_rc"
+    return "$snap_rc"
+  fi
+  local row_account row_owner row_host rest
+  row_account="${snap%%$'\n'*}"; rest="${snap#*$'\n'}"
+  row_owner="${rest%%$'\n'*}"; rest="${rest#*$'\n'}"
+  row_host="${rest%%$'\n'*}"
+
+  if [ -z "$row_account" ]; then
+    _reg_fail "$want_json" "steward registry session realign: '$key' carries no ACCOUNT — a legacy row has no account shape to align to; use 'registry migrate-session'" 65
+    return 65
+  fi
+
+  local acct acct_rc
+  acct="$( registry_account_load "$row_account" >/dev/null 2>&1 \
+           && printf '%s\n%s\n' "$ACCOUNT_USERNAME" "$ACCOUNT_HOST" )"; acct_rc=$?
+  if [ "$acct_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry session realign: '$key' names account '$row_account', which does not load" 78
+    return 78
+  fi
+  local want_owner want_host
+  want_owner="${acct%%$'\n'*}"; want_host="${acct#*$'\n'}"; want_host="${want_host%%$'\n'*}"
+
+  if [ "$row_owner" = "$want_owner" ] && [ "$row_host" = "$want_host" ]; then
+    if [ -n "$want_json" ]; then
+      jq -cn --arg id "$key" --arg owner "$row_owner" --arg host "$row_host" \
+        '{ok:true,kind:"session-realign",id:$id,changed:false,owner:$owner,host:$host}'
+    else
+      printf '%s is already in the new shape (OWNER=%s, HOST=%s) — nothing written\n' "$key" "$row_owner" "$row_host"
+    fi
+    return 0
+  fi
+
+  local owner_line host_line
+  owner_line="$(_registry_emit_kv OWNER "$want_owner")" || {
+    _reg_fail "$want_json" "steward registry session realign: the account's username cannot be serialized" 70; return 70; }
+  host_line="$(_registry_emit_kv HOST "$want_host")" || {
+    _reg_fail "$want_json" "steward registry session realign: the account's host cannot be serialized" 70; return 70; }
+
+  local receipt
+  receipt="realigned to account '$row_account': OWNER '$row_owner' -> '$want_owner', HOST '$row_host' -> '$want_host'"
+
+  # WRITE BESIDE THE ROW, NOT IN /tmp. A rename inside the same directory is
+  # atomic; a move across filesystems is a copy, and a copy can be interrupted
+  # halfway through a conf every supervisor on the host sources.
+  local tmp backup
+  tmp="$conf.realign.$$"
+  backup="$conf.realign-backup.$$"
+  cp -p "$conf" "$backup" 2>/dev/null || {
+    _reg_fail "$want_json" "steward registry session realign: could not take a backup of $conf" 70; return 70; }
+  cp -p "$conf" "$tmp" 2>/dev/null || {
+    rm -f "$backup"
+    _reg_fail "$want_json" "steward registry session realign: could not stage a rewrite beside $conf" 70; return 70; }
+
+  # awk, NOT sed -i: the in-place flag spells differently on the two systems
+  # this product runs on, and one of the two spellings silently writes a file
+  # named after the argument.
+  awk -v ol="$owner_line" -v hl="$host_line" '
+    /^[ \t]*OWNER=/ { if (!o) { print ol; o=1 } ; next }
+    /^[ \t]*HOST=/  { if (!h) { print hl; h=1 } ; next }
+    { print }
+    END { if (!o) print ol; if (!h) print hl }
+  ' "$backup" > "$tmp" 2>/dev/null || {
+    rm -f "$tmp" "$backup"
+    _reg_fail "$want_json" "steward registry session realign: the rewrite failed; $conf is untouched" 70; return 70; }
+  printf '# %s\n' "$receipt" >> "$tmp"
+
+  mv -f "$tmp" "$conf" 2>/dev/null || {
+    rm -f "$tmp" "$backup"
+    _reg_fail "$want_json" "steward registry session realign: could not replace $conf; it is untouched" 70; return 70; }
+
+  local verify_rc
+  ( registry_load "$key" >/dev/null 2>&1 ); verify_rc=$?
+  if [ "$verify_rc" -ne 0 ]; then
+    mv -f "$backup" "$conf" 2>/dev/null
+    _reg_fail "$want_json" "steward registry session realign: the rewritten row would not load (rc $verify_rc) — $conf has been put back" 70
+    return 70
+  fi
+  rm -f "$backup"
+
+  if [ -n "$want_json" ]; then
+    jq -cn --arg id "$key" --arg account "$row_account" \
+           --arg wasOwner "$row_owner" --arg owner "$want_owner" \
+           --arg wasHost "$row_host" --arg host "$want_host" --arg receipt "$receipt" \
+      '{ok:true,kind:"session-realign",id:$id,changed:true,account:$account,
+        was:{owner:$wasOwner,host:$wasHost},owner:$owner,host:$host,receipt:$receipt}'
+  else
+    printf '%s: %s\n' "$key" "$receipt"
+  fi
+  return 0
 }
 
 # cmd_registry_migrate_session <old-slug> --account <slug> ( --project <slug>

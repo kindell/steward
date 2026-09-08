@@ -1016,10 +1016,10 @@ registry_session_mcp_assets() {
         echo "registry: mcp assets for '$sid' — the owning account resolves to '$(registry_printable "$account")', which is not a legal slug (allowed: a-z 0-9 -); refusing to hand it to anything that builds a path" >&2
         _MCP_LEVEL_FAILED=1
       else
-        local acct_out acct_rc acct_assets acct_username acct_host acct_rest
+        local acct_out acct_rc acct_assets acct_username acct_host acct_principal acct_rest
         acct_out="$( registry_account_load "$account" >/dev/null \
-                     && printf '%s\n%s\n%s\n%s\n' "${ACCOUNT_MCP_ASSETS:-}" \
-                          "$ACCOUNT_USERNAME" "$ACCOUNT_HOST" "ok" )"
+                     && printf '%s\n%s\n%s\n%s\n%s\n' "${ACCOUNT_MCP_ASSETS:-}" \
+                          "$ACCOUNT_USERNAME" "$ACCOUNT_HOST" "$ACCOUNT_PRINCIPAL" "ok" )"
         acct_rc=$?
         if [ "$acct_rc" -ne 0 ]; then
           # THE LOADER'S OWN STDERR IS LET THROUGH here too, for the reason it
@@ -1031,10 +1031,19 @@ registry_session_mcp_assets() {
         else
           acct_assets="${acct_out%%$'\n'*}"; acct_rest="${acct_out#*$'\n'}"
           acct_username="${acct_rest%%$'\n'*}"; acct_rest="${acct_rest#*$'\n'}"
-          acct_host="${acct_rest%%$'\n'*}"
+          acct_host="${acct_rest%%$'\n'*}"; acct_rest="${acct_rest#*$'\n'}"
+          acct_principal="${acct_rest%%$'\n'*}"
         fi
-        if [ "$acct_rc" -eq 0 ] && { [ "$acct_username" != "$row_owner" ] || [ "$acct_host" != "$row_host" ]; }; then
-          echo "registry: mcp assets for '$sid' — the owning account '$account' no longer matches OWNER='$row_owner' and HOST='$row_host'; identity cannot be measured" >&2
+        # THE SAME TWO SHAPES _registry_account_principal_for_row READS. An
+        # OWNER that is the account's PRINCIPAL is the shape this product's own
+        # writers emitted before the identity model, and a HOST that names
+        # another machine is a session the hub only deploys to. Neither is a
+        # borrowed identity, and this level must not refuse a grant over a
+        # shape the loader beside it accepts - two readers of one row that
+        # disagree is the drift this file keeps arguing against.
+        if [ "$acct_rc" -eq 0 ] && [ "$acct_username" != "$row_owner" ] \
+           && [ "$acct_principal" != "$row_owner" ]; then
+          echo "registry: mcp assets for '$sid' — the owning account '$account' names neither OWNER='$row_owner' as its username nor as its principal; identity cannot be measured" >&2
           exit 78
         elif [ "$acct_rc" -eq 0 ]; then
           _registry_mcp_collect "$acct_assets" account "$account"
@@ -2835,22 +2844,50 @@ _registry_word_in_list() {
 
 # _registry_row_principal <session> — the HUMAN this row belongs to.
 #
-# STRICT WHEN ACCOUNT IS PRESENT. Its row must load and describe this session's
-# exact Unix owner and host; otherwise the session is borrowing another
-# account's person and the registry cannot vouch for it. Only a legacy row with
-# no ACCOUNT uses OWNER as the principal.
+# STRICT ABOUT THE PERSON, LENIENT ABOUT THE SHAPE. A present ACCOUNT must load
+# and must describe THIS row's person; otherwise the session is borrowing
+# another account's human and the registry cannot vouch for it. Only a legacy
+# row with no ACCOUNT uses OWNER as the principal.
+#
+# TWO SHAPES OF ROW ARE ON DISK, AND BOTH READ. The product's own writers made
+# the first one:
+#
+#   OLD  OWNER = the account's PRINCIPAL, HOST = the estate's HUB_HOST.
+#        Written by `registry session add` and `registry migrate-session`
+#        until the identity model landed.
+#   NEW  OWNER = the account's USERNAME, HOST = the account's HOST.
+#        Written by those same two verbs today.
+#
+# READ LENIENTLY, WRITE STRICTLY - the invariant this file has always stated
+# for the identity fields, and the reason it matters here: a reader that only
+# accepts the shape today's writer emits refuses every row the product wrote
+# yesterday, on estates where USERNAME and PRINCIPAL differ. Those are exactly
+# the estates the account model exists for, so the refusal would land where the
+# feature was needed and nowhere else. `steward registry session realign`
+# rewrites an old row to the new shape.
+#
+# WHAT IS STILL REFUSED: an ACCOUNT that cannot be read at all, and an OWNER
+# that is neither the account's username nor its principal. The second is the
+# borrowed-identity case - a row naming somebody else's person - and no shape
+# of any writer here ever produced it.
+#
+# A HOST THAT MATCHES NEITHER IS A GAP, NOT A FAULT. A session may live on a
+# host the hub only deploys to, and the account row names where the human's
+# login is, not where their work runs; the two were always allowed to differ.
+# The principal does not depend on the host at all, so the mismatch is said out
+# loud on stderr and the row still reads. Strictness belongs to the writer,
+# which forces HOST to the account's own (bin/steward, `session add`).
 _registry_account_principal_for_row() (
   if ! registry_account_load "${1:-}" >/dev/null 2>&1; then
     echo "registry: ${4:-session}: ACCOUNT '${1:-}' cannot be read; the row's principal cannot be measured" >&2
     return 78
   fi
-  if [ "$ACCOUNT_USERNAME" != "${2:-}" ]; then
-    echo "registry: ${4:-session}: OWNER='${2:-}' does not match ACCOUNT '${1:-}' USERNAME='$ACCOUNT_USERNAME'" >&2
+  if [ "$ACCOUNT_USERNAME" != "${2:-}" ] && [ "$ACCOUNT_PRINCIPAL" != "${2:-}" ]; then
+    echo "registry: ${4:-session}: OWNER='${2:-}' is neither ACCOUNT '${1:-}' USERNAME='$ACCOUNT_USERNAME' nor its PRINCIPAL='$ACCOUNT_PRINCIPAL'" >&2
     return 78
   fi
   if [ "$ACCOUNT_HOST" != "${3:-}" ]; then
-    echo "registry: ${4:-session}: HOST='${3:-}' does not match ACCOUNT '${1:-}' HOST='$ACCOUNT_HOST'" >&2
-    return 78
+    echo "registry: ${4:-session}: HOST='${3:-}' is not ACCOUNT '${1:-}' HOST='$ACCOUNT_HOST'; the row still reads - 'steward registry session realign ${4:-session}' rewrites it" >&2
   fi
   printf '%s' "$ACCOUNT_PRINCIPAL"
 )
