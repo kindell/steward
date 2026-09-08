@@ -75,8 +75,8 @@ or when the viewer reads everything.
 | `id` | string | the session's opaque id. |
 | `slug` | string | the short handle a human types. |
 | `label` | string | the display name the estate renders. |
-| `owner` | string | the account that owns the session. |
-| `mine` | boolean | whether `owner` is the viewer. |
+| `owner` | string | the principal id of the person the session belongs to (the account register's `PRINCIPAL`, `OWNER` only when the row carries no resolvable `ACCOUNT`). Never the unix account: `mine` and every axis rule compare it with the viewer, who is a principal. |
+| `mine` | boolean | whether `owner` equals the viewer. |
 | `domain` | string or null | the owning entity. |
 | `project` | string or null | the target project. |
 | `runtime` | string | `claude-code`, `opencode`, `codex`. |
@@ -106,10 +106,10 @@ The axis decides who sees the asset at all:
 
 - **account** - the person's own credential. Only the session's owner, or a
   `readAll` viewer, ever sees it.
-- **entity** - travels when the entity named in `source` is visible, or the
-  session's owner.
+- **entity** - travels when the entity named in `source` is visible, or to the
+  session's owner (a principal).
 - **project** - travels when the entity the project in `source` hangs under is
-  visible, or the session's owner.
+  visible, or to the session's owner (a principal).
 - anything else - dropped. A new axis has to be granted deliberately in
   `filter.jq`; it is never inherited.
 

@@ -411,6 +411,80 @@ is  "a viewer who is a member of nothing and owns nothing still sees nothing" \
     "$(jq -r '[(.entities|length),(.projects|length),(.sessions|length)]|join(" ")' "$D6/current/c.json")" \
     "0 0 0"
 
+echo "== the owner is the PERSON, resolved through the account register =="
+# THE DEFECT THIS SECTION WAS WRITTEN AGAINST. `owner` used to be the session
+# row's raw unix OWNER, and the filter compares `owner` with the viewer, which
+# is a PRINCIPAL id. The two namespaces are different registers: a unix account
+# named after one person's principal id would hand that person somebody else's
+# session as `mine: true`, its account-axis assets, and the project it works on.
+# The row below is exactly that shape - it runs as the unix account `c`, and
+# the account register says the human behind it is `b`.
+#
+# A THIRD ESTATE, NOT AN EDIT TO THE FIRST. Every assertion above counts the
+# sessions and the slugs of the first fixture; growing a row into it would
+# change what those are measuring.
+ROOT3="$T/estate3"
+mkdir -p "$ROOT3"/{estate,sessions.d,entities.d,projects.d,accounts.d,mcp.d,hosts.d,principals.d}
+sed 's/"fixture"/"fixture3"/' "$ROOT/estate/steward.conf" > "$ROOT3/estate/steward.conf"
+printf 'OWNER="b"\nOPERATOR="hub"\n' > "$ROOT3/hosts.d/h1.conf"
+printf 'NAME="Team"\nMEMBERS="b"\nMCP_ASSETS="shared"\n'  > "$ROOT3/entities.d/team.conf"
+printf 'NAME="Work"\nPARENT="team"\nMCP_ASSETS="tool"\n'  > "$ROOT3/projects.d/work.conf"
+# THE ACCOUNT IS THE HOP UNDER TEST: the unix account is `c`, the human is `b`.
+printf 'PRINCIPAL="b"\nHOST="h1"\nUSERNAME="c"\nMCP_ASSETS="mail"\n' > "$ROOT3/accounts.d/c-h1.conf"
+for m in shared tool mail; do
+  printf 'MCP_COMMAND="/usr/bin/%s"\n' "$m" > "$ROOT3/mcp.d/$m.conf"
+done
+printf 'NAME="Ben"\nTAILSCALE_LOGIN="b@example.com"\n' > "$ROOT3/principals.d/b.conf"
+printf 'NAME="Cy"\nTAILSCALE_LOGIN="c@example.com"\n'  > "$ROOT3/principals.d/c.conf"
+SID_P="s-0000000000000041"
+cat > "$ROOT3/sessions.d/$SID_P.conf" <<EOF
+OWNER="c"
+HOST="h1"
+DOMAIN="team"
+REPO_PATH="$T/repo"
+ID="$SID_P"
+SLUG="work-c"
+ACCOUNT="c-h1"
+TARGET_PROJECT="work"
+KIND="work"
+EOF
+# THE FALLBACK ROW: no ACCOUNT at all, so there is nothing to resolve and OWNER
+# is the only answer the estate has. It must still be named, not blanked.
+# ITS OWNER IS A UNIX ACCOUNT NO PRINCIPAL ROW CLAIMS, so the fallback cannot
+# accidentally satisfy the namesake assertions below with a second session.
+SID_N="s-0000000000000042"
+cat > "$ROOT3/sessions.d/$SID_N.conf" <<EOF
+OWNER="d"
+HOST="h1"
+DOMAIN="team"
+REPO_PATH="$T/repo"
+ID="$SID_N"
+SLUG="plain-c"
+TARGET_PROJECT="work"
+KIND="work"
+EOF
+D7="$T/desk7"
+rc="$(env -u STEWARD_LIVENESS_CMD STEWARD_ESTATE_ROOT="$ROOT3" STEWARD_DESK_DIR="$D7" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err7"; echo $?)"
+is  "the third estate snapshots" "$rc" "0"
+[ "$rc" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err7")"
+is  "the owner of a row whose unix account resolves to another person is the PERSON" \
+    "$(jq -r '.sessions[]|select(.slug=="work-c")|.owner' "$D7/current/b.json")" "b"
+is  "and the session is that person's own" \
+    "$(jq -r '.sessions[]|select(.slug=="work-c")|.mine|tostring' "$D7/current/b.json")" "true"
+is  "and the account-axis asset travels to that person" \
+    "$(jq -r '.sessions[]|select(.slug=="work-c")|.mcp|map(select(.axis=="account")|.id)|join(" ")' "$D7/current/b.json")" \
+    "mail"
+# THE UNIX ACCOUNT'S NAMESAKE PRINCIPAL GETS NOTHING. `c` is a person who is a
+# member of no entity and owns no session; the only thing that ever connected
+# them to this row was a string equal to a unix account name.
+is  "the namesake principal sees no session" "$(jq '.sessions|length' "$D7/current/c.json")" "0"
+is  "and no project" "$(jq '.projects|length' "$D7/current/c.json")" "0"
+is  "and no asset anywhere in the file" \
+    "$(jq '[.sessions[]?.mcp[]?]|length' "$D7/current/c.json")" "0"
+is  "a row with no ACCOUNT falls back to OWNER" \
+    "$(jq -r '.sessions[]|select(.slug=="plain-c")|.owner' "$D7/current/_operator.json")" "d"
+
 echo "== the verb's own refusals =="
 out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?
 is  "desk without a verb is a usage error" "$rc" "64"

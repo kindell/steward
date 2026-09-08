@@ -195,6 +195,18 @@ while IFS= read -r n; do
         mcp="$assets"; mcp_reason=""
       fi
     fi
+    # THE OWNER IS THE PERSON, NEVER THE UNIX ACCOUNT. `owner` is compared with
+    # the viewer in desk/filter.jq, and the viewer is a PRINCIPAL id - the
+    # account register's namespace, not the operating system's. Writing the
+    # row's raw OWNER here made the two namespaces meet: a unix account whose
+    # name happens to equal some other person's principal id would hand that
+    # person the session as `mine`, its account-axis assets (their colleague's
+    # own credentials) and the project it works on. The account register is
+    # what knows which human is behind a unix account, and this is the
+    # product's one function for asking it - ACCOUNT through
+    # registry_account_load to ACCOUNT_PRINCIPAL, OWNER only when the row
+    # carries no resolvable ACCOUNT, with a line on stderr saying so.
+    owner="$(_registry_row_principal "$n")"
     sid="${ID:-$n}"
     # KEYED BY THE REGISTRY NAME, NOT THE ID. liveness_rows prints one row per
     # session the shim ANSWERED ABOUT, under the name the estate administers it
@@ -204,7 +216,7 @@ while IFS= read -r n; do
     IFS=$'\t' read -r _lname _ldaemon _ltmux lagent _lruntime _lmodel lactivity _lreason \
       <<< "$live_row"
     jq -cn --arg id "$sid" --arg slug "${SLUG:-$n}" --arg label "$label" \
-           --arg owner "${OWNER:-}" --arg domain "$domain" --arg project "${TARGET_PROJECT:-}" \
+           --arg owner "$owner" --arg domain "$domain" --arg project "${TARGET_PROJECT:-}" \
            --arg runtime "${RUNTIME:-claude-code}" --arg host "${HOST:-}" --arg repo "$repo" \
            --arg measuredAt "$generated_at" \
            --arg agent "${lagent:-unknown}" --arg lastActivity "${lactivity:-unknown}" \
