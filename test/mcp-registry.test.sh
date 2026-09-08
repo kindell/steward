@@ -66,6 +66,10 @@ printf 'PRINCIPAL="bo"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="video-tool"\n'     
 printf 'PRINCIPAL="cy"\nUSERNAME="a"\nHOST="h1"\n'                                     > "$ACC/cy-h1.conf"
 # An account that grants what its team already grants — the dedup case.
 printf 'PRINCIPAL="di"\nUSERNAME="a"\nHOST="h1"\nMCP_ASSETS="chat-tool video-tool"\n' > "$ACC/di-h1.conf"
+# THE ONE ACCOUNT WHOSE USERNAME AND PRINCIPAL DIFFER. Every other account here
+# spells them the same, which is precisely why the account axis could grant on
+# either spelling and no test noticed.
+printf 'PRINCIPAL="ef"\nUSERNAME="svc-ef"\nHOST="h1"\nMCP_ASSETS="crm-tool"\n'      > "$ACC/ef-h1.conf"
 
 # ── THE REGISTER ───────────────────────────────────────────────────────────
 printf 'MCP_COMMAND="/opt/chat/server"\n'                                      > "$MCPD/chat-tool.conf"
@@ -109,6 +113,13 @@ TARGET_ENTITY="beta"'
 sess s-noaccount-quiet 'ACCOUNT="ghost-h1"
 DOMAIN="quiet"
 RC_LABEL="L"'
+# THE TWO SHAPES OF ONE ACCOUNT, side by side. sess() writes OWNER="a", so the
+# strict row is written by hand: OWNER is the account's USERNAME on one and its
+# PRINCIPAL on the other, and everything else is identical.
+printf 'OWNER="svc-ef"\nHOST="h1"\nREPO_PATH="/tmp/x"\nID="s-ef-strict"\nACCOUNT="ef-h1"\nTARGET_ENTITY="beta"\n' \
+  > "$SESS/s-ef-strict.conf"
+printf 'OWNER="ef"\nHOST="h1"\nREPO_PATH="/tmp/x"\nID="s-ef-legacy"\nACCOUNT="ef-h1"\nTARGET_ENTITY="beta"\n' \
+  > "$SESS/s-ef-legacy.conf"
 
 export STEWARD_ESTATE_ROOT="$FX"
 export STEWARD_CONFIG_FILE="$FX/no-such-config"
@@ -490,6 +501,30 @@ is    "27c the refusal is said out loud" \
       "$( [ -s "$FX/e27" ] && echo yes || echo no )" "yes"
 # A LEGAL ACCOUNT STILL RESOLVES — the gate refuses paths, not people.
 is "27d" "$(registry_session_mcp_assets s-ann 2>/dev/null | head -1)" "crm-tool"
+
+echo "== 28. the account axis is granted on the STRICT shape only =="
+# LEVELS 1-3 HANG OFF THE ORG; LEVEL 0 HANGS OFF A UNIX LOGIN. The loader reads
+# both row shapes on purpose, but OWNER is the login a session runs as, and a
+# personal capability is handed to whoever sits at that login. A principal id
+# and a username live in two namespaces nothing requires to be disjoint, so a
+# legacy row whose OWNER is the PRINCIPAL may name SOMEBODY ELSE's login —
+# and level 0 would hand this person's mail and notes to them.
+#
+# WITHHELD, NOT REFUSED, and said out loud: the row still reads, the org levels
+# still grant, rc stays 0. Refusing would stop a legitimate legacy session from
+# starting over a grant it can live without.
+out_strict="$(registry_session_mcp_assets s-ef-strict 2>"$FX/e28a")"; rc_strict=$?
+out_legacy="$(registry_session_mcp_assets s-ef-legacy 2>"$FX/e28b")"; rc_legacy=$?
+is    "28a the strict row gets its account's own asset" "$rc_strict" "0"
+has   "28b crm-tool is there"                           "$out_strict" "crm-tool"
+is    "28c the strict row says nothing"                 "$(cat "$FX/e28a")" ""
+is    "28d the legacy row is NOT refused"               "$rc_legacy" "0"
+hasnt "28e but the account's own asset is withheld"     "$out_legacy" "crm-tool"
+is    "28f while every org level still grants" \
+      "$out_legacy" "$(printf 'chat-tool\nmail-tool')"
+has   "28g and the withholding names the session"       "$(cat "$FX/e28b")" "s-ef-legacy"
+has   "28h and both spellings"                          "$(cat "$FX/e28b")" "USERNAME='svc-ef'"
+has   "28i and the verb that ends the ambiguity"        "$(cat "$FX/e28b")" "realign"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

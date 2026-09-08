@@ -1034,17 +1034,39 @@ registry_session_mcp_assets() {
           acct_host="${acct_rest%%$'\n'*}"; acct_rest="${acct_rest#*$'\n'}"
           acct_principal="${acct_rest%%$'\n'*}"
         fi
-        # THE SAME TWO SHAPES _registry_account_principal_for_row READS. An
-        # OWNER that is the account's PRINCIPAL is the shape this product's own
-        # writers emitted before the identity model, and a HOST that names
-        # another machine is a session the hub only deploys to. Neither is a
-        # borrowed identity, and this level must not refuse a grant over a
-        # shape the loader beside it accepts - two readers of one row that
+        # THE SAME TWO SHAPES _registry_account_principal_for_row READS decide
+        # whether the ROW is legible: an OWNER that is the account's PRINCIPAL
+        # is what this product's own writers emitted before the identity model,
+        # and a HOST naming another machine is a session the hub only deploys
+        # to. Neither is a borrowed identity, and this level must not refuse to
+        # READ a row the loader beside it accepts - two readers of one row that
         # disagree is the drift this file keeps arguing against.
         if [ "$acct_rc" -eq 0 ] && [ "$acct_username" != "$row_owner" ] \
            && [ "$acct_principal" != "$row_owner" ]; then
           echo "registry: mcp assets for '$sid' — the owning account '$account' names neither OWNER='$row_owner' as its username nor as its principal; identity cannot be measured" >&2
           exit 78
+        # BUT THE ACCOUNT AXIS IS GRANTED ON THE STRICT SHAPE ONLY, and this is
+        # the one place the lenient read must not be inherited. Levels 1-3 hang
+        # off the ORG, so a row that is legibly this person's gets them. Level 0
+        # hangs off a UNIX ACCOUNT: OWNER is the login the session runs as, and
+        # a personal capability - a mail account, a note store, a calendar - is
+        # handed to whoever is sitting at that login.
+        #
+        # THE COLLISION THIS CLOSES, and it is reachable in one estate: account
+        # X is PRINCIPAL='p' USERNAME='u', and a legacy row of X carries
+        # OWNER='p'. If some OTHER human's account is USERNAME='p', that row
+        # runs as THEIR login while claiming X's person - and level 0 would
+        # hand X's personal servers to them. Nothing here can tell the two 'p's
+        # apart, because one is a principal id and the other a login, in two
+        # namespaces that were never required to be disjoint.
+        #
+        # WITHHELD, AND SAID OUT LOUD - not a refusal. The row reads, the org
+        # levels resolve, and rc stays 0: refusing here would stop a legitimate
+        # legacy session from starting over a grant it can live without, which
+        # is a bigger fault than the one being closed. The sentence names the
+        # session, both spellings and the verb that ends the ambiguity.
+        elif [ "$acct_rc" -eq 0 ] && [ "$acct_username" != "$row_owner" ]; then
+          echo "registry: mcp assets for '$sid' — OWNER='$row_owner' is account '$account' PRINCIPAL, not its USERNAME='$acct_username'; the org levels still grant, the account's own assets are WITHHELD (a personal grant follows the login, and a principal id is not one). 'steward registry session realign $sid' ends the ambiguity" >&2
         elif [ "$acct_rc" -eq 0 ]; then
           _registry_mcp_collect "$acct_assets" account "$account"
         fi
