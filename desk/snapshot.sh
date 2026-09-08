@@ -221,15 +221,21 @@ while IFS= read -r n; do
       registry_load "$n" >/dev/null || exit $?
       # THE OWNER IS THE PERSON, NEVER THE UNIX ACCOUNT. `owner` is compared
       # with the viewer in desk/filter.jq, and the viewer is a PRINCIPAL id -
-      # the account register's namespace, not the operating system's. Writing
-      # the row's raw OWNER here made the two namespaces meet: a unix account
-      # whose name happens to equal some other person's principal id would hand
-      # that person the session as `mine`, its account-axis assets - their
-      # colleague's own credentials - and the project it works on. A row
-      # carrying an ACCOUNT resolves through registry_account_load to
-      # ACCOUNT_PRINCIPAL and is REFUSED if that account does not describe this
-      # row's own OWNER and HOST; only a legacy row with no ACCOUNT at all uses
-      # OWNER as its principal.
+      # the namespace of the account register, not the one the operating system
+      # keeps. Writing the raw OWNER of the row here made the two namespaces
+      # meet: a unix account whose name happens to equal the principal id of
+      # some other person would hand that person the session as `mine`, its
+      # account-axis assets - the very credentials of a colleague - and the
+      # project it works on. A row carrying an ACCOUNT resolves through
+      # registry_account_load to ACCOUNT_PRINCIPAL and is REFUSED if that
+      # account does not describe the OWNER and HOST of this row; only a legacy
+      # row with no ACCOUNT at all uses OWNER as its principal.
+      #
+      # NO APOSTROPHES IN THIS COMMENT, and no parentheses. It sits inside a
+      # command substitution, and bash 3.2 scans one for its closing
+      # parenthesis without understanding the shell inside it - so either
+      # character here can end the substitution somewhere the reader never
+      # meant. Same rule as lib/registry.sh:723-731 and :779-780.
       principal="$(_registry_row_principal "$n")" || exit $?
       # A NAME, NEVER THE PATH. A repository path names a directory on a
       # machine a colleague has no account on; the name is what a desk shows,

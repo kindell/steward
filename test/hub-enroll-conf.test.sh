@@ -816,8 +816,15 @@ uread="$( export STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.
   registry_load "$uid" >/dev/null 2>&1 || exit $?
   _o="$OWNER"; _h="$HOST"; _a="$ACCOUNT"; _p="${ROW_PRINCIPAL:-}"
   registry_account_load "$_a" >/dev/null 2>&1 || exit 78
-  # THE STRICT RULE, spelled out: a row today's writer would emit names the
-  # account's login and the account's host.
+  # THE STRICT RULE, spelled out: a row in the shape the writers emit today
+  # names the USERNAME of the account and the HOST of the account.
+  #
+  # NO APOSTROPHES IN THIS COMMENT. It sits inside a command substitution, and
+  # bash 3.2 scans one for its closing parenthesis without understanding the
+  # shell inside it - so an apostrophe here opens a quote that never closes,
+  # the rest of the file is swallowed, and the suite exits rc 2 with no
+  # pass/fail line at all. The same rule, measured the same way, is written
+  # down in lib/registry.sh:723-731 and :779-780.
   [ "$ACCOUNT_USERNAME" = "$_o" ] || exit 65
   [ "$ACCOUNT_HOST" = "$_h" ] || exit 65
   printf '%s' "$_p" )"; urrc=$?
