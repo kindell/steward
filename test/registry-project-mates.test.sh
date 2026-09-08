@@ -67,7 +67,7 @@ printf 'NAME="Team"\n' > "$ENT/team.conf"
 printf 'NAME="Work"\nPARENT="team"\n'  > "$PROJ/work.conf"
 printf 'NAME="Other"\nPARENT="team"\n' > "$PROJ/other.conf"
 
-row() { # <name> <owner> <target-line>
+row() { # <name> <owner> <target-line> [rc-label]
   { printf 'OWNER="%s"\nDOMAIN="team"\nREPO_PATH="/tmp/x"\n' "$2"
     # A ROW THAT NAMES NO TARGET MUST NAME ITS LABEL. registry_load derives the
     # display from the target and refuses a row that can do neither — so the
@@ -75,14 +75,19 @@ row() { # <name> <owner> <target-line>
     # and writing it here keeps case 4 a measurement of the helper rather than
     # of a conf the loader would have rejected anyway.
     if [ -n "${3:-}" ]; then printf '%s\n' "$3"; else printf 'RC_LABEL=""\n'; fi
+    # THE OPTIONAL FOURTH ARGUMENT gives a row its own RC_LABEL alongside a
+    # target — precedence 1 over the derived form, so a mate carrying one
+    # proves the line shows what registry_session_display actually returns,
+    # not a re-derivation of the target done a second way here.
+    [ -n "${4:-}" ] && printf 'RC_LABEL="%s"\n' "$4"
   } > "$SESS/$1.conf"
 }
 
 row p1   a 'TARGET_PROJECT="work"'
-row p2   b 'TARGET_PROJECT="work"'
+row p2   b 'TARGET_PROJECT="work"' Ben
 row p3   c 'TARGET_PROJECT="other"'
 row e1   a 'TARGET_ENTITY="team"'
-row e2   b 'TARGET_ENTITY="team"'
+row e2   b 'TARGET_ENTITY="team"' Ann
 row lone c ''
 
 # mates <session> — the helper in a hermetic subshell. OUT carries stdout, RC
@@ -113,7 +118,7 @@ mates_line() { # the same, through the one-line rendering the consumers share
 echo "== 1. THE PROJECT CASE — the other rows on this row's TARGET_PROJECT =="
 mates p1
 is "1: rc 0"                       "$RC"  "0"
-is "1: p1's mate is p2, with its owner" "$OUT" "p2 (b)"
+is "1: p1's mate is p2, with its owner and display" "$OUT" "p2 (b) Ben"
 hasnt "1: the row never lists itself"   "$OUT" "p1"
 hasnt "1: a row on another project is not a mate" "$OUT" "p3"
 
@@ -128,7 +133,7 @@ is "2: nothing printed" "$OUT" ""
 echo "== 3. NO PROJECT — the entity, and ONLY rows that name it directly =="
 mates e1
 is "3: rc 0"                        "$RC"  "0"
-is "3: e1's mate is e2, with its owner" "$OUT" "e2 (b)"
+is "3: e1's mate is e2, with its owner and display" "$OUT" "e2 (b) Ann"
 hasnt "3: a project row is not pulled in through the project's PARENT" "$OUT" "p1"
 hasnt "3: nor the second project row"                                  "$OUT" "p2"
 
@@ -146,11 +151,14 @@ is "5: nothing printed" "$OUT" ""
 
 echo "== 6. TWO MATES: one per line, sorted by name =="
 # p0 sorts before p2 and is added LAST, so the order in the output cannot come
-# from the order the fixture was written in.
+# from the order the fixture was written in. p0 carries no RC_LABEL, so its
+# display comes from the TARGET_PROJECT fallback (registry_display_for) —
+# proving the label is registry_session_display's own answer, not just an
+# echo of an RC_LABEL that happens to be sitting on the row.
 row p0 c 'TARGET_PROJECT="work"'
 mates p1
 is "6: rc 0"            "$RC"  "0"
-is "6: both, sorted"    "$OUT" "$(printf 'p0 (c)\np2 (b)')"
+is "6: both, sorted"    "$OUT" "$(printf 'p0 (c) Team→Work\np2 (b) Ben')"
 
 echo "== 7. THE ONE-LINE RENDERING the three consumers share =="
 # One spelling of the joined form and one spelling of the empty answer, in the
@@ -158,7 +166,7 @@ echo "== 7. THE ONE-LINE RENDERING the three consumers share =="
 # string, and "none" cannot drift into "-" in one of them.
 mates_line p1
 is "7: rc 0"                 "$RC"  "0"
-is "7: comma-joined"         "$OUT" "p0 (c), p2 (b)"
+is "7: comma-joined"         "$OUT" "p0 (c) Team→Work, p2 (b) Ben"
 mates_line p3
 is "7: the empty answer is spelled out" "$OUT" "none"
 mates_line no-such-session

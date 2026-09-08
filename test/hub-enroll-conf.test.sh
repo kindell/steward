@@ -405,8 +405,8 @@ else bad "a request into a project somebody is already on registers" "out=$out2"
 # equality is the only form that also proves the OTHER project's row and the
 # newborn itself are absent.
 mates_j="$(printf '%s' "$out2" | sed -n 's/^project-mates=//p' | head -1)"
-is    "PROOF names the session already on this project, with its owner" \
-      "$mates_j" "mate-other (ann)"
+is    "PROOF names the session already on this project, with its owner and display" \
+      "$mates_j" "mate-other (ann) Team→Other"
 lacks "and never the row on the sibling project" "$mates_j" "$idg"
 lacks "and never the newborn itself"             "$mates_j" "$idj"
 

@@ -617,7 +617,11 @@ registry_session_owning_entity() {
 }
 
 # registry_project_mates <session-name> — the OTHER sessions that work on the
-# same thing this one does, one `<name> (<OWNER>)` per line on stdout.
+# same thing this one does, one `<name> (<OWNER>) <Display>` per line on
+# stdout — the trailing display is whatever registry_session_display returns
+# for that row, and the line falls back to `<name> (<OWNER>)` alone when that
+# lookup does not resolve (see the loop below: a mate that exists but cannot
+# derive a label is still a mate, and is never dropped for it).
 #
 # WHY THE REGISTER ANSWERS THIS. Two sessions aimed at the same project can
 # already reach each other on the bus, and until now nothing told either of them
@@ -700,7 +704,17 @@ registry_project_mates() {
         else
           [ "${TARGET_ENTITY:-}" = "$value" ] || exit 1
         fi
-        printf '%s (%s)' "$row" "$OWNER"
+        # THE DISPLAY IS BEST-EFFORT. A mate that matched above is a mate
+        # regardless of whether its label can be derived — a renamed target
+        # or a forged NAME must not turn a real mate into no mate at all, so
+        # a failed lookup here falls back to the bare form rather than
+        # exiting 1 and losing the row through the same `|| continue` above.
+        disp="$(registry_session_display "$row" 2>/dev/null)"
+        if [ -n "$disp" ]; then
+          printf '%s (%s) %s' "$row" "$OWNER" "$disp"
+        else
+          printf '%s (%s)' "$row" "$OWNER"
+        fi
       )" || continue
       printf '%s\n' "$line"
     done <<ROWS | LC_ALL=C sort
