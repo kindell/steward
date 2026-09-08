@@ -32,6 +32,7 @@
 #   steward job show <id>
 #   steward jobs [--json]
 #   steward selfupdate
+#   steward registry principal add <slug> --name N [--tailscale-login L]... [--oidc-login <issuer>:<sub>]... [--oidc-email E] [--read-all] [--json]
 #   steward registry team add <slug> --name "Display Name" [--member p]... [--json]
 #   steward registry client add <slug> --managed-by <team-slug> --name "Display Name" [--json]
 #   steward registry account add <slug> --principal <p> --host <h> [--username <u>] [--json]
@@ -1146,23 +1147,24 @@ _registry_validate_account_stage() {
 # _principal_validate_row <staged-file> — the validate_fn registry_principal_write
 # calls before publishing a principal row. Same shape as the team/client/
 # account validators above: re-reads the STAGED file and confirms NAME,
-# TAILSCALE_LOGIN and DESK_READ_ALL equal what cmd_registry_principal_add
-# meant to write, byte for byte.
+# TAILSCALE_LOGIN, OIDC_LOGIN, OIDC_EMAIL and DESK_READ_ALL equal what
+# cmd_registry_principal_add meant to write, byte for byte.
 #
 # THEN ASKS THE REGISTER-WIDE QUESTION, UNDER THE LOCK, PER WORD — same shape
 # as _registry_validate_session_stage's (ACCOUNT,SLUG) recheck above.
-# TAILSCALE_LOGIN is a list; uniqueness holds per word, not per row, so every
+# TAILSCALE_LOGIN and OIDC_LOGIN are both lists; uniqueness holds per word and
+# per SOURCE, not per row, so every
 # word of the staged row's list is checked against the register in turn — a
-# row may not carry a login that any OTHER row carries, in any position. The
-# verb's own pre-check (registry_principal_for_login, called before any lock
-# is taken) is a FAST PATH ONLY: two concurrent `principal add` calls for the
-# SAME NEW login can both pass it before either has staged anything. This is
+# row may not carry an identity that any OTHER row carries, in any position.
+# The verb's own pre-check (registry_principal_for_identity, called before any
+# lock is taken) is a FAST PATH ONLY: two concurrent `principal add` calls for
+# the SAME NEW identity can both pass it before either has staged anything. This is
 # the GUARANTEE — it runs after registry_row_write has taken
 # principals.d/.write.lock, so a concurrent winner's row (if any) is
 # guaranteed to already be on disk by the time this runs: the winner cannot
 # release the lock until AFTER its own publish completes (registry_row_write
 # steps 6-8). The staged file's name is `.stage.XXXXXX`, never `<slug>.conf`,
-# so registry_principal_for_login's *.conf scan never matches the row being
+# so registry_principal_for_identity's *.conf scan never matches the row being
 # written — any hit it finds here is necessarily some OTHER principal.
 #
 # THE RC A REFUSAL REPORTS HERE IS 70, NOT 65 — registry_row_write hardcodes
@@ -1171,35 +1173,54 @@ _registry_validate_account_stage() {
 # at 70 too). 65 means "refused before the lock" (the verb's pre-check);
 # 70 means "refused under it" (here). No remapping between the two.
 _principal_validate_row() {
-  local file="$1" NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL=""
+  # EVERY FIELD THE ROW CAN CARRY IS DECLARED local BEFORE THE source. A field
+  # left out of this list would be published into the CALLER's shell by the
+  # first row that carries it - the two OIDC fields are here for exactly that
+  # reason, not for symmetry.
+  local file="$1" NAME="" TAILSCALE_LOGIN="" DESK_READ_ALL="" OIDC_LOGIN="" OIDC_EMAIL=""
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: staged principal file did not source: $file" >&2; return 70; }
-  if [ "$NAME" != "$_REGW_EXPECT_NAME" ]; then
+  if [ "$NAME" != "${_REGW_EXPECT_NAME:-}" ]; then
     echo "registry: staged principal file's NAME does not match what was written: $file" >&2
     return 70
   fi
-  if [ "$TAILSCALE_LOGIN" != "$_REGW_EXPECT_TAILSCALE_LOGIN" ]; then
+  if [ "$TAILSCALE_LOGIN" != "${_REGW_EXPECT_TAILSCALE_LOGIN:-}" ]; then
     echo "registry: staged principal file's TAILSCALE_LOGIN does not match what was written: $file" >&2
     return 70
   fi
-  if [ "$DESK_READ_ALL" != "$_REGW_EXPECT_DESK_READ_ALL" ]; then
+  if [ "$OIDC_LOGIN" != "${_REGW_EXPECT_OIDC_LOGIN:-}" ]; then
+    echo "registry: staged principal file's OIDC_LOGIN does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$OIDC_EMAIL" != "${_REGW_EXPECT_OIDC_EMAIL:-}" ]; then
+    echo "registry: staged principal file's OIDC_EMAIL does not match what was written: $file" >&2
+    return 70
+  fi
+  if [ "$DESK_READ_ALL" != "${_REGW_EXPECT_DESK_READ_ALL:-}" ]; then
     echo "registry: staged principal file's DESK_READ_ALL does not match what was written: $file" >&2
     return 70
   fi
-  _registry_words "$TAILSCALE_LOGIN"
-  local w other rc2
-  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
-    other="$(registry_principal_for_login "$w" 2>/dev/null)"; rc2=$?
-    case "$rc2" in
-      0)
-        echo "registry: the login '$w' already belongs to principal '$other' — one login, one human — refusing" >&2
-        return 70
-        ;;
-      65)
-        echo "registry: the login '$w' already maps to more than one principal — refusing to add a third — one login, one human" >&2
-        return 70
-        ;;
+  # THE REGISTER-WIDE QUESTION, ASKED UNDER THE LOCK, PER WORD, PER SOURCE.
+  # Both lists are lists, and uniqueness holds per word in either of them.
+  local w other rc2 src
+  for src in tailscale oidc; do
+    case "$src" in
+      tailscale) _registry_words "$TAILSCALE_LOGIN" ;;
+      *)         _registry_words "$OIDC_LOGIN" ;;
     esac
+    for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+      other="$(registry_principal_for_identity "$src" "$w" 2>/dev/null)"; rc2=$?
+      case "$rc2" in
+        0)
+          echo "registry: the identity '$w' already belongs to principal '$other' - one identity, one human - refusing" >&2
+          return 70
+          ;;
+        65)
+          echo "registry: the identity '$w' already maps to more than one principal - refusing to add a third - one identity, one human" >&2
+          return 70
+          ;;
+      esac
+    done
   done
   return 0
 }
@@ -1755,7 +1776,9 @@ cmd_registry_account_add() {
   return 0
 }
 
-# cmd_registry_principal_add <slug> --name N --tailscale-login L [--tailscale-login L2 ...] [--read-all] [--json]
+# cmd_registry_principal_add <slug> --name N [--tailscale-login L]...
+#                            [--oidc-login <issuer-slug>:<subject>]...
+#                            [--oidc-email E] [--read-all] [--json]
 #
 # Writes principals.d/<slug>.conf through the same shared serializer and
 # writer transaction as team/client/account add — registry_principal_write is
@@ -1769,7 +1792,17 @@ cmd_registry_account_add() {
 # write (so `--tailscale-login a --tailscale-login a` and a bare `a` both
 # write one word).
 #
-# EVERY LOGIN MUST BE UNIQUE ACROSS THE REGISTER, PER WORD. Two principal
+# --oidc-login IS THE SECOND IDENTITY SOURCE and is collected exactly the same
+# way, with one difference that is the whole reason it is a separate list: its
+# words are NOT case-folded, because the subject half is the provider's opaque
+# string (see _registry_oidc_login_valid). AT LEAST ONE SOURCE IS REQUIRED -
+# neither flag alone is - which is the rule registry_principal_load already
+# enforces on the read side; refusing here keeps the verb from writing a row
+# its own reader would then refuse to load. --oidc-email is a DISPLAY value
+# only: nothing is ever matched on it, so it is not part of the uniqueness
+# question below.
+#
+# EVERY IDENTITY MUST BE UNIQUE ACROSS THE REGISTER, PER WORD, PER SOURCE. Two
 # rows sharing one login word — in any position — is exactly the ambiguity
 # registry_principal_for_login refuses at lookup time (rc 65) — checking it
 # HERE, before anything is staged, means the ORDINARY case (no race, just a
@@ -1787,8 +1820,8 @@ cmd_registry_account_add() {
 # every validate_fn failure — no remapping between the two, see the comment
 # above _principal_validate_row).
 cmd_registry_principal_add() {
-  local want_json="" slug="" name="" read_all="" a
-  local logins=()
+  local want_json="" slug="" name="" read_all="" oidc_email="" a
+  local logins=() oidcs=()
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
 
   while [ $# -gt 0 ]; do
@@ -1800,6 +1833,12 @@ cmd_registry_principal_add() {
       --tailscale-login)
         [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login needs a value" 64; return 64; }
         logins+=("$2"); shift 2 ;;
+      --oidc-login)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry principal add: --oidc-login needs a value" 64; return 64; }
+        oidcs+=("$2"); shift 2 ;;
+      --oidc-email)
+        [ $# -ge 2 ] || { _reg_fail "$want_json" "steward registry principal add: --oidc-email needs a value" 64; return 64; }
+        oidc_email="$2"; shift 2 ;;
       --read-all)
         read_all="yes"; shift ;;
       -*)
@@ -1818,7 +1857,6 @@ cmd_registry_principal_add() {
     return 64
   fi
   [ -n "$name" ] || { _reg_fail "$want_json" "steward registry principal add: --name is required" 64; return 64; }
-  [ "${#logins[@]}" -gt 0 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login is required" 64; return 64; }
 
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
@@ -1830,7 +1868,7 @@ cmd_registry_principal_add() {
   # occurrences of the flag. A malformed word anywhere refuses before
   # anything is staged.
   local joined="" one
-  for one in "${logins[@]}"; do
+  for one in "${logins[@]+"${logins[@]}"}"; do
     joined="${joined:+$joined }$one"
   done
   _registry_words "$joined"
@@ -1845,19 +1883,61 @@ cmd_registry_principal_add() {
     seen="$seen $lw"
     login_words+=("$lw")
   done
-  [ "${#login_words[@]}" -gt 0 ] || { _reg_fail "$want_json" "steward registry principal add: --tailscale-login is required" 64; return 64; }
   local login_joined=""
-  for w in "${login_words[@]}"; do
+  for w in "${login_words[@]+"${login_words[@]}"}"; do
     login_joined="${login_joined:+$login_joined }$w"
   done
 
-  # DUPLICATE, BEFORE THE WRITE, PER WORD — see the comment above this
-  # function.
+  # THE OIDC LIST, COLLECTED THE SAME WAY: repeated flags and space-separated
+  # values are one list, every word validated on its own, duplicates within the
+  # row collapsed. No case folding - the subject half is the provider's.
+  local ojoined="" oone
+  for oone in "${oidcs[@]+"${oidcs[@]}"}"; do
+    ojoined="${ojoined:+$ojoined }$oone"
+  done
+  _registry_words "$ojoined"
+  local oseen="" oidc_words=()
+  for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+    if ! _registry_oidc_login_valid "$w"; then
+      _reg_fail "$want_json" "steward registry principal add: --oidc-login '$(registry_printable "$w")' must look like <issuer-slug>:<subject>" 64
+      return 64
+    fi
+    case " $oseen " in *" $w "*) continue ;; esac
+    oseen="$oseen $w"
+    oidc_words+=("$w")
+  done
+  local oidc_joined=""
+  for w in "${oidc_words[@]+"${oidc_words[@]}"}"; do
+    oidc_joined="${oidc_joined:+$oidc_joined }$w"
+  done
+  # AT LEAST ONE SOURCE, the same rule the reader enforces. Checked here so the
+  # verb refuses before staging rather than writing a row its own reader will
+  # not load.
+  if [ -z "$login_joined" ] && [ -z "$oidc_joined" ]; then
+    _reg_fail "$want_json" "steward registry principal add: an identity is required - give --tailscale-login, --oidc-login, or both" 64
+    return 64
+  fi
+  if [ -n "$oidc_email" ]; then
+    case "$oidc_email" in
+      *[[:space:]]*) _reg_fail "$want_json" "steward registry principal add: --oidc-email must not contain whitespace" 64; return 64 ;;
+    esac
+  fi
+
+  # DUPLICATE, BEFORE THE WRITE, PER WORD, PER SOURCE - see the comment above
+  # this function. This is the FAST PATH; _principal_validate_row is the
+  # guarantee.
   local other
-  for w in "${login_words[@]}"; do
-    other="$(registry_principal_for_login "$w" 2>/dev/null)"
+  for w in "${login_words[@]+"${login_words[@]}"}"; do
+    other="$(registry_principal_for_identity tailscale "$w" 2>/dev/null)"
     if [ -n "$other" ]; then
-      _reg_fail "$want_json" "steward registry principal add: the login '$w' already belongs to principal '$other' — one login, one human" 65
+      _reg_fail "$want_json" "steward registry principal add: the login '$w' already belongs to principal '$other' - one identity, one human" 65
+      return 65
+    fi
+  done
+  for w in "${oidc_words[@]+"${oidc_words[@]}"}"; do
+    other="$(registry_principal_for_identity oidc "$w" 2>/dev/null)"
+    if [ -n "$other" ]; then
+      _reg_fail "$want_json" "steward registry principal add: the identity '$w' already belongs to principal '$other' - one identity, one human" 65
       return 65
     fi
   done
@@ -1865,7 +1945,7 @@ cmd_registry_principal_add() {
   # See the matching comment in cmd_registry_team_add: _registry_emit_kv's
   # own refusal is CAPTURED, never left to leak onto whatever real stderr
   # this process has.
-  local kv_name kv_login rc kv_err
+  local kv_name kv_login kv_oidc kv_omail rc kv_err
   kv_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry principal add: cannot create a temporary file" 70; return 70; }
   kv_name="$(_registry_emit_kv NAME "$name" 2>"$kv_err")"; rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -1874,14 +1954,28 @@ cmd_registry_principal_add() {
     return 64
   fi
   kv_login="$(_registry_emit_kv TAILSCALE_LOGIN "$login_joined" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry principal add: --tailscale-login contains a control character or newline" 64
+    return 64
+  fi
+  kv_oidc="$(_registry_emit_kv OIDC_LOGIN "$oidc_joined" 2>"$kv_err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$kv_err"
+    _reg_fail "$want_json" "steward registry principal add: --oidc-login contains a control character or newline" 64
+    return 64
+  fi
+  kv_omail="$(_registry_emit_kv OIDC_EMAIL "$oidc_email" 2>"$kv_err")"; rc=$?
   rm -f "$kv_err"
   if [ "$rc" -ne 0 ]; then
-    _reg_fail "$want_json" "steward registry principal add: --tailscale-login contains a control character or newline" 64
+    _reg_fail "$want_json" "steward registry principal add: --oidc-email contains a control character or newline" 64
     return 64
   fi
 
   _REGW_EXPECT_NAME="$name"
   _REGW_EXPECT_TAILSCALE_LOGIN="$login_joined"
+  _REGW_EXPECT_OIDC_LOGIN="$oidc_joined"
+  _REGW_EXPECT_OIDC_EMAIL="$oidc_email"
   _REGW_EXPECT_DESK_READ_ALL="$read_all"
   local rw_err; rw_err="$(mktemp)" || {
     _reg_fail "$want_json" "steward registry principal add: cannot create a temporary file" 70
@@ -1889,10 +1983,18 @@ cmd_registry_principal_add() {
   }
   # HEADER + TRAILING NEWLINE — see the matching comment in
   # cmd_registry_team_add.
+  #
+  # A FIELD THAT WAS NOT GIVEN GETS NO LINE. A row with only a tailnet login
+  # must be byte-identical to what this verb wrote before OIDC existed - the
+  # register is in git, and a diff on every row would hide the one that
+  # changed meaning. The header line is byte-for-byte the one it always was,
+  # for the same reason.
   local content
-  content="$(printf '# %s — principal, written by steward registry principal add.\n%s\n%s' \
-    "$slug" "$kv_name" "$kv_login")"
-  [ -n "$read_all" ] && content="$content"$'\n''DESK_READ_ALL="yes"'
+  content="$(printf '# %s — principal, written by steward registry principal add.\n%s' "$slug" "$kv_name")"
+  [ -n "$login_joined" ] && content="$content"$'\n'"$kv_login"
+  [ -n "$oidc_joined" ]  && content="$content"$'\n'"$kv_oidc"
+  [ -n "$oidc_email" ]   && content="$content"$'\n'"$kv_omail"
+  [ -n "$read_all" ]     && content="$content"$'\n''DESK_READ_ALL="yes"'
   content="$content"$'\n'
   registry_principal_write "$slug" "$content" _principal_validate_row 2>"$rw_err"
   rc=$?
@@ -1909,10 +2011,13 @@ cmd_registry_principal_add() {
   local file; file="$(registry_principal_dir)/$slug.conf"
   if [ -n "$want_json" ]; then
     local ra_bool=false; [ -n "$read_all" ] && ra_bool=true
-    _json ok true kind principal slug "$slug" name "$name" tailscaleLogin "$login_joined" readAll "$ra_bool" file "$file"
+    _json ok true kind principal slug "$slug" name "$name" \
+      tailscaleLogin "$login_joined" oidcLogin "$oidc_joined" oidcEmail "$oidc_email" \
+      readAll "$ra_bool" file "$file"
   else
-    printf 'steward: wrote principals.d/%s.conf (principal %s, login %s%s)\n' \
-      "$slug" "$name" "$login_joined" "$( [ -n "$read_all" ] && printf ', read-all' )"
+    printf 'steward: wrote principals.d/%s.conf (principal %s, identities %s%s)\n' \
+      "$slug" "$name" "${login_joined:-none}${oidc_joined:+ $oidc_joined}" \
+      "$( [ -n "$read_all" ] && printf ', read-all' )"
   fi
   return 0
 }
