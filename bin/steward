@@ -5144,6 +5144,26 @@ _migrate_snap() {
 # registry_principal_for_username makes. Subshelled per row for the reason that
 # scanner gives: a row is SOURCED, and a lowercase assignment in operator data
 # must not reach this loop.
+#
+# IT ASKS THE REGISTER, NOT THE FILESYSTEM, AND THAT IS A LIMIT WORTH NAMING.
+# The obvious stronger check - does the home the new OWNER implies actually
+# exist - cannot be made from here today: lib/registry.sh derives OWNER_HOME as
+# a fixed macOS path, so on a Linux estate that directory never exists and a
+# refusal on it would refuse every realign on the machines the verb is most
+# needed on. Measured on this checkout: the home root the loader builds from is
+# absent on the Linux host this branch is developed on. A verb that refuses
+# correct input everywhere is worse than one that measures what it can, so the
+# register is what is asked, and this paragraph is here so the next reader does
+# not mistake the gap for an oversight. The filesystem check belongs with the
+# home-root question, not with this scan.
+#
+# THE COMPARISON READS THE LOCAL, NOT $1. It read $1 - which happens to hold
+# the same string today, because the substitution inherits the function
+# positionals and nothing shifts them. It is the same value by coincidence of
+# the current body, not by anything the function states: one `shift`, one
+# wrapper that forwards more arguments, and the scan starts matching a
+# different string while every test still passes. The parameter is named on
+# the first line; the check names it too.
 _realign_login_registered() { # <login>
   local login="${1:-}" d f hit
   [ -n "$login" ] || return 1
@@ -5152,7 +5172,7 @@ _realign_login_registered() { # <login>
   for f in "$d"/*.conf; do
     [ -f "$f" ] || continue
     hit="$( registry_account_load "$(basename "$f" .conf)" >/dev/null 2>&1 &&
-            [ "$ACCOUNT_USERNAME" = "$1" ] && printf 'y' )"
+            [ "$ACCOUNT_USERNAME" = "$login" ] && printf 'y' )"
     [ -n "$hit" ] && return 0
   done
   return 1
