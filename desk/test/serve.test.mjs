@@ -650,6 +650,47 @@ test('a bracketed IPv6 literal with a trailing port is normalized to the bare ad
   }
 });
 
+// THE TRAILING-PORT GUARD NEVER EATS PART OF A BARE IPV6 ADDRESS. Stripping a
+// trailing `:<port>` only applies when what remains still has no colon of its
+// own (see normalizeAddr); without that guard a bare address like
+// `2001:db8::7` is misread as host `2001:db8:` with port `7`, and a different
+// address that merely shares the same prefix before the last colon would
+// collide with it once both are truncated to `2001:db8:`.
+test('a bare IPv6 self address is not truncated into colliding with an unrelated address', async () => {
+  const sock2 = join(T, 'self-ipv6-guard.sock');
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '2001:db8::7' });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '2001:db8::9' }, B));
+    assert.equal(r.status, 200);
+    assert.ok(r.body.includes('work-a'));
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+// AN EXTRA ADDRESS THAT NORMALIZES TO EMPTY MUST NEVER JOIN SELF_ADDRS. The
+// non-empty check on a STEWARD_DESK_SELF_ADDRS token runs on the raw token,
+// before normalizeAddr strips it down - a token like `::ffff:` is non-empty
+// on its own but normalizes to the empty string, and an empty string sitting
+// in SELF_ADDRS would match the empty string a trailing comma in a
+// forwarded-for header also normalizes to (a split on a trailing comma
+// always yields one blank final entry).
+test('an extra self address that normalizes to empty never matches a blank forwarded-for entry', async () => {
+  const sock2 = join(T, 'self-addrs-empty.sock');
+  const env = childEnv({ STEWARD_DESK_SOCK: sock2, STEWARD_DESK_SELF_ADDRS: '::ffff:' });
+  let handle;
+  try {
+    handle = await spawnUp(env, sock2);
+    const r = await reqTo(sock2, 'GET', '/desk/', Object.assign({ 'x-forwarded-for': '198.51.100.9,' }, B));
+    assert.equal(r.status, 200);
+    assert.ok(r.body.includes('work-a'));
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // A DEAD GATE IS AN OUTAGE, NOT A REFUSAL. Everything below spawns its own
 // server, because the shared `child` above must stay on the silent 403 path

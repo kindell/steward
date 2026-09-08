@@ -86,10 +86,12 @@
 //       live desk already holds (never stolen - see bindSocket below), or a
 //       STEWARD_DESK_LISTEN value that does not name a loopback host with a
 //       usable port (see parseListen below).
-//   78  desk/bin/desk-paths could not answer, or desk/bin/principal-for-login
-//       is not runnable (checked once at startup with accessSync). A guessed
-//       path, or a gate nobody could even ask, is a second desk nobody is
-//       reading, so there is no fallback for either.
+//   78  desk/bin/desk-paths could not answer, desk/bin/principal-for-login
+//       is not runnable (checked once at startup with accessSync), or the
+//       host's own network interfaces could not be read. A guessed path, a
+//       gate nobody could even ask, or a self-address set built on a partial
+//       read is a second desk nobody is reading, so there is no fallback for
+//       any of the three.
 // =======================================================================
 
 import http from 'node:http';
@@ -274,7 +276,9 @@ for (const ifaces of Object.values(ownInterfaces)) {
   }
 }
 for (const extra of (process.env.STEWARD_DESK_SELF_ADDRS || '').split(/\s+/)) {
-  if (extra) SELF_ADDRS.add(normalizeAddr(extra));
+  if (!extra) continue;
+  const n = normalizeAddr(extra);
+  if (n) SELF_ADDRS.add(n);
 }
 
 // A NODE CANNOT VOUCH FOR A PERSON WHEN IT IS THE ONE ASKING. Measured on a
