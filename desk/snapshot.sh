@@ -202,8 +202,43 @@ names="$(registry_list)" || exit 78
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   (
-    registry_load "$n" >/dev/null; load_rc=$?
+    # THE ROW IS SOURCED ONE SUBSHELL DEEPER THAN THE SCOPE THAT USES IT.
+    # registry_load SOURCES an operator-owned conf, and a conf can assign
+    # anything - including the lowercase names this block decides with. `n` is
+    # the one that matters: it names the session on every line below, so a row
+    # carrying `n="some-other-session"` would have its fields written out under
+    # a name it chose. `tmp`, `steward`, `live_rows` and `generated_at` are in
+    # the same scope and just as writable. So the load happens inside a nested
+    # command substitution and only the fields this block asked for cross back,
+    # as JSON, through a channel that carries values and not assignments.
+    fields="$(
+      registry_load "$n" >/dev/null || exit $?
+      # THE OWNER IS THE PERSON, NEVER THE UNIX ACCOUNT. `owner` is compared
+      # with the viewer in desk/filter.jq, and the viewer is a PRINCIPAL id -
+      # the account register's namespace, not the operating system's. Writing
+      # the row's raw OWNER here made the two namespaces meet: a unix account
+      # whose name happens to equal some other person's principal id would hand
+      # that person the session as `mine`, its account-axis assets - their
+      # colleague's own credentials - and the project it works on. A row
+      # carrying an ACCOUNT resolves through registry_account_load to
+      # ACCOUNT_PRINCIPAL and is REFUSED if that account does not describe this
+      # row's own OWNER and HOST; only a legacy row with no ACCOUNT at all uses
+      # OWNER as its principal.
+      principal="$(_registry_row_principal "$n")" || exit $?
+      # A NAME, NEVER THE PATH. A repository path names a directory on a
+      # machine a colleague has no account on; the name is what a desk shows,
+      # and the path is what an allowlist exists to keep out of the answer.
+      repo_name=""
+      [ -n "${REPO_PATH:-}" ] && repo_name="$(basename "$REPO_PATH")"
+      jq -cn --arg id "${ID:-$n}" --arg slug "${SLUG:-$n}" \
+             --arg project "${TARGET_PROJECT:-}" --arg runtime "${RUNTIME:-claude-code}" \
+             --arg host "${HOST:-}" --arg owner "$principal" --arg repo "$repo_name" \
+        '{id:$id,slug:$slug,project:$project,runtime:$runtime,host:$host,owner:$owner,repo:$repo}'
+    )"; load_rc=$?
     if [ "$load_rc" -ne 0 ]; then
+      # A REFUSAL STOPS THE WHOLE SNAPSHOT WHEN IT IS AN IDENTITY REFUSAL. One
+      # file per principal is written from this sweep, and a file with one
+      # session's owner guessed is worse than no generation at all.
       if [ "$load_rc" -eq 78 ]; then
         echo "desk snapshot: session '$n': invalid account identity - refusing the snapshot" >&2
         exit 78
@@ -211,14 +246,16 @@ while IFS= read -r n; do
       echo "desk snapshot: session '$n': the registry refuses the row - skipped" >&2
       exit 0
     fi
+    sid="$(jq -r '.id' <<< "$fields")"
+    session_slug="$(jq -r '.slug' <<< "$fields")"
+    session_project="$(jq -r '.project' <<< "$fields")"
+    session_runtime="$(jq -r '.runtime' <<< "$fields")"
+    session_host="$(jq -r '.host' <<< "$fields")"
+    owner="$(jq -r '.owner' <<< "$fields")"
+    repo="$(jq -r '.repo' <<< "$fields")"
     label="$(registry_session_display "$n" 2>/dev/null)" || label="$n"
     [ -n "$label" ] || label="$n"
     domain="$(registry_session_owning_entity "$n" 2>/dev/null)" || domain=""
-    # A NAME, NEVER THE PATH. A repository path names a directory on a machine
-    # a colleague has no account on; the name is what a desk shows, and the
-    # path is what an allowlist exists to keep out of the answer.
-    repo=""
-    [ -n "${REPO_PATH:-}" ] && repo="$(basename "$REPO_PATH")"
     # THE MCP SURFACE COMES FROM THE VERB THAT ALREADY REFUSES TO PRINT A
     # COMMAND LINE, not from the mcp register. rc != 0 means the org would not
     # resolve, and an unresolved surface is `null` plus a reason in the RAW
@@ -229,23 +266,6 @@ while IFS= read -r n; do
         mcp="$assets"; mcp_reason=""
       fi
     fi
-    # THE OWNER IS THE PERSON, NEVER THE UNIX ACCOUNT. `owner` is compared with
-    # the viewer in desk/filter.jq, and the viewer is a PRINCIPAL id - the
-    # account register's namespace, not the operating system's. Writing the
-    # row's raw OWNER here made the two namespaces meet: a unix account whose
-    # name happens to equal some other person's principal id would hand that
-    # person the session as `mine`, its account-axis assets (their colleague's
-    # own credentials) and the project it works on. The account register is
-    # what knows which human is behind a unix account, and this is the
-    # product's one function for asking it: a row carrying an ACCOUNT resolves
-    # through registry_account_load to ACCOUNT_PRINCIPAL and is REFUSED if that
-    # account does not describe this row's own OWNER and HOST; only a legacy row
-    # with no ACCOUNT at all uses OWNER as its principal. A refusal stops the
-    # whole snapshot rather than writing one file with a guessed owner in it.
-    owner="$(_registry_row_principal "$n")" || exit 78
-    sid="${ID:-$n}"; session_slug="${SLUG:-$n}"
-    session_project="${TARGET_PROJECT:-}"; session_runtime="${RUNTIME:-claude-code}"
-    session_host="${HOST:-}"
     # KEYED BY THE REGISTRY NAME, NOT THE ID. liveness_rows prints one row per
     # session the shim ANSWERED ABOUT, under the name the estate administers it
     # by - the same word registry_list yields - and liveness_for is what turns

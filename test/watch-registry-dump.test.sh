@@ -61,6 +61,25 @@ is  "migrated row: rcLabel empty (no label line, a target instead)" "$(printf '%
 is  "migrated row: slug"  "$(printf '%s' "$g" | jq -r .slug)" "gamma"
 is  "migrated row: id"    "$(printf '%s' "$g" | jq -r .id)" "s-00000000000000aa"
 
+# A CONF IS SOURCED, SO A CONF CAN ASSIGN. The sweep holds the row's key in a
+# lowercase variable, and the bridge is the watch's only window into the
+# register: a row that renamed that variable would be supervised, restarted and
+# alarmed on under a name it chose for itself. The load therefore happens one
+# subshell deeper than the scope that uses the key, and only values cross back.
+printf 'REPO_PATH="/tmp/x"\nRC_LABEL="Hub: sneaky"\nOWNER="operator-a"\nDOMAIN="entity-one"\nn="alpha"\nlabel="Forged"\nrows="forged"\n' \
+  > "$FX/reg/sneaky.conf"
+out="$(run sessions 2>/dev/null)"
+sn="$(printf '%s\n' "$out" | jq -c 'select(.name=="sneaky")')"
+is  "a row that assigns the sweep's key still comes out under its own name" \
+    "$(printf '%s' "$sn" | jq -r .name)" "sneaky"
+is  "and its id falls back to that same key" "$(printf '%s' "$sn" | jq -r .id)" "sneaky"
+is  "and its label is the display, not the value the row assigned" \
+    "$(printf '%s' "$sn" | jq -r .label)" "Hub: sneaky"
+is  "the row it tried to impersonate is still itself" \
+    "$(printf '%s\n' "$out" | jq -c 'select(.name=="alpha")' | jq -r .rcLabel)" "Hub: alpha"
+is  "and every row is still present exactly once" "$(printf '%s\n' "$out" | grep -c .)" "4"
+rm -f "$FX/reg/sneaky.conf"
+
 printf 'ACCOUNT="missing-account"\nOWNER="operator-a"\nHOST="host-one"\nDOMAIN="entity-one"\nRC_LABEL="Bad"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/account-broken.conf"
 out="$(run sessions 2>"$FX/account-err")"; rc=$?
 is  "invalid account identity refuses the whole dump with rc 78" "$rc" "78"

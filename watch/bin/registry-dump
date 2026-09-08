@@ -51,17 +51,30 @@ case "${1:-}" in
       # fails to load must not leave the previous row's values behind. Ordinary
       # malformed rows are skipped and named; an invalid ACCOUNT refuses the
       # whole dump because an incomplete watch set must not look authoritative.
+      #
+      # AND ONE SUBSHELL DEEPER STILL FOR THE LOAD ITSELF. A conf is SOURCED
+      # here, so it can assign the lowercase names around it - `n` above all,
+      # which is the key the watch supervises this row by and the argument the
+      # display lookup takes. A row that set `n` would be dumped under a name
+      # of its own choosing. Only the fields asked for cross back, as JSON.
       row="$(
-        registry_load "$n" >/dev/null; load_rc=$?
+        fields="$(
+          registry_load "$n" >/dev/null || exit $?
+          jq -cn --arg id "${ID:-}" --arg slug "${SLUG:-}" --arg rcLabel "${RC_LABEL:-}" \
+                 --arg host "${HOST:-}" --arg owner "${OWNER:-}" \
+            '{id:$id,slug:$slug,rcLabel:$rcLabel,host:$host,owner:$owner}'
+        )"; load_rc=$?
         if [ "$load_rc" -ne 0 ]; then
           [ "$load_rc" -eq 78 ] && exit 78
           echo "registry-dump: $n: the registry refuses the row - skipped" >&2
           exit 0
         fi
         label="$(registry_session_display "$n" 2>/dev/null || printf '%s' "$n")"
-        jq -cn --arg name "$n" --arg id "${ID:-$n}" --arg slug "${SLUG:-}" --arg rcLabel "${RC_LABEL:-}" \
-               --arg label "$label" --arg host "${HOST:-}" --arg owner "${OWNER:-}" \
-               '{name:$name,id:$id,slug:$slug,rcLabel:$rcLabel,label:$label,host:$host,owner:$owner}'
+        # THE NAME IS THE KEY THE SWEEP HOLDS, never a value out of the conf,
+        # and an id the row did not carry falls back to that same key.
+        jq -c --arg name "$n" --arg label "$label" \
+          '{name:$name, id:(if .id == "" then $name else .id end), slug:.slug,
+            rcLabel:.rcLabel, label:$label, host:.host, owner:.owner}' <<< "$fields"
       )"; row_rc=$?
       [ "$row_rc" -eq 78 ] && exit 78
       [ "$row_rc" -eq 0 ] || continue

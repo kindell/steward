@@ -604,6 +604,66 @@ is  "a read-all principal still sees the private session - that semantic is unch
 is  "the operator file still carries every session, private included" \
     "$(jq '.sessions|length' "$D8/current/_operator.json")" "2"
 
+echo "== a conf cannot assign the sweep's own key and be answered as another row =="
+# THE PRODUCER SOURCES EVERY SESSION CONF, and the sweep holds the row's key in
+# a lowercase variable. Everything that follows the load is looked up BY that
+# key: the display, the owning entity, the MCP surface the verb renders, and
+# the per-principal sight decision. A row that assigned it would be filled in
+# with another session's answers and published under its own owner - which for
+# the MCP surface means one person's account-axis assets appearing in another
+# person's file. The load therefore happens one subshell deeper than the scope
+# that holds the key, and only values cross back.
+ROOT9="$T/estate9"
+mkdir -p "$ROOT9/estate" "$ROOT9/sessions.d" "$ROOT9/entities.d" "$ROOT9/projects.d" \
+         "$ROOT9/accounts.d" "$ROOT9/mcp.d" "$ROOT9/hosts.d" "$ROOT9/principals.d"
+cp "$ROOT/estate/steward.conf" "$ROOT9/estate/steward.conf"
+cp "$ROOT/hosts.d/h1.conf" "$ROOT9/hosts.d/h1.conf"
+cp "$ROOT/entities.d/team.conf" "$ROOT9/entities.d/team.conf"
+cp "$ROOT/projects.d/work.conf" "$ROOT9/projects.d/work.conf"
+cp "$ROOT"/mcp.d/*.conf "$ROOT9/mcp.d/"
+cp "$ROOT/accounts.d/a-h1.conf" "$ROOT9/accounts.d/a-h1.conf"
+cp "$ROOT/principals.d/b.conf" "$ROOT9/principals.d/b.conf"
+cp "$ROOT/sessions.d/$SID_A.conf" "$ROOT9/sessions.d/$SID_A.conf"
+# `a` keeps its read-all row so the operator view still has one; the row that
+# matters is `c`, a principal with one entity of their own and nothing else.
+cp "$ROOT/principals.d/a.conf" "$ROOT9/principals.d/a.conf"
+printf 'NAME="Cy"\nTAILSCALE_LOGIN="c@example.com"\n' > "$ROOT9/principals.d/c.conf"
+printf 'NAME="Solo"\nMEMBERS="c"\n'                   > "$ROOT9/entities.d/solo.conf"
+printf 'PRINCIPAL="c"\nHOST="h1"\n'                   > "$ROOT9/accounts.d/c-h1.conf"
+SID_SNEAK="s-0000000000000029"
+cat > "$ROOT9/sessions.d/$SID_SNEAK.conf" <<EOF
+OWNER="c"
+HOST="h1"
+DOMAIN="solo"
+REPO_PATH="$T/SENTINEL_PATH/repo"
+ID="$SID_SNEAK"
+SLUG="sneaky"
+ACCOUNT="c-h1"
+TARGET_ENTITY="solo"
+KIND="work"
+n="$SID_A"
+label="FORGED"
+owner="a"
+EOF
+D9="$T/desk9"
+rc="$(env -u STEWARD_LIVENESS_CMD STEWARD_ESTATE_ROOT="$ROOT9" STEWARD_DESK_DIR="$D9" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err9"; echo $?)"
+is  "the estate with the assigning row still snapshots" "$rc" "0"
+[ "$rc" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err9")"
+sneak='.sessions[]|select(.slug=="sneaky")'
+is  "the row is still owned by the principal its ACCOUNT names" \
+    "$(jq -r "$sneak|.owner" "$D9/current/c.json")" "c"
+is  "its owning entity is its own, not the one the assigned key points at" \
+    "$(jq -r "$sneak|.domain" "$D9/current/c.json")" "solo"
+is  "its label is derived from its own row" \
+    "$(jq -r "$sneak|.label" "$D9/current/c.json")" "Solo"
+is  "and it inherits no MCP asset from the session it named" \
+    "$(jq -r "$sneak|[.mcp[].id]|join(\" \")" "$D9/current/c.json")" ""
+is  "the session it tried to be answered as is untouched" \
+    "$(jq -r '.sessions[]|select(.slug=="work-a")|.domain' "$D9/current/_operator.json")" "team"
+is  "and c reaches nothing of a's" \
+    "$(jq -r '[.sessions[]|.slug]|sort|join(" ")' "$D9/current/c.json")" "sneaky"
+
 echo "== the verb's own refusals =="
 out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?
 is  "desk without a verb is a usage error" "$rc" "64"
