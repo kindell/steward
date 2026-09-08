@@ -322,31 +322,70 @@ else
 fi
 [ -n "$FROMKEY" ] || fel "requesting session '$FROM' is not in the registry"
 
-F_OWNER="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
-F_HOST="$(sed -n 's/^HOST="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
+# READ THE ROW THE WAY registry_load READS IT, WHICH IS BY SOURCING IT. The sed
+# grammar this block used disagreed with the register it defends in two places:
+# it anchored OWNER= at column zero where a sourced conf accepts leading
+# whitespace, and `head -1` took the FIRST OWNER= line where the shell takes the
+# LAST. A gate that measures a different value from the loader every other
+# reader uses is a gate with a hole in it - a row carrying two OWNER lines is
+# owned by the second one everywhere except here.
+#
+# SOURCED IN A SUBSHELL, AND ONLY THREE FIELDS CROSS BACK. This is register
+# data, written by this hub and by the product's own writers, and it is the
+# same containment registry_account_load is given everywhere else in this file.
+# The three possibly-empty fields come first and a constant last, because
+# command substitution strips every trailing newline.
+_frow="$(
+  OWNER=""; HOST=""; ACCOUNT=""
+  # shellcheck source=/dev/null
+  . "$rdir/$FROMKEY.conf" >/dev/null 2>&1 || exit 1
+  printf '%s\n%s\n%s\n%s\n' "$OWNER" "$HOST" "$ACCOUNT" "ok"
+)" || fel "requesting session '$FROM' has a row this hub cannot read"
+F_OWNER="${_frow%%$'\n'*}"; _frest="${_frow#*$'\n'}"
+F_HOST="${_frest%%$'\n'*}";  _frest="${_frest#*$'\n'}"
+F_ACCOUNT="${_frest%%$'\n'*}"
 # person= IS A PRINCIPAL, AND OWNER IS A LOGIN. The account lookup further down
 # matches person= against accounts.d PRINCIPAL, so that is what the field means
 # - while OWNER on the requester's own row states which unix login runs it. On
 # every estate that spells the two the same the raw comparison is right and
 # stays the fast path; on the estates the account model exists for it refuses a
 # requester that is perfectly in order. So the row's own principal is resolved
-# through the account it names, and either spelling satisfies the check.
+# through the account it names, and either spelling of the requester satisfies
+# the check - as long as the account names the row by its login, see below.
 #
-# READ WITH THIS FILE'S OWN GRAMMAR (sed over the row, never source) and
-# resolved through the account register, not through registry_load: the loader
+# RESOLVED THROUGH THE ACCOUNT REGISTER, NOT THROUGH registry_load: the loader
 # carries the estate's schema gates, and a requester whose row is merely
 # missing a LOGIN line on a schema-6 estate must still be able to fail THIS
-# check on identity rather than on a gate that belongs somewhere else.
+# check on identity rather than on a gate that belongs somewhere else. The
+# FIELD VALUES are read with the loader's grammar all the same - see the source
+# above - because a gate and the register it defends must agree on what the row
+# says.
 #
-# THE ACCOUNT MUST ALSO OWN THE ROW - the same rule the loader applies: OWNER
-# is the account's USERNAME or its PRINCIPAL, and anything else is a row
-# borrowing somebody's account, which must not become a way past this gate.
-F_ACCOUNT="$(sed -n 's/^ACCOUNT="\(.*\)"/\1/p' "$rdir/$FROMKEY.conf" | head -1)"
+# THE ACCOUNT MUST OWN THE ROW IN THE STRICT SHAPE: OWNER is the account's
+# USERNAME, and nothing else resolves a principal here.
+#
+# WHY NOT THE LOADER'S LENIENT PAIR. lib/registry.sh also READS a row whose
+# OWNER is the account's PRINCIPAL, because every conf the product wrote before
+# the identity model has that shape and a reader that refused them would take
+# down the fleet. This is not a read. Enrolment STAMPS a new row under the
+# account this resolves, and a principal id and a unix login are two namespaces
+# nothing requires to be disjoint: account A can be PRINCIPAL=p USERNAME=u
+# while account B is PRINCIPAL=q USERNAME=p, and a legacy row of A carrying
+# OWNER=p then runs as B's login while claiming A's person. mcp assets already
+# withhold the account axis for exactly that collision; the stronger verb must
+# not be looser than the weaker one.
+#
+# IT CHANGES NO OUTCOME TODAY, AND THAT IS THE POINT. The lenient arm could
+# only ever set F_PRINCIPAL to a value equal to F_OWNER, so anything it
+# admitted the raw comparison below had already admitted. What it did do was
+# credit the refusal message with a principal the account does not name the row
+# by. A gate whose shape is right only because a second gate happens to cover
+# it is a gate waiting for the second one to move.
 F_PRINCIPAL=""
 if [ -n "$F_ACCOUNT" ]; then
   _fa_p="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )" || _fa_p=""
   _fa_u="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )" || _fa_u=""
-  if [ -n "$_fa_p" ] && { [ "$_fa_u" = "$F_OWNER" ] || [ "$_fa_p" = "$F_OWNER" ]; }; then
+  if [ -n "$_fa_p" ] && [ "$_fa_u" = "$F_OWNER" ]; then
     F_PRINCIPAL="$_fa_p"
   fi
 fi

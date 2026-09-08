@@ -860,6 +860,77 @@ has "U2: as a degradation, not a refusal"      "$u2out" "nav-enroll: DEGRADED"
 has "U2: and the registry's own cause survives the read-back" "$u2out" "missing-account"
 has "U2: the confirm says the mate list is incomplete" \
     "$(cat "$UFX/sent.log" 2>/dev/null)" "project-mates=unknown"
+
+# U3-U5. THE OWNER CHECK AND THE REGISTER MUST AGREE ON WHAT THE ROW SAYS, AND
+# ON WHOSE ROW IT IS. Three shapes, one gate.
+# THE OUTPUT AND THE STATUS BOTH LAND IN GLOBALS. A helper whose result is read
+# through a command substitution runs in a subshell, and the status it recorded
+# there never reaches the caller - which is how the first draft of these three
+# cases reported rc 0 for a refusal it had just printed.
+urun() { # <from-key> <request-file> -> UOUT, URC
+  UOUT="$( STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.d" \
+           STEWARD_RELAY_ROOT="$UFX" STEWARD_AUTHORIZED_KEYS="$UFX/authorized_keys" \
+           STEWARD_BUS_SEND="$UFX/bin/send" UFX_SEND_LOG="$UFX/sent.log" \
+           STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM="$1" \
+           bash "$ENROLL" --send < "$2" 2>&1 )"; URC=$?
+}
+ureq() { # <name-suffix> <person> <key-suffix> -> a request file, path in UREQ
+  UREQ="$UFX/req-$1.txt"
+  sed "s/^namn=.*/namn=acme-widget$1-$2/; s/^projekt=.*/projekt=widget$1/; \
+       s/^person=.*/person=$2/; s/UFXAAAAAAAAAAAAAAAAAAAAAAAA/UFX$3/" \
+      "$UFX/u1.txt" > "$UREQ"
+}
+
+# U3. TWO OWNER LINES. A sourced conf is owned by the LAST one; the sed grammar
+# this gate used took the FIRST. The row below belongs to svc-ann everywhere a
+# reader looks, and a request from ben used to walk straight through.
+cat > "$UFX/sessions.d/twoline.conf" <<'CONF'
+HOST="farhost"
+OWNER="ben"
+OWNER="svc-ann"
+ACCOUNT="ann-farhost"
+DOMAIN="acme"
+RC_LABEL="Two"
+REPO_PATH="/tmp/x"
+ID="twoline"
+CONF
+ureq w3 ben CCCCCCCCCCCCCCCCCCCCCCCCCC
+urun twoline "$UREQ"
+is  "U3: the first of two OWNER lines does not own the row" "$URC" "65"
+has "U3: and the refusal quotes the owner the loader would read" "$UOUT" "owned by 'svc-ann'"
+
+# U4. LEADING WHITESPACE. A sourced conf accepts it; the anchored sed did not,
+# so the legitimate owner of this row could not enrol at all.
+printf 'HOST="farhost"\n  OWNER="svc-ann"\nACCOUNT="ann-farhost"\nDOMAIN="acme"\nRC_LABEL="Sp"\nREPO_PATH="/tmp/x"\nID="spaced"\n' \
+  > "$UFX/sessions.d/spaced.conf"
+ureq w4 ann DDDDDDDDDDDDDDDDDDDDDDDDDD
+urun spaced "$UREQ"
+is "U4: an indented OWNER line still owns the row" "$URC" "0"
+
+# U5. THE STRICT SHAPE. This row carries the account's PRINCIPAL as its OWNER -
+# legible to the loader, and the shape mcp assets already withhold the account
+# axis for, because a principal id and a unix login are two namespaces nothing
+# keeps disjoint. Enrolment stamps a row under the account it resolves, so the
+# stronger verb must not credit a principal the account does not name the row
+# by. The request names a third person, so the gate refuses either way; what is
+# measured is what the refusal says the row is.
+cat > "$UFX/sessions.d/legacyowner.conf" <<'CONF'
+HOST="farhost"
+OWNER="ann"
+ACCOUNT="ann-farhost"
+DOMAIN="acme"
+RC_LABEL="Legacy"
+REPO_PATH="/tmp/x"
+ID="legacyowner"
+CONF
+ureq w5 zoe EEEEEEEEEEEEEEEEEEEEEEEEEE
+urun legacyowner "$UREQ"
+is  "U5: a request naming somebody else is refused"  "$URC" "65"
+has "U5: and the row is named by its OWNER"          "$UOUT" "owned by 'ann'"
+case "$UOUT" in
+  *principal*) bad "U5: no principal is resolved for a row the account names only by PRINCIPAL" "got: $UOUT" ;;
+  *)           ok  "U5: no principal is resolved for a row the account names only by PRINCIPAL" ;;
+esac
 rm -rf "$UFX"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
