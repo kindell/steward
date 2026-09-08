@@ -128,24 +128,37 @@ estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION=
 # CALLER'S shell — every session on a live machine — not merely its own return
 # value. AGENT_INSTRUCTIONS is used nowhere else in this library, so it can
 # only appear in the caller's shell by leaking through this one `source`.
+#
+# AND THE LIST IS ASSERTED, NOT SPOT-CHECKED. One key proves the mechanism; it
+# does not prove the list is complete, and the list was short by five - the
+# watch's own estate keys, MAIL_ACCOUNT_FILE ALERT_TO JOB_STATUS_CMD
+# HOST_STATUS_CMD JOB_TIMEZONE, every one of them measured landing in the
+# caller's shell. Each key the estate file may carry gets its own claim here,
+# so a key added to the schema without a matching `local` fails a test rather
+# than quietly becoming a global on every machine.
 estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
   'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
   'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
   'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
   'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
   'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"' \
-  'AGENT_INSTRUCTIONS="leaked-instructions"'
+  'AGENT_INSTRUCTIONS="leaked-instructions"' 'MAIL_ACCOUNT_FILE="leaked-mail"' \
+  'ALERT_TO="leaked@example.com"' 'JOB_STATUS_CMD="/leaked/job-status"' \
+  'HOST_STATUS_CMD="/leaked/host-status"' 'JOB_TIMEZONE="Etc/UTC"'
 konf leaky 'REPO_PATH="/x"' 'RC_LABEL="Leaky"' 'OWNER="ada"' 'DOMAIN="d"'
-out="$(
-  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
-  unset AGENT_INSTRUCTIONS
-  # shellcheck source=/dev/null
-  . "$here/lib/registry.sh"
-  registry_load leaky >/dev/null 2>&1
-  if [ -z "${AGENT_INSTRUCTIONS+x}" ]; then printf 'unset'; else printf 'set=%s' "$AGENT_INSTRUCTIONS"; fi
-)"
-[ "$out" = "unset" ] && ok "registry_load does not leak AGENT_INSTRUCTIONS into the caller's shell" \
-  || bad "registry_load does not leak AGENT_INSTRUCTIONS into the caller's shell" "$out"
+for leakkey in AGENT_INSTRUCTIONS MAIL_ACCOUNT_FILE ALERT_TO JOB_STATUS_CMD \
+               HOST_STATUS_CMD JOB_TIMEZONE; do
+  out="$(
+    export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
+    unset "$leakkey"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_load leaky >/dev/null 2>&1
+    eval "if [ -z \"\${$leakkey+x}\" ]; then printf 'unset'; else printf 'set=%s' \"\$$leakkey\"; fi"
+  )"
+  [ "$out" = "unset" ] && ok "registry_load does not leak $leakkey into the caller's shell" \
+    || bad "registry_load does not leak $leakkey into the caller's shell" "$out"
+done
 
 # CONTROL GROUP RESTORED: the estate that the rest of this section's ID/KIND/
 # LIFECYCLE assertions rely on, without the leak probe's extra key.

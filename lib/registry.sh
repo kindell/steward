@@ -256,7 +256,8 @@ registry_schema_check() {
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
         BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" \
         PAUSED_DIR_NAME="" LEGACY_LOGIN="" LOGIN_REQUIRED_FOR="" \
-        LIVENESS_CMD="" ESTATE_CHECKOUT=""
+        LIVENESS_CMD="" ESTATE_CHECKOUT="" MAIL_ACCOUNT_FILE="" ALERT_TO="" \
+        JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0
