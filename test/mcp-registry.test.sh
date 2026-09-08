@@ -186,20 +186,23 @@ is "6c an entity without the field reads empty, not stale" "${ENTITY_MCP_ASSETS:
 registry_project_load gamma >/dev/null 2>&1
 is "6d PROJECT_MCP_ASSETS"           "${PROJECT_MCP_ASSETS:-}" "notes-tool mail-tool"
 
-echo "== 7. the resolver: team, then entity, then project — deduped =="
-# THE ORDER IS THE INHERITANCE. The managing team grants first, the owning
-# entity second, the project last: a reader of the effective set sees the
-# broadest grant before the narrowest, and the render below keys its JSON
-# object in exactly this order.
+echo "== 7. the resolver: project, then entity, then team — deduped =="
+# THE ORDER IS THE DISTANCE FROM THE SESSION, closest level first. The project
+# grants first, then the entity that owns it, then the team that manages that
+# entity: a reader of the effective set sees the narrowest grant before the
+# broadest, and `mcp surface` names an asset two levels granted after the one
+# nearest the session. It ran broadest-first until 2026-09-08, which attributed
+# a shared asset to the manager and cost a member of the managed client the
+# asset their own entity had granted them.
 out="$(registry_session_mcp_assets s-project 2>/dev/null)"; rc=$?
 is "7a rc 0" "$rc" "0"
-is "7b acme's, then beta's new one, then gamma's new one — each once" \
-   "$out" "$(printf 'chat-tool\nmail-tool\nnotes-tool')"
+is "7b gamma's, then beta's new one, then acme's new one — each once" \
+   "$out" "$(printf 'notes-tool\nmail-tool\nchat-tool')"
 
 echo "== 8. a session aimed at an entity has no project level =="
 out="$(registry_session_mcp_assets s-entity 2>/dev/null)"
-is "8 the team's grant, then the client's own" \
-   "$out" "$(printf 'chat-tool\nmail-tool')"
+is "8 the client's own grant, then the team's" \
+   "$out" "$(printf 'mail-tool\nchat-tool')"
 
 echo "== 9. a legacy row resolves through DOMAIN, and a root team has no manager =="
 out="$(registry_session_mcp_assets s-legacy 2>/dev/null)"
@@ -306,8 +309,8 @@ printf 'NAME="Deep"\nPARENT="leafclient"\nMCP_ASSETS="notes-tool"\n'          > 
 sess s-deep 'TARGET_PROJECT="deepwork"'
 out="$(registry_session_mcp_assets s-deep 2>"$FX/e17")"; rc=$?
 is    "17a rc 0 — every level loaded"  "$rc" "0"
-is    "17b the manager, the client, then the project" \
-      "$out" "$(printf 'chat-tool\nmail-tool\nnotes-tool')"
+is    "17b the project, the client, then the manager" \
+      "$out" "$(printf 'notes-tool\nmail-tool\nchat-tool')"
 hasnt "17c the GRANDPARENT team's grant is absent — the hop limit holds" \
       "$out" "secret-tool"
 is    "17d and a hop limit is not a fault: stderr is silent" "$(cat "$FX/e17")" ""
@@ -343,7 +346,7 @@ out="$(registry_session_mcp_assets s-partial 2>"$FX/e19")"; rc=$?
 err="$(cat "$FX/e19")"
 is    "19a rc 65 — the project level failed"  "$rc" "65"
 is    "19b the levels that DID load are still on stdout" \
-      "$out" "$(printf 'chat-tool\nmail-tool')"
+      "$out" "$(printf 'mail-tool\nchat-tool')"
 hasnt "19c the failed level granted nothing"  "$out" "secret-tool"
 has   "19d and it is named"                   "$err" "nameless"
 out="$(registry_session_mcp_assets s-quiet 2>/dev/null)"; rc=$?
@@ -414,27 +417,29 @@ is "22g ACCOUNT_MCP_ASSETS was reset" "${ACCOUNT_MCP_ASSETS:-}" ""
 is "22h and so was PRINCIPAL"         "${ACCOUNT_PRINCIPAL:-}" ""
 
 echo "== 23. the account axis unions with the entity tree, ACCOUNT FIRST =="
-# THE ORDER IS DOCUMENTED AND THEREFORE PINNED: account, managing team,
-# owning entity, target project. The account leads because it is the grant
-# that belongs to whoever is actually sitting at the session; the org tree
-# then widens around it, broadest-to-narrowest as before.
+# THE ORDER IS DOCUMENTED AND THEREFORE PINNED: account, target project, owning
+# entity, managing team. The account leads because it is the grant that belongs
+# to whoever is actually sitting at the session; the org tree then widens away
+# from it, narrowest-to-broadest, so every level is in order of its distance
+# from the session and the surface can name an asset after the nearest level
+# that granted it.
 out="$(registry_session_mcp_assets s-account 2>"$FX/e23")"; rc=$?
 is "23a rc 0"                              "$rc" "0"
-is "23b the person's own, then acme's, then beta's, then gamma's" \
-   "$out" "$(printf 'crm-tool\nchat-tool\nmail-tool\nnotes-tool')"
+is "23b the person's own, then gamma's, then beta's, then acme's" \
+   "$out" "$(printf 'crm-tool\nnotes-tool\nmail-tool\nchat-tool')"
 is "23c a resolved account is not a fault: stderr is silent" "$(cat "$FX/e23")" ""
 # AN ACCOUNT THAT GRANTS NOTHING IS A CONFIGURATION, exactly like a team that
 # grants nothing — it contributes nothing AND says nothing.
 out="$(registry_session_mcp_assets s-cy 2>"$FX/e23b")"; rc=$?
 is "23d rc 0"                              "$rc" "0"
-is "23e only the org tree's grant"          "$out" "$(printf 'chat-tool\nmail-tool')"
+is "23e only the org tree's grant"          "$out" "$(printf 'mail-tool\nchat-tool')"
 is "23f and stderr is silent"              "$(cat "$FX/e23b")" ""
 # A SESSION WITH NO ACCOUNT FIELD AT ALL is the pre-model row, and an absent
 # account is an absence, not a failure.
 out="$(registry_session_mcp_assets s-entity 2>"$FX/e23c")"; rc=$?
 is "23g rc 0"                              "$rc" "0"
 is "23h the set is unchanged from before the axis existed" \
-   "$out" "$(printf 'chat-tool\nmail-tool')"
+   "$out" "$(printf 'mail-tool\nchat-tool')"
 is "23i and nothing is said about the account it does not have" \
    "$(cat "$FX/e23c")" ""
 
@@ -446,9 +451,9 @@ echo "== 24. SAME entity, DIFFERENT accounts — different sets. The whole reaso
 out_ann="$(registry_session_mcp_assets s-ann 2>/dev/null)"
 out_bo="$(registry_session_mcp_assets s-bo 2>/dev/null)"
 is    "24a ann gets her own crm-tool on top of the shared org grant" \
-      "$out_ann" "$(printf 'crm-tool\nchat-tool\nmail-tool')"
+      "$out_ann" "$(printf 'crm-tool\nmail-tool\nchat-tool')"
 is    "24b bo gets his own video-tool on top of the SAME org grant" \
-      "$out_bo" "$(printf 'video-tool\nchat-tool\nmail-tool')"
+      "$out_bo" "$(printf 'video-tool\nmail-tool\nchat-tool')"
 hasnt "24c and ann never sees bo's"   "$out_ann" "video-tool"
 hasnt "24d nor bo ann's"              "$out_bo" "crm-tool"
 
@@ -521,7 +526,7 @@ is    "28c the strict row says nothing"                 "$(cat "$FX/e28a")" ""
 is    "28d the legacy row is NOT refused"               "$rc_legacy" "0"
 hasnt "28e but the account's own asset is withheld"     "$out_legacy" "crm-tool"
 is    "28f while every org level still grants" \
-      "$out_legacy" "$(printf 'chat-tool\nmail-tool')"
+      "$out_legacy" "$(printf 'mail-tool\nchat-tool')"
 has   "28g and the withholding names the session"       "$(cat "$FX/e28b")" "s-ef-legacy"
 has   "28h and both spellings"                          "$(cat "$FX/e28b")" "USERNAME='svc-ef'"
 has   "28i and the verb that ends the ambiguity"        "$(cat "$FX/e28b")" "realign"

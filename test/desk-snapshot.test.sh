@@ -108,11 +108,13 @@ is  "b sees the team session and a's session in the same domain" "$(jq -r '.sess
 # the entity- and project-axis assets on `a`'s session, so those two travel -
 # they are a fact about b's own team. The ACCOUNT axis is a's own credential
 # and never travels, whoever else can see the row.
-is  "b never sees a's account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/b.json")" "entity project"
+is  "b never sees a's account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/b.json")" "project entity"
 is  "member gets liveness including activity age" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "ageSeconds measuredAt state"
 is  "member sight is explicit" "$(jq -r '.sessions[]|select(.slug=="work-a")|.sight' "$D/b.json")" "member"
 is  "owner sight is explicit" "$(jq -r '.sessions[]|select(.slug=="team-b")|.sight' "$D/b.json")" "owner"
-is  "a sees the own account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/a.json")" "account entity project"
+# THE AXES ARRIVE IN COLLECTION ORDER, which is closest level first: the
+# account, then the project, then the entity that owns it.
+is  "a sees the own account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/a.json")" "account project entity"
 is  "c sees nothing" "$(jq '.sessions|length' "$D/c.json")" "0"
 is  "the operator file carries every session" "$(jq '.sessions|length' "$D/_operator.json")" "2"
 
@@ -368,17 +370,23 @@ echo "== filter.jq: an asset two levels granted reaches the level the viewer see
 #
 # THE FIXTURE IS THE SHAPE THAT BREAKS: viewer `d` is a member of the CLIENT
 # only, and `shared` is declared on both the manager and the client.
+#
+# THE mcp ARRAY IS IN THE ORDER THE REGISTRY EMITS IT, closest granting level
+# first - the owning entity before the team that manages it. That order is
+# lib/registry.sh's, pinned there by mcp-surface; the rows are written out here
+# so this file measures the filter and not the collector.
 cat > "$T/raw5.json" <<'EOF'
 {"host":"h","generatedAt":"g","registryRevision":"r",
- "principals":[{"id":"a","name":"A","readAll":false},{"id":"d","name":"D","readAll":false}],
- "entities":[{"id":"mgr","name":"Mgr","managedBy":null,"members":["a"]},
-             {"id":"client","name":"Client","managedBy":"mgr","members":["d"]}],
+ "principals":[{"id":"a","name":"A","readAll":false},{"id":"d","name":"D","readAll":false},
+               {"id":"e","name":"E","readAll":false}],
+ "entities":[{"id":"mgr","name":"Mgr","managedBy":null,"members":["a","e"]},
+             {"id":"client","name":"Client","managedBy":"mgr","members":["d","e"]}],
  "projects":[],
  "sessions":[{"id":"s1","slug":"work-a","label":"Work A","owner":"a","domain":"client","project":null,
-               "runtime":"claude-code","host":"h","repo":"repo","sight":{"d":"member","a":"owner"},
+               "runtime":"claude-code","host":"h","repo":"repo","sight":{"d":"member","a":"owner","e":"member"},
                "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
-               "mcp":[{"id":"shared","name":"shared","axis":"entity","source":"mgr"},
-                      {"id":"shared","name":"shared","axis":"entity","source":"client"},
+               "mcp":[{"id":"shared","name":"shared","axis":"entity","source":"client"},
+                      {"id":"shared","name":"shared","axis":"entity","source":"mgr"},
                       {"id":"mgr-only","name":"mgr-only","axis":"entity","source":"mgr"}]}]}
 EOF
 out5d="$(jq --arg viewer d --argjson readAll false --argjson memberOf '["client"]' \
@@ -398,15 +406,32 @@ is  "one entry per asset survives the dedup" \
 is  "an asset only the invisible level granted is still dropped" \
     "$(printf '%s' "$out5d" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(select(.id=="mgr-only"))|length')" \
     "0"
-# THE MANAGER'S OWN MEMBER STILL GETS THE CLOSEST-FIRST ATTRIBUTION: `a` is a
-# member of mgr and not of client, so the manager row is the one that survives.
+# THE MANAGER'S OWN MEMBER GETS THE CLOSEST-FIRST ATTRIBUTION TOO. `a` is a
+# member of mgr and not of client - but the entity rule already lets a manager
+# see the entities it manages, so both rows for `shared` survive and the nearer
+# source wins. `mgr-only` has only the one row and keeps it.
 out5a="$(jq --arg viewer a --argjson readAll false --argjson memberOf '["mgr"]' \
             --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
             --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
             -f "$here/desk/filter.jq" "$T/raw5.json")"
 is  "the owner keeps the first row that survives, in collection order" \
     "$(printf '%s' "$out5a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.id+"@"+.source)|join(" ")')" \
-    "shared@mgr mgr-only@mgr"
+    "shared@client mgr-only@mgr"
+# AND A VIEWER WHO CAN SEE BOTH LEVELS KEEPS THE CLOSER ONE. `e` is a member of
+# the client AND of its manager, so both rows for `shared` survive the rule and
+# the dedup decides. Closest first is the whole reason the collector emits them
+# in that order: the source a reader is shown is the nearest level that handed
+# this session the asset, not the widest one that happens to have declared it.
+out5e="$(jq --arg viewer e --argjson readAll false --argjson memberOf '["client","mgr"]' \
+            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
+            -f "$here/desk/filter.jq" "$T/raw5.json")"
+is  "a viewer who sees both levels is shown the closer one" \
+    "$(printf '%s' "$out5e" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp[]|select(.id=="shared")|.source')" \
+    "client"
+is  "and each asset is still carried once" \
+    "$(printf '%s' "$out5e" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.id)|join(" ")')" \
+    "shared mgr-only"
 for sentinel in SENTINEL_MAIL SENTINEL_LIVE SENTINEL_CMD; do
   is "extra field $sentinel is absent for both levels" \
     "$(printf '%s\n%s' "$out4a" "$out4b" | grep -Fc "$sentinel")" 0

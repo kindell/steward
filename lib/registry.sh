@@ -1073,6 +1073,36 @@ registry_session_mcp_assets() {
       fi
     fi
 
+    # LEVEL 3 — the project's OWN row, the narrowest grant, AND THEREFORE THE
+    # ONE COLLECTED RIGHT AFTER THE ACCOUNT. A session aimed at an entity has
+    # no third level at all; that is an absence, not a failure, and says
+    # nothing.
+    #
+    # COLLECTION ORDER IS CLOSEST LEVEL FIRST, and the level NUMBERS are not
+    # that order. They name how far a grant reaches - 0 the account, 3 the
+    # project - while this loop walks from the session outwards: the account,
+    # then the project, then the entity that owns it, then the team that
+    # manages that entity. It used to walk the org levels in numeric order, so
+    # `mcp surface` named an asset after the MANAGER when a managing team and
+    # the client it manages both declared it. desk/filter.jq keeps the first
+    # row it can see, so a member of the client - who is not a member of its
+    # manager - lost an asset their own entity had explicitly granted them.
+    # Nothing leaked and nothing was dropped from the SET; the attribution was
+    # simply the furthest level instead of the nearest, against SCHEMA.md:162-172
+    # and the sentence above registry_session_mcp_surface.
+    if [ -n "$target_project" ]; then
+      local proj_out proj_rc
+      proj_out="$( registry_project_load "$target_project" >/dev/null \
+                   && printf '%s\n%s\n' "${PROJECT_MCP_ASSETS:-}" "ok" )"
+      proj_rc=$?
+      if [ "$proj_rc" -ne 0 ]; then
+        echo "registry: mcp assets for '$sid' — the project '$target_project' would not load; it grants nothing here" >&2
+        _MCP_LEVEL_FAILED=1
+      else
+        _registry_mcp_collect "${proj_out%%$'\n'*}" project "$target_project"
+      fi
+    fi
+
     local owning own_rc
     owning="$( registry_session_owning_entity "$sid" )"; own_rc=$?
     if [ "$own_rc" -eq 78 ]; then
@@ -1088,7 +1118,7 @@ registry_session_mcp_assets() {
       owning=""
     fi
 
-    # LEVEL 1 AND LEVEL 2 COME OFF ONE READ OF THE OWNING ENTITY. Its
+    # LEVEL 2 AND LEVEL 1 COME OFF ONE READ OF THE OWNING ENTITY. Its
     # MANAGED_BY (the team) and its own MCP_ASSETS are both on that row;
     # asking the register twice would cost a second read for an answer it
     # already gave. Ordering again puts the possibly-empty fields first and a
@@ -1105,7 +1135,12 @@ registry_session_mcp_assets() {
         mgr="${ent_out%%$'\n'*}"
         rest="${ent_out#*$'\n'}"
         ent_assets="${rest%%$'\n'*}"
-        # LEVEL 1 — the managing team, one hop.
+        # LEVEL 2 — the owning entity itself, and it is collected BEFORE its
+        # manager: the entity a session belongs to is nearer to it than the
+        # team that manages that entity, and the surface names an asset after
+        # the nearest level that granted it.
+        _registry_mcp_collect "$ent_assets" entity "$owning"
+        # LEVEL 1 — the managing team, one hop, and the furthest level there is.
         if [ -n "$mgr" ]; then
           local mgr_out mgr_rc
           mgr_out="$( registry_entity_load "$mgr" >/dev/null \
@@ -1118,24 +1153,6 @@ registry_session_mcp_assets() {
             _registry_mcp_collect "${mgr_out%%$'\n'*}" entity "$mgr"
           fi
         fi
-        # LEVEL 2 — the owning entity itself.
-        _registry_mcp_collect "$ent_assets" entity "$owning"
-      fi
-    fi
-
-    # LEVEL 3 — the project's OWN row, the narrowest grant. A session aimed at
-    # an entity has no third level at all; that is an absence, not a failure,
-    # and says nothing.
-    if [ -n "$target_project" ]; then
-      local proj_out proj_rc
-      proj_out="$( registry_project_load "$target_project" >/dev/null \
-                   && printf '%s\n%s\n' "${PROJECT_MCP_ASSETS:-}" "ok" )"
-      proj_rc=$?
-      if [ "$proj_rc" -ne 0 ]; then
-        echo "registry: mcp assets for '$sid' — the project '$target_project' would not load; it grants nothing here" >&2
-        _MCP_LEVEL_FAILED=1
-      else
-        _registry_mcp_collect "${proj_out%%$'\n'*}" project "$target_project"
       fi
     fi
 

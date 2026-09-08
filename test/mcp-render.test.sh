@@ -123,14 +123,14 @@ run() {
   STEWARD_VIEWER=a bash "$STEWARD" "$@"
 }
 
-echo "== 1. the inherited set, rendered in inheritance order =="
+echo "== 1. the inherited set, rendered in distance order =="
 out="$(run mcp render s-project 2>"$FX/e1")"; rc=$?
 err="$(cat "$FX/e1")"
 is "1a rc 0 — one omitted asset does not sink the render" "$rc" "0"
 is "1b it is valid JSON" "$(printf '%s' "$out" | jq -e 'type' 2>/dev/null)" '"object"'
-is "1c the keys are the team's grant then the client's, in that order" \
+is "1c the keys are the client's grant then the team's, in that order" \
    "$(printf '%s' "$out" | jq -r '.mcpServers | keys_unsorted | join(",")')" \
-   "chat-tool,mail-tool"
+   "mail-tool,chat-tool"
 
 echo "== 2. a plain asset: the command as declared, no args =="
 is "2a command" "$(printf '%s' "$out" | jq -r '.mcpServers["chat-tool"].command')" "/opt/chat/server"
@@ -293,15 +293,16 @@ has   "14a the verb is listed"                        "$help" "steward mcp rende
 hasnt "14b and the rc-contract prose is not listed as a verb" "$help" "rc 0 with servers"
 
 echo "== 15. the account's own personal grant is rendered, and it leads the document =="
-# THE KEY ORDER IS THE INHERITANCE, and the document is keyed from the
-# resolver's own order: account first, then the managing team, the owning
-# entity, the project. A reader of the JSON sees whose grant each server came
-# through without having to consult four files.
+# THE KEY ORDER IS THE DISTANCE FROM THE SESSION, and the document is keyed
+# from the resolver's own order: the account first, then the project, then the
+# entity that owns it, then the team that manages that entity. A reader of the
+# JSON sees whose grant each server came through without having to consult four
+# files.
 out15="$(run mcp render s-ann 2>"$FX/e15")"; rc15=$?
 is "15a rc 0" "$rc15" "0"
-is "15b the personal asset leads, then the team's, then the client's" \
+is "15b the personal asset leads, then the client's, then the team's" \
    "$(printf '%s' "$out15" | jq -r '.mcpServers | keys_unsorted | join(",")')" \
-   "crm-tool,chat-tool,mail-tool"
+   "crm-tool,mail-tool,chat-tool"
 is "15c and it is rendered whole, command and all" \
    "$(printf '%s' "$out15" | jq -r '.mcpServers["crm-tool"].command')" "/opt/crm/server"
 is "15d the org levels still render exactly as before the axis existed" \
@@ -316,7 +317,7 @@ echo "== 16. two sessions, one entity, two people — two different documents ==
 out16="$(run mcp render s-bo 2>/dev/null)"
 is    "16a bo's document leads with HIS asset" \
       "$(printf '%s' "$out16" | jq -r '.mcpServers | keys_unsorted | join(",")')" \
-      "video-tool,chat-tool,mail-tool"
+      "video-tool,mail-tool,chat-tool"
 hasnt "16b ann's personal server is nowhere in bo's document" "$out16" "crm-tool"
 hasnt "16c and bo's is nowhere in ann's"                      "$out15" "video-tool"
 is    "16d the shared org grant is identical in both — only the person differs" \
