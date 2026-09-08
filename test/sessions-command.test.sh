@@ -313,10 +313,22 @@ is "the only row being unreadable keeps rc 0" "$only_rc" "0"
 is "and ok stays true" "$(printf '%s' "$only" | jq -r '.ok')" "true"
 is "the row is named in unreadable" \
    "$(printf '%s' "$only" | jq -r '.unreadable | index("only") != null')" "true"
-is "and sessions is empty rather than absent" \
-   "$(printf '%s' "$only" | jq -r '.sessions | length')" "0"
-case "$only_err" in
-  *"the estate file is missing"*) bad "the estate is not blamed for an account fault" "got: $only_err" ;;
+# BOTH OF THESE USED TO BE INERT, and a mutation found them: with the estate
+# probe forced to refuse, three of the five assertions here went red and these
+# two stayed green.
+#
+# `.sessions | length` PASSED ON THE REFUSAL because jq reads an absent key as
+# null and `null | length` is 0 - the same "0" an empty array gives. The type is
+# asserted beside the count, so "the key is absent" and "the key is an empty
+# array" stop being the same answer.
+is "and sessions is an empty array rather than absent" \
+   "$(printf '%s' "$only" | jq -r '(.sessions|type) + " " + (.sessions|length|tostring)')" "array 0"
+# AND THE REFUSAL IS NOT ON STDERR TO BE FOUND. bin/steward puts a refusal into
+# `.reason` in the json form and never onto stderr, so a case over stderr could
+# not see the sentence it was looking for even when the product printed it. The
+# stream this form actually answers on is the one asserted.
+case "$(printf '%s' "$only" | jq -r '.reason // ""')" in
+  *"the estate file is missing"*) bad "the estate is not blamed for an account fault" "got: $only" ;;
   *)                              ok  "the estate is not blamed for an account fault" ;;
 esac
 
