@@ -9,10 +9,11 @@
 # contain a colleague's session because the bytes are not on the disk, not
 # because a code path declined to print them. The gate is the filesystem.
 #
-# THE FILTER IS A POSITIVE ALLOWLIST AND IT LIVES IN ONE FILE - desk/filter.jq.
+# The positive field allowlist is exported by lib/visibility.sh; desk/filter.jq
+# projects it without duplicating either the field table or session visibility.
 # This script builds a RAW document that deliberately carries more than any
 # viewer may see, and every viewer file is that raw document run through the
-# one filter with three arguments. Nothing in this script writes a viewer file
+# one filter. Nothing in this script writes a viewer file
 # any other way.
 #
 # THE RAW DOCUMENT NEVER LEAVES THIS PROCESS. It is built in a temp directory
@@ -73,6 +74,9 @@ else
   exit 78
 fi
 command -v jq >/dev/null 2>&1 || { echo "desk snapshot: jq is required" >&2; exit 69; }
+. "$lib_dir/visibility.sh" || exit 78
+owner_fields="$(visibility_field_list owner | jq -Rn '[inputs]')" || exit 78
+member_fields="$(visibility_field_list member | jq -Rn '[inputs]')" || exit 78
 steward="$here/../bin/steward"
 
 # --- WHERE THE SNAPSHOT LANDS ---------------------------------------------
@@ -227,14 +231,6 @@ while IFS= read -r n; do
     # registry_account_load to ACCOUNT_PRINCIPAL, OWNER only when the row
     # carries no resolvable ACCOUNT, with a line on stderr saying so.
     owner="$(_registry_row_principal "$n")"
-    # THE RAW OWNER TRAVELS TOO, BUT ONLY AS FAR AS THIS PROCESS. `rawOwner`
-    # is the conf's own unquoted OWNER - a unix account, not a principal - and
-    # desk/filter.jq's allowlist never names it, so it can never reach a
-    # viewer file. It exists so the SHELL can tell "the person who really owns
-    # this session" (`owner`, above) apart from "a unix account that happens
-    # to be spelled like some OTHER principal's id" when it asks
-    # session_visible_to below - the exact collision the comment above this
-    # one describes, for the identical reason.
     sid="${ID:-$n}"
     # KEYED BY THE REGISTRY NAME, NOT THE ID. liveness_rows prints one row per
     # session the shim ANSWERED ABOUT, under the name the estate administers it
@@ -243,15 +239,25 @@ while IFS= read -r n; do
     live_row="$(liveness_for "$n" "$live_rows")"
     IFS=$'\t' read -r _lname _ldaemon _ltmux lagent _lruntime _lmodel lactivity _lreason \
       <<< "$live_row"
+    # One shared decision per principal/session. Only the filtered projection
+    # leaves this temporary directory; the sight map itself never travels.
+    sight_f="$tmp/sight-$n.jsonl"
+    : > "$sight_f"
+    while IFS= read -r viewer; do
+      [ -n "$viewer" ] || continue
+      sight="$(visibility_fields "$viewer" "$n")" || exit 78
+      jq -cn --arg key "$viewer" --arg value "$sight" '{key:$key,value:$value}' >> "$sight_f" || exit 78
+    done < <(jq -r '.id' "$principals_f")
+    sights="$(jq -sc 'from_entries' "$sight_f")" || exit 78
     jq -cn --arg id "$sid" --arg slug "${SLUG:-$n}" --arg label "$label" \
-           --arg owner "$owner" --arg rawOwner "${OWNER:-}" \
+           --arg owner "$owner" \
            --arg domain "$domain" --arg project "${TARGET_PROJECT:-}" \
            --arg runtime "${RUNTIME:-claude-code}" --arg host "${HOST:-}" --arg repo "$repo" \
            --arg measuredAt "$generated_at" \
            --arg agent "${lagent:-unknown}" --arg lastActivity "${lactivity:-unknown}" \
-           --argjson mcp "$mcp" --arg mcpReason "$mcp_reason" '
+           --argjson mcp "$mcp" --arg mcpReason "$mcp_reason" --argjson sight "$sights" '
       def blank($v): if $v == "" then null else $v end;
-      {id:$id, slug:$slug, label:$label, owner:$owner, rawOwner: blank($rawOwner),
+        {id:$id, slug:$slug, label:$label, owner:$owner, sight:$sight,
        domain: blank($domain), project: blank($project),
        runtime: $runtime, host: $host, repo: $repo,
        # THE AGE IS DERIVED HERE, NOT LEFT TO EVERY READER. `lastActivity` is
@@ -277,7 +283,7 @@ while IFS= read -r n; do
                                      catch null)
                                end)},
        mcp: $mcp, mcpReason: blank($mcpReason)}'
-  ) >> "$sessions_f"
+  ) >> "$sessions_f" || exit 78
 done <<< "$names"
 
 raw="$tmp/raw.json"
@@ -312,12 +318,13 @@ else
 fi
 [ -n "$gen" ] || { echo "desk snapshot: could not create a generation directory in $dir" >&2; exit 73; }
 
-write_view() { # <basename> <viewer> <readAll json> <memberOf json> <visible json>
+write_view() { # <basename> <viewer> <readAll json> <memberOf json>
   # A FAILED FILTER NEVER LEAVES ITS .tmp BEHIND. The `>` redirect below
   # creates the file the instant the shell sets it up, before jq runs at
   # all - so a jq failure still leaves an empty (or partial) .tmp sitting in
   # the generation unless this removes it on the way out.
-  jq --arg viewer "$2" --argjson readAll "$3" --argjson memberOf "$4" --argjson visible "$5" \
+  jq --arg viewer "$2" --argjson readAll "$3" --argjson memberOf "$4" \
+     --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
      -f "$here/filter.jq" "$raw" > "$dir/$gen/$1.json.tmp" || {
     rm -f "$dir/$gen/$1.json.tmp"
     return 1
@@ -335,73 +342,14 @@ while IFS= read -r p; do
   # and the desk must answer from the same rows the org is administered in.
   member_of="$(jq -c --arg p "$p" '[ .entities[] | select(.members | index($p)) | .id ]' "$raw")"
   [ -n "$member_of" ] || member_of='[]'
-  # THE SHELL DECIDES WHICH SESSIONS REACH THIS VIEWER; desk/filter.jq only
-  # PROJECTS the fields of the ones it is handed. lib/visibility.sh's
-  # session_visible_to is the product's ONE rule for that question - its own
-  # header says a rule scattered across a renderer, a command and a gate is a
-  # rule that drifts, and the desk was a FOURTH copy: a jq re-implementation
-  # of "owner or owning-entity visible or read-all" that never learned
-  # `private` or `VISIBLE_TO` at all. MEASURED 2026-09-08 on a two-account
-  # host: a private session granted to one entity reached a member of the
-  # OWNING entity who was not a member of the GRANT - the one rule answers
-  # rc 1 for that viewer, the old jq copy let the row through anyway. This is
-  # the interim fix; a later branch (sight-one-rule) is meant to make every
-  # renderer call the one function so a leak like this cannot recur under a
-  # different key.
-  #
-  # READ-ALL IS UNCHANGED BY THIS FIX: a principal whose row carries
-  # DESK_READ_ALL still sees every session, private or not - filter.jq's
-  # $readAll branch short-circuits before $visible is ever read. Whether
-  # read-all should also respect `private` is an open question for the
-  # operator, not for this fix.
-  #
-  # ONE SUBSHELL PER SESSION. session_visible_to calls registry_load, and
-  # registry_load's own reset block overwrites OWNER, DOMAIN, VISIBILITY,
-  # VISIBLE_TO, ID, HOST, REPO_PATH and a dozen more globals IN WHATEVER
-  # SHELL IT RUNS IN - see the "Reset before sourcing" line in registry.sh.
-  # This loop must ask the question once per session without one answer's
-  # globals surviving into the next question, or leaking into this loop's own
-  # `p` / `read_all` / `member_of`. `( session_visible_to ... )` is the same
-  # per-call subshell _visibility_member_of already uses inside
-  # lib/visibility.sh, for the identical reason.
-  #
-  # SESSION_VISIBLE_TO'S OWN STEP 1 COMPARES THE VIEWER TO THE CONF'S RAW
-  # OWNER - a unix account, its established contract for its established
-  # caller (`steward sessions`, whose viewer is `id -un`). The desk's viewer
-  # is a PRINCIPAL, a different namespace, and `owner` above (from
-  # _registry_row_principal) is what already resolves ACCOUNT to the real
-  # person for this desk. When the two disagree - a session whose ACCOUNT
-  # resolves to one principal while its raw OWNER string happens to spell a
-  # DIFFERENT principal's id - step 1 would answer yes for that second,
-  # unrelated principal on nothing more than a coincidence of spelling. This
-  # is the exact defect the comment beside `owner`, above, describes; a
-  # session_visible_to yes is trusted here UNLESS it can only be that
-  # coincidence: the real owner disagrees, and the raw OWNER happens to equal
-  # this viewer.
-  visible="$(
-    jq -r '.sessions[] | [.id, .owner, (.rawOwner // "")] | @tsv' "$raw" \
-      | while IFS=$'\t' read -r sid sowner srawowner; do
-          [ -n "$sid" ] || continue
-          if [ "$sowner" = "$p" ]; then
-            printf '%s\n' "$sid"
-          elif [ "$srawowner" = "$p" ] && [ "$sowner" != "$p" ]; then
-            : # the coincidence above - step 1 cannot be trusted for this pair
-          elif ( session_visible_to "$p" "$sid" ); then
-            printf '%s\n' "$sid"
-          fi
-        done | jq -R -s -c 'split("\n") | map(select(length > 0))'
-  )"
-  [ -n "$visible" ] || visible='[]'
-  write_view "$p" "$p" "$read_all" "$member_of" "$visible" || rc=1
+  write_view "$p" "$p" "$read_all" "$member_of" || rc=1
 done < <(jq -r '.principals[].id' "$raw")
 
 # THE OPERATOR FILE IS THE UNFILTERED VIEW, AND IT IS STILL WRITTEN THROUGH THE
 # FILTER. Building it any other way would make it the one file whose shape the
 # allowlist does not describe - and the one file a server is most likely to
-# serve by mistake. Its $visible is the empty list on purpose: $readAll is
-# true, and filter.jq's session select short-circuits on that before it ever
-# looks at $visible.
-write_view "_operator" "_operator" true '[]' '[]' || rc=1
+# serve by mistake. readAll selects owner fields, never raw rows.
+write_view "_operator" "_operator" true '[]' || rc=1
 
 # THE SWAP AND THE PRUNE ONLY HAPPEN WHEN EVERY VIEWER WROTE. A generation
 # with even one missing file is not a generation a reader may be pointed at -

@@ -104,7 +104,10 @@ D="$T/desk/current"
 is  "one file per principal plus the operator file" "$(ls "$D" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')" "_operator.json a.json b.json c.json "
 is  "schemaVersion is 1" "$(jq .schemaVersion "$D/b.json")" "1"
 is  "b sees the team session and a's session in the same domain" "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$D/b.json")" "team-b work-a"
-is  "b never sees a's account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/b.json")" "entity project"
+is  "b never sees a's MCP surface" "$(jq -r '.sessions[]|select(.slug=="work-a")|has("mcp")' "$D/b.json")" "false"
+is  "member gets coarse liveness only" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "measuredAt state"
+is  "member sight is explicit" "$(jq -r '.sessions[]|select(.slug=="work-a")|.sight' "$D/b.json")" "member"
+is  "owner sight is explicit" "$(jq -r '.sessions[]|select(.slug=="team-b")|.sight' "$D/b.json")" "owner"
 is  "a sees the own account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/a.json")" "account entity project"
 is  "c sees nothing" "$(jq '.sessions|length' "$D/c.json")" "0"
 is  "the operator file carries every session" "$(jq '.sessions|length' "$D/_operator.json")" "2"
@@ -155,7 +158,7 @@ is  "a session the seam never mentioned is unknown" \
 is  "and carries no age" \
     "$(jq -r '.sessions[]|select(.slug=="team-b")|.liveness.ageSeconds|type' "$D/_operator.json")" "null"
 is  "the write is atomic: no tmp files remain" "$(ls "$D" | grep -c tmp)" "0"
-is  "unknown keys are dropped by the filter" "$(jq -r '.sessions[0]|keys|join(",")' "$D/a.json")" "domain,host,id,label,liveness,mcp,mine,owner,project,repo,runtime,slug"
+is  "unknown keys are dropped by the filter" "$(jq -r '.sessions[0]|keys|join(",")' "$D/a.json")" "domain,host,id,label,liveness,mcp,mine,owner,project,repo,runtime,sight,slug"
 is  "an asset carries the four allowed keys only" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp[0]|keys|join(",")' "$D/a.json")" "axis,id,name,source"
 is  "the viewer is named in the file" "$(jq -r .viewer "$D/b.json")" "b"
 is  "read-all is a boolean" "$(jq -r '.readAll|tostring' "$D/b.json")" "false"
@@ -291,44 +294,71 @@ cat > "$T/raw3.json" <<'EOF'
               "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
               "mcp":[{"id":"x","name":"X","axis":"other","source":"whatever"}]}]}
 EOF
-out3="$(jq --arg viewer a --argjson readAll true --argjson memberOf '[]' --argjson visible '[]' \
+. "$here/lib/visibility.sh"
+owner_fields="$(visibility_field_list owner | jq -Rn '[inputs]')"
+member_fields="$(visibility_field_list member | jq -Rn '[inputs]')"
+out3="$(jq --arg viewer a --argjson readAll true --argjson memberOf '[]' \
+           --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
            -f "$here/desk/filter.jq" "$T/raw3.json")"
 is  "an unknown axis is dropped even for the owner/readAll viewer" \
     "$(printf '%s' "$out3" | jq '.sessions[0].mcp|length')" "0"
 
-echo "== filter.jq: a project-axis grant from a project the viewer's team does not own is dropped =="
-# THE NEGATIVE CASE for the project axis: two project grants on one session,
-# "work" (parent = team, which b belongs to) and "other" (parent = e1, which
-# b does not). This cannot be built through the real registry rig - a session
-# has exactly one TARGET_PROJECT, so one session can never carry two distinct
-# project-axis sources through the actual mcp-surface walk - so it is proved
-# directly against filter.jq instead, the same way as the unknown-axis case
-# above.
+echo "== filter.jq: shared sight, not membership, selects session fields =="
+# Raw input deliberately carries extra fields at every depth. No new field
+# reaches a viewer merely because the producer starts measuring it.
 cat > "$T/raw4.json" <<'EOF'
 {"host":"h","generatedAt":"g","registryRevision":"r",
  "principals":[{"id":"a","name":"A","readAll":true},{"id":"b","name":"B","readAll":false}],
  "entities":[{"id":"team","name":"Team","managedBy":null,"members":["a","b"]}],
  "projects":[{"id":"work","name":"Work","parent":"team"},{"id":"other","name":"Other","parent":"e1"}],
  "sessions":[{"id":"s1","slug":"work-a","label":"Work A","owner":"a","domain":"team","project":"work",
-              "runtime":"claude-code","host":"h","repo":"repo",
-              "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
-              "mcp":[{"id":"shared","name":"shared","axis":"entity","source":"team"},
+               "runtime":"claude-code","host":"h","repo":"repo", "sight":{"b":"member"},
+               "mail":"SENTINEL_MAIL", "activityAge":42,
+               "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":42,"secret":"SENTINEL_LIVE"},
+               "mcp":[{"id":"shared","name":"shared","axis":"entity","source":"team","command":"SENTINEL_CMD"},
                      {"id":"tool","name":"tool","axis":"project","source":"work"},
                      {"id":"other-tool","name":"other-tool","axis":"project","source":"other"}]}]}
 EOF
-out4b="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' --argjson visible '["s1"]' \
+out4b="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
             -f "$here/desk/filter.jq" "$T/raw4.json")"
-out4a="$(jq --arg viewer a --argjson readAll true  --argjson memberOf '[]' --argjson visible '[]' \
+out4a="$(jq --arg viewer a --argjson readAll true  --argjson memberOf '[]' \
+            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
             -f "$here/desk/filter.jq" "$T/raw4.json")"
-is  "b's work-a mcp axes read exactly entity project" \
-    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")')" \
-    "entity project"
-is  "b's project asset source is work only - other is dropped" \
-    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp[]|select(.axis=="project")|.source')" \
-    "work"
+is  "b gets no MCP fields" \
+    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|has("mcp")')" false
 is  "a (readAll) still sees the other-project asset" \
     "$(printf '%s' "$out4a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.source)|sort|join(" ")')" \
-    "other team work"
+     "other team work"
+for sentinel in SENTINEL_MAIL SENTINEL_LIVE SENTINEL_CMD; do
+  is "extra field $sentinel is absent for both levels" \
+    "$(printf '%s\n%s' "$out4a" "$out4b" | grep -Fc "$sentinel")" 0
+done
+out_none="$(jq '.sessions[].sight.b = "none"' "$T/raw4.json" |
+  jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+     --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" -f "$here/desk/filter.jq")"
+is "membership cannot override shell sight none" "$(printf '%s' "$out_none" | jq '.sessions|length')" 0
+
+echo "== client membership never grants the rest of the managing team =="
+printf 'NAME="Client"\nMEMBERS="c"\nMANAGED_BY="team"\n' > "$ROOT/entities.d/client.conf"
+printf 'NAME="Client work"\nPARENT="client"\n' > "$ROOT/projects.d/client-work.conf"
+for name in peer hidden granted; do
+  printf 'OWNER="b"\nHOST="h1"\nDOMAIN="client-work"\nTARGET_PROJECT="client-work"\nREPO_PATH="/tmp/repo"\n' \
+    > "$ROOT/sessions.d/$name.conf"
+done
+printf 'VISIBILITY="private"\n' >> "$ROOT/sessions.d/hidden.conf"
+printf 'VISIBILITY="private"\nVISIBLE_TO="client"\n' >> "$ROOT/sessions.d/granted.conf"
+rc="$(STEWARD_DESK_DIR="$T/desk-client" STEWARD_LIVENESS_CMD="$T/shim" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/client.err"; echo $?)"
+is "client snapshot runs" "$rc" 0
+C="$T/desk-client/current/c.json"
+is "client member sees peers and explicit grants, not private or team rows" \
+   "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$C")" "granted peer"
+is "every client peer has member sight" "$(jq -r '[.sessions[].sight]|unique|join(" ")' "$C")" member
+is "client peer fields exclude account MCP, mail and activity age" \
+   "$(jq -r 'all(.sessions[]; (has("mcp")|not) and (has("mail")|not) and (.liveness|has("ageSeconds")|not))' "$C")" true
+is "client member sees the project's descriptor" \
+   "$(jq -r '.projects|map(.id)|join(" ")' "$C")" client-work
 
 echo "== filter.jq: a project-axis asset with no source is dropped, never raises =="
 # A NULL SOURCE ON A PROJECT-AXIS ASSET must be dropped like any other asset
