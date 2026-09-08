@@ -489,7 +489,7 @@ git commit -m "desk front: the session is the cookie - principal, issue time and
 - Create: `test/desk-paths.test.sh`
 
 **Interfaces:**
-- Consumes: `_registry_estate_value <KEY> <regex>` (`lib/registry.sh:1861`, rc 78 when missing or malformed), `_registry_estate_root` (`lib/registry.sh:70`), `registry_state_dir_name`.
+- Consumes: `registry_estate_file` and `_registry_estate_root` (`lib/registry.sh:70-95`), `registry_state_dir_name`. Not `_registry_estate_value`: it knows a fixed key list and answers rc 70 for any other key, and this plan does not edit `lib/registry.sh`.
 - Produces:
   - `desk-paths` prints, after `dir=` and `sock=`, **when and only when the estate names them**: `origin=<DESK_ORIGIN>` (form `^https?://[A-Za-z0-9.-]+(:[0-9]+)?$`), `providers=<estate root>/desk/providers.d` (only when that directory exists), `session_key=<DESK_SESSION_KEY_FILE>` (form `^/.+$`). A malformed value is rc 78 with the key named on stderr; an absent value prints no line.
   - `principal-exists <slug>`: rc 0 when `<estate root>/principals.d/<slug>.conf` is a regular file, 1 when not, 64 on a slug not matching `^[a-z0-9-]+$` or wrong argument count, 78 when the estate does not load. Prints nothing.
@@ -585,20 +585,36 @@ printf 'sock=%s\n' "$base/desk.sock"
 # one, so a malformed value is rc 78 with the key named. The providers line
 # follows the directory, not a key: the estate keeps desk/providers.d beside
 # its registry, and an estate without the directory has no providers.
-if grep -q '^DESK_ORIGIN=' "$STEWARD_ESTATE_ROOT/estate/steward.conf" 2>/dev/null; then
-  origin="$(_registry_estate_value DESK_ORIGIN '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')" || exit 78
+#
+# THE TWO KEYS ARE READ HERE, NOT THROUGH _registry_estate_value: that helper
+# knows a fixed list of keys (lib/registry.sh, the case arm) and answers rc 70
+# "unknown estate key" for any other, and this bridge must not edit the
+# library. Same discipline as the helper: the variable is cleared before the
+# file is sourced, in a subshell, so a value in the caller's environment can
+# never pose as the estate's; the form is checked before the value is printed.
+estate_file="$(registry_estate_file)" || exit 78
+front_value() { # <KEY> <regex> -> value on stdout, rc 1 when the line is absent, rc 78 when malformed
+  local _key="$1" _form="$2" _v
+  grep -q "^${_key}=" "$estate_file" 2>/dev/null || return 1
+  _v="$( eval "$_key=''"; . "$estate_file" >/dev/null 2>&1; eval "printf '%s' \"\$$_key\"" )"
+  if ! [[ "$_v" =~ $_form ]]; then
+    echo "desk-paths: REFUSING - $_key is missing or invalid in $estate_file (got '$_v')" >&2
+    return 78
+  fi
+  printf '%s\n' "$_v"
+}
+if origin="$(front_value DESK_ORIGIN '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')"; then
   printf 'origin=%s\n' "$origin"
-fi
+elif [ $? -eq 78 ]; then exit 78; fi
 root="$(_registry_estate_root)" || exit 78
 [ -d "$root/desk/providers.d" ] && printf 'providers=%s\n' "$root/desk/providers.d"
-if grep -q '^DESK_SESSION_KEY_FILE=' "$STEWARD_ESTATE_ROOT/estate/steward.conf" 2>/dev/null; then
-  keyfile="$(_registry_estate_value DESK_SESSION_KEY_FILE '^/.+$')" || exit 78
+if keyfile="$(front_value DESK_SESSION_KEY_FILE '^/.+$')"; then
   printf 'session_key=%s\n' "$keyfile"
-fi
+elif [ $? -eq 78 ]; then exit 78; fi
 exit 0
 ```
 
-Check first with `sed -n 1861,1910p lib/registry.sh` that `_registry_estate_value` prints the value on stdout and returns 78 on a mismatch, and with `sed -n 70,90p lib/registry.sh` that `_registry_estate_root` prints the root; adjust the two calls to the exact signatures if they differ. If `STEWARD_ESTATE_ROOT` is not the variable the library resolves the root from, use `"$(_registry_estate_root)/estate/steward.conf"` in both `grep` lines instead.
+`registry_estate_file` (lib/registry.sh, near line 95) prints `<root>/estate/steward.conf`; `_registry_estate_root` (line 70) prints the root, honouring `STEWARD_ESTATE_ROOT`. Note the `elif [ $? -eq 78 ]` after an `if cmd; then` tests the status of the failed command substitution assignment, which is the function's rc - keep the shape exactly (an intermediate command would clobber `$?`).
 
 Create `desk/bin/principal-exists`:
 
