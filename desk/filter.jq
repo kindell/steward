@@ -55,7 +55,8 @@ def isVisibleEntity($id; $managerOf): $id != null and (isMember($id) or isMember
 def keepAsset($own; $parentOf; $managerOf):
   if   .axis == "account" then ($readAll or $own)
   elif .axis == "entity"  then ($readAll or $own or isVisibleEntity(.source; $managerOf))
-  elif .axis == "project" then ($readAll or $own or isVisibleEntity($parentOf[.source]; $managerOf))
+  elif .axis == "project" then ($readAll or $own or
+                                 (.source != null and isVisibleEntity($parentOf[.source]; $managerOf)))
   else false
   end;
 

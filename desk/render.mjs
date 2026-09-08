@@ -136,12 +136,10 @@ function readSnapshot(snap) {
 // A MISSING AGE IS `unknown`, never blank and never the language's word for
 // absence: "nobody could measure this" is a fact the reader has to be told.
 export function formatAge(ageSeconds) {
-  if (ageSeconds === null || ageSeconds === undefined) return 'unknown';
-  const n = Number(ageSeconds);
-  if (Number.isNaN(n)) return 'unknown';
-  if (n < 60) return Math.floor(n) + ' s';
-  if (n < 3600) return Math.floor(n / 60) + ' min';
-  return Math.floor(n / 3600) + ' h';
+  if (typeof ageSeconds !== 'number' || !Number.isFinite(ageSeconds) || ageSeconds < 0) return 'unknown';
+  if (ageSeconds < 60) return Math.floor(ageSeconds) + ' s';
+  if (ageSeconds < 3600) return Math.floor(ageSeconds / 60) + ' min';
+  return Math.floor(ageSeconds / 3600) + ' h';
 }
 
 const livenessWord = (lv) => orNone(lv.state) + ', last activity ' + formatAge(lv.ageSeconds);
@@ -233,10 +231,17 @@ const projectHead = (p) => link('project', p.id, labelOf(p) || orNone(p.id));
 // The session node answers the three things a reader asks of a running session
 // without opening it: whose it is, whether it is alive, and how stale that
 // answer is. `mine` is marked exactly as the session table marks it.
-const sessionHead = (s) =>
-  link('session', s.id, orNone(s.slug)) + (s.mine ? tag('mine') : '') +
-  ' - ' + h(orNone(s.label)) + ' - ' + h(orNone(s.owner)) +
-  ' - ' + h(orNone(s.liveness.state) + ' - ' + formatAge(s.liveness.ageSeconds));
+function sessionHead(s) {
+  const st = orNone(s.liveness.state);
+  const ag = formatAge(s.liveness.ageSeconds);
+  // A STATE NOBODY MEASURED AND AN AGE NOBODY MEASURED ARE ONE FACT, NOT TWO:
+  // "unknown - unknown" repeats the same absence twice where "unknown" says
+  // it once.
+  const live = (st === 'unknown' && ag === 'unknown') ? 'unknown' : st + ' - ' + ag;
+  return link('session', s.id, orNone(s.slug)) + (s.mine ? tag('mine') : '') +
+    ' - ' + h(orNone(s.label)) + ' - ' + h(orNone(s.owner)) +
+    ' - ' + h(live);
+}
 
 const sessionNode = (s) => li(sessionHead(s), []);
 const projectNode = (P, p) => li(projectHead(p), (P.projectSessions.get(p.id) || []).map(sessionNode));

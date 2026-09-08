@@ -316,6 +316,32 @@ is  "a (readAll) still sees the other-project asset" \
     "$(printf '%s' "$out4a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.source)|sort|join(" ")')" \
     "other team work"
 
+echo "== filter.jq: a project-axis asset with no source is dropped, never raises =="
+# A NULL SOURCE ON A PROJECT-AXIS ASSET must be dropped like any other asset
+# the viewer cannot see, not raise a jq error that fails the whole snapshot.
+# THE REAL PRODUCER NEVER WRITES ONE (registry_session_mcp_surface always
+# names the granting project's own slug), so this is fed to filter.jq
+# directly, the same way raw3/raw4 above are.
+# THE VIEWER MUST NOT OWN THE SESSION AND MUST NOT READ ALL, so keepAsset's
+# short-circuiting `or` cannot skip the buggy indexing before it is ever
+# reached - b is a plain member of team, not the session's owner.
+cat > "$T/raw5.json" <<'EOF'
+{"host":"h","generatedAt":"g","registryRevision":"r",
+ "principals":[{"id":"a","name":"A","readAll":true},{"id":"b","name":"B","readAll":false}],
+ "entities":[{"id":"team","name":"Team","managedBy":null,"members":["a","b"]}],
+ "projects":[{"id":"work","name":"Work","parent":"team"}],
+ "sessions":[{"id":"s1","slug":"work-a","label":"Work A","owner":"a","domain":"team","project":"work",
+              "runtime":"claude-code","host":"h","repo":"repo",
+              "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
+              "mcp":[{"id":"orphan","name":"orphan","axis":"project","source":null}]}]}
+EOF
+rc5="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+          -f "$here/desk/filter.jq" "$T/raw5.json" >"$T/out5.json" 2>"$T/err5b"; echo $?)"
+is  "the snapshot succeeds with a null-source project asset" "$rc5" "0"
+[ "$rc5" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err5b")"
+is  "and the null-source asset is absent" \
+    "$(jq -r '.sessions[0].mcp|length' "$T/out5.json" 2>/dev/null)" "0"
+
 echo "== one visibility rule: what hangs under a visible entity is visible =="
 # THE DEFECT THIS SECTION WAS WRITTEN AGAINST, measured on a real estate. A
 # viewer who belongs to `team` reached `client` - the entity `team` manages -

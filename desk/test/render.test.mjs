@@ -321,3 +321,23 @@ test('an age reads in the unit a reader thinks in', () => {
   assert.equal(formatAge(360), '6 min');
   assert.equal(formatAge(7200), '2 h');
 });
+
+// ANYTHING THAT IS NOT A FINITE, NON-NEGATIVE NUMBER IS `unknown`, not a
+// coerced guess. The producer writes a JSON number or null - never a string,
+// a boolean or an out-of-range value - so an age that fails that shape is
+// unmeasurable, not merely small or large.
+test('an age that is not a finite non-negative number reads unknown', () => {
+  assert.equal(formatAge(''), 'unknown');
+  assert.equal(formatAge(true), 'unknown');
+  assert.equal(formatAge(-5), 'unknown');
+  assert.equal(formatAge(Infinity), 'unknown');
+});
+
+// A SESSION NODE COLLAPSES "unknown - unknown" INTO ONE WORD. Two separate
+// fields both saying the same absence read as one message read twice; a
+// single "unknown" says it once.
+test('a session node with an unknown state and an unknown age says it once', () => {
+  const h = pageIndex(snap);
+  assert.ok(h.includes(' - Mine - b - unknown</li>'), h);
+  assert.ok(!h.includes('unknown - unknown'));
+});

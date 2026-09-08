@@ -106,9 +106,10 @@ The axis decides who sees the asset at all:
 
 - **account** - the person's own credential. Only the session's owner, or a
   `readAll` viewer, ever sees it.
-- **entity** - travels when the entity named in `source` is visible.
+- **entity** - travels when the entity named in `source` is visible, or the
+  session's owner.
 - **project** - travels when the entity the project in `source` hangs under is
-  visible.
+  visible, or the session's owner.
 - anything else - dropped. A new axis has to be granted deliberately in
   `filter.jq`; it is never inherited.
 
