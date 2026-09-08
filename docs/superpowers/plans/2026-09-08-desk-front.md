@@ -942,6 +942,7 @@ git commit -m "desk front: providers are estate rows, discovery is fetched once,
 **Interfaces:**
 - Consumes: `startStub` (Task 4), `discover`, `beginLogin`.
 - Produces:
+  - `FETCH_TIMEOUT_MS = 10000` and a module-private `timedFetch(fetchImpl, url, init)` that adds `signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)` to `init`; `discover` (Task 4's function, edited here), `exchangeCode` and the JWKS fetch all go through it. A provider that accepts the connection and never answers must fail the login in 10 s, not hang it (Task 4's review found the discovery fetch unbounded).
   - `async exchangeCode(provider, doc, { code, verifier, redirectUri }, fetchImpl = fetch) -> string` - POSTs `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `client_secret` (read from `provider.clientSecretFile`, trimmed, at call time), `code_verifier` as `application/x-www-form-urlencoded` to `doc.token_endpoint`; returns `id_token`; throws on non-2xx or a missing `id_token`.
   - `async verifyIdToken(provider, doc, token, { nonce, now = Math.floor(Date.now()/1000) }, fetchImpl = fetch) -> { sub, tid: string|null, email: string|null }` - throws `Error` whose message starts with `id_token:` on: malformed JWT, `alg` not `RS256`, unknown `kid` after one JWKS refresh, bad signature, `iss` mismatch (byte for byte with `provider.issuer`, or `provider.issuerTemplate` with `<tid>` replaced by the token's `tid` claim - a template provider with a token lacking `tid` is refused), `aud` not equal to `provider.clientId` (string or one-element array), `exp <= now`, `iat > now + 300` or `iat < now - 300`, `nonce` mismatch, `sub` missing.
   - `identityOf(provider, claims) -> string` - `oidc:<provider.slug>:<sub>`; for a template provider, `oidc:<slug>:<tid>.<sub>` so a personal and a work account with the same `sub` shape stay distinct. The separator is `.`: the registry's `OIDC_LOGIN` word allows `[A-Za-z0-9._~-]` in the subject half and nothing else (measured on the services branch), and a tenant id is a UUID without dots, so the first dot splits unambiguously.
@@ -1033,10 +1034,18 @@ Expected: FAIL - `exchangeCode` is not exported.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `desk/oidc.mjs`:
+Append to `desk/oidc.mjs`, and edit Task 4's `discover` so its fetch reads `await timedFetch(fetchImpl, provider.discovery, { headers: { accept: 'application/json' } })`:
 
 ```js
 import { createPublicKey, createVerify } from 'node:crypto';
+
+// EVERY CALL TO A PROVIDER IS BOUNDED. A provider that accepts the connection
+// and never answers would otherwise hang a login forever; ten seconds is
+// longer than any healthy discovery, JWKS or token exchange takes.
+const FETCH_TIMEOUT_MS = 10000;
+function timedFetch(fetchImpl, url, init) {
+  return fetchImpl(url, Object.assign({}, init || {}, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }));
+}
 
 export async function exchangeCode(provider, doc, { code, verifier, redirectUri }, fetchImpl = fetch) {
   // The secret is read at call time, never held: a rotated file takes effect
@@ -1047,7 +1056,7 @@ export async function exchangeCode(provider, doc, { code, verifier, redirectUri 
     grant_type: 'authorization_code', code, redirect_uri: redirectUri,
     client_id: provider.clientId, client_secret: secret, code_verifier: verifier
   });
-  const res = await fetchImpl(doc.token_endpoint, {
+  const res = await timedFetch(fetchImpl, doc.token_endpoint, {
     method: 'POST', body: form.toString(),
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }
   });
@@ -1065,7 +1074,7 @@ async function jwksFor(provider, doc, kid, fetchImpl) {
   if (!entry || !entry.keys.has(kid)) {
     // Refresh once on an unknown kid (rotation), never more: a second miss is
     // a token this provider did not sign, not a cache that is behind.
-    const res = await fetchImpl(doc.jwks_uri, { headers: { accept: 'application/json' } });
+    const res = await timedFetch(fetchImpl, doc.jwks_uri, { headers: { accept: 'application/json' } });
     if (!res.ok) throw new Error('jwks for ' + provider.slug + ' answered ' + res.status);
     const body = await res.json();
     const keys = new Map();
@@ -1118,7 +1127,7 @@ export function identityOf(provider, claims) {
 }
 ```
 
-Move the `import { createPublicKey, createVerify }` line up to the module's import block (imports must lead the file); merge with the existing `node:crypto` import.
+Move the `import { createPublicKey, createVerify }` line up to the module's import block (imports must lead the file); merge with the existing `node:crypto` import. Place `FETCH_TIMEOUT_MS` and `timedFetch` above `discover` so Task 4's function can call it. Add one test: a stub whose discovery endpoint never responds (start a bare `http.createServer((req) => {})` on 127.0.0.1) and a provider row pointing at it; `discover(prov, fetch)` must reject within `FETCH_TIMEOUT_MS` - to keep the suite fast, pass a `fetchImpl` that wraps `fetch` and shortens the signal: `(u, o) => fetch(u, Object.assign({}, o, { signal: AbortSignal.timeout(200) }))` is NOT valid (the module sets its own signal); instead assert that the `init` handed to a counting `fetchImpl` carries `signal instanceof AbortSignal` and that `signal.aborted` becomes true after `FETCH_TIMEOUT_MS` is not awaited - i.e. the test checks the signal is present with `assert.ok(init.signal instanceof AbortSignal)` on all three call sites (discovery, token, jwks) via a recording `fetchImpl`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
