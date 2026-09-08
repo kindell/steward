@@ -79,13 +79,40 @@ function timedFetch(fetchImpl, url, init) {
   return fetchImpl(url, Object.assign({}, init || {}, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }));
 }
 
+// AND EVERY ANSWER IS BOUNDED IN SIZE AS WELL AS IN TIME. The provider is a
+// trusted party by construction, so this is the compromised-provider case: a
+// discovery document or a JWKS of a gigabyte would otherwise be read whole
+// into this process, and every key in such a JWKS handed to createPublicKey.
+// A declared content-length over the cap is refused before the body is read;
+// without one the body is read and then measured, which bounds what is
+// PARSED rather than what is received. 64 KiB is far above any real document
+// of either kind - a JWKS of a hundred keys is a few kilobytes - so the cap
+// also bounds the key count without counting keys.
+//
+// The message keeps the caller's own prefix, because serve.mjs allowlists
+// those four prefixes for the operator's log and degrades anything else to a
+// class name.
+const MAX_BODY_BYTES = 65536;
+async function boundedJson(res, what) {
+  const declared = res.headers.get('content-length');
+  const tooBig = what + ' answered a body over ' + MAX_BODY_BYTES + ' bytes';
+  if (declared !== null && Number(declared) > MAX_BODY_BYTES) throw new Error(tooBig);
+  const text = await res.text();
+  if (Buffer.byteLength(text) > MAX_BODY_BYTES) throw new Error(tooBig);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(what + ' answered something that is not JSON');
+  }
+}
+
 export async function discover(provider, fetchImpl = fetch) {
   const key = cacheKey(provider);
   const hit = discoveryCache.get(key);
   if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.doc;
   const res = await timedFetch(fetchImpl, provider.discovery, { headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error('discovery for ' + provider.slug + ' answered ' + res.status);
-  const doc = await res.json();
+  const doc = await boundedJson(res, 'discovery for ' + provider.slug);
   for (const k of ['issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri']) {
     if (typeof doc[k] !== 'string' || !doc[k]) throw new Error('discovery for ' + provider.slug + ' lacks ' + k);
   }
@@ -171,11 +198,17 @@ async function jwksFor(provider, doc, kid, fetchImpl) {
   // least a minute old (rotation) - at most once per verification either way.
   const res = await timedFetch(fetchImpl, doc.jwks_uri, { headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error('jwks for ' + provider.slug + ' answered ' + res.status);
-  const body = await res.json();
+  const body = await boundedJson(res, 'jwks for ' + provider.slug);
   const keys = new Map();
   for (const k of (body.keys || [])) {
     if (k.kty !== 'RSA' || !k.kid) continue;
     if (k.use && k.use !== 'sig') continue;
+    // A KEY THAT NAMES ITS OWN ALGORITHM IS TAKEN AT ITS WORD. Every
+    // signature here is verified as RS256, so a key published as RS512 is not
+    // a key for this verification - keeping it would mean verifying an RS256
+    // signature with a key its owner said was for something else. A key that
+    // names no alg is unconstrained and stays.
+    if (k.alg && k.alg !== 'RS256') continue;
     keys.set(k.kid, createPublicKey({ key: k, format: 'jwk' }));
   }
   const fresh = { keys, at: Date.now() };
@@ -221,6 +254,11 @@ export async function verifyIdToken(provider, doc, token, { nonce, now = Math.fl
   if (aud !== provider.clientId) refuse('aud');
   if (!Number.isFinite(claims.exp) || claims.exp <= now) refuse('exp');
   if (!Number.isFinite(claims.iat) || Math.abs(claims.iat - now) > 300) refuse('iat');
+  // nbf WHEN THE PROVIDER SENDS ONE - and it does; Microsoft always has. A
+  // token that is not yet valid is not valid, and without this check its only
+  // bound was the iat skew window. Absent it says nothing, so absent is fine;
+  // present and not a number is a claim that cannot be honoured.
+  if (claims.nbf !== undefined && (!Number.isFinite(claims.nbf) || claims.nbf > now + 300)) refuse('nbf');
   // The nonce must be a string as well as equal: a caller with no nonce at
   // hand would otherwise pass undefined, and a token that simply carries no
   // nonce claim would match it.

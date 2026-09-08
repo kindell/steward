@@ -42,7 +42,11 @@ export async function startStub(opts = {}) {
         jwks_uri: opts.jwksUri || base + '/jwks'
       });
     }
-    if (u.pathname === '/jwks') return json(200, { keys: [Object.assign({ kid, use: 'sig', alg: 'RS256' }, jwk)] });
+    // opts.jwksAlg lets a test publish the key under an algorithm this desk
+    // does not verify with, so the "a key that names another alg is skipped"
+    // path has a fixture. It exists only in this stub; the product has no
+    // such knob.
+    if (u.pathname === '/jwks') return json(200, { keys: [Object.assign({ kid, use: 'sig', alg: opts.jwksAlg || 'RS256' }, jwk)] });
     if (u.pathname === '/authorize') {
       stub.lastAuthorize = u.searchParams;
       const back = new URL(u.searchParams.get('redirect_uri'));

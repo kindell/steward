@@ -36,8 +36,9 @@ test('loadProviders refuses a row missing a key, both issuer forms, a template w
   bad('Bad Name.conf', 'ISSUER="https://a"\nDISCOVERY="https://a/d"\nCLIENT_ID="c"\nCLIENT_SECRET_FILE="/f"\n', /slug/);
 });
 
-test('discover fetches the four endpoints once and caches them', async () => {
+test('discover fetches the four endpoints once and caches them', async (t) => {
   const stub = await startStub();
+  t.after(() => stub.close());
   let calls = 0;
   const counting = (u, o) => { calls++; return fetch(u, o); };
   const prov = { slug: 'p', issuer: stub.issuer, issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
@@ -47,31 +48,30 @@ test('discover fetches the four endpoints once and caches them', async () => {
   assert.equal(doc.jwks_uri, stub.origin + '/jwks');
   await discover(prov, counting);
   assert.equal(calls, 1);
-  await stub.close();
 });
 
-test('discover refuses a document that names another issuer', async () => {
+test('discover refuses a document that names another issuer', async (t) => {
   const stub = await startStub({ issuer: 'https://accounts.example.test' });
+  t.after(() => stub.close());
   const prov = { slug: 'iss-mismatch', issuer: 'https://provider.example.test', issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
   await assert.rejects(discover(prov), /discovery for iss-mismatch names another issuer/);
-  await stub.close();
 });
 
-test('discover refuses an endpoint on another origin', async () => {
+test('discover refuses an endpoint on another origin', async (t) => {
   const stub = await startStub({ jwksUri: 'https://provider.example.test/jwks' });
+  t.after(() => stub.close());
   const prov = { slug: 'off-origin', issuer: stub.issuer, issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
   await assert.rejects(discover(prov), /discovery for off-origin points jwks_uri off its own origin/);
-  await stub.close();
 });
 
-test('discover refuses a plaintext endpoint on a host that is not loopback', async () => {
+test('discover refuses a plaintext endpoint on a host that is not loopback', async (t) => {
   // The endpoints sit on the issuer's own origin, so the origin check has
   // nothing to say and the scheme check is the one that must refuse. Only
   // loopback may be plaintext, and this host is not loopback.
   const stub = await startStub({ issuer: 'http://provider.example.test', endpointBase: 'http://provider.example.test' });
+  t.after(() => stub.close());
   const prov = { slug: 'plaintext', issuer: 'http://provider.example.test', issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
   await assert.rejects(discover(prov), /discovery for plaintext names a plaintext authorization_endpoint/);
-  await stub.close();
 });
 
 test('loadProviders refuses a DISCOVERY that is not https and not loopback', () => {
@@ -83,8 +83,9 @@ test('loadProviders refuses a DISCOVERY that is not https and not loopback', () 
   assert.equal(loadProviders(providersDir({ 'x.conf': row('http://127.0.0.1:9/.well-known/openid-configuration') })).size, 1);
 });
 
-test('beginLogin builds a PKCE S256 authorization URL with fresh state and nonce', async () => {
+test('beginLogin builds a PKCE S256 authorization URL with fresh state and nonce', async (t) => {
   const stub = await startStub();
+  t.after(() => stub.close());
   const prov = { slug: 'p', issuer: stub.issuer, issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
   const doc = await discover(prov);
   const a = beginLogin(prov, doc, 'https://desk.example.test/desk/auth/callback');
@@ -100,11 +101,17 @@ test('beginLogin builds a PKCE S256 authorization URL with fresh state and nonce
   assert.equal(u.searchParams.get('nonce'), a.nonce);
   assert.equal(u.searchParams.get('code_challenge_method'), 'S256');
   assert.equal(u.searchParams.get('code_challenge'), createHash('sha256').update(a.verifier).digest('base64url'));
-  await stub.close();
 });
 
-async function loginFixture(stubOpts = {}, provOver = {}) {
+// THE STUB IS CLOSED BY THE RUNNER, NOT BY THE LAST LINE OF THE TEST. A
+// closing call after the assertions is skipped by a failing assertion, and the
+// leaked listening server then keeps node --test's event loop alive: the
+// failure is printed and the process hangs instead of exiting 1, which reads
+// as a timeout rather than a red test. Measured on this branch - three red
+// mutation runs each had to be killed at 150 s. t.after runs either way.
+async function loginFixture(t, stubOpts = {}, provOver = {}) {
   const stub = await startStub(stubOpts);
+  t.after(() => stub.close());
   const secretDir = mkdtempSync(join(tmpdir(), 'desk-sec-'));
   writeFileSync(join(secretDir, 's'), 'shh-secret\n');
   const prov = Object.assign({
@@ -131,8 +138,8 @@ function craftToken(stub, payloadText, opts = {}) {
   return signingInput + '.' + sig.toString('base64url');
 }
 
-test('exchangeCode posts the form with the secret from the file and returns the id_token', async () => {
-  const f = await loginFixture();
+test('exchangeCode posts the form with the secret from the file and returns the id_token', async (t) => {
+  const f = await loginFixture(t);
   const tok = await exchangeCode(f.prov, f.doc, { code: f.code, verifier: f.begun.verifier, redirectUri: 'https://desk.example.test/desk/auth/callback' });
   assert.equal(typeof tok, 'string');
   const call = f.stub.tokenCalls[0];
@@ -140,20 +147,18 @@ test('exchangeCode posts the form with the secret from the file and returns the 
   assert.equal(call.form.get('client_secret'), 'shh-secret');
   assert.equal(call.form.get('code_verifier'), f.begun.verifier);
   await assert.rejects(exchangeCode(f.prov, f.doc, { code: 'WRONG', verifier: 'v', redirectUri: 'x' }), /token endpoint/);
-  await f.stub.close();
 });
 
-test('a valid id_token verifies to its subject', async () => {
-  const f = await loginFixture();
+test('a valid id_token verifies to its subject', async (t) => {
+  const f = await loginFixture(t);
   const tok = await exchangeCode(f.prov, f.doc, { code: f.code, verifier: f.begun.verifier, redirectUri: 'https://desk.example.test/desk/auth/callback' });
   const claims = await verifyIdToken(f.prov, f.doc, tok, { nonce: f.begun.nonce });
   assert.deepEqual(claims, { sub: 'sub-1', tid: null, email: 'alice@example.test' });
   assert.equal(identityOf(f.prov, claims), 'oidc:p:sub-1');
-  await f.stub.close();
 });
 
-test('every refusal the spec lists is a refusal', async () => {
-  const f = await loginFixture();
+test('every refusal the spec lists is a refusal', async (t) => {
+  const f = await loginFixture(t);
   const now = Math.floor(Date.now() / 1000);
   const cases = [
     ['wrong aud', f.stub.mintIdToken({ aud: 'other' }), /id_token: aud/],
@@ -165,7 +170,9 @@ test('every refusal the spec lists is a refusal', async () => {
     ['no sub', f.stub.mintIdToken({ sub: undefined }), /id_token: sub/],
     ['not a jwt', 'abc.def', /id_token: malformed/],
     ['garbage segments', 'a.b.c', /id_token: malformed/],
-    ['wrong alg', f.stub.mintIdToken({}, { alg: 'none' }), /id_token: alg/]
+    ['wrong alg', f.stub.mintIdToken({}, { alg: 'none' }), /id_token: alg/],
+    ['not yet valid', f.stub.mintIdToken({ nbf: now + 600 }), /id_token: nbf/],
+    ['nbf that is not a number', f.stub.mintIdToken({ nbf: 'soon' }), /id_token: nbf/]
   ];
   const other = generateKeyPairSync('rsa', { modulusLength: 2048 });
   cases.push(['bad signature', f.stub.mintIdToken({}, { key: other.privateKey }), /id_token: signature/]);
@@ -179,7 +186,6 @@ test('every refusal the spec lists is a refusal', async () => {
   for (const [name, tok, re] of cases) {
     await assert.rejects(verifyIdToken(f.prov, f.doc, tok, { nonce: f.begun.nonce }), re, name);
   }
-  await f.stub.close();
 });
 
 test('identityOf does not tenant-scope a plain provider even if claims carry a tid', () => {
@@ -187,18 +193,17 @@ test('identityOf does not tenant-scope a plain provider even if claims carry a t
   assert.equal(identityOf(prov, { sub: 'sub-1', tid: 'tenant-x' }), 'oidc:p:sub-1');
 });
 
-test('a JWKS fetch failure refuses with the id_token prefix, not the raw endpoint error', async () => {
-  const f = await loginFixture();
+test('a JWKS fetch failure refuses with the id_token prefix, not the raw endpoint error', async (t) => {
+  const f = await loginFixture(t);
   const tok = await exchangeCode(f.prov, f.doc, { code: f.code, verifier: f.begun.verifier, redirectUri: 'https://desk.example.test/desk/auth/callback' });
   // A jwks_uri the stub answers 404 for: a fresh cache key (the URL differs
   // from the fixture's real one), so this is a genuine fetch, not a hit.
   const brokenDoc = Object.assign({}, f.doc, { jwks_uri: f.stub.origin + '/jwks-does-not-exist' });
   await assert.rejects(verifyIdToken(f.prov, brokenDoc, tok, { nonce: f.begun.nonce }), /id_token: jwks/);
-  await f.stub.close();
 });
 
-test('a template provider matches iss against the token tenant and keys identity by tenant', async () => {
-  const f = await loginFixture({ issuer: 'https://login.example.test/tenant-1/v2.0', tid: 'tenant-1' },
+test('a template provider matches iss against the token tenant and keys identity by tenant', async (t) => {
+  const f = await loginFixture(t, { issuer: 'https://login.example.test/tenant-1/v2.0', tid: 'tenant-1' },
     { issuer: null, issuerTemplate: 'https://login.example.test/<tid>/v2.0' });
   const tok = f.stub.mintIdToken();
   const claims = await verifyIdToken(f.prov, f.doc, tok, { nonce: f.begun.nonce });
@@ -206,14 +211,14 @@ test('a template provider matches iss against the token tenant and keys identity
   assert.equal(identityOf(f.prov, claims), 'oidc:p:tenant-1.sub-1');
   await assert.rejects(verifyIdToken(f.prov, f.doc, f.stub.mintIdToken({ tid: 'tenant-2' }), { nonce: f.begun.nonce }), /id_token: iss/);
   await assert.rejects(verifyIdToken(f.prov, f.doc, f.stub.mintIdToken({ tid: undefined }), { nonce: f.begun.nonce }), /id_token: tid/);
-  await f.stub.close();
 });
 
-test('every provider fetch carries an abort signal', async () => {
+test('every provider fetch carries an abort signal', async (t) => {
   // A fresh slug so the discovery and JWKS caches from earlier tests miss,
   // and every one of the three provider calls (discovery, token, jwks)
   // actually happens through the recording fetchImpl below.
   const stub = await startStub();
+  t.after(() => stub.close());
   const secretDir = mkdtempSync(join(tmpdir(), 'desk-sec-'));
   writeFileSync(join(secretDir, 's'), 'shh-secret\n');
   const prov = {
@@ -230,5 +235,65 @@ test('every provider fetch carries an abort signal', async () => {
   await verifyIdToken(prov, doc, tok, { nonce: begun.nonce }, recording);
   assert.equal(seen.length, 3);
   assert.ok(seen.every((o) => o && o.signal instanceof AbortSignal));
-  await stub.close();
+});
+
+test('an nbf inside the skew window, and no nbf at all, both verify', async (t) => {
+  // nbf says nothing when it is absent, and a provider that sends one sends
+  // it in the past - so only a token from the future is refused for it.
+  const f = await loginFixture(t);
+  const now = Math.floor(Date.now() / 1000);
+  const withNbf = await verifyIdToken(f.prov, f.doc, f.stub.mintIdToken({ nbf: now - 10 }), { nonce: f.begun.nonce });
+  assert.equal(withNbf.sub, 'sub-1');
+  const without = await verifyIdToken(f.prov, f.doc, f.stub.mintIdToken(), { nonce: f.begun.nonce });
+  assert.equal(without.sub, 'sub-1');
+});
+
+test('a JWKS key published under another algorithm is not a key for an RS256 signature', async (t) => {
+  const f = await loginFixture(t, { jwksAlg: 'RS512' });
+  // The key is the right kid and the right kty, and its owner says it is for
+  // RS512 - so it is skipped, and the token's kid then resolves to nothing.
+  await assert.rejects(verifyIdToken(f.prov, f.doc, f.stub.mintIdToken(), { nonce: f.begun.nonce }),
+    /id_token: kid unknown/);
+});
+
+test('a discovery document over the cap is refused, declared or not', async (t) => {
+  const origin = 'https://big.example.test';
+  const base = { issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f' };
+  const doc = {
+    issuer: origin, authorization_endpoint: origin + '/authorize',
+    token_endpoint: origin + '/token', jwks_uri: origin + '/jwks'
+  };
+  const huge = JSON.stringify(Object.assign({ padding: 'x'.repeat(70000) }, doc));
+  // A declared content-length over the cap is refused on the header alone.
+  const declared = async () => new Response(huge, {
+    status: 200, headers: { 'content-length': String(Buffer.byteLength(huge)) }
+  });
+  const provA = Object.assign({ slug: 'big-declared', issuer: origin, discovery: origin + '/a' }, base);
+  await assert.rejects(discover(provA, declared),
+    /discovery for big-declared answered a body over 65536 bytes/);
+  // A chunked answer declares nothing, so the body is read and then measured.
+  const undeclared = async () => new Response(new Blob([huge]).stream(), { status: 200 });
+  const provB = Object.assign({ slug: 'big-chunked', issuer: origin, discovery: origin + '/b' }, base);
+  await assert.rejects(discover(provB, undeclared),
+    /discovery for big-chunked answered a body over 65536 bytes/);
+  // A body inside the cap that is not JSON is named as such, not as a class.
+  const notJson = async () => new Response('<html>an error page</html>', { status: 200 });
+  const provC = Object.assign({ slug: 'not-json', issuer: origin, discovery: origin + '/c' }, base);
+  await assert.rejects(discover(provC, notJson), /discovery for not-json answered something that is not JSON/);
+  // And a small document still gets through the same reader.
+  const fine = async () => new Response(JSON.stringify(doc), { status: 200 });
+  const provD = Object.assign({ slug: 'small', issuer: origin, discovery: origin + '/d' }, base);
+  assert.equal((await discover(provD, fine)).jwks_uri, origin + '/jwks');
+});
+
+test('a JWKS over the cap is refused rather than parsed into keys', async (t) => {
+  const f = await loginFixture(t);
+  const huge = JSON.stringify({ padding: 'x'.repeat(70000), keys: [] });
+  const fat = async () => new Response(huge, {
+    status: 200, headers: { 'content-length': String(Buffer.byteLength(huge)) }
+  });
+  // A jwks_uri this process has never fetched, so this is a real fetch.
+  const doc = Object.assign({}, f.doc, { jwks_uri: f.stub.origin + '/jwks-fat' });
+  await assert.rejects(verifyIdToken(f.prov, doc, f.stub.mintIdToken(), { nonce: f.begun.nonce }, fat),
+    /id_token: jwks unavailable/);
 });

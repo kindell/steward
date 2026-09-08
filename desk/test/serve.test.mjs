@@ -1086,27 +1086,38 @@ describe('the front listener', () => {
   // carries the identity, so the question asked on every click is the one the
   // login asked - which of the two ways an operator takes somebody off the
   // front happened is not something the front has to know.
+  // The row goes back in a finally for the same reason a stub is closed in
+  // one: a red assertion here would otherwise leave the fixture broken and
+  // every test after it would fail for a reason that is not its own.
+  const restoreRowE = () => writeFileSync(ROW_E(), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+
   it('removing the OIDC word revokes the session on the next request', async () => {
     const cookie = sessionFor(IDENTITY);
     assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
-    // The row stays and keeps a tailnet login: only the front's word goes,
-    // which is the natural edit for "off the front, still on the tailnet".
-    writeFileSync(ROW_E(), 'NAME="Eve"\nTAILSCALE_LOGIN="eve@example.test"\n');
-    const gone = await front('GET', '/desk/', { cookie });
-    assert.equal(gone.status, 403);
-    assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
-    writeFileSync(ROW_E(), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+    try {
+      // The row stays and keeps a tailnet login: only the front's word goes,
+      // which is the natural edit for "off the front, still on the tailnet".
+      writeFileSync(ROW_E(), 'NAME="Eve"\nTAILSCALE_LOGIN="eve@example.test"\n');
+      const gone = await front('GET', '/desk/', { cookie });
+      assert.equal(gone.status, 403);
+      assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
+    } finally {
+      restoreRowE();
+    }
     assert.equal((await front('GET', '/desk/', { cookie })).status, 200, 'the word back is the session back');
   });
 
   it('deleting the row revokes the session on the next request', async () => {
     const cookie = sessionFor(IDENTITY);
     assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
-    unlinkSync(ROW_E());
-    const gone = await front('GET', '/desk/', { cookie });
-    assert.equal(gone.status, 403);
-    assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
-    writeFileSync(ROW_E(), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+    try {
+      unlinkSync(ROW_E());
+      const gone = await front('GET', '/desk/', { cookie });
+      assert.equal(gone.status, 403);
+      assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
+    } finally {
+      restoreRowE();
+    }
   });
 
   it('an identity no row claims is refused even with a cookie this host minted', async () => {
