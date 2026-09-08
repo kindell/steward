@@ -305,11 +305,46 @@ bus_secret_guard() { # <text>
     # checksum and inode reporting. (Proposed after measuring that lowercase plus
     # digits — hex, base32 — passes and CANNOT be closed without also failing our
     # own allow list. The permitted case and the hole are the same string shape.)
-    if printf '%s' "$_line" | grep -qE '(ghp_|gho_|ghs_|github_pat_|sk-[A-Za-z0-9]|xox[baprs]-|AKIA[A-Z0-9]{12}|-----BEGIN [A-Z ]*PRIVATE KEY|eyJ[A-Za-z0-9_-]{10})'; then
-      echo "bus-send: REFUSES — line $_n carries a known secret prefix." >&2
+    #
+    # THE sk- FAMILY CARRIES A BOUNDARY AND A FLOOR that the others do not.
+    # Three legitimate messages were refused in one day because the plain
+    # prefix matched any word ending in "sk" followed by a hyphen and one
+    # alphanumeric character - a shape this fleet's Swedish writing produces
+    # constantly as an adjective ending, not as a key. A left boundary (start
+    # of line or a non-alphanumeric character before "sk-") plus a floor of
+    # sixteen characters after it keeps a real key caught (forty-plus
+    # characters, never sitting mid-word) while letting the ordinary word
+    # pass. The other families were not observed to have this failure mode,
+    # so only this one pattern changed.
+    #
+    # ONE LIST, EACH ROW A LABEL AND A PATTERN, so the refusal can say WHICH
+    # family matched instead of only that something did. bash 3.2 has no
+    # associative arrays and no mapfile, so the table is a printf-built,
+    # tab-separated block read a row at a time - a pipe cannot be the field
+    # separator here, since the patterns themselves use pipe for ERE
+    # alternation.
+    _sg_prefixes="$(printf '%s\t%s\n' \
+      'ghp_/gho_/ghs_/github_pat_' '(ghp_|gho_|ghs_|github_pat_)' \
+      'sk-' '(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}' \
+      'xox-' 'xox[baprs]-' \
+      'AKIA' 'AKIA[A-Z0-9]{12}' \
+      'PEM private key' '-----BEGIN [A-Z ]*PRIVATE KEY' \
+      'JWT' 'eyJ[A-Za-z0-9_-]{10}')"
+    while IFS=$'\t' read -r _sg_label _sg_pattern; do
+      [ -n "$_sg_pattern" ] || continue
+      # `--` ENDS OPTION PARSING before the pattern: split out on its own,
+      # the PEM pattern starts with "-----" and grep would otherwise read it
+      # as a run of short options and refuse to run at all.
+      printf '%s' "$_line" | grep -qE -- "$_sg_pattern" || continue
+      # THE REFUSAL NAMES THE FAMILY, NEVER THE STRING. The string is the
+      # thing this guard exists to refuse to say out loud; the family is
+      # enough for the sender to see what tripped it and fix the message.
+      echo "bus-send: REFUSES — line $_n carries a known secret prefix ($_sg_label)." >&2
       echo "  A POINTER does the same job. False positive: pass --not-a-secret." >&2
       return 65
-    fi
+    done <<SGPREFIXEOF
+$_sg_prefixes
+SGPREFIXEOF
     # THE NOUN LIST IS DATA, NOT PROSE. It must match what people actually
     # write, and this estate writes Swedish — so the Swedish word for password
     # belongs in the pattern. It is spelled with an OCTAL ESCAPE rather than the
