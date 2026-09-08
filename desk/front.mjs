@@ -141,22 +141,38 @@ export class RateLimiter {
     this.sincePrune = 0;
     this.lastPrune = -Infinity;
   }
+  // THE SWEEP DATES ITSELF BY WHAT IT KEPT, NOT BY WHEN IT RAN. A sweep keeps
+  // every entry up to a window old, so when it leaves the map at the cap the
+  // next one is due as soon as the OLDEST SURVIVOR goes stale - which is
+  // sooner than a window from now, and is the first moment there is anything
+  // to free. Dating it `now` instead made a full map wait a whole window past
+  // a sweep that freed nothing: measured with RateLimiter(10, 60000, 10000) a
+  // flood filled the map at t=0, the sweep at t=59000 kept all of it, and a
+  // new legitimate visitor was refused from t=60001 until t=119001 - 59
+  // seconds of 429 against a map holding nothing but dead entries.
   prune(now) {
     const floor = now - this.windowMs;
+    let oldest = Infinity;
     for (const [k, times] of this.hits) {
       const kept = times.filter((t) => t > floor);
-      if (kept.length === 0) this.hits.delete(k); else this.hits.set(k, kept);
+      if (kept.length === 0) {
+        this.hits.delete(k);
+      } else {
+        this.hits.set(k, kept);
+        if (kept[0] < oldest) oldest = kept[0]; // a key's list is in arrival order
+      }
     }
     this.sincePrune = 0;
-    this.lastPrune = now;
+    this.lastPrune = this.hits.size >= this.maxKeys && oldest !== Infinity ? oldest : now;
   }
   hit(key, now) {
     // Every 256th call, and at the cap at most once per window - so the sweep
     // is amortized in the ordinary case and a full map costs one sweep per
     // window rather than one per request. A FULL MAP WHOSE SWEEP IS NOT DUE
-    // REFUSES A NEW KEY WITHOUT SWEEPING: nothing in the map can have gone
-    // stale since the last sweep in less than a window, so the sweep would
-    // free nothing and only spend the whole map on this one request.
+    // REFUSES A NEW KEY WITHOUT SWEEPING: the previous sweep dated itself by
+    // the oldest entry it kept, so the sweep falls due exactly when that entry
+    // goes stale and there is room to free - and until then a sweep really
+    // would free nothing and only spend the whole map on this one request.
     if (++this.sincePrune >= PRUNE_EVERY ||
         (this.hits.size >= this.maxKeys && now - this.lastPrune >= this.windowMs)) this.prune(now);
     const floor = now - this.windowMs;

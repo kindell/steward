@@ -145,3 +145,23 @@ test('RateLimiter counts only the trailing window even when no prune has swept',
   assert.equal(rl.hit('a', 62002), true);
   assert.equal(rl.hit('a', 62003), false);
 });
+
+// A SWEEP THAT FREES NOTHING MUST NOT BUY A WHOLE WINDOW OF SILENCE. The
+// sweep keeps every entry up to a window old, so entries it kept go stale
+// moments after it ran; dating the sweep `now` made the map wait a second
+// window before looking again, and in that gap a map of nothing but dead
+// entries refuses every new visitor. Measured at the deployed settings: 59
+// seconds of 429 for anybody who had not been seen before.
+test('a sweep that keeps everything is due again when its oldest entry goes stale', () => {
+  const rl = new RateLimiter(10, 60000, 10);
+  for (let i = 0; i < 10; i++) assert.equal(rl.hit('k' + i, 0), true);
+  // Just short of a window: the sweep runs, keeps all ten, and the new key is
+  // refused because the map is full - which is the documented trade.
+  assert.equal(rl.hit('flood', 59000), false);
+  assert.equal(rl.hits.size, 10);
+  // A second past the window every one of those ten is stale, so the sweep is
+  // due on the entries' clock and not on the sweep's own.
+  assert.equal(rl.hit('new-visitor', 60001), true,
+    'a map holding nothing but dead entries must not refuse a live visitor');
+  assert.equal(rl.hits.size, 1);
+});
