@@ -24,15 +24,51 @@ def isMember($x): $x != null and (($memberOf | index($x)) != null);
 def isVisibleEntity($id; $managerOf):
   $id != null and (isMember($id) or isMember($managerOf[$id]));
 
+# keepAsset - ONE asset of ONE session, decided in two steps.
+#
+# STEP ONE IS NOT DECIDED HERE. $ownerAxes and $memberAxes come from
+# lib/visibility.sh's visibility_asset_axes, which is the product's only
+# statement of which MCP axes each sight class may carry: the account axis to
+# the owner (and to read-all) alone, the two org axes to a member as well. An
+# axis on neither list - a vocabulary the policy cannot interpret - matches
+# nothing and is dropped even from an owner's document, so schema growth is
+# never an implicit grant.
+#
+# STEP TWO IS THE ENTITY RULE, THE ONE THIS DOCUMENT ALREADY APPLIES. An asset
+# an org node granted travels exactly as far as that node does, so an
+# entity-axis asset asks isVisibleEntity of its source and a project-axis asset
+# asks it of the source project's parent. That is the same isVisibleEntity
+# entities[] and projects[] use two rules below, not a second copy of the axis
+# policy - and it can only ever narrow the axis table, never widen it.
+#
+# THE `source` READ HERE IS ONE HOP, NOT THE WHOLE CHAIN THAT GRANTED IT.
+# registry_session_mcp_surface attributes an entity-axis asset to the level it
+# found it at, so an asset declared on BOTH a manager and the entity it manages
+# arrives named after the manager alone; a member of the managed entity is then
+# not a member of the source and the asset is dropped. That only ever DENIES.
+# Worth fixing in the surface, where the attribution is decided; nothing here
+# can, because the second granting level never reaches this file.
+def keepAsset($sight; $own; $parentOf; $managerOf):
+  # THE AXIS IS BOUND BEFORE THE LOOKUP. `index(.axis)` reads `.` as the axis
+  # ARRAY the pipe just handed it, not as this asset - jq raises "cannot index
+  # array with string" and every viewer's file fails to write.
+  .axis as $ax
+  | (((if $sight == "owner" then $ownerAxes else $memberAxes end) | index($ax)) != null)
+  and (if   .axis == "account" then true
+       elif .axis == "entity"  then ($readAll or $own or isVisibleEntity(.source; $managerOf))
+       else ($readAll or $own or
+             (.source != null and isVisibleEntity($parentOf[.source]; $managerOf)))
+       end);
+
 ([( .entities // [])[] | {key: .id, value: .managedBy}] | from_entries) as $managerOf
+| ([( .projects // [])[] | {key: .id, value: .parent}] | from_entries) as $parentOf
 | [ (.sessions // [])[]
     | .sight = (if $readAll then "owner" else (.sight[$viewer] // "none") end)
     | select(.sight == "owner" or .sight == "member")
     | .mine = (.owner == $viewer)
-    # Account, entity and project are the complete known MCP-axis vocabulary.
-    # Unknown axes are dropped even for owners/readAll: permitting an axis the
-    # policy cannot interpret would turn schema growth into an implicit grant.
-    | .mcp = [(.mcp // [])[] | select(.axis == "account" or .axis == "entity" or .axis == "project")]
+    | .sight as $sight
+    | .mine as $own
+    | .mcp = [(.mcp // [])[] | select(keepAsset($sight; $own; $parentOf; $managerOf))]
     | projectFields((if .sight == "owner" then $ownerFields else $memberFields end) | map(split(".")))
   ] as $sessions
 | {schemaVersion: 1, host, generatedAt, registryRevision,

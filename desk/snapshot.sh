@@ -80,6 +80,12 @@ command -v jq >/dev/null 2>&1 || { echo "desk snapshot: jq is required" >&2; exi
 # deciding what leaves the machine.
 owner_fields="$(visibility_field_list owner | jq -Rn '[inputs]')" || exit 78
 member_fields="$(visibility_field_list member | jq -Rn '[inputs]')" || exit 78
+# THE AXIS TABLE COMES OUT OF THE SAME LIBRARY, for the same reason. Which MCP
+# axes an owner and a member may carry is a policy, and the renderer must ask
+# for it rather than restate it - a copy in jq beside the shell function is how
+# the two answers drifted apart the last time.
+owner_axes="$(visibility_asset_axes owner | jq -Rn '[inputs]')" || exit 78
+member_axes="$(visibility_asset_axes member | jq -Rn '[inputs]')" || exit 78
 steward="$here/../bin/steward"
 
 # --- WHERE THE SNAPSHOT LANDS ---------------------------------------------
@@ -359,6 +365,7 @@ write_view() { # <basename> <viewer> <readAll json> <memberOf json>
   # the generation unless this removes it on the way out.
   jq --arg viewer "$2" --argjson readAll "$3" --argjson memberOf "$4" \
      --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+     --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
      -f "$here/filter.jq" "$raw" > "$dir/$gen/$1.json.tmp" || {
     rm -f "$dir/$gen/$1.json.tmp"
     return 1

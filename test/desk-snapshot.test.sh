@@ -104,7 +104,11 @@ D="$T/desk/current"
 is  "one file per principal plus the operator file" "$(ls "$D" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')" "_operator.json a.json b.json c.json "
 is  "schemaVersion is 1" "$(jq .schemaVersion "$D/b.json")" "1"
 is  "b sees the team session and a's session in the same domain" "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$D/b.json")" "team-b work-a"
-is  "b never sees a's MCP surface" "$(jq -r '.sessions[]|select(.slug=="work-a")|has("mcp")' "$D/b.json")" "false"
+# THE AXES ARE NOT INTERCHANGEABLE. `b` is a member of the entity that granted
+# the entity- and project-axis assets on `a`'s session, so those two travel -
+# they are a fact about b's own team. The ACCOUNT axis is a's own credential
+# and never travels, whoever else can see the row.
+is  "b never sees a's account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/b.json")" "entity project"
 is  "member gets liveness including activity age" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "ageSeconds measuredAt state"
 is  "member sight is explicit" "$(jq -r '.sessions[]|select(.slug=="work-a")|.sight' "$D/b.json")" "member"
 is  "owner sight is explicit" "$(jq -r '.sessions[]|select(.slug=="team-b")|.sight' "$D/b.json")" "owner"
@@ -306,8 +310,11 @@ EOF
 . "$here/lib/visibility.sh"
 owner_fields="$(visibility_field_list owner | jq -Rn '[inputs]')"
 member_fields="$(visibility_field_list member | jq -Rn '[inputs]')"
+owner_axes="$(visibility_asset_axes owner | jq -Rn '[inputs]')"
+member_axes="$(visibility_asset_axes member | jq -Rn '[inputs]')"
 out3="$(jq --arg viewer a --argjson readAll true --argjson memberOf '[]' \
            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
            -f "$here/desk/filter.jq" "$T/raw3.json")"
 is  "an unknown axis is dropped even for the owner/readAll viewer" \
     "$(printf '%s' "$out3" | jq '.sessions[0].mcp|length')" "0"
@@ -330,12 +337,22 @@ cat > "$T/raw4.json" <<'EOF'
 EOF
 out4b="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
             --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
             -f "$here/desk/filter.jq" "$T/raw4.json")"
 out4a="$(jq --arg viewer a --argjson readAll true  --argjson memberOf '[]' \
             --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
             -f "$here/desk/filter.jq" "$T/raw4.json")"
-is  "b gets no MCP fields" \
-    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|has("mcp")')" false
+is  "b's work-a mcp axes read exactly entity project" \
+    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")')" \
+    "entity project"
+# THE NEGATIVE CASE FOR THE PROJECT AXIS. Two project grants on one session:
+# "work" (parent = team, which b belongs to) and "other" (parent = e1, which b
+# does not). An asset travels exactly as far as the node that granted it, so
+# the second is dropped for b and kept for the read-all viewer below.
+is  "b's project asset source is work only - other is dropped" \
+    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp[]|select(.axis=="project")|.source')" \
+    "work"
 is  "a (readAll) still sees the other-project asset" \
     "$(printf '%s' "$out4a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.source)|sort|join(" ")')" \
      "other team work"
@@ -345,7 +362,8 @@ for sentinel in SENTINEL_MAIL SENTINEL_LIVE SENTINEL_CMD; do
 done
 out_none="$(jq '.sessions[].sight.b = "none"' "$T/raw4.json" |
   jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
-     --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" -f "$here/desk/filter.jq")"
+     --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" -f "$here/desk/filter.jq")"
 is "membership cannot override shell sight none" "$(printf '%s' "$out_none" | jq '.sessions|length')" 0
 
 echo "== filter.jq: a project travels with its entity or with the viewer's OWN session =="
@@ -378,6 +396,7 @@ cat > "$T/raw-projects.json" <<'EOF'
 EOF
 outp="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["acme"]' \
            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
            -f "$here/desk/filter.jq" "$T/raw-projects.json")"
 is "b sees both sessions" "$(printf '%s' "$outp" | jq -r '.sessions|map(.slug)|sort|join(" ")')" "alpha beta"
 is "b's entities still withhold client-x" \
@@ -405,8 +424,8 @@ C="$T/desk-client/current/c.json"
 is "client member sees peers and explicit grants, not private or team rows" \
    "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$C")" "granted peer"
 is "every client peer has member sight" "$(jq -r '[.sessions[].sight]|unique|join(" ")' "$C")" member
-is "client peer fields exclude account MCP and mail but retain activity age" \
-   "$(jq -r 'all(.sessions[]; (has("mcp")|not) and (has("mail")|not) and (.liveness|has("ageSeconds")))' "$C")" true
+is "client peer fields exclude the account axis and mail but retain activity age" \
+   "$(jq -r 'all(.sessions[]; ([.mcp[]|select(.axis=="account")]|length == 0) and (has("mail")|not) and (.liveness|has("ageSeconds")))' "$C")" true
 is "client member sees the project's descriptor" \
    "$(jq -r '.projects|map(.id)|join(" ")' "$C")" client-work
 
@@ -432,11 +451,12 @@ cat > "$T/raw5.json" <<'EOF'
 EOF
 rc5="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
            --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
+            --argjson ownerAxes "$owner_axes" --argjson memberAxes "$member_axes" \
           -f "$here/desk/filter.jq" "$T/raw5.json" >"$T/out5.json" 2>"$T/err5b"; echo $?)"
 is  "the snapshot succeeds with a null-source project asset" "$rc5" "0"
 [ "$rc5" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err5b")"
 is  "and the null-source asset is absent" \
-    "$(jq -r '.sessions[0]|has("mcp")' "$T/out5.json" 2>/dev/null)" "false"
+    "$(jq -r '.sessions[0].mcp|length' "$T/out5.json" 2>/dev/null)" "0"
 
 echo "== one visibility rule: what hangs under a visible entity is visible =="
 # THE DEFECT THIS SECTION WAS WRITTEN AGAINST, measured on a real estate. A
@@ -489,8 +509,9 @@ is  "and the project that hangs under that client" \
     "$(jq -r '.projects|map(.id)|sort|join(" ")' "$D6/current/b.json")" "work"
 is  "and the session working on it" \
     "$(jq -r '.sessions|map(.slug)|join(" ")' "$D6/current/b.json")" "work-a"
-is  "member session visibility does not expose the MCP surface" \
-    "$(jq -r '.sessions[]|has("mcp")' "$D6/current/b.json")" "false"
+is  "and the project-axis grant that project made" \
+    "$(jq -r '.sessions[]|.mcp|map(select(.axis=="project")|.source)|join(" ")' "$D6/current/b.json")" \
+    "work"
 # THE RULE WIDENS ONE HOP, NOT ALL OF THEM. `e1` is managed by nobody Ben
 # belongs to, so neither it nor what hangs under it may follow the client in.
 is  "a project under an unrelated entity stays absent for Ben" \

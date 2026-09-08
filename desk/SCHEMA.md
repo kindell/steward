@@ -117,7 +117,7 @@ the fields of the sessions it already returned yes for.
 | `repo` | string | the repository's **name** - never its path. |
 | `liveness` | object | `state`, `measuredAt`, `ageSeconds` (below). |
 | `sight` | string | `owner` or `member` - which of the two field sets this row was projected through, said out loud so a view never has to infer it from which keys arrived. A `readAll` viewer reads `owner` on every row. |
-| `mcp` | array | the granted assets, present only on an `owner` row (below). |
+| `mcp` | array | the granted assets that reached this viewer - always present, possibly empty (below). |
 
 ### `sessions[].liveness`
 
@@ -136,28 +136,56 @@ the fields of the sessions it already returned yes for.
 | `axis` | string | `account`, `entity` or `project` - which level granted it. |
 | `source` | string | the row on that level that did the granting. |
 
-**The whole array is an owner field.** `lib/visibility.sh`'s
-`visibility_field_list` names `mcp.*` under `owner` and not under `member`, so
-a colleague who can see a session sees its identity, its work location and its
-liveness and no `mcp` key at all - not an empty array, which would read as
-"granted nothing". A `readAll` viewer is projected through the owner set and
-sees it.
+**The array is always present; the AXIS decides what is in it.**
+`lib/visibility.sh`'s `visibility_field_list` names `mcp.*` under both `owner`
+and `member`, so every row a viewer receives carries the key - an empty array
+means "nothing on this row reached you", never "this key is not for you", and a
+consumer never has to tell an absent key from an empty one.
 
-**Decided 2026-09-08, and it narrowed the answer.** The rule used to be
-per-axis: an account-axis asset to the owner alone, an entity- or project-axis
-asset to anyone the granting entity was visible to. Two rules for one question
-is how a renderer drifts from the gate, and the axis half was the copy that
-would drift - it re-derived entity visibility in `jq` beside the shell function
-that already owns that decision. One field table, asked once, is the shape the
-branch settled on; a member who needs to know what a colleague's session is
-wired to asks the register, not the desk.
+**The axes are not interchangeable, and `lib/visibility.sh`'s
+`visibility_asset_axes` is the one place that says so.**
 
-**The axis vocabulary is still checked, and that check is not about who sees
-what.** `account`, `entity` and `project` are the complete known set, and an
-asset carrying anything else is dropped even from an owner's document: an axis
-the policy cannot interpret must never become an implicit grant the day the
-schema grows. A new axis has to be admitted deliberately in `filter.jq`; it is
-never inherited.
+| axis | who receives it |
+|------|-----------------|
+| `account` | the owner, and a `readAll` viewer. Nobody else, ever. |
+| `entity` | anyone the granting entity is visible to. |
+| `project` | anyone the entity the source project hangs under is visible to. |
+
+An `account`-axis asset is a person's own credential - a mail account, a note
+store - granted to the human sitting in the session and not to the org node
+above them. An `entity`- or `project`-axis asset was granted by an org node,
+and it travels exactly as far as that node does: a member of the granting
+entity sees what their own entity handed out, which is a fact about their own
+team rather than about a colleague.
+
+**Where each half of that decision lives.** The axis table is shell, in
+`lib/visibility.sh`, and `desk/snapshot.sh` passes it into the filter - the
+renderer states no policy of its own. The "is the granting node visible to this
+viewer" half is `filter.jq`'s `isVisibleEntity`, the same function this
+document already applies to `entities[]` and `projects[]`; it is the entity
+rule applied to an asset's source, not a second copy of the axis policy, and it
+can only ever narrow the table, never widen it.
+
+**Decided 2026-09-08, reversed 2026-09-08.** For one branch the whole array was
+an owner field, on the argument that two rules for one question is how a
+renderer drifts from the gate. That argument was for MOVING the axis rule out
+of `jq`, which is what the table above does; deleting it instead removed a
+capability no spec sentence asked to remove, and left the product answering one
+question two ways - `steward sessions --json` handed a member the colleague's
+declared `ASSETS` while the desk handed that same member no `mcp` key at all.
+
+**`assets` in `steward sessions --json` is a different question.** That field is
+the row's own declared `ASSETS` line - what the session says it wants - and it
+carries no axis at all; `docs/client-spec.md` pins it as always a list of the
+row's declarations. This document's `mcp[]` is the surface that RESOLVED for
+this viewer. The two are only ever compared by mistake.
+
+**The axis vocabulary is closed.** `account`, `entity` and `project` are the
+complete known set, and an asset carrying anything else matches no line in the
+table and is dropped even from an owner's document: an axis the policy cannot
+interpret must never become an implicit grant the day the schema grows. A new
+axis has to be admitted deliberately in `visibility_asset_axes`; it is never
+inherited.
 
 ## Operating the desk on a session host
 

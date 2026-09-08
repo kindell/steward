@@ -6129,6 +6129,15 @@ cmd_sessions() {
           # know this product"s placeholder byte.
           lineage: (if .[10] == "-" then null else .[10] end),
           entity: (if .[5] == "-" then null else {name:.[5], relation:.[6]} end),
+          # `assets` IS THE ROW"S OWN DECLARATION, NOT A RESOLVED SURFACE.
+          # It is the ASSETS line off the conf - what the session says it
+          # wants - and it carries no axis, so visibility_asset_axes in
+          # lib/visibility.sh (which decides which MCP AXES reach which
+          # viewer, and is what the desk projects `mcp[]` through) does not
+          # narrow it. docs/client-spec pins this field as always a list of
+          # what the row declared. The desk answers the other question; the
+          # two are only ever compared by mistake, and IMPORTANT 3 of the
+          # 2026-09-08 review was that comparison.
           assets: (if .[7] == "-" then [] else (.[7] | split(" ")) end),
           liveness: ($L[.[0]] // {daemon:"unknown",tmux:"unknown",agent:"unknown",
                                   runtime:"unknown",model:null,lastActivity:null,

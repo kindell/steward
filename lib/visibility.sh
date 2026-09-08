@@ -182,8 +182,9 @@ visibility_fields() {
 }
 
 # Field table (the executable allowlist below is its only enumeration):
-# member gets identity, work location (repo basename only), and liveness;
-# owner additionally gets the existing four-key MCP surface.
+# member gets identity, work location (repo basename only), liveness, and the
+# four-key MCP surface; owner gets the same keys, and the AXES that reach each
+# of them are the second table below.
 # mine and sight are derived presentation markers, not additional registry data.
 # Dotted keywords name nested JSON fields; arrays project each element using
 # the same suffixes. Unknown keys, mail and raw registry data never travel.
@@ -192,8 +193,50 @@ visibility_fields() {
 visibility_field_list() {
   case "${1:-}" in owner|member) ;; *) return 1 ;; esac
   printf '%s\n' id slug label owner domain project runtime host repo mine sight \
-    liveness.state liveness.measuredAt liveness.ageSeconds
-  if [ "$1" = owner ]; then
-    printf '%s\n' mcp.id mcp.name mcp.axis mcp.source
-  fi
+    liveness.state liveness.measuredAt liveness.ageSeconds \
+    mcp.id mcp.name mcp.axis mcp.source
+}
+
+# visibility_asset_axes <owner|member>: one MCP axis keyword per line - the
+# axes a row projected through that field set may carry.
+#
+# THE AXES ARE NOT INTERCHANGEABLE, and that is the whole of this table. An
+# ACCOUNT-axis asset is a person's own credential - a mail account, a note
+# store - granted to the human sitting in the session and not to the org node
+# above them. It travels to the owner and to a read-all viewer and to nobody
+# else, ever. An ENTITY-axis or PROJECT-axis asset was granted by an org node,
+# and it travels as far as that node does: a member of the granting entity sees
+# what their own entity handed out, which is a fact about their own team.
+#
+# WHY IT IS HERE AND NOT IN THE RENDERER. This rule lived in desk/filter.jq and
+# was deleted rather than moved when the field table arrived, which left the
+# product answering one question twice: `steward sessions --json` handed a
+# member the colleague's declared ASSETS while the desk handed that same member
+# no `mcp` key at all. ONE PLACE, as the header of this file says. The renderer
+# now asks this function for the axes and derives nothing of its own.
+#
+# WHAT THE RENDERER STILL DOES, and must: for the two org axes it also checks
+# that the GRANTING node is visible to this viewer. That is not a second copy
+# of this rule - it is the entity rule, which the same document already applies
+# to entities[] and projects[], applied to the source of an asset. An asset
+# whose source the viewer cannot see is dropped, so the surface can only ever
+# be narrower than this table, never wider.
+#
+# THE VOCABULARY IS CLOSED. account, entity and project are the complete known
+# set; an asset carrying anything else matches no line here and is dropped even
+# from an owner's document, because an axis the policy cannot interpret must
+# never become an implicit grant the day the schema grows.
+#
+# NOT THE SAME QUESTION AS `assets` IN `steward sessions --json`. That field is
+# the row's own declared ASSETS line - what the session says it wants - and it
+# carries no axis at all, so no table here narrows it. docs/client-spec.md
+# pins it as always a list of the row's declarations. The two documents answer
+# "what did this row declare" and "what surface resolved for this viewer", and
+# they are only ever compared by mistake.
+visibility_asset_axes() {
+  case "${1:-}" in
+    owner)  printf '%s\n' account entity project ;;
+    member) printf '%s\n' entity project ;;
+    *) return 1 ;;
+  esac
 }

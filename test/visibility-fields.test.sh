@@ -150,14 +150,40 @@ owner_fields="$(visibility_field_list owner)"
 for field in id slug label owner domain project runtime host repo liveness.state liveness.measuredAt liveness.ageSeconds; do
   is "member allows $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 1
 done
-for field in mcp.id mcp.axis mcp.source mail repoPath; do
+for field in mail repoPath; do
   is "member excludes $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 0
 done
 for field in mcp.id mcp.name mcp.axis mcp.source liveness.ageSeconds; do
   is "owner retains $field" "$(printf '%s\n' "$owner_fields" | grep -Fxc "$field")" 1
 done
+# THE MCP KEYS ARE IN BOTH SETS, AND THE AXIS TABLE IS WHAT SEPARATES THEM.
+# A member receives the four asset keys; which ASSETS reach them is the axis
+# question below, not a missing key. Present-or-absent per row was the shape
+# docs/client-spec.md's own consumer principle argues against ("a consumer that
+# had to handle both a string and a list gets it wrong once").
+for field in mcp.id mcp.name mcp.axis mcp.source; do
+  is "member also receives $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 1
+done
 is "none has no fields" "$(visibility_field_list none)" ""
 is "unknown field level refuses" "$(visibility_field_list other >/dev/null; printf '%s' "$?")" 1
+
+echo "-- the MCP axis table, the one place that says which axes reach whom --"
+# THE ACCOUNT AXIS IS A PERSON'S OWN CREDENTIAL and travels to the owner alone;
+# the two ORG axes were granted by a node and travel as far as that node does,
+# so a member of the granting entity sees what their own entity handed out.
+# This lived in desk/filter.jq and was deleted rather than moved, which left
+# the product answering one question two ways. It is here now, and the renderer
+# asks for it.
+is "owner axes"  "$(visibility_asset_axes owner | tr '\n' ' ')"  "account entity project "
+is "member axes" "$(visibility_asset_axes member | tr '\n' ' ')" "entity project "
+is "a member never receives the account axis" \
+   "$(visibility_asset_axes member | grep -Fxc account)" "0"
+is "an unknown sight class refuses" \
+   "$(visibility_asset_axes other >/dev/null 2>&1; printf '%s' "$?")" "1"
+# THE VOCABULARY IS CLOSED IN BOTH DIRECTIONS: nothing outside these three
+# words is nameable, so schema growth is never an implicit grant.
+is "the whole vocabulary is three words" \
+   "$(visibility_asset_axes owner | sort | tr '\n' ' ')" "account entity project "
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
