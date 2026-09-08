@@ -1,0 +1,147 @@
+#!/bin/bash
+# linux/steward-account-helper - the ONE privileged action the product needs.
+#
+# Creating a unix account needs root; the hub runs as the steward account. The
+# alternative to this file is unrestricted sudo for the steward account, which
+# is not a boundary at all: it makes every bug in every product script a root
+# bug. So the estate installs exactly one line,
+#
+#   steward ALL=(root) NOPASSWD: /usr/local/sbin/steward-account-helper
+#
+# and this file is what stands behind it. On a host where the steward account
+# already has unrestricted sudo the line is redundant and is installed anyway,
+# so the product measures the same thing on every host - and the day a host
+# restricts that account, nothing changes.
+#
+# IT TAKES NO INPUT BUT ITS ARGUMENTS. No environment variable steers it, no
+# file configures it, and it never reads stdin. Anything it read would be a way
+# to steer root through a line that was written to be narrow.
+#
+# IT VALIDATES ITS OWN ARGUMENT. A sudoers line permits a COMMAND, not an
+# argument, so a caller can pass anything; the guard has to live here.
+#
+# Exit codes: 0 done - 64 usage or a bad argument - 70 an action failed -
+# 77 not running as root.
+set -uo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: steward-account-helper add <username>
+       steward-account-helper lock <username> [--archive-home]
+
+  add   create the account when it is missing (home 750, groups video and
+        render where they exist, a locked password, lingering enabled) and
+        write the per-account rig socket directory fragment. Idempotent.
+  lock  stop lingering (which takes the account's user manager and its session
+        units with it), lock the password and expire the account.
+        --archive-home also moves the home under /home/.offboarded.
+
+The estate grants this file, and nothing else, through:
+  steward ALL=(root) NOPASSWD: /usr/local/sbin/steward-account-helper
+USAGE
+  exit 64
+}
+
+fail() { echo "helper: REFUSING - $1" >&2; exit "${2:-70}"; }
+
+ACTION="${1:-}"; USERNAME="${2:-}"; shift 2 2>/dev/null || true
+ARCHIVE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --archive-home) ARCHIVE=1; shift ;;
+    *) usage ;;
+  esac
+done
+case "$ACTION" in add|lock) ;; *) usage ;; esac
+# THE SHAPE, ENUMERATED. Between 2 and 32 characters, starting with a letter -
+# the shape a unix account name has on the hosts this runs on, and narrow
+# enough that the name can never be anything but a name.
+if ! [[ "$USERNAME" =~ ^[a-z][a-z0-9-]{1,31}$ ]]; then
+  usage
+fi
+[ "$(id -u)" = "0" ] || fail "this helper must run as root (through the estate's sudoers line)" 77
+
+# home_of <username> - the account's home from the SYSTEM's own database, never
+# a /home literal. The archive ROOT below is a fixed location the operator
+# looks in; a home is not, and guessing one would move the wrong directory.
+home_of() {
+  local h
+  h="$(getent passwd "$1" 2>/dev/null | cut -d: -f6)"
+  h="${h%%$'\n'*}"
+  case "$h" in
+    /*) printf '%s\n' "$h" ;;
+    *)  return 1 ;;
+  esac
+}
+
+if [ "$ACTION" = "add" ]; then
+  if ! getent passwd "$USERNAME" >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash "$USERNAME" \
+      || fail "useradd failed for '$USERNAME'"
+    echo "helper: account $USERNAME created"
+  else
+    echo "helper: account $USERNAME already exists"
+  fi
+  HOME_DIR="$(home_of "$USERNAME")" \
+    || fail "the account database has no absolute home for '$USERNAME'"
+  # 750: the owner works in it, the steward account's group reaches it, nobody
+  # else on the machine reads it. This is the boundary the bus's cross-home
+  # delivery exists to respect.
+  chmod 750 "$HOME_DIR" || fail "could not set mode 750 on $HOME_DIR"
+  echo "helper: home $HOME_DIR mode 750"
+  # THE GROUPS ARE OPTIONAL, PER HOST. A host with no graphics stack has no
+  # render group, and refusing there would make a headless host un-onboardable
+  # for a reason that has nothing to do with the person.
+  for g in video render; do
+    if getent group "$g" >/dev/null 2>&1; then
+      usermod -aG "$g" "$USERNAME" || fail "could not add '$USERNAME' to group '$g'"
+      echo "helper: group $g"
+    else
+      echo "helper: group $g absent on this host, skipped"
+    fi
+  done
+  # NO PASSWORD, EVER. The account is reached over ssh with a key or as its own
+  # user manager; a password is one more credential nobody rotates.
+  passwd -l "$USERNAME" >/dev/null 2>&1 || fail "could not lock the password for '$USERNAME'"
+  echo "helper: password locked"
+  loginctl enable-linger "$USERNAME" || fail "could not enable lingering for '$USERNAME'"
+  echo "helper: lingering enabled"
+  # THE RIG SOCKET DIRECTORY, PER ACCOUNT. The rig's account must be able to
+  # create the socket and the steward account must be able to connect to it, so
+  # the directory is 0710 owned <account>:steward. Harmless on an account that
+  # never gets a rig: an empty directory under /run.
+  FRAGMENT="/etc/tmpfiles.d/steward-rig-$USERNAME.conf"
+  printf 'd /run/steward/rig/%s 0710 %s steward -\n' "$USERNAME" "$USERNAME" \
+    | install -m 0644 /dev/stdin "$FRAGMENT" \
+    || fail "could not write $FRAGMENT"
+  systemd-tmpfiles --create "$FRAGMENT" || fail "could not apply $FRAGMENT"
+  echo "helper: tmpfiles $FRAGMENT"
+  exit 0
+fi
+
+# lock - the reverse of add, in reverse order.
+getent passwd "$USERNAME" >/dev/null 2>&1 \
+  || fail "no such account '$USERNAME' - nothing to lock"
+# DISABLE-LINGER IS WHAT STOPS THE WORK. It takes the account's user manager
+# down, and every session unit under it with the manager - which is the only
+# way the steward account can stop another person's sessions without a shell in
+# their home.
+loginctl disable-linger "$USERNAME" || fail "could not disable lingering for '$USERNAME'"
+echo "helper: lingering disabled (the user manager and its units are down)"
+usermod --lock "$USERNAME" || fail "could not lock '$USERNAME'"
+echo "helper: password locked"
+usermod --expiredate 1 "$USERNAME" || fail "could not expire '$USERNAME'"
+echo "helper: account expired"
+if [ -n "$ARCHIVE" ]; then
+  HOME_DIR="$(home_of "$USERNAME")" \
+    || fail "the account database has no absolute home for '$USERNAME'"
+  # THE ARCHIVE ROOT IS FIXED AND THE SOURCE IS NOT. Where a home lives is the
+  # system's answer; where an archived home waits for the operator's word is a
+  # place a human has to be able to find, so it is one path, named here.
+  DEST="/home/.offboarded/$USERNAME-$(date -u +%Y-%m-%d)"
+  mkdir -p /home/.offboarded || fail "could not create /home/.offboarded"
+  mv "$HOME_DIR" "$DEST" || fail "could not archive $HOME_DIR to $DEST"
+  echo "helper: archived $DEST"
+  echo "helper: NOTHING WAS DELETED - the archive is removed on the operator's word, never by this helper"
+fi
+exit 0
