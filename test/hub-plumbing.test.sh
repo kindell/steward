@@ -40,6 +40,15 @@ printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\n
 printf 'ID="s-00000000000000aa"\nSLUG="alpha"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000aa.conf"
 printf 'ID="s-00000000000000mm"\nSLUG="machine"\nACCOUNT="operator-c-hub"\nOWNER="operator-c"\nDOMAIN="machine"\nHOST="host-one"\nRC_LABEL=""\nREPO_PATH="/tmp/x"\n' > "$FX/reg/s-00000000000000mm.conf"
 
+# The gate now reads the PRINCIPAL through the account, never OWNER alone - so
+# every row above that names an ACCOUNT needs a loadable fixture. USERNAME
+# and HOST must agree with the row's own OWNER and HOST, or the account is
+# refused as one this hub cannot vouch for.
+mkdir -p "$FX/accounts.d"
+export STEWARD_ACCOUNT_DIR="$FX/accounts.d"
+printf 'PRINCIPAL="operator-a"\nUSERNAME="operator-a"\nHOST="host-one"\n' > "$FX/accounts.d/operator-a-hub.conf"
+printf 'PRINCIPAL="operator-c"\nUSERNAME="operator-c"\nHOST="host-one"\n' > "$FX/accounts.d/operator-c-hub.conf"
+
 # A tmux stub that logs every call. It answers has-session with TMUX_ALIVE and
 # capture-pane with PANE_TEXT, like the estate's relay-deliver fixture.
 cat > "$FX/bin/tmux" <<'STUB'

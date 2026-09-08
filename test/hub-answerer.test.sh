@@ -44,6 +44,13 @@ printf 'ID="s-00000000000000ff"\nSLUG="hub-one"\nACCOUNT="operator-a-hub"\nOWNER
 # An asker with the same owner (allowed), and a stranger (other owner, other entity).
 printf 'OWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/asker.conf"
 printf 'OWNER="operator-z"\nDOMAIN="entity-nine"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/stranger.conf"
+# The gate now reads the PRINCIPAL through the account, never OWNER alone -
+# so the hub row's own ACCOUNT needs a loadable fixture. USERNAME and HOST
+# must agree with the hub row's own OWNER and HOST, or the account is
+# refused as one this hub cannot vouch for.
+mkdir -p "$FX/accounts.d"
+export STEWARD_ACCOUNT_DIR="$FX/accounts.d"
+printf 'PRINCIPAL="operator-a"\nUSERNAME="operator-a"\nHOST="host-one"\n' > "$FX/accounts.d/operator-a-hub.conf"
 # Tools the catalogue may name.
 printf '#!/bin/bash\necho "probe says: all is well"\n' > "$FX/probe.sh"
 printf '#!/bin/bash\necho "one port is open"\nexit 3\n' > "$FX/finding.sh"
