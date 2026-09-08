@@ -800,7 +800,11 @@ if [ "$_mates_rc" -eq 78 ]; then
   # SUBSHELLED, like every other load in this file: registry_load sources a
   # session conf, and this script's uppercase state is what such a conf sets.
   if ! ( registry_load "$ID" >/dev/null 2>&1 ); then
-    fel "the register refuses the row just written for '$ID' (rc 78, cause above) — the row is on disk; repair its identity claim rather than re-enrolling" 78
+    # THE CAUSE IS NOT ASSUMED. The mates read-back can return 78 for a row's
+    # identity claim OR for an estate the register cannot read at all, and a
+    # refusal that names the wrong one sends the operator to the wrong file -
+    # the exact fault this branch's sibling in lib/sessions.sh was fixed for.
+    fel "the register cannot read the row just written for '$ID' back (rc 78) — the cause is above, and the row is on disk; repair what it names rather than re-enrolling" 78
   fi
   echo "nav-enroll: DEGRADED — another row's identity claim was refused while reading the mates back (rc 78, cause above); '$ID' itself reads, so the confirm goes out with an incomplete mate list" >&2
   PROJECT_MATES="unknown - the register refused a row's identity claim while reading the mates back (rc 78)"

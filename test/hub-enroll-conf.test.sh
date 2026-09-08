@@ -445,12 +445,29 @@ GFX=""
 LFX="$(mktemp -d)"; trap 'rm -rf "$LFX" "$GFX" "$FX"' EXIT
 mkdir -p "$LFX/estate" "$LFX/sessions.d" "$LFX/bus/bin" "$LFX/bin" \
   "$LFX/accounts.d" "$LFX/entities.d" "$LFX/projects.d" "$LFX/logins.d"
+# THE FULL ESTATE KEY SET, for the reason the FX fixture at the top of this
+# file carries it and the GFX fixture below says out loud: enrolment READS the
+# register back, and registry_load refuses (rc 78) on a half-built estate.
+# This fixture kept the trimmed five keys, so L1/L2/R1/R2 were measuring a
+# missing OP_TOKEN_FILE_NAME rather than the LOGIN and RUNTIME fields they
+# were written for.
 cat > "$LFX/estate/steward.conf" <<'CONF'
 ESTATE_NAME="prov"
 SCHEMA_VERSION="6"
+LABEL_PREFIX="com.prov.claude"
 RC_LABEL_PREFIX="Hub: "
 HUB_SESSION="hub"
 HUB_HOST="hubhost"
+HUB_SSH="alice@hubhost"
+JOB_LOG_DIR="prov-jobs"
+TMUX_SOCKET="prov.sock"
+PING_MSG="you have mail"
+STATE_DIR_NAME="prov-supervisor"
+PAUSED_DIR_NAME="prov-paused"
+JOB_LABEL_PREFIX="com.prov.job"
+SERVICE_LABEL_PREFIX="com.prov.service"
+BROWSER_LABEL_PREFIX="com.prov.browser"
+OP_TOKEN_FILE_NAME="prov-token"
 CONF
 cat > "$LFX/sessions.d/asker.conf" <<'CONF'
 HOST="farhost"
