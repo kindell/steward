@@ -72,6 +72,18 @@ mkshim id 'case "${1:-}" in
   -nG) printf "%s\n" "${FAKE_GROUPS:-}"; exit 0 ;;
 esac
 echo "${FAKE_UID:-0}"'
+# sudo answers the question a group list cannot. An account whose rights come
+# from /etc/sudoers.d, from a directory service or from a netgroup is in none of
+# the group names the floor knows and can still become root, so the floor asks
+# sudo itself. FAKE_SUDO_LIST is the fixture's answer and FAKE_SUDO_RC its exit
+# status; with FAKE_SUDO_LIST unset the shim gives the shape a real sudo gives
+# for an account with no rules at all - the "is not allowed" line, status 1.
+mkshim sudo 'if [ -n "${FAKE_SUDO_LIST+x}" ]; then
+  [ -z "$FAKE_SUDO_LIST" ] || printf "%s\n" "$FAKE_SUDO_LIST"
+  exit "${FAKE_SUDO_RC:-0}"
+fi
+echo "User ${4:-someone} is not allowed to run sudo on this host."
+exit 1'
 # getent answers passwd out of $FX/passwd and group for video only - that is
 # how the "already there" branch and every floor case are exercised without a
 # real account database.
@@ -135,6 +147,18 @@ mkshim rmdir 'if [ -n "${FAKE_RIGDIR_BUSY:-}" ]; then exit 1; fi; exit 0'
 mkshim userdel 'exit 0'
 mkshim deluser 'exit 0'
 
+# A SECOND SHIM DIRECTORY, FOR THE HOST THAT HAS NO SUDO. "sudo is not installed
+# here" is one of the four answers the floor has to handle, and it cannot be
+# arranged by a shim: the machine running this suite has a real sudo on the
+# production search path, and running that is not on the table. So the case gets
+# a bin directory holding every shim EXCEPT sudo, and a copy of the helper whose
+# search path is that directory and nothing else.
+mkdir -p "$FX/bin-nosudo"
+for s in "$FX"/bin/*; do
+  case "${s##*/}" in sudo) continue ;; esac
+  cp "$s" "$FX/bin-nosudo/"
+done
+
 echo "== the helper pins its own PATH and locale, before anything else =="
 FIXED_PATH='export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 FIXED_LOCALE='export LC_ALL=C'
@@ -192,6 +216,20 @@ else
   ok "the relocated copy differs from the first copy"
 fi
 runfs() { ( bash "$FX/helper-fs" "$@" ); }
+
+# A THIRD COPY, FOR THE HOST WITH NO SUDO INSTALLED. This one replaces the
+# production PATH line outright with the sudo-less shim directory, so `command -v
+# sudo` answers no without any real binary being reachable at all.
+sed -e "s|^export PATH=.*|export PATH=$FX/bin-nosudo|" "$H" > "$FX/helper-nosudo"
+no  "the sudo-less copy can reach no real binary" \
+    "$(grep -F -- 'export PATH=' "$FX/helper-nosudo")" "/usr/bin"
+has "and searches the shim directory that has no sudo in it" \
+    "$(grep -F -- 'export PATH=' "$FX/helper-nosudo")" "export PATH=$FX/bin-nosudo"
+is  "which really has no sudo in it" \
+    "$([ -e "$FX/bin-nosudo/sudo" ] && echo present || echo absent)" "absent"
+is  "and really does have the rest" \
+    "$([ -x "$FX/bin-nosudo/usermod" ] && echo present || echo absent)" "present"
+runnosudo() { ( bash "$FX/helper-nosudo" "$@" ); }
 
 echo "== the argument guard =="
 out="$(run 2>&1)"; rc=$?
@@ -318,11 +356,38 @@ has "and asks logind what is left" "$calls" "loginctl --no-legend list-sessions"
 out="$( ( export FAKE_SESSIONS='c3 1001 alice seat0 pts/1'; run lock alice ) 2>&1 )"; rc=$?
 is  "a member who still has a session open is rc 70" "$rc" "70"
 has "and the refusal says why" "$out" "still has an open session"
-no  "and nothing was locked or expired" "$(cat "$FX/calls")" "usermod"
+calls="$(cat "$FX/calls")"
+# AND THE EXPIRY HAS ALREADY HAPPENED, which is the whole point of doing it
+# first: neither a lock nor a terminate stops a NEW login, so a member with
+# `autossh` running reconnects into the gap between the terminate and the
+# measurement and the receipt describes a host that no longer exists. Expiring
+# first makes that gap unreachable, and expiring is what this call is for.
+has "but the account was expired before any of that was measured" "$calls" \
+    "usermod --expiredate 1 alice"
+no  "and the home was not touched" "$calls" "mv "
+no  "and no receipt claims the sessions are gone" "$out" "no session left"
 : > "$FX/calls"
 out="$( ( export FAKE_SESSIONS='c3 1002 bob seat0 pts/1'; run lock alice ) 2>&1 )"; rc=$?
 is  "another account's session is not this account's" "$rc" "0"
 has "and the receipt is printed" "$out" "helper: lingering disabled"
+# THE RECEIPT NAMES WHAT WAS MEASURED. The old wording claimed the user manager
+# and its units were down; the only thing this helper reads is the session list,
+# and a claim about a unit it never asked about is a claim it cannot make.
+has "and it names what was actually measured" "$out" "no session left (measured)"
+no  "and claims nothing about units it never asked about" "$out" "the user manager and its units are down"
+# A TTY OR A SEAT NAMED LIKE THE ACCOUNT IS NOT A SESSION OF THE ACCOUNT. The
+# session list is read field by field for exactly this reason: a substring match
+# over the same lines would refuse a lock that has nothing standing in its way,
+# and an offboard that fails for a reason nobody can find gets done by hand.
+# BOTH shapes are here on purpose - the name in the SEAT column, which is what a
+# `grep -q " alice "` would swallow, and the name in the last column, which such
+# a grep would miss for want of a trailing space. Only the first of them can fail
+# the loose parse, so only the first one measures it.
+: > "$FX/calls"
+out="$( ( export FAKE_SESSIONS='c3 1002 bob alice pts/1
+c4 1003 carol seat0 alice'; run lock alice ) 2>&1 )"; rc=$?
+is  "a seat or a tty named like the account is not the account's session" "$rc" "0"
+has "and the lock went through" "$(cat "$FX/calls")" "usermod --lock alice"
 
 : > "$FX/calls"; db_empty
 out="$(run lock alice 2>&1)"; rc=$?
@@ -386,14 +451,78 @@ out="$( ( export FAKE_GROUPS='alice adm'; run lock alice ) 2>&1 )"; rc=$?
 is  "and adm" "$rc" "64"
 out="$( ( export FAKE_GROUPS='alice admin'; run lock alice ) 2>&1 )"; rc=$?
 is  "and admin" "$rc" "64"
+# The list is not only the stock ones. docker is a root shell one `docker run -v
+# /:/host` away, lxd is the same story, and disk is raw write access to the block
+# device the root filesystem is on. A member in any of them has a way to root
+# that does not go through this helper.
+out="$( ( export FAKE_GROUPS='alice docker'; run lock alice ) 2>&1 )"; rc=$?
+is  "docker is a way to root too" "$rc" "64"
+out="$( ( export FAKE_GROUPS='alice lxd'; run lock alice ) 2>&1 )"; rc=$?
+is  "and lxd" "$rc" "64"
+out="$( ( export FAKE_GROUPS='alice disk'; run lock alice ) 2>&1 )"; rc=$?
+is  "and disk" "$rc" "64"
+# AND AN UNREADABLE GROUP LIST IS NOT AN EMPTY ONE. On a host whose groups come
+# from a directory service, `id -nG` exits non-zero during a blip - and a floor
+# that reads that as "in no privileged group" locks out the administrator it
+# exists to protect, at the moment the host is already unwell. Every other
+# unanswered question in this file is a refusal; this one used to fail open.
+out="$( ( export FX_FAIL='id:-nG'; run lock alice --archive-home ) 2>&1 )"; rc=$?
+is  "a group list the host will not give is rc 64" "$rc" "64"
+has "and the refusal says it does not judge what it cannot read" "$out" \
+    "could not read the group list"
+out="$( ( export FX_FAIL='id:-nG'; run add alice ) 2>&1 )"; rc=$?
+is  "and add refuses on the same ground" "$rc" "64"
+# id prints a NUMBER instead of a name for a group that does not resolve, so a
+# host that cannot name its own sudo group answers '27' and sails past a test
+# that looks for the word. Unnameable is unjudgeable, and it takes the same
+# refusal as a list that could not be read at all.
+out="$( ( export FAKE_GROUPS='alice 27 users'; run lock alice ) 2>&1 )"; rc=$?
+is  "a group the host cannot name is rc 64" "$rc" "64"
+has "and it takes the same refusal" "$out" "could not read the group list"
+
+# A GROUP NAME LIST IS THE WRONG SHAPE FOR THE QUESTION, and no addition to it
+# makes it the right one. The rights that matter are in /etc/sudoers.d - which is
+# exactly how this product's own installer grants the hub account - and in
+# whatever a directory service hands out; an account with `alice ALL=(ALL)
+# NOPASSWD:ALL` in a drop-in file is in no privileged group at all. So the floor
+# asks sudo, which resolves all of it and answers the real question.
+out="$( ( export FAKE_SUDO_LIST='User alice may run the following commands on this host:
+    (ALL) NOPASSWD: ALL'
+          run lock alice --archive-home ) 2>&1 )"; rc=$?
+is  "an account sudo lists privileges for is rc 64" "$rc" "64"
+has "and the refusal says who answered" "$out" "sudo lists privileges for 'alice'"
+calls="$(cat "$FX/calls")"
+has "and the question was put to sudo itself, non-interactively" "$calls" \
+    "sudo -n -l -U alice"
+no  "and nothing was locked or expired" "$calls" "usermod"
+no  "nor its password touched" "$calls" "passwd -"
+no  "nor its home moved" "$calls" "mv "
+# AND AN UNANSWERED SUDO IS NOT A NO. Same rule as the group list above and as
+# the session list and the device numbers further down: what this helper cannot
+# measure, it does not manage.
+out="$( ( export FAKE_SUDO_LIST='' FAKE_SUDO_RC=2; run lock alice ) 2>&1 )"; rc=$?
+is  "a sudo that will not answer is rc 64" "$rc" "64"
+has "and the refusal says so" "$out" "sudo would not answer for 'alice'"
+out="$( ( export FAKE_SUDO_LIST='' FAKE_SUDO_RC=2; run add alice ) 2>&1 )"; rc=$?
+is  "and add refuses on that ground too" "$rc" "64"
 out="$( ( export SUDO_USER=alice; run lock alice --archive-home ) 2>&1 )"; rc=$?
 is  "locking the calling account is rc 64" "$rc" "64"
 has "and the refusal says which account that is" "$out" "the calling account"
 out="$( ( export SUDO_USER=alice; run add alice ) 2>&1 )"; rc=$?
 is  "and add refuses the calling account too" "$rc" "64"
+# The name comparison above is defeated by a second passwd row sharing the hub's
+# uid under a different name. Creating one needs root, so this is hardening
+# rather than a hole - but the uid is the thing the kernel goes by, and sudo sets
+# SUDO_UID in the same breath as SUDO_USER.
+out="$( ( export SUDO_UID=1001; run lock alice --archive-home ) 2>&1 )"; rc=$?
+is  "an account holding the calling account's uid is rc 64" "$rc" "64"
+has "and the refusal says which" "$out" "the calling account's uid"
 
+# id, getent and `sudo -l -U` are the three READS the floor is made of - they
+# answer a question and change nothing. Every other command in this log would be
+# an action taken on an account the helper had just decided it must not manage.
 is  "and not one of those refusals ran a privileged command" \
-    "$(grep -cvE '^(id|getent) ' "$FX/calls" | tr -d ' ')" "0"
+    "$(grep -cvE '^(id|getent|sudo -n -l -U) ' "$FX/calls" | tr -d ' ')" "0"
 
 # The other direction, so the two new refusals are not simply "the floor now
 # refuses everything": an ordinary group list passes, and on the paths where
@@ -403,6 +532,19 @@ out="$( ( export FAKE_GROUPS='alice users video'; run lock alice ) 2>&1 )"; rc=$
 is  "an ordinary group list is not a refusal" "$rc" "0"
 out="$(run lock alice 2>&1)"; rc=$?
 is  "with no SUDO_USER in the environment that test is vacuous" "$rc" "0"
+# The shape a real sudo gives for an account with no rules at all: status 1 and
+# one line saying so. That is a NO, not an unanswered question, and reading it as
+# the latter would make the helper refuse every ordinary member on the host.
+out="$( ( export FAKE_SUDO_LIST='User alice is not allowed to run sudo on this host.' FAKE_SUDO_RC=1
+          run lock alice ) 2>&1 )"; rc=$?
+is  "an account sudo lists no privileges for passes the floor" "$rc" "0"
+# And a host with no sudo installed at all. The account cannot be sudo-capable
+# THAT way, and refusing every member of such a host would be a refusal on a
+# missing package.
+: > "$FX/calls"; db 'alice:1001:/home/alice'
+out="$(runnosudo lock alice 2>&1)"; rc=$?
+is  "a host with no sudo installed passes the floor" "$rc" "0"
+no  "and nothing asked a sudo that is not there" "$(cat "$FX/calls")" "sudo "
 
 echo "== the floor also judges the account useradd just made =="
 # Every case above seeds the database first, so every one of them takes the
@@ -491,6 +633,12 @@ has "and takes the archive root down to 700" "$calls" "chmod 700 $FXHOME/.offboa
 # rather than trusting the -e test taken two statements earlier.
 has "and moves it with -T" "$calls" "mv -T $FXHOME/alice $FXHOME/.offboarded/alice-$today"
 has "and the receipt names the destination" "$out" "helper: archived $FXHOME/.offboarded/alice-$today"
+# THE LOUDEST LINE IN THE OUTPUT HAS TO BE TRUE OF THE RUN IT IS PRINTED IN, and
+# this run did delete two things: the helper's own tmpfiles fragment and an empty
+# rig directory, both receipted above. The promise being made here is about the
+# member's data, so that is what the line says.
+has "and the line about deletion says whose data it means" "$out" \
+    "NOTHING BELONGING TO THE MEMBER WAS DELETED"
 
 # mv across filesystems is a recursive copy followed by rm -rf of the source. It
 # makes the receipt below a lie - the helper did delete, and what it deleted is
@@ -523,7 +671,15 @@ rm -f "$FXHOME/.offboarded"
 out="$(runfs lock alice --archive-home 2>&1)"; rc=$?
 is  "an archive destination that already exists is rc 70" "$rc" "70"
 has "and the refusal names it" "$out" "$FXHOME/.offboarded/alice-$today"
-no  "and nothing was moved" "$(cat "$FX/calls")" "mv "
+calls="$(cat "$FX/calls")"
+no  "and nothing was moved" "$calls" "mv "
+# THE DESTINATION IS TESTED THROUGH A PATH THAT HAS BEEN PROVED FIRST. This test
+# used to run before the archive root was made, before the symlink refusal and
+# before the mode - a stat through a path nothing had established was the
+# directory the receipt names. The root is validated first now, so the chmod that
+# ends that validation is in the log by the time the destination is judged.
+has "and the archive root was validated before the destination was tested" \
+    "$calls" "chmod 700 $FXHOME/.offboarded"
 
 # mv does not follow a symlinked source: it relocates the LINK and leaves the
 # data where it was, still readable, under a receipt that says archived.
@@ -630,6 +786,16 @@ arch_guard "an archive root that cannot be moded" "chmod:700"   "helper: archive
 arch_guard "a device number that cannot be read" "stat"         "helper: archived"
 arch_guard "a move that fails"          "mv:-T"                 "helper: archived"
 
+# THE GUARD ABOVE MEASURES THE EXIT CODE; IT CANNOT SEE THE DIAGNOSIS. `passwd
+# -l` is quietened on stdout only, because the one line explaining why a root
+# password lock failed is written to stderr - and putting `2>&1` back in front of
+# that /dev/null would throw it away without a single assertion noticing.
+: > "$FX/calls"; db_empty
+out="$( ( export FX_FAIL='passwd:-l'; run add alice ) 2>&1 )"; rc=$?
+is  "a password lock that fails is still rc 70" "$rc" "70"
+has "and the tool's own diagnosis reaches the caller" "$out" \
+    "passwd: forced failure from the fixture"
+
 # THE ONE TOLERATED FAILURE, AND IT IS TOLERATED ON PURPOSE: an account with no
 # session open has nothing to terminate, and logind says so with a non-zero
 # status. The session list two lines later is what the receipt actually rests on.
@@ -673,6 +839,28 @@ is  "and the only rmdir is the rig socket directory" \
 # none of them asks when. Archiving a home before the account's work is stopped
 # moves the tree out from under a running agent, and a substring check cannot
 # tell that arrangement from the right one.
+#
+# THE LOCK SEQUENCE IS ORDERED FOR ONE REASON: nothing but the expiry stops a
+# NEW login. usermod --lock puts a '!' on a password hash that key-based ssh
+# never consults, and terminate-user kills what is running now. So the account is
+# expired FIRST, and only then are the sessions taken down and measured -
+# otherwise a member reconnecting from a laptop lands in the window between the
+# terminate and the measurement, and the receipt is false the moment it prints.
+: > "$FX/calls"; db 'alice:1001:/home/alice'
+run lock alice >/dev/null 2>&1
+line_of() { grep -n -- "$1" "$FX/calls" | head -1 | cut -d: -f1; }
+n_expire="$(line_of 'usermod --expiredate 1 alice')"
+n_linger="$(line_of 'loginctl disable-linger alice')"
+n_term="$(line_of 'loginctl terminate-user -- alice')"
+n_list="$(line_of 'loginctl --no-legend list-sessions')"
+if [ -n "$n_expire" ] && [ -n "$n_linger" ] && [ -n "$n_term" ] && [ -n "$n_list" ] \
+   && [ "$n_expire" -lt "$n_linger" ] && [ "$n_linger" -lt "$n_term" ] \
+   && [ "$n_term" -lt "$n_list" ]; then
+  ok "the account is expired before its sessions are stopped and measured"
+else
+  bad "the account is expired before its sessions are stopped and measured" \
+      "expiredate at '$n_expire', disable-linger at '$n_linger', terminate-user at '$n_term', list-sessions at '$n_list'"
+fi
 : > "$FX/calls"; db "alice:1001:$FXHOME/alice"
 rm -rf "$FXHOME/alice" "$FXHOME/.offboarded"; mkdir -p "$FXHOME/alice" "$FXHOME/.offboarded"
 runfs lock alice --archive-home >/dev/null 2>&1

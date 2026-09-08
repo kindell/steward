@@ -139,13 +139,22 @@ read_account() {
 #   unset and the test is vacuous, which is the right answer there: nobody
 #   reaches root THROUGH this file on those paths.
 #
-#   AN ACCOUNT THAT CAN BECOME ROOT. Group membership is the one place that is
-#   written down, so it is the one place this can be measured. An account a
-#   human put in sudo, wheel, admin or adm is an account with a way to root that
-#   does not go through here, and this helper has no business managing it. The
-#   cost if that is the wrong call is small and visible: a member who was
-#   hand-placed in one of those groups cannot be offboarded by the helper, the
-#   receipt says exactly why, and the operator does it by hand.
+#   AN ACCOUNT THAT CAN BECOME ROOT, asked in two ways because one is not
+#   enough. A group list is cheap and covers the stock arrangement, but rights
+#   granted in /etc/sudoers.d - which is exactly how this product's own installer
+#   grants the hub account - or by a directory service put an account nowhere
+#   near those groups and one command from root. So the group list is the first
+#   test and sudo itself is the second: `sudo -l -U <name>` resolves sudoers.d,
+#   LDAP, netgroups and whatever else a site configured, and answers the question
+#   that is actually being asked. The cost if that is the wrong call is small and
+#   visible: a member with rights of their own cannot be offboarded by the
+#   helper, the receipt says exactly why, and the operator does it by hand.
+#
+#   AND NEITHER TEST MAY FAIL OPEN. An unreadable group list, a group this host
+#   cannot name, or a sudo that will not answer are all the same answer - this
+#   helper does not know - and the account goes unmanaged rather than judged on a
+#   guess. Reading silence as "no privileges" is how a floor built to protect the
+#   administrator locks the administrator out, on a host that is already unwell.
 #
 # So the helper manages only what it could have created itself: an ordinary
 # uid, never root, never the caller, never sudo-capable, with its home exactly
@@ -158,17 +167,92 @@ read_account() {
 # privileged command by the time it asks and owes a different answer than a
 # caller who named the wrong account.
 #
-# account_is_sudo_capable READS THE GROUP LIST WITHOUT A PIPELINE, deliberately.
-# `id -nG | grep -q` under `set -o pipefail` can return the status of a writer
-# killed by grep's early exit, which would turn "not sudo-capable" into an error
-# on timing alone. A loop over the words has no such reading.
-account_is_sudo_capable() {
+# account_group_privilege <username> - the cheap first test, out of the account's
+# own group list: rc 0 the account is in a group that is a way to root, rc 1 it
+# is in none of them, rc 2 the list could not be read or could not be named.
+#
+# IT READS THE GROUP LIST WITHOUT A PIPELINE, deliberately. `id -nG | grep -q`
+# under `set -o pipefail` can return the status of a writer killed by grep's
+# early exit, which would turn "not sudo-capable" into an error on timing alone.
+# A loop over the words has no such reading.
+#
+# THE NAMES ARE NOT ONLY THE STOCK ONES. sudo, wheel, admin and adm are the
+# distributions' own; docker and lxd hand out a root shell one `docker run -v
+# /:/host` away, and disk is raw write access to the block device the root
+# filesystem lives on. None of them is a smaller privilege than sudo.
+account_group_privilege() {
   local groups g
-  groups="$(id -nG -- "$1" 2>/dev/null)" || return 1
+  # AN UNREADABLE LIST IS NOT AN EMPTY LIST. On a host whose groups come from a
+  # directory service this read fails during a blip, and reading that as "in no
+  # privileged group" locks out the administrator this floor exists to protect,
+  # at the moment the host is already unwell.
+  groups="$(id -nG -- "$1" 2>/dev/null)" || return 2
   for g in $groups; do
-    case "$g" in sudo|wheel|admin|adm) return 0 ;; esac
+    case "$g" in
+      sudo|wheel|admin|adm|docker|lxd|disk) return 0 ;;
+      # id prints the NUMBER when a group has no name on this host, so a host
+      # that cannot name its own sudo group would answer '27' and pass a test
+      # that looks for the word. Unnameable is unjudgeable.
+      *[!0-9]*) ;;
+      *) return 2 ;;
+    esac
   done
   return 1
+}
+# account_sudo_rules <username> - THE QUESTION PUT TO SUDO ITSELF: rc 0 sudo
+# lists privileges for the account, rc 1 it lists none (or there is no sudo on
+# this host to ask), rc 2 sudo would not answer.
+#
+# A LIST OF GROUP NAMES IS THE WRONG SHAPE FOR THIS QUESTION and no addition to
+# it makes it the right one. The rights that matter live in /etc/sudoers.d - the
+# arrangement this product's own installer produces for the hub account - and in
+# whatever a directory service or a netgroup hands out; an account with
+# `<name> ALL=(ALL) NOPASSWD:ALL` in a drop-in file is in no privileged group at
+# all. sudo resolves every one of those sources, so sudo is asked.
+#
+# -n because nothing here may ever wait for a terminal: this runs from a hub with
+# no tty, and a helper that blocks on a prompt is a helper that hangs.
+account_sudo_rules() {
+  local out line listing
+  command -v sudo >/dev/null 2>&1 || return 1
+  out="$(sudo -n -l -U "$1" 2>/dev/null)" || true
+  listing=""
+  while IFS= read -r line; do
+    case "$line" in
+      # The shape a real sudo gives an account with no rules at all, alongside
+      # status 1. That is a NO, and it is the ONLY non-zero status this reads as
+      # one - every other one is an unanswered question.
+      *'is not allowed to run sudo'*) return 1 ;;
+      # Everything after this header is a privilege, whatever it looks like.
+      *'may run the following commands'*) listing=1; continue ;;
+    esac
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    [ -z "$listing" ] || return 0
+    case "$line" in *'NOPASSWD'*|*'(ALL'*) return 0 ;; esac
+  done <<<"$out"
+  # Nothing this file can read either way. An answer that cannot be parsed is not
+  # an answer, and the account goes unmanaged rather than judged on a guess.
+  return 2
+}
+
+# account_privilege_reason <username> - sets FLOOR_REASON when the account has,
+# or might have, a way to root of its own. Every answer this cannot get is a
+# refusal: an account this helper cannot judge is an account it does not manage,
+# which is the rule the session list and the device numbers below already follow.
+account_privilege_reason() {
+  local st
+  account_group_privilege "$1"; st=$?
+  case "$st" in
+    0) FLOOR_REASON="'$1' is in a sudo-capable group; this helper never manages it - an account with its own way to root is the operator's to offboard by hand"
+       return ;;
+    2) FLOOR_REASON="could not read the group list for '$1' - this helper does not manage an account it cannot judge"
+       return ;;
+  esac
+  account_sudo_rules "$1"; st=$?
+  case "$st" in
+    0) FLOOR_REASON="sudo lists privileges for '$1'; this helper never manages it - an account with its own way to root is the operator's to offboard by hand" ;;
+    2) FLOOR_REASON="sudo would not answer for '$1' - this helper does not manage an account it cannot judge" ;;
+  esac
 }
 FLOOR_REASON=""
 account_fails_floor() {
@@ -177,6 +261,8 @@ account_fails_floor() {
     FLOOR_REASON="'$USERNAME' is the root account - this helper never manages it"
   elif [ "$USERNAME" = "${SUDO_USER:-}" ]; then
     FLOOR_REASON="'$USERNAME' is the calling account - this helper never manages the account it was invoked on behalf of"
+  elif [ "$ACCT_UID" = "${SUDO_UID:-}" ]; then
+    FLOOR_REASON="'$USERNAME' has the calling account's uid ($ACCT_UID) - this helper never manages the account it was invoked on behalf of, under whichever name"
   else
     case "$ACCT_UID" in
       ''|*[!0-9]*)
@@ -186,8 +272,8 @@ account_fails_floor() {
           FLOOR_REASON="'$USERNAME' is a system account (uid $ACCT_UID) - this helper manages ordinary accounts only"
         elif [ "$HOME_DIR" != "/home/$USERNAME" ]; then
           FLOOR_REASON="'$USERNAME' has home '$HOME_DIR', not /home/$USERNAME - this helper manages only the account layout it creates"
-        elif account_is_sudo_capable "$USERNAME"; then
-          FLOOR_REASON="'$USERNAME' is in a sudo-capable group; this helper never manages it - an account with its own way to root is the operator's to offboard by hand"
+        else
+          account_privilege_reason "$USERNAME"
         fi ;;
     esac
   fi
@@ -331,6 +417,22 @@ case "$FOUND" in
   *) fail "no such account '$USERNAME' - nothing to lock" ;;
 esac
 require_ordinary_account
+# THE EXPIRY GOES FIRST, AND IT IS THE ONLY THING HERE THAT STOPS A NEW LOGIN.
+# usermod --lock puts a '!' in front of the password hash, which key-based ssh
+# never consults; terminate-user kills what is running at that instant and
+# nothing after it. So with the old order - stop, terminate, measure, then
+# expire - a member whose laptop is reconnecting on a loop lands in the window
+# between the terminate and the measurement, and the receipt below describes a
+# host that stopped being true while it was being printed. With --archive-home
+# that is the whole harm back again: their processes go on working through open
+# file descriptors into a tree that has been moved out from under them.
+#
+# Expiring first closes the window rather than narrowing it, and costs nothing:
+# expiring the account is what this verb was called to do.
+usermod --expiredate 1 "$USERNAME" || fail "could not expire '$USERNAME'"
+receipt "account expired"
+usermod --lock "$USERNAME" || fail "could not lock '$USERNAME'"
+receipt "password locked"
 # DISABLE-LINGER IS WHAT STOPS THE WORK. It takes the account's user manager
 # down, and every session unit under it with the manager - which is the only
 # way the steward account can stop another person's sessions without a shell in
@@ -358,11 +460,11 @@ while read -r _s_id _s_uid s_user _s_rest; do
   [ "$s_user" = "$USERNAME" ] || continue
   fail "'$USERNAME' still has an open session - the user manager is not down, so the account's units are still running"
 done <<<"$SESSIONS"
-receipt "lingering disabled (the user manager and its units are down)"
-usermod --lock "$USERNAME" || fail "could not lock '$USERNAME'"
-receipt "password locked"
-usermod --expiredate 1 "$USERNAME" || fail "could not expire '$USERNAME'"
-receipt "account expired"
+# THE RECEIPT NAMES WHAT WAS MEASURED, and nothing beyond it. The session list is
+# the one thing this helper read; whether user@<uid>.service is still up is a
+# separate question to a separate command, and a receipt may not answer a
+# question that was never asked.
+receipt "lingering disabled, no session left (measured)"
 # THE FRAGMENT IS THIS HELPER'S OWN FILE, and add is what put it there. Left
 # behind, systemd recreates /run/steward/rig/<name> at every boot for an account
 # that was offboarded. Removing it is not deleting the member's data - it is
@@ -397,14 +499,11 @@ if [ -n "$ARCHIVE" ]; then
   # A COMMAND SUBSTITUTION THAT FAILS IS NOT CAUGHT BY set -u: it yields an
   # empty string. An unstamped destination is /home/.offboarded/<name>-, which
   # collides with itself and turns every later archive of that account into the
-  # refusal two lines down, for a reason nothing in the message would name.
+  # destination refusal below, for a reason nothing in the message would name.
   STAMP="$(date -u +%Y-%m-%d)" || STAMP=""
   [ -n "$STAMP" ] \
     || fail "could not read the date this archive would be stamped with - an unstamped destination collides with the next one"
   DEST="/home/.offboarded/$USERNAME-$STAMP"
-  if [ -e "$DEST" ] || [ -L "$DEST" ]; then
-    fail "archive destination $DEST already exists - move or remove it before archiving again"
-  fi
   mkdir -p /home/.offboarded || fail "could not create /home/.offboarded"
   # THE ARCHIVE ROOT IS CHECKED AFTER IT IS MADE, because mkdir -p succeeds on a
   # symlink that already points at a directory - which is the one way the
@@ -416,6 +515,15 @@ if [ -n "$ARCHIVE" ]; then
   [ -d /home/.offboarded ] \
     || fail "/home/.offboarded is not a directory - there is nowhere to archive to"
   chmod 700 /home/.offboarded || fail "could not set mode 700 on /home/.offboarded"
+  # AND ONLY NOW THE DESTINATION, through a path that has been proved to be the
+  # directory this receipt names. Taken earlier, this was a stat through an
+  # archive root that had not yet been made, let alone shown not to be a symlink
+  # somewhere else. Nothing was exploitable in that order - the refusals below it
+  # caught the same arrangements - but the test read as a question about a place
+  # and answered one about a path.
+  if [ -e "$DEST" ] || [ -L "$DEST" ]; then
+    fail "archive destination $DEST already exists - move or remove it before archiving again"
+  fi
   # A MOVE ACROSS FILESYSTEMS IS NOT A MOVE. mv degrades silently to a recursive
   # copy followed by a recursive delete of the source, and both of the things
   # this archive promises stop being true: the receipt below says nothing was
@@ -431,12 +539,16 @@ if [ -n "$ARCHIVE" ]; then
     || fail "could not read the device number of $HOME_DIR or of /home/.offboarded - without it there is no telling a rename from a copy and a delete"
   [ "$SRC_DEV" = "$ARCHIVE_DEV" ] \
     || fail "$HOME_DIR (device $SRC_DEV) and /home/.offboarded (device $ARCHIVE_DEV) are on different filesystems - a move between them copies and then deletes, and this helper never deletes"
-  # -T MAKES THE KERNEL REFUSE A NEST. The destination test above is a
-  # check-then-act taken several statements earlier; -T means mv treats the
+  # -T MAKES THE KERNEL REFUSE A NEST. The destination test above is still a
+  # check-then-act, however close to the move it is taken; -T means mv treats the
   # destination as a name and not as a directory to move into, so the guarantee
   # is the kernel's rather than the stat's.
   mv -T "$HOME_DIR" "$DEST" || fail "could not archive $HOME_DIR to $DEST"
   receipt "archived $DEST"
-  receipt "NOTHING WAS DELETED - the archive is removed on the operator's word, never by this helper"
+  # THE LOUDEST LINE IN THE OUTPUT SAYS WHOSE DATA IT IS ABOUT. This run has just
+  # deleted two things - the helper's own tmpfiles fragment and an empty rig
+  # directory, both receipted above - so an unqualified "nothing was deleted" is
+  # read against those two lines and loses. The promise is about the member.
+  receipt "NOTHING BELONGING TO THE MEMBER WAS DELETED - the archive is removed on the operator's word, never by this helper"
 fi
 exit 0
