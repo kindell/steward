@@ -141,6 +141,28 @@ _sessions_registry_snapshot() (
       targetEntity:$targetEntity,targetProject:$targetProject,slug:$slug}'
 )
 
+# _sessions_estate_readable - rc 0 when the ESTATE ITSELF reads.
+#
+# WHICH FAULT WAS IT? A sweep that loaded no row at all has two causes that
+# look identical from the loop: the estate file is missing or missing a key,
+# so registry_load refused every row before it reached the conf; or the
+# estate is fine and every row happened to be unreadable on its own terms
+# (an ACCOUNT that is not registered, a conf missing REPO_PATH). Only the
+# first is "the registry could not be read"; the second is a fleet of
+# unreadable rows, and docs/client-spec.md says what that answer looks like.
+#
+# SO IT MEASURES INSTEAD OF GUESSING FROM THE CAUSE STRINGS. These are the
+# two estate-wide gates registry_load passes through before it ever opens a
+# session conf - the schema gate and the hub host - so if both answer, the
+# estate was readable and every failure below was a per-row one.
+#
+# A SUBSHELL because registry_schema_check publishes _REGISTRY_SCHEMA_SEEN,
+# and this probe is a question, not a state change for the caller's shell.
+_sessions_estate_readable() (
+  registry_schema_check >/dev/null || exit $?
+  registry_hub_host >/dev/null || exit $?
+)
+
 session_identity_rows() {
   SESSIONS_UNREADABLE=""
   if ! command -v registry_load >/dev/null 2>&1; then
@@ -224,8 +246,9 @@ session_identity_rows() {
     #
     # A REGISTRY THAT REALLY CANNOT BE READ STILL REFUSES, and does it without
     # a special case here: the schema gate and the estate keys fail for EVERY
-    # row, so the all-fail branch after this loop returns non-zero with an
-    # empty stdout. The fleet-wide stop survives only where it has an argument
+    # row, and the all-fail branch after this loop asks the estate directly
+    # which of the two faults it was before it refuses. The fleet-wide stop
+    # survives only where it has an argument
     # of its own - desk/snapshot.sh, which publishes one file per principal and
     # would otherwise write a file with an owner guessed in it.
     if [ "$_lrc" -ne 0 ]; then
@@ -358,18 +381,40 @@ EOF
 
   # AN ALL-FAIL IS A DIFFERENT ANSWER FROM "NO SESSIONS", NOT A WORSE CASE OF
   # IT. registry_list listing one or more names and every one of them failing
-  # to load is not an estate with no sessions — it is a registry that could
-  # not be read (a missing estate file, or one missing LABEL_PREFIX / HUB_HOST
-  # / OP_TOKEN_FILE_NAME). Nothing was printed above in this branch, since the
-  # loop only prints a row for a session that loaded — so stdout is already
-  # empty here, matching the refusal this returns.
-  rm -f "$_diagfile"
-
+  # to load is not an estate with no sessions — but it is not automatically
+  # an unreadable registry either, and until the leniency work it could only
+  # have been one: before a present-but-dangling ACCOUNT became a per-row
+  # refusal, nothing except the estate gates could fail for every row at once.
+  #
+  # SO THE BRANCH ASKS WHICH FAULT IT WAS, and asks the estate rather than the
+  # cause strings. If the estate reads, every failure above was a per-row one:
+  # each name is already in SESSIONS_UNREADABLE with its own sentence on
+  # stderr, and docs/client-spec.md:208-213 wants exactly that answer - the
+  # rows absent from `sessions`, named in `unreadable`, `ok` still true,
+  # "because ok answers 'was the registry readable', not 'is every row here'".
+  # A one-session host whose only row is unreadable is the reachable case; a
+  # freshly enrolled machine is exactly that.
+  #
+  # IF THE ESTATE DOES NOT READ, the refusal stands and now carries the
+  # measured cause instead of a list of keys it might have been. Nothing was
+  # printed above in this branch, since the loop only prints a row for a
+  # session that loaded - so stdout is already empty here, matching the
+  # refusal this returns.
   if [ "$total" -gt 0 ] && [ "$loaded" -eq 0 ]; then
-    echo "sessions: REFUSING — $total session(s) listed and none could be loaded;" \
-         "the estate file is likely missing or missing a required field" \
-         "(LABEL_PREFIX, HUB_HOST, OP_TOKEN_FILE_NAME) — see the lines above" >&2
-    return 1
+    # THE PROBE'S OWN STDERR IS DROPPED, not repeated: when the estate is the
+    # fault the loop above already printed that same refusal once per row, and
+    # a diagnosis said twice trains a reader to skim it.
+    local _erc
+    _sessions_estate_readable 2>/dev/null; _erc=$?
+    if [ "$_erc" -ne 0 ]; then
+      rm -f "$_diagfile"
+      echo "sessions: REFUSING — $total session(s) listed and none could be loaded," \
+           "and the estate itself does not read (rc $_erc):" \
+           "the estate file is missing, or missing a required field" \
+           "(LABEL_PREFIX, HUB_HOST, OP_TOKEN_FILE_NAME) — see the lines above" >&2
+      return 1
+    fi
   fi
+  rm -f "$_diagfile"
   return 0
 }

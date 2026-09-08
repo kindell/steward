@@ -289,6 +289,54 @@ is "and the rest of the fleet is still answered for" \
 has "the cause names the broken account on stderr" "$bad_account_err" "missing-account"
 rm -f "$FX/sessions.d/bad-account.conf"
 
+echo "== an estate where EVERY row is unreadable is still ok:true =="
+# THE CASE IS A ONE-SESSION HOST, which is what a freshly enrolled machine is.
+# When its single row cannot be loaded on its own terms - a dangling ACCOUNT
+# here - "listed one, loaded none" used to read as "the registry could not be
+# read" and blamed the estate file for an account fault. docs/client-spec.md
+# wants the per-row answer regardless of how many rows there are: ok stays
+# true, the row is named in unreadable, sessions is empty. The count of rows
+# is not what decides; which fault it was decides.
+FX5="$(mktemp -d)"
+mkdir -p "$FX5/sessions.d" "$FX5/entities.d" "$FX5/estate"
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX5/estate/steward.conf"
+printf 'NAME="Acme"\n' > "$FX5/entities.d/acme.conf"
+printf 'HOST="h1"\nOWNER="a"\nACCOUNT="missing-account"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="only"\n' \
+  > "$FX5/sessions.d/only.conf"
+o5err="$(mktemp)"
+only="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEWARD_VIEWER="a" \
+        env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>"$o5err")"
+only_rc=$?
+only_err="$(cat "$o5err")"; rm -f "$o5err"
+is "the only row being unreadable keeps rc 0" "$only_rc" "0"
+is "and ok stays true" "$(printf '%s' "$only" | jq -r '.ok')" "true"
+is "the row is named in unreadable" \
+   "$(printf '%s' "$only" | jq -r '.unreadable | index("only") != null')" "true"
+is "and sessions is empty rather than absent" \
+   "$(printf '%s' "$only" | jq -r '.sessions | length')" "0"
+case "$only_err" in
+  *"the estate file is missing"*) bad "the estate is not blamed for an account fault" "got: $only_err" ;;
+  *)                              ok  "the estate is not blamed for an account fault" ;;
+esac
+
+echo "== but an estate missing a required key still refuses =="
+# THE OTHER HALF OF THE SAME BRANCH. Same shape of sweep - one row listed, none
+# loaded - and here the fault really is the estate: registry_load refuses every
+# row before it opens the conf, so there is no per-row diagnosis to give and
+# ok:false is the honest answer.
+printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="only"\n' \
+  > "$FX5/sessions.d/only.conf"
+printf 'LABEL_PREFIX="com.fixture.claude"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX5/estate/steward.conf"
+noest="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEWARD_VIEWER="a" \
+         env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>/dev/null)"
+noest_rc=$?
+is "a missing estate key refuses" "$( [ "$noest_rc" -ne 0 ] && echo yes || echo no )" "yes"
+is "and ok is false" "$(printf '%s' "$noest" | jq -r '.ok')" "false"
+has "and the reason names the key" "$(printf '%s' "$noest" | jq -r '.reason')" "HUB_HOST"
+rm -rf "$FX5"
+
 # AN UNREADABLE REGISTRY REFUSES, in both forms, and the json form must still be
 # json — a consumer that gets a bare error string on stdout cannot parse it.
 echo "== an unreadable registry refuses in both forms =="
