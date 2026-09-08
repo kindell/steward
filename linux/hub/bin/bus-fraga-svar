@@ -146,7 +146,7 @@ for f in "$inbox"/*.json; do
   if ! bus_fraga_tillatet "$from" "$RECIPIENT_ID"; then
     bus_send "$from" "$RECIPIENT_ID" "DRIFT $subject: FRAGA refused
 '$from' may not put a FRAGA to '$RECIPIENT_ID'.
-The rule: same OWNER, or same DOMAIN (the entity being worked on).
+The rule: same PERSON (the account's principal; the OWNER when the row names no account), or same DOMAIN (the entity being worked on).
 Ordinary messages (BESLUT FYND SAMORDNING DRIFT) are unaffected and go through." bus_tmux_ping >/dev/null \
       && { mkdir -p "$(bus_home)/$RECIPIENT_ID/done"; mv "$f" "$(bus_home)/$RECIPIENT_ID/done/" 2>/dev/null; refused=$((refused+1)); } \
       || left=$((left+1))

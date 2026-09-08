@@ -117,7 +117,8 @@ has "the run reports one refusal" "$out" "1 refused"
 # The stranger lives in another account, so the reply travelled as that owner.
 remote="$FX/hh/.config/agent-bus/stranger/inbox"
 is  "the stranger got a reply - in ITS home, delivered as its owner" "$(find "$remote" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "1"
-has "the reply names the rule" "$(jq -r .text "$(find "$remote" -name '*.json' | head -1)")" "same OWNER, or same DOMAIN"
+# The rule names the PERSON, not the unix account: the gate compares principals.
+has "the reply names the rule" "$(jq -r .text "$(find "$remote" -name '*.json' | head -1)")" "same PERSON (the account's principal"
 is  "the question was acknowledged - it was answered" "$(find "$HUB_D" -name '*.json' | wc -l | tr -d ' ')" "1"
 
 echo "6. the allowlist is the catalogue's data, and the form is enforced"

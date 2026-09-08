@@ -272,14 +272,34 @@ bus_fraga_tillatet() {
   # person may run one session under their own account and another under a
   # machine's steward account, and the two must answer the same way this
   # gate's sibling, the hub peer link, already answers them (bus_recipient_
-  # principal). 2>/dev/null on purpose: bus_recipient_principal's own stderr
-  # is written for a caller who can show it to the sender (the link); here
-  # the asker only ever sees this gate's own refusal, and a row this hub
-  # cannot vouch for (rc 65 ambiguous, rc 78 broken or unvouched) opens
-  # nothing, exactly like rc 1 (no such row) - refusal-as-default does not
-  # distinguish the reasons, only the caller of the gate does that.
-  fo="$(bus_recipient_principal "$from_" 2>/dev/null)" || return 1
-  ft="$(bus_recipient_principal "$to_" 2>/dev/null)"  || return 1
+  # principal). A row this hub cannot vouch for (rc 65 ambiguous, rc 78 broken
+  # or unvouched) opens nothing, exactly like rc 1 (no such row) - refusal-as-
+  # default does not distinguish the reasons, and it refuses on EVERY path
+  # below, the same-domain grant, the group grant and the machine carve-out
+  # included, exactly as the peer link refuses it.
+  #
+  # THE REFUSAL IS LOUD; STDERR IS NOT SWALLOWED HERE. A gate that closes
+  # silently on a row nobody can vouch for cannot be told from a gate that is
+  # working - the suite's own words - and the only text that says WHICH row and
+  # WHY is bus_recipient_principal's: it names the conf, the account, and the
+  # field that disagrees. The gate's own wording names the rule; that is not a
+  # repair instruction, and the repair here is on the ROW, never on the gate.
+  # So rc 78 keeps its explanation, and rc 1 and rc 65 keep theirs.
+  #
+  # THE TWO FIELDS OF ONE ROW ARE NOW READ WITH TWO GRAMMARS, and that is a
+  # change of answer, not only of wording. OWNER comes through bus_recipient_
+  # principal, which reads it with DELIVERY's grammar (grep|tr|cut - quoted or
+  # unquoted); DOMAIN below keeps bus_fraga_falt's quoted-only sed. Measured
+  # 2026-09-08 against the old gate over one fixture registry: a row written
+  # `OWNER=alice` without quotes is ALLOWED where it used to be refused (the
+  # registry loader sources the conf, so that row was always legitimate and the
+  # old sed simply could not see it), and a row whose OWNER fails the charset
+  # check is REFUSED where it used to be allowed (such a row is invalid to
+  # registry_load anyway). The claim that every legacy row answers as before is
+  # therefore false in both directions; only a row with no ACCOUNT and a
+  # well-formed quoted OWNER is untouched.
+  fo="$(bus_recipient_principal "$from_")" || return 1
+  ft="$(bus_recipient_principal "$to_")"  || return 1
   do_="$(bus_fraga_falt "$from_" DOMAIN)" || return 1
   dt="$(bus_fraga_falt "$to_" DOMAIN)" || return 1
   [ -n "$fo" ] && [ -n "$ft" ] && [ -n "$do_" ] && [ -n "$dt" ] || return 1
@@ -295,15 +315,12 @@ bus_fraga_tillatet() {
   # client therefore cannot offer an `ask` this gate then refuses. It was false
   # in both directions. A later fix claimed instead that only the group grant
   # is shared and counted three divergences — that missed that the owner path
-  # above (fo = ft) is the same test as the visibility rule's "viewer = PRINCIPAL"
-  # under the mapping the rest of this comment already uses (the asker's principal
-  # := the viewer), same outcome including under `private` — and it missed a
-  # fourth divergence. Measured 2026-08-28 by running session_visible_to and
+  # above (fo = ft) was, until 2026-09-08, the same test as the visibility
+  # rule's "viewer = OWNER" under the mapping the rest of this comment already
+  # uses (the asker := the viewer), same outcome including under `private` -
+  # and it missed a fourth divergence. It is no longer the same test: see
+  # divergence 5. Measured 2026-08-28 by running session_visible_to and
   # this function over one fixture registry:
-  #
-  # 2026-09-08: fo/ft are the principals now, through bus_recipient_principal;
-  # a row with no ACCOUNT still yields its OWNER, so every legacy fixture
-  # answers as before.
   #
   #   target OWNER=b DOMAIN=cust, cust MANAGED_BY=mgr, mgr MEMBERS=a
   #     visibility rule: VISIBLE     this gate: refused
@@ -315,7 +332,7 @@ bus_fraga_tillatet() {
   #   MEMBERS at all (only MANAGED_BY=mgr, and a is not in mgr either)
   #     visibility rule: hidden      this gate: ALLOWED
   #
-  # FOUR KNOWN DIVERGENCES, in the order measured above:
+  # FIVE KNOWN DIVERGENCES, the first four in the order measured above:
   #   1. NO MANAGED_BY HOP HERE. The visibility rule takes one hop from the
   #      target's domain up to the entity that manages it; this gate compares
   #      the two domain names for equality and stops there. That is the very
@@ -334,6 +351,15 @@ bus_fraga_tillatet() {
   #      the domain entity and requires the viewer to appear in its MEMBERS.
   #      This is the same direction of leak as divergence 1: more open than
   #      the rule, never less.
+  #   5. 2026-09-08: THIS GATE COMPARES PEOPLE; THE VISIBILITY RULE STILL
+  #      COMPARES THE UNIX ACCOUNT. fo and ft are principals now, read through
+  #      bus_recipient_principal - a row with no ACCOUNT still yields its
+  #      OWNER, a row that names one yields the person on the account. The
+  #      visibility rule (lib/visibility.sh, line 68) still tests the viewer
+  #      against the row's OWNER, so a person who runs two accounts may ask
+  #      here and cannot see there. Same direction as 1 and 4: this gate is
+  #      the more open one. Making the rule read the person is that rule's own
+  #      work and its own change, not this gate's.
   #
   # CLOSING THE GAP IS A DESIGN CHANGE, NOT A COMMENT FIX. It means giving a
   # gate whose refusal-as-default reasoning is load-bearing a derivation hop and
