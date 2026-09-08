@@ -139,6 +139,12 @@ is "missing row sees nothing" "$(visibility_fields a missing)" none
 registry_load plain >/dev/null 2>&1
 visibility_fields c both >/dev/null
 is "field decision preserves caller row" "$VISIBILITY" ""
+mkdir -p "$FX/accounts.d"
+printf 'PRINCIPAL="c"\nHOST="h1"\nUSERNAME="a"\n' > "$FX/accounts.d/service.conf"
+conf service 'ACCOUNT="service"\nVISIBILITY="private"\n'
+is "account principal owns private work despite a different Unix owner" "$(visibility_fields c service)" owner
+is "Unix owner is not the principal when the account resolves" "$(visibility_fields a service)" none
+is "empty principal still refuses an account-backed row" "$(visibility_fields '' service)" none
 member_fields="$(visibility_field_list member)"
 owner_fields="$(visibility_field_list owner)"
 for field in id slug label owner domain project runtime host repo liveness.state liveness.measuredAt; do

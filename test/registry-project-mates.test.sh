@@ -264,5 +264,11 @@ for heading in 'Same project:' 'Same client:' 'Same team:' 'People on this proje
   is "summary includes $heading" "$(printf '%s\n' "$OUT" | grep -Fc "$heading")" 1
 done
 
+mkdir -p "$FX/accounts.d"
+printf 'PRINCIPAL="c"\nHOST="h1"\nUSERNAME="service"\n' > "$FX/accounts.d/service.conf"
+printf 'OWNER="service"\nHOST="h1"\nACCOUNT="service"\nTARGET_PROJECT="client-work"\nREPO_PATH="/tmp/repo"\n' > "$SESS/service.conf"
+mates service mates_team
+is "team membership uses the account principal, not the Unix owner" "$(printf '%s\n' "$OUT" | grep -c '^peer ')" 1
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

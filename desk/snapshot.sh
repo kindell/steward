@@ -230,7 +230,7 @@ while IFS= read -r n; do
     # product's one function for asking it - ACCOUNT through
     # registry_account_load to ACCOUNT_PRINCIPAL, OWNER only when the row
     # carries no resolvable ACCOUNT, with a line on stderr saying so.
-    owner="$(_registry_row_principal "$n")"
+    owner="$(_registry_row_principal "$n")" || exit 78
     sid="${ID:-$n}"
     # KEYED BY THE REGISTRY NAME, NOT THE ID. liveness_rows prints one row per
     # session the shim ANSWERED ABOUT, under the name the estate administers it

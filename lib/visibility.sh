@@ -38,7 +38,7 @@ _visibility_member_of() {
     case " ${ENTITY_MEMBERS:-} " in *" $person "*) exit 0 ;; *) exit 1 ;; esac )
 }
 
-# session_visible_to <viewer> <session> — rc 0 visible, rc 1 not.
+# session_visible_to <viewer-principal> <session> — rc 0 visible, rc 1 not.
 # Prints nothing on stdout; a reason reaches stderr only when the lookup itself
 # could not be made.
 session_visible_to() {
@@ -65,7 +65,7 @@ session_visible_to() {
 
   # 1. The owner, always — a private session is private FROM others, never from
   #    the person whose session it is.
-  [ "$viewer" = "$owner" ] && return 0
+  [ "$viewer" = "$(_registry_row_principal "$session")" ] && return 0
 
   # 2. A group grant, BEFORE the private check. A board session sets both
   #    fields: private to withdraw it from the team, and a grant to hand it to
@@ -145,12 +145,12 @@ session_visible_to() {
   return 1
 }
 
-# visibility_fields <viewer-owner> <session-name>: owner/member/none.
+# visibility_fields <viewer-principal> <session-name>: owner/member/none.
 # Keep the object decision in session_visible_to; isolate its registry globals.
 visibility_fields() (
   if ! session_visible_to "${1:-}" "${2:-}"; then
     printf 'none\n'
-  elif [ "$1" = "$OWNER" ]; then
+  elif [ "$1" = "$(_registry_row_principal "$2")" ]; then
     printf 'owner\n'
   else
     printf 'member\n'

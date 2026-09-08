@@ -683,7 +683,8 @@ registry_project_mates() {
     # compared against must be read off the subject's row before anything else
     # is loaded, or the comparison would drift with the loop.
     local want_project="${TARGET_PROJECT:-}" want_entity="${TARGET_ENTITY:-}"
-    local viewer="$OWNER" field value
+    local viewer field value
+    viewer="$(_registry_row_principal "$sid")" || exit 1
     if [ "$level" = mates_team ]; then
       field="team"; value=""
     elif [ "$level" = mates_client ]; then
