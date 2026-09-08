@@ -1159,6 +1159,63 @@ describe('the front listener', () => {
     assert.equal((await pollFront(200, headers)).res.status, 200, 'the row back is the session back');
   });
 
+  // AN OUTAGE IS NOT AN ANSWER, SO IT IS NOT REMEMBERED. The memo above holds
+  // "this identity is e" and "this identity is nobody" for five seconds each,
+  // and both of those are answers the registry gave. A bridge that could not
+  // answer at all gave neither. If that non-answer were remembered, one blip
+  // of one request would be served to everybody holding a cookie for the next
+  // five seconds as "nobody" - and "nobody" on the front is 403 WITH THE
+  // SESSION COOKIE CLEARED, so a hiccup in the bridge would log the whole
+  // desk out and make them all log in again.
+  //
+  // THE BLIP IS MADE BY TAKING THE LIBRARY OUT FROM UNDER THE BRIDGE for
+  // exactly one request. STEWARD_REGISTRY_LIB points this child's bridge at a
+  // shim that sources the real library; deleting the shim makes the bridge
+  // exit 78 - the same outage the "a bridge that fails on every request" test
+  // further up produces, arrived at transiently - and putting it back makes
+  // the next request answerable again. No knob in the product, and nothing
+  // stubbed: the bridge that runs here is the bridge that ships.
+  //
+  // Verified by mutation: with `if (answer.outage) return answer;` removed
+  // from principalForIdentityCached, the second request below is 403 with a
+  // cleared cookie instead of 200.
+  it('an outage is not remembered, so the request after it is answered again', async () => {
+    const shim = join(T, 'flaky-registry.sh');
+    const realLib = fileURLToPath(new URL('../../lib/registry.sh', import.meta.url));
+    const putShimBack = () => writeFileSync(shim, '. "' + realLib + '"\n');
+    putShimBack();
+    const p2 = await freePort();
+    const headers = from(25, { cookie: sessionFor(IDENTITY) });
+    let h;
+    try {
+      h = await spawnUpTcp(frontEnv({
+        STEWARD_DESK_SOCK: join(T, 'outage-memo.sock'),
+        STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + p2,
+        STEWARD_DESK_FRONT_PEER: '127.0.0.1',
+        STEWARD_REGISTRY_LIB: shim
+      }), '127.0.0.1', p2, UP_CAP_MS);
+      // The window starts here: everything from the outage to the answer after
+      // it has to fall inside the memo, or this test measures nothing.
+      const began = Date.now();
+      unlinkSync(shim);
+      const down = await reqHttp('127.0.0.1', p2, 'GET', '/desk/', headers);
+      assert.equal(down.status, 503, 'a bridge that cannot answer is an outage, not a refusal');
+      assert.equal((down.headers['set-cookie'] || []).length, 0,
+        'an outage must not clear the session cookie: nobody said this person was gone');
+      putShimBack();
+      const back = await reqHttp('127.0.0.1', p2, 'GET', '/desk/', headers);
+      const elapsed = Date.now() - began;
+      assert.equal(back.status, 200,
+        'the request after an outage must ask again and get today s answer, not the outage');
+      assert.ok(elapsed < 5000,
+        'both requests must fall inside the five-second memo for this to measure anything (took ' +
+        elapsed + ' ms) - a red here is a stalled box, not a broken memo');
+    } finally {
+      try { unlinkSync(shim); } catch { /* already gone */ }
+      if (h) await stopSpawned(h);
+    }
+  });
+
   it('an identity no row claims is refused even with a cookie this host minted', async () => {
     const r = await front('GET', '/desk/', { cookie: sessionFor('oidc:stub:nobody') });
     assert.equal(r.status, 403);
