@@ -128,6 +128,25 @@ is  "and it is a small number of seconds" \
 is  "the measuredAt is the run's own stamp" \
     "$(jq -r '(.sessions[0].liveness.measuredAt == .generatedAt)' "$D/_operator.json")" "true"
 
+echo "== the seam may print fractional seconds =="
+# A REAL LIVENESS COMMAND HAS BEEN SEEN TO STAMP MILLISECONDS, e.g.
+# `2026-09-07T13:10:22.000Z` rather than the plain-seconds form the first
+# shim uses. Both must derive an age - a parser that only accepted one form
+# would leave every session null the day the seam started printing the other.
+cat > "$T/shim-ms" <<EOF
+#!/bin/bash
+printf '{"sessions":{"%s":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code","model":null,"lastActivity":"%s"}}}\n' \\
+  "$SID_A" "\$(date -u +%Y-%m-%dT%H:%M:%S).000Z"
+EOF
+chmod +x "$T/shim-ms"
+rc="$(STEWARD_DESK_DIR="$T/desk-ms" STEWARD_LIVENESS_CMD="$T/shim-ms" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err-ms"; echo $?)"
+is  "the snapshot runs with a fractional lastActivity" "$rc" "0"
+is  "the age of a fractional-seconds timestamp is a number" \
+    "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness.ageSeconds|type' "$T/desk-ms/current/_operator.json")" "number"
+is  "and it is a small number of seconds" \
+    "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness.ageSeconds | (. >= 0 and . < 120)' "$T/desk-ms/current/_operator.json")" "true"
+
 # ABSENCE FROM THE SEAM'S ANSWER IS A WORD, NOT A GUESS. The shim never
 # mentions the second session; it must read as `unknown` with no age at all,
 # and never inherit the measured session's row.

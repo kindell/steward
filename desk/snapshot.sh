@@ -219,12 +219,20 @@ while IFS= read -r n; do
        # decide three ways. Unparseable or absent is null - an age nobody
        # could measure, said out loud. The two placeholders the seam prints say
        # the same thing in its own vocabulary: `-` is measured-and-empty,
-       # `unknown` is never-measured, and neither one is a timestamp.
+       # `unknown` is never-measured, and neither one is a timestamp. The seam
+       # has also been seen to print fractional seconds, e.g. a trailing
+       # `.000Z` carried over from how a multiplexer formats its own
+       # timestamps; `fromdateiso8601` rejects a fraction outright, so it is
+       # stripped before parsing - the fraction is finer than the
+       # second-level precision ageSeconds reports anyway, so dropping it
+       # loses nothing this field promises.
        liveness: {state: $agent,
                   measuredAt: $measuredAt,
                   ageSeconds: (if ($lastActivity == "" or $lastActivity == "-"
                                    or $lastActivity == "unknown") then null
-                               else (try ((now - ($lastActivity | fromdateiso8601)) | floor)
+                               else (try ((now - ($lastActivity
+                                                   | sub("\\.[0-9]+Z$"; "Z")
+                                                   | fromdateiso8601)) | floor)
                                      catch null)
                                end)},
        mcp: $mcp, mcpReason: blank($mcpReason)}'
