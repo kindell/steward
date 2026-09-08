@@ -62,12 +62,17 @@
 //                       desk/bin/desk-paths.
 //   STEWARD_DESK_SOCK   the unix socket to listen on, chmod 0600 after listen.
 //                       Unset -> the `sock=` line from desk/bin/desk-paths.
-//                       Not consulted at all when STEWARD_DESK_LISTEN is set.
-//   STEWARD_DESK_LISTEN  opt-in loopback TCP mode, as `<host>:<port>`. Unset
+//                       The variable and the bridge's `sock=` line are both
+//                       never USED when STEWARD_DESK_LISTEN is set - the
+//                       bridge may still be asked for its `dir=` line if
+//                       STEWARD_DESK_DIR is unset.
+//   STEWARD_DESK_LISTEN opt-in loopback TCP mode, as `<host>:<port>`. Unset
 //                       -> the unix socket above, unchanged. See the operator
-//                       note next to "THE SOCKET IS THE OWNER'S ALONE" for
-//                       when this is the right choice, and bindSocket for why
-//                       the socket is the default everywhere else.
+//                       note above headed "THE SOCKET IS THE DEFAULT, AND IT
+//                       IS THE OWNER'S ALONE" for when this is the right
+//                       choice, listenSocket for the chmod that phrase
+//                       describes, and bindSocket for why the socket is the
+//                       default everywhere else.
 //   STEWARD_DESK_MAX_AGE  seconds before a snapshot is stale. Unset -> 900.
 //
 // EXIT CODES
@@ -149,7 +154,11 @@ function deskPaths() {
 // header a loopback-only bind would have made unreachable to begin with. The
 // port must be a real, singular port: 0 means "let the kernel pick", which is
 // useless here because nothing outside this process could ever be told what
-// it picked.
+// it picked. The spelling `localhost` is accepted but never passed to
+// listen() as written: it goes through the resolver, and a resolver on this
+// kind of host can hand back only ::1, leaving a caller aimed at 127.0.0.1
+// refused - so the loopback guarantee has to be a literal address, never
+// resolver-mediated.
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 function parseListen(raw) {
   const i = raw.lastIndexOf(':');
@@ -161,11 +170,11 @@ function parseListen(raw) {
     process.exit(64);
   }
   const port = Number(portRaw);
-  if (!/^[0-9]+$/.test(portRaw) || port < 1 || port > 65535) {
+  if (!/^[0-9]+$/.test(portRaw) || port < 1 || port > 65535 || portRaw !== String(port)) {
     console.error('desk: STEWARD_DESK_LISTEN port must be an integer from 1 to 65535, got ' + JSON.stringify(raw));
     process.exit(64);
   }
-  return { host, port };
+  return { host: host === 'localhost' ? '127.0.0.1' : host, port };
 }
 
 const MAX_AGE = maxAge();
@@ -177,8 +186,11 @@ let SOCK = process.env.STEWARD_DESK_SOCK;
 if (LISTEN) {
   // Loopback mode touches no socket path at all: no desk-paths call for
   // `sock=`, no length check, no chmod, no unlink. desk-paths may still be
-  // asked for `dir=` when that alone is missing.
+  // asked for `dir=` when that alone is missing. SOCK is dropped here even
+  // when STEWARD_DESK_SOCK was set in the environment, so cleanUp below has
+  // nothing to act on and never unlinks a file this process did not create.
   if (!DIR) DIR = deskPaths().dir;
+  SOCK = undefined;
 } else if (!DIR || !SOCK) {
   const p = deskPaths();
   DIR = DIR || p.dir;
@@ -335,8 +347,9 @@ const server = http.createServer((req, res) => {
   send(res, 200, html);
 });
 
-// cleanUp only ever touches SOCK, so in loopback mode - where SOCK is never
-// even resolved - it has nothing to do.
+// cleanUp only ever touches SOCK, so in loopback mode - where SOCK is cleared
+// to undefined right after the mode branch above, whatever the environment
+// held - it has nothing to do.
 const cleanUp = () => {
   if (!SOCK) return;
   try { unlinkSync(SOCK); } catch { /* already gone */ }

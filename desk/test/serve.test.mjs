@@ -138,14 +138,20 @@ const B = { 'tailscale-user-login': 'b@example.com' };
 const A = { 'tailscale-user-login': 'a@example.com' };
 
 // runToExit - start serve.mjs with an env that should make it refuse, and
-// collect how it refused. Used for the two startup refusals (64 and 78).
+// collect how it refused. Used for the two startup refusals (64 and 78). A
+// mutation that lets the server start instead of refusing must not hang this
+// suite forever, so a caller who never exits on its own is killed after 5s
+// and reported as { code: null }, which fails the caller's own assertion on
+// a specific exit code rather than blocking every test after it.
 function runToExit(env) {
   return new Promise((resolve) => {
     const p = spawn(process.execPath, [SERVE], { env, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     p.stderr.setEncoding('utf8');
     p.stderr.on('data', (c) => { err += c; });
-    p.on('close', (code) => resolve({ code, err }));
+    const t = setTimeout(() => { p.kill('SIGKILL'); resolve({ code: null, err }); }, 5000);
+    t.unref();
+    p.on('close', (code) => { clearTimeout(t); resolve({ code, err }); });
   });
 }
 
@@ -644,6 +650,32 @@ test('STEWARD_DESK_LISTEN without a port is refused', async () => {
   assert.equal(r.code, 64, r.err);
 });
 
+test('STEWARD_DESK_LISTEN refuses a port written with a leading zero', async () => {
+  // 08080, not 080: a leading zero on a privileged port (below 1024) would
+  // fail to bind for its own reason (EACCES) and prove nothing about the
+  // leading-zero check itself.
+  const r = await runToExit(childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:08080' }));
+  assert.equal(r.code, 64, r.err);
+  assert.ok(/STEWARD_DESK_LISTEN port/.test(r.err), r.err);
+});
+
+test('STEWARD_DESK_LISTEN accepts the spelling localhost and binds it literally as 127.0.0.1', async () => {
+  const port = await freePort();
+  const env = childEnv({ STEWARD_DESK_LISTEN: 'localhost:' + port });
+  delete env.STEWARD_DESK_SOCK;
+  const handle = spawnDesk(env);
+  try {
+    const until = Date.now() + 5000;
+    while (Date.now() < until && !/listening on/.test(handle.getErr())) {
+      if (handle.proc.exitCode !== null) break;
+      await sleep(25);
+    }
+    assert.ok(new RegExp('listening on 127\\.0\\.0\\.1:' + port).test(handle.getErr()), handle.getErr());
+  } finally {
+    await stopSpawned(handle);
+  }
+});
+
 test('a free loopback port serves the same gate over TCP, and creates no socket file', async () => {
   const port = await freePort();
   const sock2 = join(T, 'loop-ok.sock');
@@ -658,6 +690,21 @@ test('a free loopback port serves the same gate over TCP, and creates no socket 
     assert.equal(noLogin.status, 403);
     assert.ok(!existsSync(sock2), 'loopback mode must not create a socket file');
     assert.ok(new RegExp('listening on 127\\.0\\.0\\.1:' + port).test(handle.getErr()), handle.getErr());
+  } finally {
+    if (handle) await stopSpawned(handle);
+  }
+});
+
+test('a pre-existing file at STEWARD_DESK_SOCK survives a loopback server on SIGTERM', async () => {
+  const port = await freePort();
+  const sock2 = join(T, 'loop-preexisting.sock');
+  writeFileSync(sock2, 'not a socket, and never touched by loopback mode');
+  const env = childEnv({ STEWARD_DESK_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_SOCK: sock2 });
+  let handle;
+  try {
+    handle = await spawnUpTcp(env, '127.0.0.1', port, 5000);
+    await stopSpawned(handle);
+    assert.ok(existsSync(sock2), 'a loopback server must never unlink a file at STEWARD_DESK_SOCK on exit');
   } finally {
     if (handle) await stopSpawned(handle);
   }
