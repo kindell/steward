@@ -264,8 +264,15 @@ fi
 [ -n "$gen" ] || { echo "desk snapshot: could not create a generation directory in $dir" >&2; exit 73; }
 
 write_view() { # <basename> <viewer> <readAll json> <memberOf json>
+  # A FAILED FILTER NEVER LEAVES ITS .tmp BEHIND. The `>` redirect below
+  # creates the file the instant the shell sets it up, before jq runs at
+  # all - so a jq failure still leaves an empty (or partial) .tmp sitting in
+  # the generation unless this removes it on the way out.
   jq --arg viewer "$2" --argjson readAll "$3" --argjson memberOf "$4" \
-     -f "$here/filter.jq" "$raw" > "$dir/$gen/$1.json.tmp" || return 1
+     -f "$here/filter.jq" "$raw" > "$dir/$gen/$1.json.tmp" || {
+    rm -f "$dir/$gen/$1.json.tmp"
+    return 1
+  }
   mv -f "$dir/$gen/$1.json.tmp" "$dir/$gen/$1.json"
 }
 
@@ -288,21 +295,36 @@ done < <(jq -r '.principals[].id' "$raw")
 # serve by mistake.
 write_view "_operator" "_operator" true '[]' || rc=1
 
-# ONE SYMLINK, REPLACED IN PLACE. `mv -f` onto an existing symlink-to-directory
-# does NOT replace it on BSD - it moves the new link INSIDE the old target
-# (measured on macOS: the link landed as current/current.tmp and `current` never
-# moved). `ln -sfn` replaces the link itself on both BSD and GNU, and is the
-# only portable spelling of this swap.
-ln -sfn "$gen" "$dir/current" || { echo "desk snapshot: could not point $dir/current at $gen" >&2; exit 73; }
+# THE SWAP AND THE PRUNE ONLY HAPPEN WHEN EVERY VIEWER WROTE. A generation
+# with even one missing file is not a generation a reader may be pointed at -
+# `current` stays on the last good one, this run's half-built directory is
+# left behind (a later successful run's prune sweeps it up as just another
+# old generation), and the run exits non-zero so the fault is not silent.
+if [ "$rc" -eq 0 ]; then
+  # ONE SYMLINK, REPLACED IN PLACE. `mv -f` onto an existing symlink-to-directory
+  # does NOT replace it on BSD - it moves the new link INSIDE the old target
+  # (measured on macOS: the link landed as current/current.tmp and `current` never
+  # moved). `ln -sfn` replaces the link itself on both BSD and GNU, and is the
+  # only portable spelling of this swap.
+  ln -sfn "$gen" "$dir/current" || { echo "desk snapshot: could not point $dir/current at $gen" >&2; exit 73; }
 
-# KEEP TWO GENERATIONS: the one being served and the one a reader may still
-# have open. Older ones are the previous week's answers and nobody asks them.
-gens="$(cd "$dir" && ls -1d gen-* 2>/dev/null | sort)"
-total="$(printf '%s\n' "$gens" | grep -c . || true)"
-drop=$((total - 2))
-if [ "$drop" -gt 0 ]; then
-  printf '%s\n' "$gens" | sed -n "1,${drop}p" | while IFS= read -r g; do
-    case "$g" in gen-*) rm -rf "${dir:?}/$g" ;; esac
+  # KEEP TWO GENERATIONS: the one being served and the one a reader may still
+  # have open. Older ones are the previous week's answers and nobody asks them.
+  #
+  # THE GENERATION JUST PUBLISHED IS NEVER A PRUNE CANDIDATE, whatever its name
+  # sorts as. Names are epoch stamps, and a clock that steps backward between
+  # runs can make the fresh one sort earlier than a sibling minted before it -
+  # sorting alone would then count $gen among the "oldest" and delete the very
+  # directory `current` was just pointed at. It is kept unconditionally, plus
+  # whichever OTHER generation sorts latest; everything else goes.
+  gens="$(cd "$dir" && ls -1d gen-* 2>/dev/null | sort)"
+  keep_other="$(printf '%s\n' "$gens" | grep -v -x "$gen" | tail -1)"
+  printf '%s\n' "$gens" | while IFS= read -r g; do
+    case "$g" in
+      gen-*) [ "$g" = "$gen" ] || [ "$g" = "$keep_other" ] || rm -rf "${dir:?}/$g" ;;
+    esac
   done
+else
+  echo "desk snapshot: generation $gen was not fully written - current still points at the previous generation" >&2
 fi
 exit "$rc"

@@ -189,6 +189,114 @@ is  "every state is unknown" \
 is  "and every age is null" \
     "$(jq -r '[.sessions[].liveness.ageSeconds]|unique|map(tostring)|join(" ")' "$T/desk3/current/_operator.json")" "null"
 
+echo "== a viewer write that fails never publishes the generation =="
+# THE FAULT IS A REAL, BROKEN FILTER INPUT for exactly one viewer - jq itself
+# fails for principal `c`'s call and only that call. A fake `jq` ahead of the
+# real one on PATH refuses the one invocation whose `--arg viewer` is `c`
+# (that triple appears nowhere else in the script) and delegates every other
+# call to the real binary untouched, so `a` and `_operator` still write. The
+# shell's own `>` redirection still creates `c.json.tmp` before the fake jq
+# even runs, so this reproduces the leftover-tmp half of the bug too.
+D4="$T/desk4"
+rc="$(STEWARD_DESK_DIR="$D4" STEWARD_LIVENESS_CMD="$T/shim" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err4"; echo $?)"
+is  "finding1 setup: the baseline run succeeds" "$rc" "0"
+before_current="$(readlink "$D4/current")"
+
+mkdir -p "$T/fakebin"
+cat > "$T/fakebin/jq" <<'EOF'
+#!/bin/bash
+args=("$@")
+n=${#args[@]}
+i=0
+while [ "$i" -lt "$n" ]; do
+  if [ "${args[$i]}" = "--arg" ] && [ "${args[$((i+1))]}" = "viewer" ] && [ "${args[$((i+2))]}" = "c" ]; then
+    echo "fake jq: forced failure for viewer c" >&2
+    exit 1
+  fi
+  i=$((i+1))
+done
+exec /usr/bin/jq "$@"
+EOF
+chmod +x "$T/fakebin/jq"
+
+rc="$(PATH="$T/fakebin:$PATH" STEWARD_DESK_DIR="$D4" STEWARD_LIVENESS_CMD="$T/shim" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err4b"; echo $?)"
+is  "a failed viewer write makes the whole run fail" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+is  "current still points at the previous generation" "$(readlink "$D4/current")" "$before_current"
+is  "no tmp file survives anywhere under the desk dir" \
+    "$(find "$D4" -name '*.tmp' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+echo "== prune never deletes the generation just published =="
+# A BACKWARDS CLOCK STEP MUST NOT ORPHAN `current`. Two siblings pre-dated far
+# into the future (by name, not by mtime) sort AFTER the generation this run
+# is about to publish; a pruner that trusts sort order alone would count the
+# fresh generation among the "oldest" and delete the very directory `current`
+# now points to.
+D5="$T/desk5"
+mkdir -p "$D5/gen-9999999999" "$D5/gen-9999999998"
+rc="$(STEWARD_DESK_DIR="$D5" STEWARD_LIVENESS_CMD="$T/shim" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err5"; echo $?)"
+is  "the run still succeeds with future-named siblings present" "$rc" "0"
+new_gen="$(readlink "$D5/current")"
+is  "the freshly published generation still exists after prune" \
+    "$([ -n "$new_gen" ] && [ -d "$D5/$new_gen" ] && echo yes || echo no)" "yes"
+is  "current is not left dangling" "$([ -e "$D5/current" ] && echo yes || echo no)" "yes"
+
+echo "== filter.jq: an axis this file does not know is dropped for every viewer =="
+# TESTED DIRECTLY AGAINST filter.jq, not through the registry - there is no
+# way to make `mcp surface` hand back an axis this file has never heard of;
+# the axis names are the registry's own vocabulary. A hand-written raw
+# document is the deterministic way to prove the rule the comment states:
+# unknown is dropped, never inherited by "own" or "readAll".
+cat > "$T/raw3.json" <<'EOF'
+{"host":"h","generatedAt":"g","registryRevision":"r",
+ "principals":[{"id":"a","name":"A","readAll":true}],
+ "entities":[], "projects":[],
+ "sessions":[{"id":"s1","slug":"s1","label":"S1","owner":"a","domain":null,"project":null,
+              "runtime":"claude-code","host":"h","repo":"repo",
+              "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
+              "mcp":[{"id":"x","name":"X","axis":"other","source":"whatever"}]}]}
+EOF
+out3="$(jq --arg viewer a --argjson readAll true --argjson memberOf '[]' \
+           -f "$here/desk/filter.jq" "$T/raw3.json")"
+is  "an unknown axis is dropped even for the owner/readAll viewer" \
+    "$(printf '%s' "$out3" | jq '.sessions[0].mcp|length')" "0"
+
+echo "== filter.jq: a project-axis grant from a project the viewer's team does not own is dropped =="
+# THE NEGATIVE CASE for the project axis: two project grants on one session,
+# "work" (parent = team, which b belongs to) and "other" (parent = e1, which
+# b does not). This cannot be built through the real registry rig - a session
+# has exactly one TARGET_PROJECT, so one session can never carry two distinct
+# project-axis sources through the actual mcp-surface walk - so it is proved
+# directly against filter.jq instead, the same way as the unknown-axis case
+# above.
+cat > "$T/raw4.json" <<'EOF'
+{"host":"h","generatedAt":"g","registryRevision":"r",
+ "principals":[{"id":"a","name":"A","readAll":true},{"id":"b","name":"B","readAll":false}],
+ "entities":[{"id":"team","name":"Team","managedBy":null,"members":["a","b"]}],
+ "projects":[{"id":"work","name":"Work","parent":"team"},{"id":"other","name":"Other","parent":"e1"}],
+ "sessions":[{"id":"s1","slug":"work-a","label":"Work A","owner":"a","domain":"team","project":"work",
+              "runtime":"claude-code","host":"h","repo":"repo",
+              "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
+              "mcp":[{"id":"shared","name":"shared","axis":"entity","source":"team"},
+                     {"id":"tool","name":"tool","axis":"project","source":"work"},
+                     {"id":"other-tool","name":"other-tool","axis":"project","source":"other"}]}]}
+EOF
+out4b="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+            -f "$here/desk/filter.jq" "$T/raw4.json")"
+out4a="$(jq --arg viewer a --argjson readAll true  --argjson memberOf '[]' \
+            -f "$here/desk/filter.jq" "$T/raw4.json")"
+is  "b's work-a mcp axes read exactly entity project" \
+    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")')" \
+    "entity project"
+is  "b's project asset source is work only - other is dropped" \
+    "$(printf '%s' "$out4b" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp[]|select(.axis=="project")|.source')" \
+    "work"
+is  "a (readAll) still sees the other-project asset" \
+    "$(printf '%s' "$out4a" | jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.source)|sort|join(" ")')" \
+    "other team work"
+
 echo "== the verb's own refusals =="
 out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?
 is  "desk without a verb is a usage error" "$rc" "64"

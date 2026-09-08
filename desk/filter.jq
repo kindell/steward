@@ -34,9 +34,9 @@ def isMember($x): $x != null and (($memberOf | index($x)) != null);
 # is dropped, not passed through: a new axis must be granted deliberately here,
 # never inherited by an `else`.
 def keepAsset($own; $parentOf):
-  if $readAll or $own       then true
-  elif .axis == "entity"    then isMember(.source)
-  elif .axis == "project"   then isMember($parentOf[.source])
+  if   .axis == "account" then ($readAll or $own)
+  elif .axis == "entity"  then ($readAll or $own or isMember(.source))
+  elif .axis == "project" then ($readAll or $own or isMember($parentOf[.source]))
   else false
   end;
 
