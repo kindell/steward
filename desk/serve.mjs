@@ -102,6 +102,7 @@ import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pageIndex, pageTeam, pageProject, pageSession } from './render.mjs';
+import { normalizeAddr } from './front.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOOKUP = join(HERE, 'bin', 'principal-for-login');
@@ -217,39 +218,7 @@ if (!LISTEN && Buffer.byteLength(SOCK) > SOCK_MAX) {
   process.exit(64);
 }
 
-// normalizeAddr - one comparable form, used for both SELF_ADDRS members and
-// every forwarded-header entry, so the two sides of the comparison are never
-// normalized two different ways:
-//   - a bracketed IPv6 literal (`[addr]` or `[addr]:port`, the RFC 3986
-//     host:port form) loses the brackets and any port outside them;
-//   - an unbracketed address with a trailing `:<port>` loses that suffix,
-//     but only when what remains has no colon of its own - a bare IPv6
-//     address always has more than one colon, so this never eats part of one;
-//   - a trailing `%zone` suffix is dropped (an IPv6 link-local address
-//     carries the interface it was seen on, and that suffix is local to this
-//     process, never something a forwarded header would reproduce the same
-//     way twice);
-//   - a leading `::ffff:` (the IPv4-mapped IPv6 form some platforms use) is
-//     dropped so a mapped and a bare form of the same address compare equal;
-//   - the whole thing is trimmed and lowercased.
-function normalizeAddr(raw) {
-  let a = String(raw).trim().toLowerCase();
-  if (a.startsWith('[')) {
-    const close = a.indexOf(']');
-    if (close !== -1) a = a.slice(1, close);
-  } else {
-    const lastColon = a.lastIndexOf(':');
-    if (lastColon !== -1) {
-      const portPart = a.slice(lastColon + 1);
-      const hostPart = a.slice(0, lastColon);
-      if (/^[0-9]+$/.test(portPart) && !hostPart.includes(':')) a = hostPart;
-    }
-  }
-  const zone = a.indexOf('%');
-  if (zone !== -1) a = a.slice(0, zone);
-  if (a.startsWith('::ffff:')) a = a.slice(7);
-  return a;
-}
+// normalizeAddr - one comparable form for an address; see front.mjs.
 
 // SELF_ADDRS - every address this host answers to, collected ONCE at
 // startup, never per request: the interfaces' own non-internal addresses
