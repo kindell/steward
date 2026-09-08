@@ -1485,10 +1485,33 @@ cmd_registry_team_add() {
   fi
   [ -n "$name" ] || { _reg_fail "$want_json" "steward registry team add: --name is required" 64; return 64; }
 
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
   local members_source="default"
   if [ -z "$saw_member" ]; then
-    local viewer="${STEWARD_VIEWER:-}"
-    [ -n "$viewer" ] || viewer="$(id -un 2>/dev/null)"
+    # MEMBERS ARE PRINCIPALS, SO THE DEFAULT MUST BE ONE TOO. `id -un` names a
+    # unix account, and a unix account is not a person: the same human can own
+    # two of them on two hosts, and a login can be spelled like SOME OTHER
+    # person's principal id. Writing the raw login into MEMBERS would put this
+    # row in a different namespace from every rule that reads it - visibility,
+    # the desk, the mate levels - and the row would look right while granting
+    # the wrong human. Resolve it the way lib/sessions.sh resolves the viewer:
+    # accounts.d USERNAME (and HOST) to PRINCIPAL, the login itself only when
+    # the estate has no account register.
+    #
+    # STEWARD_VIEWER IS ALREADY A PRINCIPAL - the same contract docs/client-spec.md
+    # states for it - so it is never resolved a second time.
+    local viewer="${STEWARD_VIEWER:-}" viewer_login="" viewer_host=""
+    if [ -z "$viewer" ]; then
+      viewer_login="$(id -un 2>/dev/null)"
+      if [ -n "${STEWARD_HOSTNAME_CMD:-}" ]; then
+        viewer_host="$("$STEWARD_HOSTNAME_CMD" 2>/dev/null)"
+      else
+        viewer_host="$(hostname -s 2>/dev/null)"
+      fi
+      [ -z "$viewer_login" ] || viewer="$(registry_principal_for_username "$viewer_login" "$viewer_host")" || viewer=""
+    fi
     if [ -z "$viewer" ]; then
       _reg_fail "$want_json" "steward registry team add: no --member given and no viewer could be determined (set STEWARD_VIEWER)" 64
       return 64
@@ -1508,9 +1531,6 @@ cmd_registry_team_add() {
   for m in "${members[@]}"; do
     members_joined="${members_joined:+$members_joined }$m"
   done
-
-  # shellcheck source=lib/registry.sh
-  . "$HERE/lib/registry.sh"
 
   # _registry_emit_kv's own refusal goes to stderr. CAPTURED here (the same
   # way rw_err captures registry_entity_write's below), never left to leak

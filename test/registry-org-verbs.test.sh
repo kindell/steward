@@ -490,5 +490,31 @@ is "L2b: rc 0" "$rc" "0"
 first_line="$(head -n1 "$CONF/shapecheck-client.conf")"
 has "L2b: first line is a '# <slug> — ...' header comment" "$first_line" "# shapecheck-client —"
 
+echo "== V1. the default member is the VIEWER'S PRINCIPAL, not the unix login =="
+# MEMBERS is a list of principal ids, and every rule that reads it - the
+# visibility decision, the desk, the mate levels - compares principals. So the
+# one name this verb may invent, the login of whoever ran it, has to cross into
+# that namespace first: accounts.d joins USERNAME (on HOST) to PRINCIPAL. A
+# verb that wrote the raw login would produce a row that looks right and grants
+# the wrong human whenever the two namespaces disagree, which is exactly what
+# an account register exists to record. STEWARD_VIEWER is UNSET here on
+# purpose: it is already a principal by contract, so it is the one input this
+# resolution must not touch.
+mkdir -p "$FX/accounts.d"
+printf 'PRINCIPAL="zoe"\nUSERNAME="%s"\nHOST="%s"\n' "$(id -un)" "$(hostname -s)" \
+  > "$FX/accounts.d/zoe-here.conf"
+out="$(env -u STEWARD_VIEWER STEWARD_ESTATE_ROOT="$FX" \
+       STEWARD_CONFIG_FILE="$FX/no-such-config" \
+       bash "$STEWARD" registry team add principal-default --name "Principal Default" --json 2>&1)"; rc=$?
+is "V1: rc 0" "$rc" "0"
+is "V1: membersSource default" "$(printf '%s' "$out" | jq -r '.membersSource')" "default"
+(
+  MEMBERS=""
+  # shellcheck source=/dev/null
+  . "$CONF/principal-default.conf"
+  [ "$MEMBERS" = "zoe" ]
+)
+is "V1: MEMBERS is the account PRINCIPAL, not the login" "$?" "0"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
