@@ -20,7 +20,8 @@
 #
 # Prints a claude-compatible mcp-config document for ONE session's effective
 # MCP set -- the union lib/registry.sh's registry_session_mcp_assets derives
-# from the managing team, the owning entity and the target project.
+# from the owning account, the target project, the owning entity and the team
+# that manages it.
 #
 # THE PATTERN IS: PATHS ON COMMAND LINES, VALUES ONLY IN FILES. When an asset
 # declares MCP_ENV_FILE the entry does not gain an `env` object holding the
@@ -326,8 +327,9 @@ EOF
     jq -n '{mcpServers: {}}'
     return 0
   fi
-  # KEY ORDER IS THE INHERITANCE ORDER. jq preserves insertion order, and the
-  # objects were built in the order the resolver emitted them — broadest grant
-  # first — so the document reads the org from the outside in.
+  # KEY ORDER IS THE RESOLVER'S ORDER, which is the distance from the session.
+  # jq preserves insertion order and the objects were built in the order the
+  # resolver emitted them — the account, the project, the owning entity, the
+  # team that manages it — so the document reads the org from the inside out.
   printf '%s\n' "${objs[@]}" | jq -s '{mcpServers: (add // {})}'
 }

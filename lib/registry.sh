@@ -894,10 +894,16 @@ TEAM_ROWS
 # the exact nightmare this register exists to prevent, arriving through the one
 # layer the rc contract did not cover.
 #
-# FOUR LEVELS, IN THIS ORDER: the session's OWNING ACCOUNT, the managing
-# team, the owning entity, the target project's own row. The three org levels
-# run broadest grant first, narrowest last — a reader of the list, and the
-# JSON the render verb keys from it, both see the org from the outside in.
+# FOUR LEVELS, IN THIS ORDER: the session's OWNING ACCOUNT, the target
+# project's own row, the owning entity, the managing team. The order is the
+# DISTANCE FROM THE SESSION, closest first — a reader of the list, and the JSON
+# the render verb keys from it, both see the org from the inside out.
+#
+# IT RAN THE OTHER WAY UNTIL 2026-09-08, and the level NUMBERS in the code
+# still do: they say how far a grant REACHES, not how near the level is. Read
+# as an order they put the managing team ahead of the entity it manages, so a
+# shared asset was attributed to the furthest level that declared it and a
+# member of the managed entity lost what their own entity had granted them.
 #
 # THE ACCOUNT IS AN AXIS, NOT A FOURTH RUNG OF THE SAME LADDER, AND IT LEADS.
 # The org levels all answer "where does this work sit"; the account answers
@@ -909,7 +915,7 @@ TEAM_ROWS
 # and that difference is the whole reason this level exists.
 #
 # IT LEADS BECAUSE IT IS THE GRANT THAT BELONGS TO WHOEVER IS ACTUALLY AT THE
-# SESSION, and the org then widens around it. The order is fixed and
+# SESSION, and the org then widens away from it. The order is fixed and
 # documented rather than incidental: dedup keeps FIRST-SEEN, so the order
 # decides which level a shared asset is attributed to, and the render verb
 # keys its JSON object straight off this list.
