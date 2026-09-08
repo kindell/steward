@@ -120,7 +120,7 @@ mates_line() { # the same, through the one-line rendering the consumers share
   RC=$?
 }
 
-# mates_err <session> [level] — the same call with STDERR captured instead of
+# mates_err <session> [level] - the same call with STDERR captured instead of
 # stdout. A refusal that stops the whole enumeration has to say why: the row's
 # load is deliberately quiet about the ordinary faults it skips, and a silent
 # rc 78 would leave a consumer with "the register could not be read back" and
