@@ -227,9 +227,13 @@ login runs here. Design: `docs/superpowers/specs/2026-09-08-desk-front-design.md
 The estate provides, in this order:
 
 1. `DESK_ORIGIN="https://<public hostname>"` and
-   `DESK_SESSION_KEY_FILE="<absolute path>"` in `estate/steward.conf`. The key
-   file is generated once, 0600, owned by the desk account, at least 32
-   bytes: `umask 077; head -c 32 /dev/urandom | base64 > <path>`.
+   `DESK_SESSION_KEY_FILE="<absolute path>"` in `estate/steward.conf`. The
+   origin is `https://` plus the host, with an optional `:<port>`, and
+   **nothing else**: no path, no trailing slash. `desk-paths` checks the form
+   and exits 78 naming the key on anything else, so a desk never runs on a
+   guessed origin. The key file is generated once, 0600, owned by the desk
+   account, at least 32 bytes:
+   `umask 077; head -c 32 /dev/urandom | base64 > <path>`.
 2. `desk/providers.d/<slug>.conf` beside the registry, one per provider:
    `ISSUER` (or `ISSUER_TEMPLATE` with a literal `<tid>` for a multi-tenant
    provider that discovers through a common endpoint), `DISCOVERY`,
@@ -266,6 +270,20 @@ cookie. `/desk/auth/*` is rate limited to 10 requests per minute per visitor.
 
 The front never reads the `tailscale-user-login` header; the tailnet socket
 never reads a cookie.
+
+**Known costs.** Two things a person setting this up should know before they
+meet them:
+
+- `desk-paths` resolves `origin=` and `session_key=` through
+  `registry_estate_file`, which honours `STEWARD_ESTATE`, but resolves
+  `providers=` through `_registry_estate_root`, which does not. Set
+  `STEWARD_ESTATE_ROOT` for the desk, not `STEWARD_ESTATE`, or the desk finds
+  an origin and a key and no providers - and refuses to start for the
+  providers it cannot see. The deploy sets `STEWARD_ESTATE_ROOT`.
+- The per-request `principal-exists` check is a synchronous spawn with a five
+  second timeout, and the desk is one process with both listeners in it. A
+  slow registry bridge therefore stalls the tailnet listener as well as the
+  front, for up to five seconds per request.
 
 ## What is deliberately absent
 
