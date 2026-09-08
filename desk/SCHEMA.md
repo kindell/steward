@@ -108,7 +108,7 @@ the fields of the sessions it already returned yes for.
 | `id` | string | the session's opaque id. |
 | `slug` | string | the short handle a human types. |
 | `label` | string | the display name the estate renders. |
-| `owner` | string | the principal id of the person the session belongs to. A row with `ACCOUNT` must resolve to a registered account whose `USERNAME` equals the row's `OWNER` and whose `HOST` equals the row's `HOST`; otherwise the row is refused. Only a legacy row with no `ACCOUNT` uses `OWNER` as its principal. |
+| `owner` | string | the principal id of the person the session belongs to. A row with `ACCOUNT` must resolve to a registered account, and its `OWNER` must be that account's `USERNAME` **or** its `PRINCIPAL` - the two shapes this product's own writers have emitted; anything else is a borrowed identity and the row is refused. A `HOST` the account does not name is a gap, not a fault: a session may live on a host the hub only deploys to. That is the read rule; the WRITE rule is stricter, and `steward registry session realign` moves a row to the shape today's writers emit. A refused row is absent here and named in `unreadable` (docs/client-spec.md:208-213), never a blank fleet. Only a legacy row with no `ACCOUNT` uses `OWNER` as its principal. |
 | `mine` | boolean | whether `owner` equals the viewer. |
 | `domain` | string or null | the owning entity. |
 | `project` | string or null | the target project. |

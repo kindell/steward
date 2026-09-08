@@ -782,9 +782,20 @@ bus_recipient_owner() {
 # all (the old shape) keeps OWNER as its principal, because it has nothing else
 # and the old rule was exactly that.
 #
-# NOT _registry_row_principal: that helper is written for the schema gate and
-# falls back to OWNER when the account does not resolve — the one thing this
-# gate must never do.
+# THIS GATE IS DELIBERATELY STRICTER THAN THE REGISTRY'S READ, and the two are
+# not in conflict. lib/registry.sh reads leniently — OWNER may be the account's
+# USERNAME or its PRINCIPAL, and a HOST the account does not name is a gap —
+# because a reader that refused yesterday's rows would take down sessions the
+# product wrote itself (docs/client-spec.md:208-213: such a row is one
+# unreadable row, never a blank fleet). This function is not asking "can this
+# row be read"; it is asking "may this row use somebody's OWNED link", and
+# delivery lands by OWNER in a real home. So it answers on the strict shape
+# only. The cost is stated rather than hidden: an old-shape row, or a row on a
+# host its account does not name, reads fine everywhere else and cannot cross a
+# peer link until `steward registry session realign` moves it.
+#
+# NOT _registry_row_principal: that helper reads both shapes for the schema
+# gate, which is the one thing this gate must never do.
 #
 # rc: 1 no such row; 65 the resolver's refusal (ambiguous slug), explained on
 # stderr; 78 a row this hub cannot vouch for — malformed OWNER, or an ACCOUNT

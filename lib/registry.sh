@@ -3046,9 +3046,18 @@ registry_load() {
     fi
   done
   # ACCOUNT IS AN IDENTITY CLAIM, NOT A BEST-EFFORT JOIN. A present row must
-  # describe this exact Unix owner on this exact host; otherwise no caller may
-  # treat the session as loadable, including supervisors and runtimes that do
-  # not render visibility at all.
+  # name an account that loads and that describes THIS row's person - its
+  # USERNAME or its PRINCIPAL, the two shapes the writers here have emitted
+  # (_registry_account_principal_for_row). Anything else is a borrowed
+  # identity, and no caller may treat such a session as loadable, including
+  # supervisors and runtimes that do not render visibility at all.
+  #
+  # READ LENIENTLY, WRITE STRICTLY. The host is NOT part of the claim: a
+  # session may live on a host the hub only deploys to, so a HOST the account
+  # does not name is said out loud and read. The writer is the strict half.
+  # And a refusal here is ONE ROW, never the fleet - docs/client-spec.md:208-213
+  # says what the answer looks like: the row absent, named in `unreadable`,
+  # `ok` still true.
   if [ -n "$ACCOUNT" ]; then
     local _account_principal
     _account_principal="$(_registry_row_principal "$project")" || return 78
@@ -3089,10 +3098,10 @@ registry_load() {
     # THE PRINCIPAL IS RESOLVED ONLY WHEN A QUESTION IS ACTUALLY ASKED. With
     # LOGIN_REQUIRED_FOR absent (the ABSENT KEY = EVERY PRINCIPAL case, and the
     # estate's actual state today), every principal is refused regardless of
-    # who this row belongs to -- resolving _who unconditionally would fire
-    # _registry_row_principal's fallback stderr line on that path too, even
-    # though no principal question was asked. The line's whole reason to exist
-    # is to say which question the fallback answered when the answer mattered.
+    # who this row belongs to -- so resolving _who unconditionally would load
+    # the account and emit _registry_account_principal_for_row's host-gap line
+    # on a path that never asked a principal question. A diagnostic belongs to
+    # the question it answers.
     if [ -n "$_req" ]; then
       _who="$(_registry_row_principal "$project")" || return 78
     fi
