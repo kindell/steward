@@ -13,11 +13,16 @@
 # root, and scripts/desk/bin/ beside scripts/lib/ in a deployed home.
 # STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
 #
-# OUTPUT IS EXACTLY TWO LINES, in this order, each `key=value`:
+# OUTPUT IS AT LEAST TWO LINES, in this order, each `key=value`:
 #   dir=<HOME>/.local/state/<STATE_DIR_NAME>/desk
 #   sock=<HOME>/.local/state/<STATE_DIR_NAME>/desk.sock
-# rc 78 when the estate does not load - a caller must never fall back to a
-# guessed path, because a guessed path is a second desk nobody is reading.
+# followed by up to three more, each printed only when the estate names it:
+#   origin=<DESK_ORIGIN>
+#   providers=<estate root>/desk/providers.d   (only when that directory exists)
+#   session_key=<DESK_SESSION_KEY_FILE>
+# rc 78 when the estate does not load, or when a named front value is
+# malformed - a caller must never fall back to a guessed path or a guessed
+# origin, because a guessed one is a second desk nobody is reading.
 set -uo pipefail
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
@@ -38,3 +43,37 @@ state="$(registry_state_dir_name)" || {
 base="$HOME/.local/state/$state"
 printf 'dir=%s\n'  "$base/desk"
 printf 'sock=%s\n' "$base/desk.sock"
+
+# THE FRONT'S THREE LINES, printed only when the estate names them. A desk
+# with no front has no origin, no providers and no key, and must not be
+# refused for their absence; a desk WITH a front must never run on a guessed
+# one, so a malformed value is rc 78 with the key named. The providers line
+# follows the directory, not a key: the estate keeps desk/providers.d beside
+# its registry, and an estate without the directory has no providers.
+#
+# THE TWO KEYS ARE READ HERE, NOT THROUGH _registry_estate_value: that helper
+# knows a fixed list of keys (lib/registry.sh, the case arm) and answers rc 70
+# "unknown estate key" for any other, and this bridge must not edit the
+# library. Same discipline as the helper: the variable is cleared before the
+# file is sourced, in a subshell, so a value in the caller's environment can
+# never pose as the estate's; the form is checked before the value is printed.
+estate_file="$(registry_estate_file)" || exit 78
+front_value() { # <KEY> <regex> -> value on stdout, rc 1 when the line is absent, rc 78 when malformed
+  local _key="$1" _form="$2" _v
+  grep -q "^${_key}=" "$estate_file" 2>/dev/null || return 1
+  _v="$( eval "$_key=''"; . "$estate_file" >/dev/null 2>&1; eval "printf '%s' \"\$$_key\"" )"
+  if ! [[ "$_v" =~ $_form ]]; then
+    echo "desk-paths: REFUSING - $_key is missing or invalid in $estate_file (got '$_v')" >&2
+    return 78
+  fi
+  printf '%s\n' "$_v"
+}
+if origin="$(front_value DESK_ORIGIN '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$')"; then
+  printf 'origin=%s\n' "$origin"
+elif [ $? -eq 78 ]; then exit 78; fi
+root="$(_registry_estate_root)" || exit 78
+[ -d "$root/desk/providers.d" ] && printf 'providers=%s\n' "$root/desk/providers.d"
+if keyfile="$(front_value DESK_SESSION_KEY_FILE '^/.+$')"; then
+  printf 'session_key=%s\n' "$keyfile"
+elif [ $? -eq 78 ]; then exit 78; fi
+exit 0
