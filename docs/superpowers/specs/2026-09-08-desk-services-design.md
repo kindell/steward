@@ -125,8 +125,14 @@ receipt, in this order:
    `RUNTIME` from the row;
 8. relay key + relay row + delivery key (the same steps the bus enrolment
    already performs);
-9. deploy of the skeleton to the new home; desk snapshot;
-10. row `STATE=redeemed`, `REDEEMED_LOGIN`, `REDEEMED_AT`.
+9. the hub's host key into the new account's `known_hosts` and the
+   `onboarding.env` seed in the home - the first ssh to the hub fails
+   without them (measured on a host 2026-09-08: this step was missing from
+   the manual routine and stopped the skeleton deploy);
+10. the rig socket directory for the account (`tmpfiles.d` line, companion
+    spec) - harmless when the account never gets a rig;
+11. deploy of the skeleton to the new home; desk snapshot;
+12. row `STATE=redeemed`, `REDEEMED_LOGIN`, `REDEEMED_AT`.
 
 A step that fails leaves the earlier receipts in place and exits non-zero;
 re-running continues from the first step that has not left its mark. The
@@ -152,7 +158,10 @@ validates its argument shape itself (`^[a-z][a-z0-9-]{1,31}$`), takes no
 other input, and is the only thing the sudoers line allows:
 `steward ALL=(root) NOPASSWD: /usr/local/sbin/steward-account-helper`.
 The estate installs the line; the product documents it and refuses with a
-clear message when `sudo -n` cannot run the helper.
+clear message when `sudo -n` cannot run the helper. On a host where the
+steward account already has unrestricted sudo the line is redundant but
+still installed, so the product measures the same thing on every host and
+the day a host restricts the steward account nothing changes.
 
 ## Desk: from reading to ordering
 

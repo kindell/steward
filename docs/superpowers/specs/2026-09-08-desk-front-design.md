@@ -32,11 +32,11 @@ Both resolve through `registry_principal_for_identity <source> <value>`
 ambiguous identity: 403, no page, no hint - unchanged.
 
 The two entrances are **separate listeners**. The tailnet listener is the
-existing unix socket behind Tailscale Serve. The front listener is a
-second unix socket (`desk-front.sock`), reached only by the public box.
-A request on the front socket ignores `tailscale-user-login` entirely; a
-request on the tailnet socket ignores cookies entirely. A header cannot
-walk through the wrong door.
+existing unix socket behind Tailscale Serve. The front listener is a TCP
+port on the host's tailnet address, reachable only by the public box (see
+the next section). A request on the front listener ignores
+`tailscale-user-login` entirely; a request on the tailnet socket ignores
+cookies entirely. A header cannot walk through the wrong door.
 
 ## The public box is a proxy, nothing more
 
@@ -54,19 +54,33 @@ directly over the tailnet's exit or the host's own egress.
 What the public box runs: one reverse proxy with automatic certificates
 (Caddy or equivalent), `reverse_proxy` to the host's tailnet address on
 the front port, and the tailnet client. The proxy forwards
-`X-Forwarded-Proto` and `X-Forwarded-For`; the Desk trusts them **only**
-on the front listener and only when the peer is the public box (Tailscale
-ACL: the box's tag may reach the host on the front port and nothing
-else). The proxy adds nothing about identity - the Desk would refuse it
-anyway.
+`X-Forwarded-Proto` and the visitor's address as `X-Real-IP`; the Desk
+trusts them **only** on the front listener and only when the TCP peer is
+the public box's tailnet address. The proxy adds nothing about identity -
+the Desk would refuse it anyway.
 
-The front port on the host is a `tailscale serve` of the front socket on a
-dedicated service hostname (the Desk v1 spec already requires its own
-origin; the front gets another). mTLS between box and host is not needed
-in v1: the tailnet authenticates the peer node and the ACL restricts it.
-The box terminates TLS, so it sees the request in cleartext, cookie
-included - accepted in v1 and stated in "What a compromised box can do",
-with the passthrough alternative there.
+**The front listener is plain TCP on the host's tailnet address** (a new
+knob, `STEWARD_DESK_FRONT_LISTEN=<tailnet-addr>:<port>`, next to the
+existing `STEWARD_DESK_LISTEN`), not a `tailscale serve` mount. Measured
+on a host 2026-09-08 (tailscale 1.102.3): `serve` has no per-service
+hostname, it overwrites `X-Forwarded-For` with the client's tailnet
+address, and it sets `tailscale-user-login` to the box's *owner* - three
+things the front would have to undo. A TCP listener inside the WireGuard
+tunnel needs none of it: the traffic is already encrypted and
+peer-authenticated by the tailnet, the Desk reads the peer address
+straight from the socket and refuses any peer but the configured box
+(`STEWARD_DESK_FRONT_PEER=<box tailnet addr>`), and the Tailscale ACL
+lets only the box's tag reach that port. `X-Real-IP` is trusted because
+the box is the only thing that can reach the port; per-address rate
+limiting keys on it. The listener binds the tailnet address only - never
+`0.0.0.0` - and refuses to start when the address is not a CGNAT
+(`100.64.0.0/10`) address. Own origin for cookies comes for free: a
+different host:port from the tailnet Desk.
+
+mTLS between box and host is not needed in v1 for the same reason. The
+box terminates TLS, so it sees the request in cleartext, cookie included
+- accepted in v1 and stated in "What a compromised box can do", with the
+passthrough alternative there.
 
 ## The OIDC login, in the Desk
 
@@ -132,13 +146,25 @@ after the same identity check.
   VNC endpoint. Framing per RFC 6455 is implemented in the Desk (no
   dependency); binary frames only, no extensions.
 - **No password reaches the browser.** The rig's VNC server listens on a
-  unix socket (`x11vnc -unixsock`), created by the rig at start in a
-  directory only the steward account and the rig's account can enter
-  (`/run/steward/rig/`, 0710, group = steward; socket 0660). The bridge is
-  the only client; the browser sees security type `None` because the
-  bridge already is inside. The `-rfbauth` password file and the loopback
-  TCP port go away for rigs that opt into the socket (`BROWSER_VNC_SOCK=yes`
-  on the session row; the numeric `BROWSER_VNC` stays for rigs that do not).
+  unix socket, created by the rig at start. The bridge is the only client;
+  the browser sees security type `None` because the bridge already is
+  inside. Rigs opt in with `BROWSER_VNC_SOCK=yes` on the session row; the
+  numeric `BROWSER_VNC` with `-rfbauth` stays for rigs that do not.
+- **`-unixsock` alone is a hole.** Measured on a host 2026-09-08 (x11vnc
+  0.9.16): `x11vnc -unixsock <sock> -nopw` creates the socket **and keeps
+  listening on `0.0.0.0:5900` and `[::]:5905` without a password** - the
+  option adds a listener, it does not replace one. The socket mode
+  therefore means exactly `x11vnc -unixsock <sock> -rfbport 0 -nopw`
+  (`-rfbport 0` measured: no TCP listener, socket kept), and the product's
+  rig start refuses to run a socket rig with any other port argument. A
+  test asserts the argument vector.
+- **The socket directory is per account**, because the rig's account must
+  be able to create the socket and the steward account must be able to
+  connect: `/run/steward/rig/<account>/` 0710 owned `<account>:steward`
+  (a `tmpfiles.d` line per account, written by the onboarding step). The
+  socket is created by x11vnc under `umask 007` (0770 - x11vnc takes no
+  mode argument; 0770 inside a 0710 directory is enough). The bridge
+  enters through the group execute bit and connects.
 - The CDP port stays loopback-only and is never bridged. It is the
   session's tool, not a human's.
 
@@ -187,7 +213,10 @@ key). Then:
 - rig: a ticket for another session or an old minute is refused; a domain
   member and a read-all viewer get 404 on another owner's rig; the bridge
   never forwards before the ticket check; the VNC socket path is derived
-  from the session row, never from the request.
+  from the session row, never from the request; a socket rig's argument
+  vector contains `-rfbport 0` and no `-rfbauth`;
+- front listener: refuses a non-CGNAT bind address, refuses a TCP peer
+  other than the configured box, ignores `X-Real-IP` from any other peer.
 - language and leak guards as for every product change.
 
 ## Non-goals
@@ -203,12 +232,18 @@ rigs.
    the companion spec, built once).
 2. Product: the front listener, OIDC login and callback, session cookie,
    stub provider tests.
-3. Estate: the public box (proxy, tailnet, ACL), the provider registrations
-   (client ids and secrets are the operator's hands), the service
-   hostname, the HMAC key file.
+3. Estate: the public box (proxy, tailnet, a tag), the provider
+   registrations (client ids and secrets are the operator's hands), the
+   front address and port, the HMAC key file. The tailnet ACL is a bigger
+   hand than one line when the tailnet runs on the default allow-all
+   policy: the first real policy must preserve everything that works
+   today, so it is written as a proposal from measured traffic and pasted
+   by the operator.
 4. Rehearsal: the operator logs in through the front with a provider
    account, redeems a rehearsal invitation, reaches `/desk/me`, is
    offboarded.
-5. Product: the rig bridge; estate: `x11vnc -unixsock` and the socket
-   directory; rehearsal again with a rig.
+5. Product: the rig bridge and the socket-mode rig start (`-unixsock
+   <sock> -rfbport 0`); estate: the per-account socket directories;
+   rehearsal again with a rig - and a listener sweep (`ss -ltnp`) proving
+   no VNC TCP port appeared.
 6. The first invited person.
