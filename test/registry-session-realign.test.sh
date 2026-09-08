@@ -86,6 +86,16 @@ is  "every other field is carried through byte for byte" \
     "$(grep -cE '^ACCOUNT="ann-h2"$|^SLUG="old-one"$|^TARGET_ENTITY="alpha"$|^DOMAIN="alpha"$|^REPO_PATH="/tmp/repo"$|^ASSETS="widget"$|^ID="'"$OLD"'"$' "$ROOT/sessions.d/$OLD.conf")" "7"
 has "the conf carries the receipt as a comment for the next reader" \
     "$(cat "$ROOT/sessions.d/$OLD.conf")" "# realigned to account 'ann-h2'"
+# OWNER IS NOT A LABEL. lib/registry.sh derives the home from it, and the log
+# path and the op token path from the home - so a login change moves four
+# things, and a session already up keeps the ones it started with. The receipt
+# is where the next reader of this file finds that out.
+has "the receipt says the login change moves the derived paths" \
+    "$out" "op-token"
+has "and that a running session keeps the old ones until it restarts" \
+    "$out" "until it is restarted"
+has "and the conf carries that sentence too" \
+    "$(cat "$ROOT/sessions.d/$OLD.conf")" "a session already running keeps the old ones"
 
 echo "== the row still loads, and its principal is unchanged =="
 OUT="$(export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_REGISTRY_DIR="$ROOT/sessions.d"
@@ -141,6 +151,37 @@ is  "rc 0" "$rrc" "0"
 has "and it says there was nothing to write" "$rout" "already in the new shape"
 is  "the conf is byte-identical afterwards" \
     "$(cat "$ROOT/sessions.d/$REMOTE.conf")" "$remote_before"
+
+# THE VERIFY STEP READS THE FIELD BACK, NOT JUST THE RETURN CODE, so what the
+# receipt claims and what the next loader will read are the same value. The awk
+# rewrite drops any OWNER line after the first, so a conf cannot come out of it
+# carrying two - which is what makes this an assertion rather than a fix, and
+# why the case below is a row that is rewritten normally.
+echo "== the value the receipt reports is the value the loader reads back =="
+TWO="s-00000000000000b5"
+cat > "$ROOT/sessions.d/$TWO.conf" <<EOF
+# $TWO - session
+ID="$TWO"
+ACCOUNT="ann-h2"
+SLUG="two-owner"
+TARGET_ENTITY="alpha"
+DOMAIN="alpha"
+HOST="h1"
+REPO_PATH="/tmp/repo"
+OWNER="svc-ann"
+OWNER="ann"
+EOF
+tj="$(run "$TWO" --json 2>/dev/null)"; trc=$?
+is  "a row carrying two OWNER lines still realigns" "$trc" "0"
+is  "the receipt reports the new login"             "$(printf '%s' "$tj" | jq -r .owner)" "svc-ann"
+is  "exactly one OWNER line survives the rewrite" \
+    "$(grep -c '^OWNER=' "$ROOT/sessions.d/$TWO.conf")" "1"
+is  "and the loader reads the value the receipt reported" \
+    "$(export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_REGISTRY_DIR="$ROOT/sessions.d"
+       . "$here/lib/registry.sh"; registry_load "$TWO" >/dev/null 2>&1 && printf '%s' "$OWNER")" \
+    "svc-ann"
+is  "and no backup or staging file is left behind" "$(ls "$ROOT/sessions.d" | grep -c realign)" "0"
+rm -f "$ROOT/sessions.d/$TWO.conf"
 
 echo "== --host is the one way to restate where a session lives =="
 hout="$(run "$REMOTE" --host h7 2>/dev/null)"; hrc=$?

@@ -5128,6 +5128,36 @@ _migrate_snap() {
     source "$__conf" 2>/dev/null; printf '%s' "${!__name}" )
 }
 
+# _realign_login_registered <login> — rc 0 when some accounts.d row names that
+# login as its USERNAME.
+#
+# WHAT IT IS FOR. realign writes a LOGIN into OWNER, and every path derived from
+# OWNER is a path in that login home. A row whose OWNER names a login the
+# register does not know is a row whose home, log and op token path point at a
+# person nothing in the register describes - and the read-back through
+# registry_load cannot see it, because the loader builds those paths from the
+# string without asking whether it belongs to anybody.
+#
+# THE SCAN IS THE MEASUREMENT, not the value already in hand. want_owner came
+# out of one account row a moment earlier; asking the register again is what
+# turns this from a restatement into a check, and it is the same walk
+# registry_principal_for_username makes. Subshelled per row for the reason that
+# scanner gives: a row is SOURCED, and a lowercase assignment in operator data
+# must not reach this loop.
+_realign_login_registered() { # <login>
+  local login="${1:-}" d f hit
+  [ -n "$login" ] || return 1
+  d="$(registry_account_dir)" || return 1
+  [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -f "$f" ] || continue
+    hit="$( registry_account_load "$(basename "$f" .conf)" >/dev/null 2>&1 &&
+            [ "$ACCOUNT_USERNAME" = "$1" ] && printf 'y' )"
+    [ -n "$hit" ] && return 0
+  done
+  return 1
+}
+
 # cmd_registry_session_realign <handle> [--json] — rewrite ONE row from the old
 # identity shape to the one today's writers emit, and say what changed.
 #
@@ -5144,6 +5174,16 @@ _migrate_snap() {
 # the row already names; the ACCOUNT itself is never chosen here, so this verb
 # cannot move a session to another human. Everything else in the conf is
 # carried through byte for byte, comments included.
+#
+# BUT OWNER IS NOT A LABEL, AND A RUNNING SESSION DOES NOT FOLLOW IT. OWNER is
+# the unix login the session runs as, and lib/registry.sh derives the home from
+# it, and from the home the log path and the op token path. Rewriting it moves
+# all four for every reader from the next load onwards, while the process that
+# is already up keeps the paths it was started with - so a realigned row and a
+# running session disagree until that session is restarted. HOST got this
+# warning when it stopped being rewritten silently; OWNER needs it more,
+# because OWNER is the field this verb exists to change. The receipt says it
+# too, in the conf, where the next reader of the file will find it.
 #
 # HOST IS NOT PART OF THE SHAPE THIS VERB ALIGNS. lib/registry.sh states that a
 # session may live on a host the hub only deploys to - the account row names
@@ -5264,6 +5304,11 @@ cmd_registry_session_realign() {
   fi
   local receipt
   receipt="realigned to account '$row_account': $changes"
+  # THE RECEIPT CARRIES THE CONSEQUENCE, not just the diff. It is appended to
+  # the conf, so this is where the next person to open the file learns that the
+  # login change moved the paths derived from it and that a session already up
+  # is still using the old ones.
+  [ "$do_owner" -eq 0 ] || receipt="$receipt (OWNER is the unix login this session runs as: its home, log and op-token paths are derived from it and move with it, and a session already running keeps the old ones until it is restarted)"
 
   # WRITE BESIDE THE ROW, NOT IN /tmp. A rename inside the same directory is
   # atomic; a move across filesystems is a copy, and a copy can be interrupted
@@ -5294,12 +5339,39 @@ cmd_registry_session_realign() {
     rm -f "$tmp" "$backup"
     _reg_fail "$want_json" "steward registry session realign: could not replace $conf; it is untouched" 70; return 70; }
 
-  local verify_rc
-  ( registry_load "$key" >/dev/null 2>&1 ); verify_rc=$?
+  # THE VERIFY STEP READS THE FIELD BACK, not just the return code, so what the
+  # receipt claims and what the next loader will read are one value. The awk
+  # above already drops every OWNER line after the first, so nothing on the
+  # path today can make these two disagree; the read-back is what says so out
+  # loud, and it is the line that would catch the next rewrite that forgets.
+  local verify_rc verify_owner
+  verify_owner="$( registry_load "$key" >/dev/null 2>&1 && printf '%s' "${OWNER:-}" )"; verify_rc=$?
   if [ "$verify_rc" -ne 0 ]; then
     mv -f "$backup" "$conf" 2>/dev/null
     _reg_fail "$want_json" "steward registry session realign: the rewritten row would not load (rc $verify_rc) — $conf has been put back" 70
     return 70
+  fi
+  if [ "$verify_owner" != "$want_owner" ]; then
+    mv -f "$backup" "$conf" 2>/dev/null
+    _reg_fail "$want_json" "steward registry session realign: the rewritten row loads as OWNER='$verify_owner', not '$want_owner' — the file carries more than one OWNER line and the loader takes the last; $conf has been put back" 70
+    return 70
+  fi
+  # AND THE LOGIN THE ROW NOW NAMES MUST EXIST IN THE REGISTER. Everything
+  # derived from OWNER is a path in that login home, so a login no accounts.d
+  # row names leaves the session pointing at a person the register does not
+  # describe. Refused rather than warned: this verb writes, and putting the row
+  # back is free while a wrong home is discovered at the next restart.
+  #
+  # HONESTLY: TODAY IT CANNOT FIRE. want_owner is read out of one account row a
+  # few lines up, so the scan is certain to find that row again unless the
+  # register changes underneath this verb. It is here because the value it
+  # guards is the one thing this verb writes, and the next writer that takes
+  # want_owner from somewhere else - a flag, a resolved login row - must not be
+  # able to skip the question.
+  if ! _realign_login_registered "$verify_owner"; then
+    mv -f "$backup" "$conf" 2>/dev/null
+    _reg_fail "$want_json" "steward registry session realign: no account row names '$verify_owner' as its USERNAME, and OWNER is the login this session runs as — its home, log and op-token paths would point at a login the register does not describe; $conf has been put back" 65
+    return 65
   fi
   rm -f "$backup"
 
