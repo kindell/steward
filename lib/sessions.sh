@@ -302,7 +302,23 @@ session_identity_rows() {
     # has already said once, through the collapsed cause line above. The one
     # sentence the rule itself can emit is "could not load the registry",
     # which cannot fire: this function sourced registry.sh before the loop.
-    if ! _session_visible_to "$_viewer" "$n" "$owner" 2>/dev/null; then
+    #
+    # AND rc 78 OUT OF THE RULE IS NOT A WITHHOLDING. The rule answers "no
+    # claim" and "could not resolve who would have one" with the same rc 1 by
+    # design, and both belong in the count - but rc 78 is the third answer, the
+    # registry refusing the row's identity claim, and counting that as hidden
+    # says a policy withheld a row that the register would not hand over at
+    # all. The row loaded a moment ago and does not now, so the conf changed
+    # under the sweep; it takes the same skip-and-name path any unloadable row
+    # takes. `loaded` is left alone: the row DID load in this sweep, and the
+    # all-fail branch below asks about the load, not about this.
+    local _vis_rc
+    _session_visible_to "$_viewer" "$n" "$owner" 2>/dev/null; _vis_rc=$?
+    if [ "$_vis_rc" -eq 78 ]; then
+      echo "sessions: skipping '$n' — the registry refused the row (rc 78) while deciding who may see it; it loaded a moment earlier in this same sweep, so the conf changed underneath" >&2
+      SESSIONS_UNREADABLE="${SESSIONS_UNREADABLE}$n"$'\n'
+      continue
+    elif [ "$_vis_rc" -ne 0 ]; then
       SESSIONS_HIDDEN=$((SESSIONS_HIDDEN + 1))
       continue
     fi

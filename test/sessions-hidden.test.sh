@@ -109,6 +109,49 @@ hasnt "without naming the hidden"   "$t" "theirs"
 has "and the sentence names the viewer" \
     "$(printf '%s\n' "$t" | grep 'not visible to')" "alice"
 
+echo "== a registry refusal from the rule is unreadable, never hidden =="
+# THE THIRD ANSWER. lib/visibility.sh answers "this viewer has no claim" and
+# "we could not resolve who would have one" with the same rc 1 on purpose, and
+# both of those belong in the count above. rc 78 is neither: it is the register
+# refusing the row identity claim, and counting that as hidden reports a policy
+# decision about a row nothing could read. It can only happen here because the
+# rule loads the row again - so the conf changed between the sweep own load, a
+# moment earlier, and this call.
+#
+# MEASURED THROUGH THE SEAM, because that race cannot be staged in a fixture:
+# the sweep loads every row itself first, so a conf that refuses is already
+# refused before this line is reached. The libraries are sourced, the rule is
+# overridden, and the sweep is asked - which is the whole of what it consults.
+# No apostrophes and no parentheses in this comment, because the block below
+# runs inside a command substitution.
+vis78="$(
+  export STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="bob"
+  . "$here/lib/registry.sh"
+  . "$here/lib/visibility.sh"
+  . "$here/lib/sessions.sh"
+  _session_visible_to() { return 78; }
+  session_identity_rows >/dev/null 2>&1
+  printf '%s|%s' "${SESSIONS_HIDDEN:-x}" "$SESSIONS_UNREADABLE"
+)"
+is "nothing is counted as hidden" "${vis78%%|*}" "0"
+is "and every refused row is named unreadable" \
+   "$(printf '%s' "${vis78#*|}" | grep -c .)" "4"
+
+echo "== and a rule that merely says no is still a withholding =="
+# THE OTHER HALF OF THE SAME BRANCH, through the same seam: rc 1 must still be
+# counted and must still name nobody.
+vis1="$(
+  export STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="bob"
+  . "$here/lib/registry.sh"
+  . "$here/lib/visibility.sh"
+  . "$here/lib/sessions.sh"
+  _session_visible_to() { return 1; }
+  session_identity_rows >/dev/null 2>&1
+  printf '%s|%s' "${SESSIONS_HIDDEN:-x}" "$SESSIONS_UNREADABLE"
+)"
+is "all four are hidden"          "${vis1%%|*}" "4"
+is "and none is named unreadable" "$(printf '%s' "${vis1#*|}" | grep -c .)" "0"
+
 # AN UNIDENTIFIABLE VIEWER IS REFUSED, AND SAID. With no viewer the rule hides
 # everything, which is right — an empty viewer is not a wildcard. But the line
 # once read "not visible to )" with a blank where the name goes, which reads as
