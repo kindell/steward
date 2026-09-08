@@ -1,0 +1,40 @@
+#!/bin/bash
+# desk/bin/desk-paths - the two default locations the desk owns, derived from
+# the registry and from nowhere else.
+#
+# THE DESK HAS TWO LANGUAGES AND MUST NOT HAVE TWO OPINIONS ABOUT WHERE IT
+# LIVES. The producer is bash and the server is Node; both need the same
+# directory and the same socket path, and a Node process cannot source a bash
+# library. So this script is the bridge, exactly as watch/bin/registry-dump is
+# for the watch: it sources lib/registry.sh, asks it for STATE_DIR_NAME, and
+# prints the two paths. One reader of the estate, two languages reading it.
+#
+# THE LIBRARY IS TWO HOPS UP IN BOTH LAYOUTS: desk/bin/ beside lib/ at the repo
+# root, and scripts/desk/bin/ beside scripts/lib/ in a deployed home.
+# STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
+#
+# OUTPUT IS EXACTLY TWO LINES, in this order, each `key=value`:
+#   dir=<HOME>/.local/state/<STATE_DIR_NAME>/desk
+#   sock=<HOME>/.local/state/<STATE_DIR_NAME>/desk.sock
+# rc 78 when the estate does not load - a caller must never fall back to a
+# guessed path, because a guessed path is a second desk nobody is reading.
+set -uo pipefail
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
+  # shellcheck source=/dev/null
+  . "$STEWARD_REGISTRY_LIB" || exit 78
+elif [ -f "$here/../../lib/registry.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$here/../../lib/registry.sh" || exit 78
+else
+  echo "desk-paths: the registry library was found in neither layout (from $here)" >&2
+  exit 78
+fi
+
+state="$(registry_state_dir_name)" || {
+  echo "desk-paths: the estate file names no readable STATE_DIR_NAME" >&2
+  exit 78
+}
+base="$HOME/.local/state/$state"
+printf 'dir=%s\n'  "$base/desk"
+printf 'sock=%s\n' "$base/desk.sock"

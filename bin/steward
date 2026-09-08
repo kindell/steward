@@ -3340,6 +3340,23 @@ cmd_mcp() {
   esac
 }
 
+# THE DESK IS TWO PROGRAMS BEHIND ONE WORD, and this dispatcher is deliberately
+# nothing but the fork. The producer is bash and the server is Node; neither
+# belongs inside this file, and a `desk` verb that grew logic here would be a
+# third place that knows what a desk is.
+#
+# `exec`, NOT A CALL. The two programs own their own exit codes - the snapshot's
+# 69/73/78 mean what they mean to an operator reading a timer's log, and a
+# wrapper that returned its own status would have to reproduce that vocabulary
+# and would drift from it on the first change.
+cmd_desk() {
+  case "${1:-}" in
+    snapshot) shift; exec bash "$HERE/desk/snapshot.sh" "$@" ;;
+    serve)    shift; exec node "$HERE/desk/serve.mjs" "$@" ;;
+    *) fel "steward desk: unknown verb '${1:-}' (allowed: snapshot, serve)" 64 ;;
+  esac
+}
+
 cmd_sessions() {
   local want_json="" sort_key="" sort_field="" a
   # DETECT --json BEFORE VALIDATING ANYTHING ELSE. A refusal must come back in
@@ -5040,6 +5057,7 @@ case "${1:-}" in
   assets)   shift; cmd_assets "$@"; exit $? ;;
   sessions) shift; cmd_sessions "$@"; exit $? ;;
   mcp)      shift; cmd_mcp "$@"; exit $? ;;
+  desk)     shift; cmd_desk "$@"; exit $? ;;
   login)    shift; cmd_login "$@"; exit $? ;;
   job)      shift; cmd_job "$@"; exit $? ;;
   jobs)     shift; cmd_jobs "$@"; exit $? ;;

@@ -1,0 +1,170 @@
+#!/bin/bash
+# test/desk-snapshot.test.sh - the desk snapshot: one filtered file per
+# principal, written into a fresh generation and swapped in atomically, with
+# sentinel values in the registry that prove what never leaves.
+set -u
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
+is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
+has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+
+# THE FIXTURE ESTATE - the same shape test/mcp-surface.test.sh builds, plus the
+# principal rows the desk filters by. Three principals: `a` reads everything,
+# `b` is a member of `team`, `c` is a member of nothing. Two sessions, both
+# owned by rows that carry SENTINEL values the snapshot must never copy out.
+ROOT="$T/estate"
+mkdir -p "$ROOT"/{estate,sessions.d,entities.d,projects.d,accounts.d,mcp.d,hosts.d,principals.d}
+cat > "$ROOT/estate/steward.conf" <<'EOF'
+ESTATE_NAME="fixture"
+LABEL_PREFIX="com.fixture.claude"
+JOB_LABEL_PREFIX="com.fixture.job"
+SERVICE_LABEL_PREFIX="com.fixture.svc"
+RC_LABEL_PREFIX=""
+HUB_SESSION="hub"
+HUB_HOST="h1"
+STATE_DIR_NAME="fixture-supervisor"
+PAUSED_DIR_NAME="fixture-paused"
+TMUX_SOCKET="fixture.sock"
+OP_TOKEN_FILE_NAME="fixture-token"
+PING_MSG="mail"
+EOF
+printf 'OWNER="a"\nOPERATOR="hub"\n' > "$ROOT/hosts.d/h1.conf"
+printf 'NAME="Team"\nMEMBERS="a b"\nMCP_ASSETS="shared"\n' > "$ROOT/entities.d/team.conf"
+printf 'NAME="Work"\nPARENT="team"\nMCP_ASSETS="tool"\n' > "$ROOT/projects.d/work.conf"
+printf 'PRINCIPAL="a"\nHOST="h1"\nMCP_ASSETS="mail"\n' > "$ROOT/accounts.d/a-h1.conf"
+printf 'PRINCIPAL="b"\nHOST="h1"\n' > "$ROOT/accounts.d/b-h1.conf"
+for m in shared tool mail; do
+  printf 'MCP_COMMAND="/usr/bin/%s"\nMCP_ARGS="--token SENTINEL_ARG"\nMCP_ENV_FILE="~/SENTINEL_ENV"\n' "$m" > "$ROOT/mcp.d/$m.conf"
+done
+printf 'NAME="Ann"\nTAILSCALE_LOGIN="a@example.com"\nDESK_READ_ALL="yes"\n' > "$ROOT/principals.d/a.conf"
+printf 'NAME="Ben"\nTAILSCALE_LOGIN="b@example.com"\n'                      > "$ROOT/principals.d/b.conf"
+printf 'NAME="Cy"\nTAILSCALE_LOGIN="c@example.com"\n'                       > "$ROOT/principals.d/c.conf"
+
+SID_A="s-0000000000000021"
+SID_B="s-0000000000000022"
+cat > "$ROOT/sessions.d/$SID_A.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="work"
+REPO_PATH="$T/SENTINEL_PATH/repo"
+ID="$SID_A"
+SLUG="work-a"
+ACCOUNT="a-h1"
+TARGET_PROJECT="work"
+KIND="work"
+BROWSER_RIG="yes"
+BROWSER_DISPLAY="11"
+BROWSER_CDP="9999"
+BROWSER_VNC="22"
+EOF
+cat > "$ROOT/sessions.d/$SID_B.conf" <<EOF
+OWNER="b"
+HOST="h1"
+DOMAIN="team"
+REPO_PATH="$T/SENTINEL_PATH/repo"
+ID="$SID_B"
+SLUG="team-b"
+ACCOUNT="b-h1"
+TARGET_ENTITY="team"
+KIND="work"
+EOF
+
+# THE LIVENESS ANSWER IS INJECTED, NEVER MEASURED HERE. The real producer runs
+# `steward sessions --json` as a subprocess, which reads a live multiplexer
+# socket; a suite that let it run could type into a real conversation. The file
+# below carries that command's real document shape.
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$T/sessions.json" <<EOF
+{"ok":true,"hub":"h1","unreadable":[],"hidden":0,"sessions":[
+ {"name":"$SID_A","id":"$SID_A","owner":"a","domain":"work","host":"h1","slug":"work-a",
+  "display":"Work","lineage":null,"entity":null,"assets":[],
+  "liveness":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code",
+              "model":null,"lastActivity":"$NOW","reason":null}},
+ {"name":"$SID_B","id":"$SID_B","owner":"b","domain":"team","host":"h1","slug":"team-b",
+  "display":"Team","lineage":null,"entity":null,"assets":[],
+  "liveness":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code",
+              "model":null,"lastActivity":"$NOW","reason":null}}]}
+EOF
+
+export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"
+export HOME="$T/home"; mkdir -p "$HOME"
+echo "desk-snapshot"
+
+run() {
+  STEWARD_DESK_DIR="$T/desk" STEWARD_DESK_SESSIONS_JSON="$T/sessions.json" \
+    bash "$here/bin/steward" desk snapshot "$@"
+}
+rc="$(run >/dev/null 2>"$T/err"; echo $?)"
+is  "the snapshot runs" "$rc" "0"
+[ "$rc" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err")"
+D="$T/desk/current"
+is  "one file per principal plus the operator file" "$(ls "$D" 2>/dev/null | sort | tr '\n' ' ')" "_operator.json a.json b.json c.json "
+is  "schemaVersion is 1" "$(jq .schemaVersion "$D/b.json")" "1"
+is  "b sees the team session and a's session in the same domain" "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$D/b.json")" "team-b work-a"
+is  "b never sees a's account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/b.json")" "entity project"
+is  "a sees the own account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/a.json")" "account entity project"
+is  "c sees nothing" "$(jq '.sessions|length' "$D/c.json")" "0"
+is  "the operator file carries every session" "$(jq '.sessions|length' "$D/_operator.json")" "2"
+
+# THE SENTINELS ARE THE POINT. Each one is a real registry value the snapshot
+# reads past on its way to something else; a filter that ever grew a passthrough
+# would carry one of them into a viewer's file, and this loop is what notices.
+for s in SENTINEL_ARG SENTINEL_PATH SENTINEL_ENV "9999" MCP_ARGS mcpReason; do
+  is "sentinel $s reaches no file" "$(grep -l "$s" "$D"/*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+done
+
+is  "repo is a name, not a path" "$(jq -r '.sessions[0].repo' "$D/_operator.json")" "repo"
+is  "liveness carries an age" "$(jq -r '.sessions[0].liveness|has("ageSeconds")' "$D/_operator.json")" "true"
+is  "the age of a just-measured session is a number" "$(jq -r '.sessions[0].liveness.ageSeconds|type' "$D/_operator.json")" "number"
+is  "liveness state is the agent word" "$(jq -r '.sessions[0].liveness.state' "$D/_operator.json")" "running"
+is  "the write is atomic: no tmp files remain" "$(ls "$D" | grep -c tmp)" "0"
+is  "unknown keys are dropped by the filter" "$(jq -r '.sessions[0]|keys|join(",")' "$D/a.json")" "domain,host,id,label,liveness,mcp,mine,owner,project,repo,runtime,slug"
+is  "an asset carries the four allowed keys only" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp[0]|keys|join(",")' "$D/a.json")" "axis,id,name,source"
+is  "the viewer is named in the file" "$(jq -r .viewer "$D/b.json")" "b"
+is  "read-all is a boolean" "$(jq -r '.readAll|tostring' "$D/b.json")" "false"
+is  "and true for the read-all principal" "$(jq -r '.readAll|tostring' "$D/a.json")" "true"
+is  "mine marks the viewer's own session" "$(jq -r '.sessions[]|select(.slug=="team-b")|.mine|tostring' "$D/b.json")" "true"
+is  "and is false for a colleague's" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mine|tostring' "$D/b.json")" "false"
+is  "b sees the team it belongs to, marked as membership" "$(jq -r '.entities|map(.id+":"+(.member|tostring))|join(" ")' "$D/b.json")" "team:true"
+is  "c sees no entity" "$(jq '.entities|length' "$D/c.json")" "0"
+
+echo "== generations: every run is a new directory, current is a symlink =="
+is  "current is a symlink" "$([ -L "$T/desk/current" ] && echo yes || echo no)" "yes"
+is  "one generation after one run" "$(ls -d "$T/desk"/gen-* | wc -l | tr -d ' ')" "1"
+run >/dev/null 2>&1
+run >/dev/null 2>&1
+is  "exactly two generations after three runs" "$(ls -d "$T/desk"/gen-* | wc -l | tr -d ' ')" "2"
+is  "current still points into a live generation" "$(jq -r .schemaVersion "$T/desk/current/a.json")" "1"
+is  "and no tmp file survived any run" "$(find "$T/desk" -name '*.tmp' | wc -l | tr -d ' ')" "0"
+
+echo "== desk-paths: the two default locations, derived from the estate =="
+out="$(HOME="$T/home" bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+is  "the bridge answers" "$rc" "0"
+is  "the directory hangs under the estate's state dir" "$(printf '%s\n' "$out" | sed -n 's/^dir=//p')" "$T/home/.local/state/fixture-supervisor/desk"
+is  "and names the socket beside it" "$(printf '%s\n' "$out" | sed -n 's/^sock=//p')" "$T/home/.local/state/fixture-supervisor/desk.sock"
+
+echo "== an unresolvable surface is an empty list, never a reason a viewer reads =="
+# `mcp surface` refuses (rc 65) when a level of the org will not load. The raw
+# document records that as mcp:null plus mcpReason - and the allowlist names
+# neither, so the viewer gets an empty list and the snapshot still renders.
+printf 'NAME="Work"\nPARENT="missing"\nMCP_ASSETS="tool"\n' > "$ROOT/projects.d/work.conf"
+rc="$(STEWARD_DESK_DIR="$T/desk2" STEWARD_DESK_SESSIONS_JSON="$T/sessions.json" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err"; echo $?)"
+is  "the snapshot still runs" "$rc" "0"
+is  "the session is still there for the operator" "$(jq -r '.sessions[]|select(.slug=="work-a")|.slug' "$T/desk2/current/_operator.json")" "work-a"
+is  "with an empty asset list" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|length' "$T/desk2/current/_operator.json")" "0"
+is  "and no reason field anywhere" "$(grep -l mcpReason "$T/desk2/current"/*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
+printf 'NAME="Work"\nPARENT="team"\nMCP_ASSETS="tool"\n' > "$ROOT/projects.d/work.conf"
+
+echo "== the verb's own refusals =="
+out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?
+is  "desk without a verb is a usage error" "$rc" "64"
+has "and names the verbs it has" "$(cat "$T/err")" "snapshot"
+out="$(bash "$here/bin/steward" desk bogus 2>"$T/err")"; rc=$?
+is  "an unknown desk verb is a usage error" "$rc" "64"
+
+printf '\n  %d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
