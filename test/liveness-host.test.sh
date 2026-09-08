@@ -91,6 +91,49 @@ mk s-e5 bob   h1 handle-five
 # NOT THIS HOST. Another machine answers for it.
 mk s-f6 alice h2 handle-six
 
+# THREE CODEX ROWS. A codex row is a thread, not a pane: it is supervised by
+# its own timer, it has no tmux session by design, and whether it can work is
+# decided by the owner's daemon socket and by having a thread to speak into.
+# The three probes written for a pane row answer three different wrong
+# questions about it, so each of these rows pins one of the three answers.
+# timer armed, a thread on disk, a ledger of answered letters, daemon socket up
+mk s-g7 alice h1 handle-seven 'RUNTIME="codex"'
+# NOTHING: no timer, no thread, no ledger. Every field must still be measured.
+mk s-h8 alice h1 handle-eight 'RUNTIME="codex"'
+# timer armed and a thread on disk, but the owner's daemon is not listening.
+mk s-i9 alice h1 handle-nine  'RUNTIME="codex"'
+
+# THE CODEX RUNTIME'S OWN STATE DIRECTORY, named by the adapter's existing
+# production knob. No test-only door is opened in the answerer for this.
+CX="$T/codex-state"
+mkdir -p "$CX"
+# A KNOWN MTIME, because lastActivity is asserted literally below. `touch -d @N`
+# is GNU; the BSD form takes a local wall clock, which `date -r N` prints for
+# the same instant, so both hosts stamp the same file.
+touch_at() { # touch_at <epoch> <file>
+  touch -d "@$1" "$2" 2>/dev/null && return 0
+  touch -t "$(date -r "$1" +%Y%m%d%H%M.%S)" "$2"
+}
+printf 'thread-g7\n' > "$CX/s-g7.codex-thread"
+printf 'letter-one\n' > "$CX/s-g7.codex-answered"
+# The thread file is OLDER than the ledger on purpose: the newest of the two is
+# the answer, and a fixture where both are equal cannot tell a max from a pick.
+touch_at 1756540800 "$CX/s-g7.codex-thread"
+touch_at 1756542000 "$CX/s-g7.codex-answered"
+printf 'thread-i9\n' > "$CX/s-i9.codex-thread"
+
+# THE OWNER'S DAEMON CONTROL SOCKET - a REAL unix socket, for the same reason
+# the tmux one above is real: the probe tests for a socket, and a regular file
+# there would prove only that a path exists.
+if ! python3 - "$T/codex-daemon.sock" <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sys.argv[1])
+PY
+then
+  echo "  FAIL could not create a codex daemon socket for the fixture (python3?)" >&2
+  exit 1
+fi
+
 # ── stubs ────────────────────────────────────────────────────────────────────
 # systemd: only s-a1, s-c3 and s-d4 have an armed timer.
 #
@@ -105,6 +148,9 @@ for a in "$@"; do
     agent-session@*)
       inst="${a#*@}"; inst="${inst%.timer}"
       case "$inst" in s-a1|s-c3|s-d4) exit 0 ;; esac ;;
+    agent-codex@*)
+      inst="${a#*@}"; inst="${inst%.timer}"
+      case "$inst" in s-g7|s-i9) exit 0 ;; esac ;;
   esac
 done
 exit 3
@@ -163,6 +209,8 @@ run() { # run [extra PATH dir first] -> stdout of the answerer
   env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
     STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
     STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+    STEWARD_CODEX_STATE_DIR="$CX" \
+    STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
     TMUX_LOG="$T/tmuxlog" \
     bash "$CMD" 2>"$T/err"
 }
@@ -226,6 +274,57 @@ eq "the declared runtime is reported" \
    "$(printf '%s' "$out" | jq -r '.sessions["s-d4"].runtime')" "opencode"
 eq "and its model"      "$(printf '%s' "$out" | jq -r '.sessions["s-d4"].model')"  "acme/model-x"
 
+echo "== a codex row is measured by its own machinery =="
+# Measured on a session host: a healthy codex row - timer active, the owner's
+# daemon up, a thread id on disk, the last letter answered hours before - was
+# rendered not-running with no activity at all. The page was right; all three
+# probes had answered a question this row was never asked.
+eq "the timer that actually supervises it is the one asked" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-g7"].daemon')" "loaded"
+# NOT `down`. `down` is the sentence "we looked for a pane and there was none".
+# A codex row owns no tmux session by design, so nobody looked.
+eq "tmux does not apply to this row" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-g7"].tmux')" "n/a"
+eq "agent is running: daemon socket up and a thread to speak into" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-g7"].agent')" "running"
+eq "the declared runtime is reported" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-g7"].runtime')" "codex"
+# THE NEWEST OF THE TWO FILES THIS RUNTIME WRITES. The ledger of answered
+# letters is younger than the thread file in the fixture, so a reader that
+# picked one instead of the maximum would read the older stamp.
+eq "lastActivity is the newest of ledger and thread" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-g7"].lastActivity')" \
+   "2025-08-30T08:20:00.000Z"
+
+echo "== a codex row with no timer, no thread and no ledger =="
+eq "daemon is missing"  "$(printf '%s' "$out" | jq -r '.sessions["s-h8"].daemon')" "missing"
+eq "tmux still does not apply" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-h8"].tmux')" "n/a"
+eq "agent is not-running" "$(printf '%s' "$out" | jq -r '.sessions["s-h8"].agent')" "not-running"
+# NEVER RAN IS NOT A TIMESTAMP. null is a measurement; a stale stamp would be a
+# guess wearing a measurement's clothes.
+eq "lastActivity is null" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-h8"].lastActivity')" "null"
+
+echo "== a codex row cannot work while the owner's daemon is not listening =="
+# Supervision is armed and the thread exists; only the socket is gone. The two
+# facts are separate and the answer must keep them separate.
+out4="$( env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
+          STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+          STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+          STEWARD_CODEX_STATE_DIR="$CX" \
+          STEWARD_CODEX_DAEMON_SOCK="$T/no-such-daemon.sock" \
+          TMUX_LOG="$T/tmuxlog4" bash "$CMD" 2>/dev/null )"
+eq "daemon is still loaded"  "$(printf '%s' "$out4" | jq -r '.sessions["s-i9"].daemon')" "loaded"
+eq "but the agent is not-running" \
+   "$(printf '%s' "$out4" | jq -r '.sessions["s-i9"].agent')" "not-running"
+
+echo "== no pane is ever walked for a codex row =="
+# The pane walk is the third wrong question. A row with no tmux session must
+# not be asked which runtime descends from panes it does not have.
+eq "list-panes never targets a codex id" \
+   "$(grep -cE 'list-panes.*=s-(g7|h8|i9)' "$T/tmuxlog" | tr -d ' ')" "0"
+
 echo "== another account's row leaves the answer entirely =="
 eq "it is not measured" "$(printf '%s' "$out" | jq -r '.sessions | has("s-e5")')" "false"
 # NOT EVEN AS AN OMISSION. An omitted entry says "I tried and could not"; this
@@ -237,8 +336,8 @@ echo "== another host's row leaves the answer entirely =="
 eq "it is not measured" "$(printf '%s' "$out" | jq -r '.sessions | has("s-f6")')" "false"
 eq "and not excused either" "$(printf '%s' "$out" | jq -r '.omitted | has("s-f6")')" "false"
 
-echo "== exactly four rows are answered for =="
-eq "four measured rows" "$(printf '%s' "$out" | jq -r '.sessions | length')" "4"
+echo "== exactly seven rows are answered for =="
+eq "seven measured rows" "$(printf '%s' "$out" | jq -r '.sessions | length')" "7"
 
 echo "== the tmux probe asks the DECLARED socket, not the default one =="
 # Measured on a live fleet: a bare `tmux ls` asks the default socket while every
@@ -265,8 +364,8 @@ eq "the answer is still valid JSON" \
    "$(printf '%s' "$out2" | jq -r '.sessions | type')" "object"
 eq "nothing is measured" \
    "$(printf '%s' "$out2" | jq -r '.sessions | length')" "0"
-eq "all four own rows are omitted" \
-   "$(printf '%s' "$out2" | jq -r '.omitted | length')" "4"
+eq "all seven own rows are omitted" \
+   "$(printf '%s' "$out2" | jq -r '.omitted | length')" "7"
 eq "and the reason names the missing tool" \
    "$(printf '%s' "$out2" | jq -r '.omitted["s-a1"] | test("systemctl")')" "true"
 eq "the neighbour is still not in the answer" \

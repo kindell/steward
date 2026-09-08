@@ -195,58 +195,127 @@ for conf in "$RDIR"/*.conf; do
     continue
   fi
 
-  # DAEMON. `is-active` on the session's user timer, the same unit name the
-  # supervisor and the status table use. An armed timer is `loaded`; no timer,
-  # or a stopped one, is `missing` — and that is a MEASUREMENT, not a failure to
-  # measure: we looked, and supervision is not running for this row.
-  if systemctl --user is-active "agent-session@$id.timer" >/dev/null 2>&1; then
-    daemon="loaded"
-  else
-    daemon="missing"
-  fi
+  # RUNTIME COMES FROM THE ROW, not from a probe - it is what the session was
+  # DECLARED to run, and the seam renders a runtime name as itself. A conf with
+  # no RUNTIME line is a Claude row: every conf that predates the field is one,
+  # and calling them unknown would make a healthy home look unmeasured. It is
+  # read HERE, before any probe, because it decides WHICH probes are the honest
+  # ones for this row.
+  runtime="$(_conf_val "$conf" RUNTIME)"; runtime="${runtime:-claude-code}"
 
-  # TMUX. Membership in the one list-sessions answer above.
-  case "$LIVE_NAMES" in
-    *" $id "*) tmux_state="up" ;;
-    *)         tmux_state="down" ;;
-  esac
+  if [ "$runtime" = "codex" ]; then
+    # A CODEX ROW IS A THREAD, NOT A PANE, and the three probes below the else
+    # each answer a different question it was never asked. Measured on a session
+    # host: a healthy codex row - its supervising timer active, its last round
+    # finished a second after it started, the owner's app-server daemon up with
+    # remote control, a thread id on disk and the last letter answered three
+    # hours earlier - was rendered as not-running with no activity at all, and a
+    # person asked why the page was broken. The page was fine. The measurement
+    # lied, three times: the timer probe asks about a unit template this row is
+    # not supervised by, the tmux probe asks for a session this runtime never
+    # creates, and the pane walk asks which runtime process descends from panes
+    # that do not exist. Three wrong answers about one healthy row.
 
-  # AGENT. A runtime process that descends from one of THIS session's panes.
-  # With no tmux session there are no panes, so nothing can descend from it —
-  # `not-running` is measured, not assumed.
-  agent="not-running"
-  last="null"
-  if [ "$tmux_state" = "up" ]; then
-    # The exact target form (=name): tmux -t prefix-matches, and a session whose
-    # name prefixes a sibling's would otherwise borrow the sibling's panes.
-    # EVERY window (-s), never just the current one: a human who opens a second
-    # window makes the runtime in window 0 invisible to a current-window probe.
-    panes="$(_tmux list-panes -s -t "=$id" -F '#{pane_pid}' 2>/dev/null || true)"
-    if [ -n "$panes" ]; then
-      for pid in $RUNTIME_PIDS; do
-        for pane in $panes; do
-          if is_descendant "$pid" "$pane"; then agent="running"; break 2; fi
-        done
-      done
+    # DAEMON. The unit template that actually supervises a codex row. Same word
+    # pair as every other row: an armed timer is `loaded`, a stopped or absent
+    # one is `missing`, and that is a MEASUREMENT.
+    if systemctl --user is-active "agent-codex@$id.timer" >/dev/null 2>&1; then
+      daemon="loaded"
+    else
+      daemon="missing"
     fi
-    # LAST ACTIVITY, only where it is free: tmux already told us, in the same
-    # call that told us the session is live. A row that is not up has no
-    # activity to report — null, never a stale stamp dressed as a measurement.
-    _e="$(printf '%s\n' "$LIVE_ACT" | awk -v n="$id" '$1==n {print $2; exit}')"
-    if [ -n "$_e" ]; then
-      _iso="$(date -u -d "@$_e" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
-              || date -u -r "$_e" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || true)"
+
+    # TMUX. The literal `n/a`, and deliberately NOT `down`. `down` is the
+    # sentence "we looked for a pane and there was none"; here nobody looked,
+    # because this runtime owns no tmux session BY DESIGN. Saying `n/a` tells a
+    # reader the column does not apply to this row, which is the true sentence
+    # and the only one they can act on.
+    tmux_state="n/a"
+
+    # AGENT. Two facts stand in for the pane walk: the owner's daemon is
+    # listening, and this row has a thread to speak into. Both paths are the
+    # adapter's own production knobs - the same environment names it reads - so
+    # a home that has moved either one is measured where it actually lives.
+    #
+    # THE SOCKET IS TESTED FOR EXISTENCE AND NEVER OPENED. This file is
+    # read-only and answers for a whole home in one call; a probe that
+    # negotiates a websocket is a probe that can hang the entire answer. The
+    # existence test is also EXACTLY what the thread client itself uses to
+    # decide whether the daemon is up, so the two agree by construction rather
+    # than by anybody remembering to keep them in step.
+    _cx_sock="${STEWARD_CODEX_DAEMON_SOCK:-${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock}"
+    _cx_state="${STEWARD_CODEX_STATE_DIR:-$HOME/.local/state/$(registry_state_dir_name)}"
+    _cx_thread="$_cx_state/$id.codex-thread"
+    agent="not-running"
+    if [ -S "$_cx_sock" ] && [ -s "$_cx_thread" ]; then agent="running"; fi
+
+    # LAST ACTIVITY. The newest mtime of the two files this runtime writes: the
+    # ledger of answered letters, and the thread id. Neither present is a row
+    # that has never run - null, which is a measurement, and never a stale stamp
+    # dressed as one. `stat` is asked in the GNU form first and the BSD form
+    # second; `ls` output is a rendering, not a field, and is never parsed.
+    last="null"
+    _cx_newest=""
+    for _cx_f in "$_cx_state/$id.codex-answered" "$_cx_thread"; do
+      [ -e "$_cx_f" ] || continue
+      _cx_m="$(stat -c %Y "$_cx_f" 2>/dev/null || stat -f %m "$_cx_f" 2>/dev/null || true)"
+      case "$_cx_m" in ''|*[!0123456789]*) continue ;; esac
+      if [ -z "$_cx_newest" ] || [ "$_cx_m" -gt "$_cx_newest" ]; then _cx_newest="$_cx_m"; fi
+    done
+    if [ -n "$_cx_newest" ]; then
+      _iso="$(date -u -d "@$_cx_newest" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
+              || date -u -r "$_cx_newest" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || true)"
       [ -n "$_iso" ] && last="\"$(_json_str "$_iso")\""
     fi
+  else
+    # DAEMON. `is-active` on the session's user timer, the same unit name the
+    # supervisor and the status table use. An armed timer is `loaded`; no timer,
+    # or a stopped one, is `missing` - and that is a MEASUREMENT, not a failure to
+    # measure: we looked, and supervision is not running for this row.
+    if systemctl --user is-active "agent-session@$id.timer" >/dev/null 2>&1; then
+      daemon="loaded"
+    else
+      daemon="missing"
+    fi
+
+    # TMUX. Membership in the one list-sessions answer above.
+    case "$LIVE_NAMES" in
+      *" $id "*) tmux_state="up" ;;
+      *)         tmux_state="down" ;;
+    esac
+
+    # AGENT. A runtime process that descends from one of THIS session's panes.
+    # With no tmux session there are no panes, so nothing can descend from it -
+    # `not-running` is measured, not assumed.
+    agent="not-running"
+    last="null"
+    if [ "$tmux_state" = "up" ]; then
+      # The exact target form (=name): tmux -t prefix-matches, and a session whose
+      # name prefixes a sibling's would otherwise borrow the sibling's panes.
+      # EVERY window (-s), never just the current one: a human who opens a second
+      # window makes the runtime in window 0 invisible to a current-window probe.
+      panes="$(_tmux list-panes -s -t "=$id" -F '#{pane_pid}' 2>/dev/null || true)"
+      if [ -n "$panes" ]; then
+        for pid in $RUNTIME_PIDS; do
+          for pane in $panes; do
+            if is_descendant "$pid" "$pane"; then agent="running"; break 2; fi
+          done
+        done
+      fi
+      # LAST ACTIVITY, only where it is free: tmux already told us, in the same
+      # call that told us the session is live. A row that is not up has no
+      # activity to report - null, never a stale stamp dressed as a measurement.
+      _e="$(printf '%s\n' "$LIVE_ACT" | awk -v n="$id" '$1==n {print $2; exit}')"
+      if [ -n "$_e" ]; then
+        _iso="$(date -u -d "@$_e" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
+                || date -u -r "$_e" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || true)"
+        [ -n "$_iso" ] && last="\"$(_json_str "$_iso")\""
+      fi
+    fi
   fi
 
-  # RUNTIME AND MODEL COME FROM THE ROW, not from a probe — they are what the
-  # session was DECLARED to run, and the seam renders a runtime name as itself.
-  # A conf with no RUNTIME line is a Claude row: every conf that predates the
-  # field is one, and calling them unknown would make a healthy home look
-  # unmeasured. A missing MODEL is null — "we looked and there is no value" —
-  # which the seam keeps distinct from an absent key.
-  runtime="$(_conf_val "$conf" RUNTIME)"; runtime="${runtime:-claude-code}"
+  # THE MODEL COMES FROM THE ROW TOO, and a missing MODEL is null - "we looked
+  # and there is no value" - which the seam keeps distinct from an absent key.
   model="$(_conf_val "$conf" MODEL)"
   if [ -n "$model" ]; then model="\"$(_json_str "$model")\""; else model="null"; fi
 
