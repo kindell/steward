@@ -143,6 +143,18 @@ has "SLUG carries the constructed name" "$body" 'SLUG="acme-widget-someone"'
 has "ACCOUNT resolves (OWNER, HOST) to the accounts.d row" "$body" 'ACCOUNT="someone-farhost"'
 has "TARGET_ENTITY names the domain's own entity row" "$body" 'TARGET_ENTITY="acme"'
 
+# THE KEY LINE MUST CARRY THE ESTATE ROOT THE HUB ITSELF RAN WITH. A hub whose
+# HOME is not the estate checkout (its own rows are the only ones under its own
+# sessions.d) resolves the recipient through registry_dir(), which honours
+# STEWARD_ESTATE_ROOT - unset in an sshd forced command. Without the assignment
+# living in the line itself, the relay only ever knows the hub's own rows.
+keyline="$(cat "$FX/authorized_keys")"
+prefix="restrict,command=\"STEWARD_ESTATE_ROOT=$FX /bin/bash $FX/bus/bin/bus-relay-in $id\" "
+case "$keyline" in
+  "$prefix"*) ok "the key line carries the estate root the hub ran with" ;;
+  *) bad "the key line carries the estate root the hub ran with" "$keyline" ;;
+esac
+
 # THIS ESTATE IS SCHEMA 3 (below the LOGIN-required schema) AND THE REQUEST
 # CARRIES NO login= LINE — the transition, byte for byte: no LOGIN line
 # appears on a row this estate's own reader does not require it on. Writer

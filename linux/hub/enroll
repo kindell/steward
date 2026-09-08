@@ -611,8 +611,24 @@ cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
 # THE KEY BINDS THE ID, NEVER THE NAME. A name is a per-account SLUG and can
 # change; the id is the one thing that must never move underneath a key that
 # already exists on a real machine.
-printf 'restrict,command="/bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
-  "$RELAY_ROOT" "$ID" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
+#
+# THE LINE ALSO CARRIES THE ESTATE ROOT THIS HUB RAN WITH. Measured on a real
+# two-account estate 2026-09-08: the hub account's HOME is not the estate
+# checkout, so its own sessions.d holds only its own two rows. bus-relay-in
+# resolves the recipient through registry_dir(), which honours
+# STEWARD_ESTATE_ROOT - but sshd strips the environment from a forced command,
+# so an unset STEWARD_ESTATE_ROOT left the relay seeing only the hub's own
+# rows, and every other recipient (including the session this line was just
+# minted for) came back "unknown recipient". The nineteen hand-maintained
+# lines on that host already carried the assignment inline and worked; this
+# line did not, because it was never hand-maintained. A forced command has no
+# environment to inherit and no later hook to set one in - the only place left
+# to carry the root is the command string itself, so the line assigns it fresh
+# on every inbound call, from the very root this run of enroll already
+# resolved and exported above (lines 46-57 refuse before this point is ever
+# reached, so it is always set here).
+printf 'restrict,command="STEWARD_ESTATE_ROOT=%s /bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
+  "$STEWARD_ESTATE_ROOT" "$RELAY_ROOT" "$ID" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
 
 # ── THE NEWBORN ROW MUST REACH THE ESTATE'S GIT HISTORY ─────────────────────
 # THE GAP, measured 2026-09-01. This file wrote the row into the hub's RUNTIME
