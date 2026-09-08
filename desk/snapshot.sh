@@ -29,14 +29,27 @@ here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # THE LIBRARY SITS ONE HOP UP IN BOTH LAYOUTS: desk/ beside lib/ at the repo
 # root, and scripts/desk/ beside scripts/lib/ in a deployed home.
 # STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
+lib_dir=""
 if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
   # shellcheck source=/dev/null
   . "$STEWARD_REGISTRY_LIB" || exit 78
+  lib_dir="$(dirname "$STEWARD_REGISTRY_LIB")"
 elif [ -f "$here/../lib/registry.sh" ]; then
   # shellcheck source=/dev/null
   . "$here/../lib/registry.sh" || exit 78
+  lib_dir="$here/../lib"
 else
   echo "desk snapshot: the registry library was found in neither layout (from $here)" >&2
+  exit 78
+fi
+# THE LIVENESS LIBRARY IS TAKEN FROM THE SAME DIRECTORY THE REGISTRY CAME FROM,
+# never guessed separately: an override that aims the registry at one tree and
+# the liveness seam at another would measure one estate and describe a second.
+if [ -f "$lib_dir/liveness.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$lib_dir/liveness.sh" || exit 78
+else
+  echo "desk snapshot: the liveness library is not beside the registry library in $lib_dir" >&2
   exit 78
 fi
 command -v jq >/dev/null 2>&1 || { echo "desk snapshot: jq is required" >&2; exit 69; }
@@ -62,29 +75,44 @@ revision="$(git -C "$estate_dir" rev-parse --short HEAD 2>/dev/null)"
 [ -n "$revision" ] || revision="unknown"
 
 # --- THE LIVENESS ANSWER --------------------------------------------------
-# ONE CALL FOR THE WHOLE FLEET, and it is a subprocess rather than a library
-# call because the measurement lives behind `steward sessions --json` and the
-# seam it dispatches to is the estate's own.
+# NOT `steward sessions --json`. That verb is VISIBILITY-FILTERED by the unix
+# user that calls it, and the snapshot runs as one account while writing files
+# for every principal in the estate - so the producer would measure only its own
+# rows and every colleague's session would land as `unknown` in a file that
+# otherwise describes it fully. Measured before this was changed: the producing
+# account saw 2 sessions of 24. The seam underneath is what this reads instead.
 #
-# STEWARD_DESK_SESSIONS_JSON IS AN OPERATOR OVERRIDE, not a test hook: an
-# estate that already collects this document on a schedule (or on another
-# machine) points the snapshot at the file instead of paying for a second
-# measurement on every run.
+# ONE CALL FOR THE WHOLE FLEET - liveness_rows takes no arguments and answers
+# about everything the estate's shim can measure, by design.
+#
+# THE COMMAND IS RESOLVED THE WAY `sessions` RESOLVES IT: the environment wins,
+# and only when it has no opinion does the estate's own LIVENESS_CMD get a turn.
+# An estate that names none is the ordinary unconfigured state, not a refusal;
+# an estate that names a malformed one is a refusal, and rc 78 carries it out,
+# because a column of silent `unknown` is exactly what would hide that mistake.
+if [ -z "${STEWARD_LIVENESS_CMD:-}" ]; then
+  lv_err="$(mktemp)" || { echo "desk snapshot: could not create a temporary file" >&2; exit 73; }
+  lv_out="$(registry_liveness_cmd 2>"$lv_err")"; lv_rc=$?
+  if [ "$lv_rc" -ne 0 ]; then
+    cat "$lv_err" >&2; rm -f "$lv_err"; exit 78
+  fi
+  rm -f "$lv_err"
+  [ -z "$lv_out" ] || { STEWARD_LIVENESS_CMD="$lv_out"; export STEWARD_LIVENESS_CMD; }
+fi
+
+# NOT IN A COMMAND SUBSTITUTION - the LIVENESS_SEAM_REASON contract. `$( )` is a
+# subshell, and the variable liveness_rows sets to say WHY it measured nothing
+# would not come back from one; liveness_for reads it to fill the reason field
+# of every session it has no row for. bin/steward redirects for the same reason.
 #
 # A MISSING OR UNPARSEABLE ANSWER IS `unknown`, NEVER A FAILED SNAPSHOT. The
 # desk's other half - who owns what, and who may see it - is fully readable
 # without any liveness at all, and a desk that refused to render because a
 # multiplexer was down would be dark exactly when it is wanted.
-live_raw=""
-if [ -n "${STEWARD_DESK_SESSIONS_JSON:-}" ]; then
-  live_raw="$(cat "$STEWARD_DESK_SESSIONS_JSON" 2>/dev/null)" || live_raw=""
-elif [ -x "$steward" ]; then
-  live_raw="$("$steward" sessions --json 2>/dev/null)" || live_raw=""
-fi
-live_map="$(printf '%s' "$live_raw" | jq -c '
-  [ (.sessions // [])[] | { key: (.id // .name // ""), value: (.liveness // {}) } ] | from_entries' 2>/dev/null)" \
-  || live_map=""
-[ -n "$live_map" ] || live_map='{}'
+live_rows=""
+live_out="$tmp/liveness.tsv"
+liveness_rows > "$live_out"
+live_rows="$(cat "$live_out")"
 
 # --- THE RAW DOCUMENT, ONE REGISTER AT A TIME -----------------------------
 # EACH ROW IS LOADED IN ITS OWN SUBSHELL - the registry-dump pattern. The
@@ -168,12 +196,18 @@ while IFS= read -r n; do
       fi
     fi
     sid="${ID:-$n}"
-    live="$(printf '%s' "$live_map" | jq -c --arg k "$sid" '.[$k] // {}' 2>/dev/null)" || live="{}"
-    [ -n "$live" ] || live="{}"
+    # KEYED BY THE REGISTRY NAME, NOT THE ID. liveness_rows prints one row per
+    # session the shim ANSWERED ABOUT, under the name the estate administers it
+    # by - the same word registry_list yields - and liveness_for is what turns
+    # an absent name into a full row of `unknown` rather than into silence.
+    live_row="$(liveness_for "$n" "$live_rows")"
+    IFS=$'\t' read -r _lname _ldaemon _ltmux lagent _lruntime _lmodel lactivity _lreason \
+      <<< "$live_row"
     jq -cn --arg id "$sid" --arg slug "${SLUG:-$n}" --arg label "$label" \
            --arg owner "${OWNER:-}" --arg domain "$domain" --arg project "${TARGET_PROJECT:-}" \
            --arg runtime "${RUNTIME:-claude-code}" --arg host "${HOST:-}" --arg repo "$repo" \
-           --arg measuredAt "$generated_at" --argjson live "$live" \
+           --arg measuredAt "$generated_at" \
+           --arg agent "${lagent:-unknown}" --arg lastActivity "${lactivity:-unknown}" \
            --argjson mcp "$mcp" --arg mcpReason "$mcp_reason" '
       def blank($v): if $v == "" then null else $v end;
       {id:$id, slug:$slug, label:$label, owner:$owner,
@@ -183,13 +217,16 @@ while IFS= read -r n; do
        # whatever the seam printed; a reader that parsed it itself would have
        # to decide what an unparseable value means, and three readers would
        # decide three ways. Unparseable or absent is null - an age nobody
-       # could measure, said out loud.
-       liveness: {state: ($live.agent // "unknown"),
+       # could measure, said out loud. The two placeholders the seam prints say
+       # the same thing in its own vocabulary: `-` is measured-and-empty,
+       # `unknown` is never-measured, and neither one is a timestamp.
+       liveness: {state: $agent,
                   measuredAt: $measuredAt,
-                  ageSeconds: (($live.lastActivity // null) as $la
-                               | if $la == null then null
-                                 else (try ((now - ($la | fromdateiso8601)) | floor) catch null)
-                                 end)},
+                  ageSeconds: (if ($lastActivity == "" or $lastActivity == "-"
+                                   or $lastActivity == "unknown") then null
+                               else (try ((now - ($lastActivity | fromdateiso8601)) | floor)
+                                     catch null)
+                               end)},
        mcp: $mcp, mcpReason: blank($mcpReason)}'
   ) >> "$sessions_f"
 done <<< "$names"

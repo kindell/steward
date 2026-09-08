@@ -72,29 +72,29 @@ TARGET_ENTITY="team"
 KIND="work"
 EOF
 
-# THE LIVENESS ANSWER IS INJECTED, NEVER MEASURED HERE. The real producer runs
-# `steward sessions --json` as a subprocess, which reads a live multiplexer
-# socket; a suite that let it run could type into a real conversation. The file
-# below carries that command's real document shape.
-NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-cat > "$T/sessions.json" <<EOF
-{"ok":true,"hub":"h1","unreadable":[],"hidden":0,"sessions":[
- {"name":"$SID_A","id":"$SID_A","owner":"a","domain":"work","host":"h1","slug":"work-a",
-  "display":"Work","lineage":null,"entity":null,"assets":[],
-  "liveness":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code",
-              "model":null,"lastActivity":"$NOW","reason":null}},
- {"name":"$SID_B","id":"$SID_B","owner":"b","domain":"team","host":"h1","slug":"team-b",
-  "display":"Team","lineage":null,"entity":null,"assets":[],
-  "liveness":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code",
-              "model":null,"lastActivity":"$NOW","reason":null}}]}
+# THE LIVENESS ANSWER IS INJECTED THROUGH THE PRODUCT'S OWN SEAM, NEVER
+# MEASURED HERE. The producer reads liveness_rows, whose command is named by
+# STEWARD_LIVENESS_CMD; the real one reads a live multiplexer socket and a
+# suite that let it run could type into a real conversation. The shim below is
+# that seam's contract shape - an object keyed by session NAME, which is what
+# registry_list yields.
+#
+# ONE SESSION IS MEASURED AND ONE IS NOT, ON PURPOSE. A shim that answered
+# about every session could not tell a caller that reads absence as health
+# apart from one that reads it as `unknown`.
+cat > "$T/shim" <<EOF
+#!/bin/bash
+printf '{"sessions":{"%s":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code","model":null,"lastActivity":"%s"}}}\n' \\
+  "$SID_A" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 EOF
+chmod +x "$T/shim"
 
 export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"
 export HOME="$T/home"; mkdir -p "$HOME"
 echo "desk-snapshot"
 
 run() {
-  STEWARD_DESK_DIR="$T/desk" STEWARD_DESK_SESSIONS_JSON="$T/sessions.json" \
+  STEWARD_DESK_DIR="$T/desk" STEWARD_LIVENESS_CMD="$T/shim" \
     bash "$here/bin/steward" desk snapshot "$@"
 }
 rc="$(run >/dev/null 2>"$T/err"; echo $?)"
@@ -120,6 +120,21 @@ is  "repo is a name, not a path" "$(jq -r '.sessions[0].repo' "$D/_operator.json
 is  "liveness carries an age" "$(jq -r '.sessions[0].liveness|has("ageSeconds")' "$D/_operator.json")" "true"
 is  "the age of a just-measured session is a number" "$(jq -r '.sessions[0].liveness.ageSeconds|type' "$D/_operator.json")" "number"
 is  "liveness state is the agent word" "$(jq -r '.sessions[0].liveness.state' "$D/_operator.json")" "running"
+# THE AGE IS SECONDS SINCE THE SEAM'S TIMESTAMP, not a constant the producer
+# invented: the shim stamps the moment it runs, so anything outside a couple of
+# minutes means the derivation read the wrong field or the wrong clock.
+is  "and it is a small number of seconds" \
+    "$(jq -r '.sessions[0].liveness.ageSeconds | (. >= 0 and . <= 120)' "$D/_operator.json")" "true"
+is  "the measuredAt is the run's own stamp" \
+    "$(jq -r '(.sessions[0].liveness.measuredAt == .generatedAt)' "$D/_operator.json")" "true"
+
+# ABSENCE FROM THE SEAM'S ANSWER IS A WORD, NOT A GUESS. The shim never
+# mentions the second session; it must read as `unknown` with no age at all,
+# and never inherit the measured session's row.
+is  "a session the seam never mentioned is unknown" \
+    "$(jq -r '.sessions[]|select(.slug=="team-b")|.liveness.state' "$D/_operator.json")" "unknown"
+is  "and carries no age" \
+    "$(jq -r '.sessions[]|select(.slug=="team-b")|.liveness.ageSeconds|type' "$D/_operator.json")" "null"
 is  "the write is atomic: no tmp files remain" "$(ls "$D" | grep -c tmp)" "0"
 is  "unknown keys are dropped by the filter" "$(jq -r '.sessions[0]|keys|join(",")' "$D/a.json")" "domain,host,id,label,liveness,mcp,mine,owner,project,repo,runtime,slug"
 is  "an asset carries the four allowed keys only" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp[0]|keys|join(",")' "$D/a.json")" "axis,id,name,source"
@@ -151,13 +166,28 @@ echo "== an unresolvable surface is an empty list, never a reason a viewer reads
 # document records that as mcp:null plus mcpReason - and the allowlist names
 # neither, so the viewer gets an empty list and the snapshot still renders.
 printf 'NAME="Work"\nPARENT="missing"\nMCP_ASSETS="tool"\n' > "$ROOT/projects.d/work.conf"
-rc="$(STEWARD_DESK_DIR="$T/desk2" STEWARD_DESK_SESSIONS_JSON="$T/sessions.json" \
+rc="$(STEWARD_DESK_DIR="$T/desk2" STEWARD_LIVENESS_CMD="$T/shim" \
       bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err"; echo $?)"
 is  "the snapshot still runs" "$rc" "0"
 is  "the session is still there for the operator" "$(jq -r '.sessions[]|select(.slug=="work-a")|.slug' "$T/desk2/current/_operator.json")" "work-a"
 is  "with an empty asset list" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|length' "$T/desk2/current/_operator.json")" "0"
 is  "and no reason field anywhere" "$(grep -l mcpReason "$T/desk2/current"/*.json 2>/dev/null | wc -l | tr -d ' ')" "0"
 printf 'NAME="Work"\nPARENT="team"\nMCP_ASSETS="tool"\n' > "$ROOT/projects.d/work.conf"
+
+echo "== an estate with no liveness command still renders a desk =="
+# THE COMMON, UNCONFIGURED STATE. The fixture estate names no LIVENESS_CMD and
+# nothing is in the environment, so the seam measures nothing at all - and the
+# desk's other half (who owns what, and who may see it) is fully readable
+# without it. A snapshot that refused here would be dark exactly when it is
+# wanted. `env -u` because an ambient value would silently make this pass.
+rc="$(env -u STEWARD_LIVENESS_CMD STEWARD_DESK_DIR="$T/desk3" \
+      bash "$here/bin/steward" desk snapshot >/dev/null 2>"$T/err"; echo $?)"
+is  "the snapshot runs without any seam" "$rc" "0"
+[ "$rc" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err")"
+is  "every state is unknown" \
+    "$(jq -r '[.sessions[].liveness.state]|unique|join(" ")' "$T/desk3/current/_operator.json")" "unknown"
+is  "and every age is null" \
+    "$(jq -r '[.sessions[].liveness.ageSeconds]|unique|map(tostring)|join(" ")' "$T/desk3/current/_operator.json")" "null"
 
 echo "== the verb's own refusals =="
 out="$(bash "$here/bin/steward" desk 2>"$T/err")"; rc=$?

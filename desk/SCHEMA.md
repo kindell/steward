@@ -78,7 +78,7 @@ or reads everything.
 
 | key | type | meaning |
 |-----|------|---------|
-| `state` | string | `running`, `not-running` or `unknown` - the agent word from `steward sessions --json`. A session that answer did not mention is `unknown`. |
+| `state` | string | `running`, `not-running` or `unknown` - the agent word from the estate's liveness seam (`liveness_rows`, one call per run, keyed by session name). A session the seam did not measure is `unknown`, and so is every session when no seam is configured. |
 | `measuredAt` | string | the run's `generatedAt`. |
 | `ageSeconds` | number or null | seconds since the session's last activity, or null when there was no timestamp or it did not parse. |
 
