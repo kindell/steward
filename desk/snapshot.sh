@@ -231,7 +231,9 @@ while IFS= read -r n; do
     # registry_account_load to ACCOUNT_PRINCIPAL, OWNER only when the row
     # carries no resolvable ACCOUNT, with a line on stderr saying so.
     owner="$(_registry_row_principal "$n")" || exit 78
-    sid="${ID:-$n}"
+    sid="${ID:-$n}"; session_slug="${SLUG:-$n}"
+    session_project="${TARGET_PROJECT:-}"; session_runtime="${RUNTIME:-claude-code}"
+    session_host="${HOST:-}"
     # KEYED BY THE REGISTRY NAME, NOT THE ID. liveness_rows prints one row per
     # session the shim ANSWERED ABOUT, under the name the estate administers it
     # by - the same word registry_list yields - and liveness_for is what turns
@@ -245,14 +247,14 @@ while IFS= read -r n; do
     : > "$sight_f"
     while IFS= read -r viewer; do
       [ -n "$viewer" ] || continue
-      sight="$(visibility_fields "$viewer" "$n")" || exit 78
+      sight="$(_visibility_fields_resolved "$viewer" "$n" "$owner")" || exit 78
       jq -cn --arg key "$viewer" --arg value "$sight" '{key:$key,value:$value}' >> "$sight_f" || exit 78
     done < <(jq -r '.id' "$principals_f")
     sights="$(jq -sc 'from_entries' "$sight_f")" || exit 78
-    jq -cn --arg id "$sid" --arg slug "${SLUG:-$n}" --arg label "$label" \
+    jq -cn --arg id "$sid" --arg slug "$session_slug" --arg label "$label" \
            --arg owner "$owner" \
-           --arg domain "$domain" --arg project "${TARGET_PROJECT:-}" \
-           --arg runtime "${RUNTIME:-claude-code}" --arg host "${HOST:-}" --arg repo "$repo" \
+           --arg domain "$domain" --arg project "$session_project" \
+           --arg runtime "$session_runtime" --arg host "$session_host" --arg repo "$repo" \
            --arg measuredAt "$generated_at" \
            --arg agent "${lagent:-unknown}" --arg lastActivity "${lactivity:-unknown}" \
            --argjson mcp "$mcp" --arg mcpReason "$mcp_reason" --argjson sight "$sights" '

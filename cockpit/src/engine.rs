@@ -62,6 +62,9 @@ impl Session {
 
 #[derive(Debug, Deserialize)]
 pub struct Fleet {
+    /// The principal used by the engine's visibility decision. The cockpit
+    /// consumes this answer instead of resolving the Unix login a second way.
+    pub viewer: String,
     pub sessions: Vec<Session>,
     pub hidden: u32,
     pub unreadable: Vec<String>,
@@ -132,7 +135,7 @@ mod tests {
 
     #[test]
     fn reads_a_fleet() {
-        let json = r#"{"ok":true,"hub":"h1","hidden":2,"unreadable":[],"sessions":[
+        let json = r#"{"ok":true,"hub":"h1","viewer":"alice","hidden":2,"unreadable":[],"sessions":[
             {"name":"alpha","id":"alpha","owner":"a","domain":"d","host":"h1",
              "entity":null,"assets":["widget"],
              "liveness":{"daemon":"loaded","tmux":"up","agent":"running",
@@ -149,6 +152,7 @@ mod tests {
         assert_eq!(f.sessions[0].liveness.tmux, "up");
         assert_eq!(f.hidden, 2);
         assert_eq!(f.hub, "h1");
+        assert_eq!(f.viewer, "alice");
     }
 
     // THE LABEL IS THE DISPLAY; THE KEY IS THE NAME. A row after the naming
@@ -158,7 +162,7 @@ mod tests {
     // this guards is a cockpit that attaches by a human label.
     #[test]
     fn reads_slug_and_display_without_touching_the_key() {
-        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
+        let json = r#"{"ok":true,"hub":"h1","viewer":"alice","hidden":0,"unreadable":[],"sessions":[
             {"name":"s-00000000000000aa","id":"s-00000000000000aa","slug":"advisor",
              "display":"Alpha","owner":"a","domain":"d","host":"h1",
              "entity":null,"assets":[],
@@ -179,7 +183,7 @@ mod tests {
     // something a person can find in the registry.
     #[test]
     fn label_falls_back_to_the_key() {
-        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
+        let json = r#"{"ok":true,"hub":"h1","viewer":"alice","hidden":0,"unreadable":[],"sessions":[
             {"name":"legacy","id":"legacy","owner":"a","domain":"d","host":"h1",
              "entity":null,"assets":[],
              "liveness":{"daemon":"loaded","tmux":"up","agent":"running",
@@ -196,7 +200,7 @@ mod tests {
     // parse error like the other required fields.
     #[test]
     fn a_document_missing_hub_is_an_error() {
-        let json = r#"{"ok":true,"hidden":0,"unreadable":[],"sessions":[]}"#;
+        let json = r#"{"ok":true,"viewer":"alice","hidden":0,"unreadable":[],"sessions":[]}"#;
         let e = read_fleet(&stub(json)).unwrap_err();
         assert!(e.contains("hub"), "the refusal should name the missing field, got: {e}");
     }
@@ -205,7 +209,7 @@ mod tests {
     // and a reader that treated a missing field as "no hiding" would guess.
     #[test]
     fn hidden_is_read_even_at_zero() {
-        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[]}"#;
+        let json = r#"{"ok":true,"hub":"h1","viewer":"alice","hidden":0,"unreadable":[],"sessions":[]}"#;
         let f = read_fleet(&stub(json)).expect("should parse");
         assert_eq!(f.hidden, 0);
         assert!(f.sessions.is_empty());
@@ -215,7 +219,7 @@ mod tests {
     // the engine keeps them apart — so must the reader.
     #[test]
     fn unreadable_is_its_own_list() {
-        let json = r#"{"ok":true,"hub":"h1","hidden":1,"unreadable":["broken"],"sessions":[]}"#;
+        let json = r#"{"ok":true,"hub":"h1","viewer":"alice","hidden":1,"unreadable":["broken"],"sessions":[]}"#;
         let f = read_fleet(&stub(json)).expect("should parse");
         assert_eq!(f.unreadable, vec!["broken"]);
         assert_eq!(f.hidden, 1);
@@ -225,7 +229,7 @@ mod tests {
     // rendering it as "" would make a measured emptiness look like a value.
     #[test]
     fn a_null_model_stays_none() {
-        let json = r#"{"ok":true,"hub":"h1","hidden":0,"unreadable":[],"sessions":[
+        let json = r#"{"ok":true,"hub":"h1","viewer":"alice","hidden":0,"unreadable":[],"sessions":[
             {"name":"a","id":"a","owner":"o","domain":"d","host":"h","entity":null,
              "assets":[],"liveness":{"daemon":"missing","tmux":"down","agent":"not-running",
              "runtime":"claude-code","model":null,"lastActivity":null,"reason":"x"}}]}"#;

@@ -38,11 +38,21 @@ _visibility_member_of() {
     case " ${ENTITY_MEMBERS:-} " in *" $person "*) exit 0 ;; *) exit 1 ;; esac )
 }
 
-# session_visible_to <viewer-principal> <session> — rc 0 visible, rc 1 not.
-# Prints nothing on stdout; a reason reaches stderr only when the lookup itself
-# could not be made.
-session_visible_to() {
-  local viewer="${1:-}" session="${2:-}"
+_visibility_session_snapshot() (
+  registry_load "${1:-}" >/dev/null 2>/dev/null || exit 1
+  local principal="${2:-}"
+  [ -n "$principal" ] || principal="$(_registry_row_principal "${1:-}")"
+  printf '%s|%s|%s|%s|%s|%s\n' "$principal" "${DOMAIN:-}" \
+    "${VISIBILITY:-}" "${VISIBLE_TO:-}" "${TARGET_PROJECT:-}" "${TARGET_ENTITY:-}"
+)
+
+# _session_visible_to <viewer-principal> <session> [resolved-principal] — the
+# shared implementation. Session rows are loaded in an isolated snapshot so a
+# lowercase assignment in operator data cannot overwrite this decision's locals
+# through Bash dynamic scope. Internal sweep callers may pass the principal they
+# already resolved for this row; the public function below never accepts it.
+_session_visible_to() {
+  local viewer="${1:-}" session="${2:-}" resolved_principal="${3:-}"
   # AN EMPTY VIEWER IS NOT A WILDCARD. A caller that could not determine who is
   # asking must get nothing, not everything — the failure mode of the opposite
   # choice is silent and total.
@@ -54,18 +64,15 @@ session_visible_to() {
     . "$_here/registry.sh" || { echo "visibility: could not load the registry" >&2; return 1; }
   fi
 
-  # SNAPSHOT EVERYTHING BEFORE ASKING ANYTHING ELSE. registry_load writes into
-  # this shell, and _visibility_member_of loads entities; reading these fields
-  # later would read whatever the last load left behind.
-  registry_load "$session" >/dev/null 2>&1 || return 1
-  local owner="${OWNER:-}" domain="${DOMAIN:-}"
-  local vis="${VISIBILITY:-}" grants="${VISIBLE_TO:-}"
-  local target_project="${TARGET_PROJECT:-}" target_entity="${TARGET_ENTITY:-}"
-  [ -n "$owner" ] || return 1
+  local snapshot domain vis grants target_project target_entity
+  snapshot="$(_visibility_session_snapshot "$session" "$resolved_principal")" || return 1
+  IFS='|' read -r resolved_principal domain vis grants target_project target_entity <<< "$snapshot"
+  [ -n "$resolved_principal" ] || return 1
+  _VISIBILITY_PRINCIPAL="$resolved_principal"
 
   # 1. The owner, always — a private session is private FROM others, never from
   #    the person whose session it is.
-  [ "$viewer" = "$(_registry_row_principal "$session")" ] && return 0
+  [ "$viewer" = "$resolved_principal" ] && return 0
 
   # 2. A group grant, BEFORE the private check. A board session sets both
   #    fields: private to withdraw it from the team, and a grant to hand it to
@@ -145,21 +152,32 @@ session_visible_to() {
   return 1
 }
 
+# session_visible_to <viewer-principal> <session> — rc 0 visible, rc 1 not.
+# Prints nothing on stdout; a reason reaches stderr only when the lookup itself
+# could not be made.
+session_visible_to() {
+  _session_visible_to "${1:-}" "${2:-}"
+}
+
 # visibility_fields <viewer-principal> <session-name>: owner/member/none.
 # Keep the object decision in session_visible_to; isolate its registry globals.
-visibility_fields() (
-  if ! session_visible_to "${1:-}" "${2:-}"; then
+_visibility_fields_resolved() (
+  if ! _session_visible_to "${1:-}" "${2:-}" "${3:-}"; then
     printf 'none\n'
-  elif [ "$1" = "$(_registry_row_principal "$2")" ]; then
+  elif [ "$1" = "$_VISIBILITY_PRINCIPAL" ]; then
     printf 'owner\n'
   else
     printf 'member\n'
   fi
 )
 
+visibility_fields() {
+  _visibility_fields_resolved "${1:-}" "${2:-}"
+}
+
 # Field table (the executable allowlist below is its only enumeration):
-# member gets identity, work location (repo basename only), coarse liveness;
-# owner additionally gets activity age and the existing four-key MCP surface.
+# member gets identity, work location (repo basename only), and liveness;
+# owner additionally gets the existing four-key MCP surface.
 # mine and sight are derived presentation markers, not additional registry data.
 # Dotted keywords name nested JSON fields; arrays project each element using
 # the same suffixes. Unknown keys, mail and raw registry data never travel.
@@ -168,8 +186,8 @@ visibility_fields() (
 visibility_field_list() {
   case "${1:-}" in owner|member) ;; *) return 1 ;; esac
   printf '%s\n' id slug label owner domain project runtime host repo mine sight \
-    liveness.state liveness.measuredAt
+    liveness.state liveness.measuredAt liveness.ageSeconds
   if [ "$1" = owner ]; then
-    printf '%s\n' liveness.ageSeconds mcp.id mcp.name mcp.axis mcp.source
+    printf '%s\n' mcp.id mcp.name mcp.axis mcp.source
   fi
 }

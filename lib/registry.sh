@@ -677,14 +677,14 @@ registry_project_mates() {
   case "$level" in mates_project|mates_client|mates_team) ;; *) return 1 ;; esac
   (
     . "$(_registry_self_dir)/visibility.sh" || exit 1
-    registry_load "$sid" >/dev/null 2>&1 || exit 1
+    local subject_snapshot subject_domain subject_vis subject_grants
+    subject_snapshot="$(_visibility_session_snapshot "$sid")" || exit 1
     # SNAPSHOTTED BEFORE THE LOOP. The per-row loads below run in their own
     # command substitutions, so they cannot reach these — but the value being
     # compared against must be read off the subject's row before anything else
     # is loaded, or the comparison would drift with the loop.
-    local want_project="${TARGET_PROJECT:-}" want_entity="${TARGET_ENTITY:-}"
-    local viewer field value
-    viewer="$(_registry_row_principal "$sid")" || exit 1
+    local want_project want_entity viewer field value
+    IFS='|' read -r viewer subject_domain subject_vis subject_grants want_project want_entity <<< "$subject_snapshot"
     if [ "$level" = mates_team ]; then
       field="team"; value=""
     elif [ "$level" = mates_client ]; then
@@ -716,15 +716,26 @@ registry_project_mates() {
       # assignment: a row that was never compared, reported as one that did not
       # match. The second one broke every function further down this file.
       line="$(
-        session_visible_to "$viewer" "$row" || exit 1
+        local candidate candidate_domain candidate_vis candidate_grants
+        local candidate_project candidate_entity candidate_owner candidate_slug
+        candidate="$(
+          registry_load "$row" >/dev/null 2>&1 || exit 1
+          candidate_owner="$(_registry_row_principal "$row")" || exit 1
+          printf '%s|%s|%s|%s|%s|%s|%s' "$candidate_owner" "${DOMAIN:-}" \
+            "${VISIBILITY:-}" "${VISIBLE_TO:-}" "${TARGET_PROJECT:-}" \
+            "${TARGET_ENTITY:-}" "${SLUG:-$row}"
+        )" || exit 1
+        IFS='|' read -r candidate_owner candidate_domain candidate_vis candidate_grants \
+          candidate_project candidate_entity candidate_slug <<< "$candidate"
+        _session_visible_to "$viewer" "$row" "$candidate_owner" || exit 1
         if [ "$field" = "project" ]; then
-          [ "${TARGET_PROJECT:-}" = "$value" ] || exit 1
+          [ "$candidate_project" = "$value" ] || exit 1
         elif [ "$field" = "client" ]; then
           [ "$(registry_session_owning_entity "$row")" = "$value" ] || exit 1
         elif [ "$field" = "team" ]; then
           _visibility_member_of "$viewer" "$(registry_session_owning_entity "$row")" || exit 1
         else
-          [ "${TARGET_ENTITY:-}" = "$value" ] || exit 1
+          [ "$candidate_entity" = "$value" ] || exit 1
         fi
         # THE DISPLAY IS BEST-EFFORT. A mate that matched above is a mate
         # regardless of whether its label can be derived — a renamed target
@@ -742,11 +753,11 @@ registry_project_mates() {
         # identity model carries no SLUG at all and falls back to its name
         # exactly as before. No apostrophes and no parens in this comment
         # block, same rule as above.
-        local nm="${SLUG:-$row}"
+        local nm="$candidate_slug"
         if [ -n "$disp" ]; then
-          printf '%s (%s) %s' "$nm" "$OWNER" "$disp"
+          printf '%s (%s) %s' "$nm" "$candidate_owner" "$disp"
         else
-          printf '%s (%s)' "$nm" "$OWNER"
+          printf '%s (%s)' "$nm" "$candidate_owner"
         fi
       )" || continue
       printf '%s\n' "$line"
@@ -798,15 +809,34 @@ MATES
 # Every candidate, at every level, must pass session_visible_to first.
 # People are the project's parent MEMBERS, not inferred from live sessions.
 registry_mates_summary() (
-  local sid="${1:-}" project client team people="" parent=""
+  local sid="${1:-}" project client team="" people="" parent="" viewer=""
+  . "$(_registry_self_dir)/visibility.sh" || exit 1
   project="$(registry_project_mates_line "$sid")" || exit 1
   client="$(registry_project_mates_line "$sid" mates_client)" || exit 1
-  team="$(registry_project_mates_line "$sid" mates_team)" || exit 1
-  registry_load "$sid" >/dev/null 2>&1 || exit 1
-  if [ -n "${TARGET_PROJECT:-}" ]; then
-    parent="$(registry_project_load "$TARGET_PROJECT" >/dev/null 2>&1 && printf '%s' "$PROJECT_PARENT")"
+  local team_rows team_limit=8 team_total=0 team_shown=0 team_line
+  team_rows="$(registry_project_mates "$sid" mates_team)" || exit 1
+  while IFS= read -r team_line; do
+    [ -n "$team_line" ] || continue
+    team_total=$((team_total + 1))
+    if [ "$team_shown" -lt "$team_limit" ]; then
+      if [ -z "$team" ]; then team="$team_line"; else team="$team; $team_line"; fi
+      team_shown=$((team_shown + 1))
+    fi
+  done <<TEAM_ROWS
+$team_rows
+TEAM_ROWS
+  [ -n "$team" ] || team="none"
+  if [ "$team_total" -gt "$team_shown" ]; then
+    team="$team; (+$((team_total - team_shown)) more)"
+  fi
+  local subject_snapshot subject_domain subject_vis subject_grants target_project target_entity
+  subject_snapshot="$(_visibility_session_snapshot "$sid")" || exit 1
+  IFS='|' read -r viewer subject_domain subject_vis subject_grants target_project target_entity <<< "$subject_snapshot"
+  if [ -n "$target_project" ]; then
+    parent="$(registry_project_load "$target_project" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}")"
     if [ -n "$parent" ]; then
-      people="$(registry_entity_load "$parent" >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS")"
+      people="$(registry_entity_load "$parent" >/dev/null 2>&1 && printf '%s' "${ENTITY_MEMBERS:-}")"
+      _visibility_member_of "$viewer" "$parent" || people=""
     fi
   fi
   printf 'Same project: %s\nSame client: %s\nSame team: %s\nPeople on this project: %s\n' \
@@ -1916,6 +1946,39 @@ registry_account_load() {
   ACCOUNT_MCP_ASSETS="$MCP_ASSETS"
 }
 
+# registry_principal_for_username <unix-username> [host] — the principal behind a
+# local login. Account slugs are opaque; USERNAME is the only field that joins
+# the operating-system namespace to the principal namespace. More than one
+# matching account is fine when every row names the same principal (one person
+# can have several accounts on different hosts); conflicting principals refuse.
+# A login absent from the account register keeps its username as the legacy
+# principal, so estates that have not introduced accounts.d continue to render.
+registry_principal_for_username() (
+  local username="${1:-}" host="${2:-}" d f principal="" found="" candidate=""
+  [ -n "$username" ] || return 1
+  d="$(registry_account_dir)" || return 1
+  [ -d "$d" ] || { printf '%s' "$username"; return 0; }
+  for f in "$d"/*.conf; do
+    [ -f "$f" ] || continue
+    # The loader sources an operator-owned row. Keep it in a command
+    # substitution so lowercase assignments in that row cannot overwrite this
+    # scanner's loop and result locals through Bash dynamic scope. The helper's
+    # positional $1 survives the nested function call and is safer than a named
+    # local inside that sourced scope.
+    candidate="$(registry_account_load "$(basename "$f" .conf)" >/dev/null 2>&1 &&
+      [ "$ACCOUNT_USERNAME" = "$1" ] &&
+      { [ -z "$2" ] || [ "$ACCOUNT_HOST" = "$2" ]; } &&
+      printf '%s' "$ACCOUNT_PRINCIPAL")"
+    [ -n "$candidate" ] || continue
+    if [ -n "$found" ] && [ "$principal" != "$candidate" ]; then
+      echo "registry: username '$username' resolves to more than one principal" >&2
+      return 1
+    fi
+    principal="$candidate"; found=1
+  done
+  printf '%s' "${principal:-$username}"
+)
+
 # registry_account_write <slug> <content> <validate_fn> — THIN WRAPPER over
 # registry_row_write, the account-register twin of registry_entity_write
 # above: resolves the account directory (honoring STEWARD_ACCOUNT_DIR),
@@ -2731,10 +2794,11 @@ _registry_word_in_list() {
 # everywhere the loader runs, and a gate that refuses when it cannot resolve
 # would take down every session that reaches it from such a place.
 #
-# THE FALLBACK SAYS SO ON STDERR, EVERY TIME. A half-measurement that looks like
-# a measurement is the failure mode this whole plan is written against: if the
-# gate ever lets a row through on the fallback, the journal must contain the
-# sentence that explains which question was actually answered.
+# A ROW WITH NO ACCOUNT IS LEGACY, NOT A FAILED LOOKUP, and falls back silently.
+# A non-empty ACCOUNT that does not resolve is a half-measurement and says so on
+# stderr. OWNER lives in the Unix namespace, so this fallback can collide with
+# another person's principal slug; callers must never treat it as equivalent to
+# a successfully resolved account principal.
 _registry_row_principal() {
   local s="${1:-}" p=""
   if declare -F registry_account_load >/dev/null 2>&1 && [ -n "${ACCOUNT:-}" ]; then
@@ -2742,7 +2806,9 @@ _registry_row_principal() {
   fi
   if [ -z "$p" ]; then
     p="${OWNER:-}"
-    echo "registry: $s: could not resolve ACCOUNT '${ACCOUNT:-none}' to a principal; using OWNER='$p' for the schema gate" >&2
+    if [ -n "${ACCOUNT:-}" ]; then
+      echo "registry: $s: could not resolve ACCOUNT '$ACCOUNT' to a principal; using OWNER='$p' for the schema gate" >&2
+    fi
   fi
   printf '%s' "$p"
 }

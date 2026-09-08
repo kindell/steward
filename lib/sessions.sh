@@ -126,6 +126,21 @@ _sessions_lineage() {
 # SESSION's own conf would not load; hidden means it loaded and the rule said
 # no. They stay separate so a registry error can never disappear behind a
 # visibility rule.
+_sessions_registry_snapshot() (
+  # registry_load sources an operator-owned row. Keep that source in this
+  # subshell so lowercase assignments cannot overwrite the caller's loop,
+  # viewer, counters or already captured rows through Bash dynamic scope.
+  registry_load "${1:-}" >/dev/null || exit $?
+  local principal
+  principal="$(_registry_row_principal "${1:-}")" || exit $?
+  jq -cn --arg id "${ID:-${1:-}}" --arg owner "$principal" \
+    --arg domain "${DOMAIN:--}" --arg host "${HOST:--}" --arg assets "${ASSETS:-}" \
+    --arg targetEntity "${TARGET_ENTITY:-}" --arg targetProject "${TARGET_PROJECT:-}" \
+    --arg slug "${SLUG:--}" \
+    '{id:$id,owner:$owner,domain:$domain,host:$host,assets:$assets,
+      targetEntity:$targetEntity,targetProject:$targetProject,slug:$slug}'
+)
+
 session_identity_rows() {
   SESSIONS_UNREADABLE=""
   if ! command -v registry_load >/dev/null 2>&1; then
@@ -143,7 +158,17 @@ session_identity_rows() {
   # suite, the same seam shape as STEWARD_REGISTRY_DIR, and like that one it is
   # a testing convenience rather than a boundary. The boundary is file
   # permissions on the hosts; this is what the tool chooses to render.
-  local _viewer="${STEWARD_VIEWER:-$(id -un 2>/dev/null)}"
+  local _viewer="${STEWARD_VIEWER:-}" _username="" _viewer_host=""
+  if [ -z "$_viewer" ]; then
+    _username="$(id -un 2>/dev/null)"
+    if [ -n "${STEWARD_HOSTNAME_CMD:-}" ]; then
+      _viewer_host="$("$STEWARD_HOSTNAME_CMD" 2>/dev/null)"
+    else
+      _viewer_host="$(hostname -s 2>/dev/null)"
+    fi
+    [ -z "$_username" ] || _viewer="$(registry_principal_for_username "$_username" "$_viewer_host")" || _viewer=""
+  fi
+  SESSIONS_VIEWER="$_viewer"
   SESSIONS_HIDDEN=0
   # THE ESCAPER IS A DEPENDENCY, AND A MISSING ONE MUST REFUSE. Falling back to
   # a raw printf when jq is absent would restore the injection this layer was
@@ -185,7 +210,8 @@ session_identity_rows() {
     # either — `cmd | tr` makes the captured status tr's, which is always 0, so
     # every session would read as loaded.
     : > "$_diagfile"
-    registry_load "$n" >/dev/null 2>"$_diagfile"; _lrc=$?
+    local _snapshot
+    _snapshot="$(_sessions_registry_snapshot "$n" 2>"$_diagfile")"; _lrc=$?
     _cause="$(tr '\n' ' ' < "$_diagfile")"
     if [ "$_lrc" -ne 0 ]; then
       # A SESSION THAT EXISTS BUT WON'T LOAD IS DIAGNOSIS, NOT SILENCE. This
@@ -200,32 +226,35 @@ session_identity_rows() {
       SESSIONS_UNREADABLE="${SESSIONS_UNREADABLE}$n"$'\n'
       continue
     fi
+    [ -z "$_cause" ] || printf '%s\n' "$_cause" >&2
     loaded=$((loaded + 1))
+    # Snapshot the row before the shared visibility function performs its own
+    # registry loads. The principal is resolved once and reused by both the
+    # decision and the emitted owner field.
+    local id owner domain host assets target_entity target_project slug
+    id="$(jq -r '.id' <<< "$_snapshot")"; owner="$(jq -r '.owner' <<< "$_snapshot")"
+    domain="$(jq -r '.domain' <<< "$_snapshot")"; host="$(jq -r '.host' <<< "$_snapshot")"
+    # Command substitution strips trailing newlines. Append a non-newline
+    # sentinel inside jq, then remove it in shell, so even an unvalidated ASSETS
+    # value ending in one or more newlines survives byte-for-byte.
+    local assets_sentinel
+    assets_sentinel="$(jq -r '.assets + "\u001f"' <<< "$_snapshot")"
+    assets="${assets_sentinel%$'\037'}"
+    target_entity="$(jq -r '.targetEntity' <<< "$_snapshot")"
+    target_project="$(jq -r '.targetProject' <<< "$_snapshot")"
+    slug="$(jq -r '.slug' <<< "$_snapshot")"
     # A SESSION THE VIEWER MAY NOT SEE IS COUNTED, NOT NAMED. Omitting it
     # silently would make a filtered fleet look like a small one; naming it
     # would leak the thing being withheld. The count says "there is more here"
     # without saying what.
-    if ! session_visible_to "$_viewer" "$n"; then
+    if ! _session_visible_to "$_viewer" "$n" "$owner"; then
       SESSIONS_HIDDEN=$((SESSIONS_HIDDEN + 1))
       continue
     fi
-    # SNAPSHOT BEFORE USING. registry_load writes into this shell, and the next
-    # iteration overwrites every one of these — read them out first.
-    #
-    # AND A SECOND LOAD HAS ALREADY HAPPENED SINCE THE ONE ABOVE. The filter
-    # just above calls session_visible_to, which runs registry_load on this
-    # same session in THIS shell — the rule lives in one place and reads the
-    # conf itself rather than trusting fields a caller passed it. So the values
-    # read below are the FILTER'S load, not the counting load. They are
-    # identical today for one reason only: it is the same session's conf. A
-    # future filter that consulted a different conf would leave that conf's
-    # fields here and this row would silently carry another session's data.
-    # The duplicate load also doubles the per-session read cost, which is a
-    # local file and cheap enough to be the right trade for one rule in one
-    # place — worth knowing before this loop grows a third consultation.
-    local id owner domain host assets
-    id="${ID:-$n}"; owner="${OWNER:--}"; domain="${DOMAIN:--}"
-    host="${HOST:--}"; assets="${ASSETS:-}"
+    # Everything emitted below comes from the locals captured before the
+    # visibility call. The rule deliberately reloads the session so it remains
+    # the one authority; none of the globals that consultation leaves behind
+    # may silently replace this row's captured identity.
     [ -n "$assets" ] || assets="-"
 
     # THE ENTITY IS A JOIN, AND A MISSING ONE IS NOT AN ERROR. A session may
@@ -248,11 +277,11 @@ session_identity_rows() {
     # and the derived display could contradict each other for the same row.
     # Same precedence the visibility rule uses, for the same reason.
     local _ent_key="$domain"
-    if [ -n "${TARGET_ENTITY:-}" ]; then
-      _ent_key="$TARGET_ENTITY"
-    elif [ -n "${TARGET_PROJECT:-}" ]; then
+    if [ -n "$target_entity" ]; then
+      _ent_key="$target_entity"
+    elif [ -n "$target_project" ]; then
       local _pp
-      _pp="$( registry_project_load "$TARGET_PROJECT" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}" )"
+      _pp="$( registry_project_load "$target_project" >/dev/null 2>&1 && printf '%s' "${PROJECT_PARENT:-}" )"
       [ -n "$_pp" ] && _ent_key="$_pp"
     fi
     local ent_name="-" ent_rel="-" lineage="-" ent_conf="$entity_dir/$_ent_key.conf"
@@ -304,7 +333,7 @@ session_identity_rows() {
     # consumer renders display, disambiguates with slug, and operates on id.
     # An old-shape row has no SLUG: the dash says "this row has no handle
     # beyond its name", never an invented one.
-    local slug="${SLUG:--}" display
+    local display
     display="$( registry_session_display "$n" 2>/dev/null )" || display=""
     [ -n "$display" ] || display="-"
     _sessions_tsv_row "$n" "$id" "$owner" "$domain" "$host" "$ent_name" "$ent_rel" "$assets" "$slug" "$display" "$lineage"

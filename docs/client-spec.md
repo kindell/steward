@@ -241,16 +241,18 @@ behind a visibility rule. Finding the registry gap behind a `hidden` is a
 registry question and not this document's: it is asked with the tools that read
 entities, and it cannot be answered here without naming what is withheld.
 
-**The viewer is the account running the command** — `id -un`, not a value a
-caller passes in the request — so `hidden` (and which sessions appear in
-`sessions` at all) changes with who runs it. Two people running this command
-against the same registry at the same moment can get different documents. A
-view that caches this response between users, or renders it for someone other
-than whoever's session actually ran the command, is showing one person's
-answer to another.
+**The viewer is the principal behind the account running the command.** The
+Unix username from `id -un` is resolved through `accounts.d`'s `USERNAME` to
+its `PRINCIPAL`; when no account row exists, the username remains the legacy
+principal. The JSON document carries that exact resolved value as `viewer`, so
+a consumer must use it rather than resolve the login again. Two people running
+this command against the same registry at the same moment can get different
+documents. A view that caches this response between users, or renders it for
+someone other than whoever's session actually ran the command, is showing one
+person's answer to another.
 
 **`STEWARD_VIEWER` overrides that from the environment.** If the variable is
-set, its value is the viewer and `id -un` is never consulted. It exists so the
+set, its value is already a principal and `id -un` is never consulted. It exists so the
 product's own suites can ask the question as somebody else, the same seam shape
 as `STEWARD_REGISTRY_DIR`, and like that one it is a testing convenience rather
 than a boundary. It is stated here because a document that describes the viewer

@@ -105,7 +105,7 @@ is  "one file per principal plus the operator file" "$(ls "$D" 2>/dev/null | LC_
 is  "schemaVersion is 1" "$(jq .schemaVersion "$D/b.json")" "1"
 is  "b sees the team session and a's session in the same domain" "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$D/b.json")" "team-b work-a"
 is  "b never sees a's MCP surface" "$(jq -r '.sessions[]|select(.slug=="work-a")|has("mcp")' "$D/b.json")" "false"
-is  "member gets coarse liveness only" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "measuredAt state"
+is  "member gets liveness including activity age" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "ageSeconds measuredAt state"
 is  "member sight is explicit" "$(jq -r '.sessions[]|select(.slug=="work-a")|.sight' "$D/b.json")" "member"
 is  "owner sight is explicit" "$(jq -r '.sessions[]|select(.slug=="team-b")|.sight' "$D/b.json")" "owner"
 is  "a sees the own account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/a.json")" "account entity project"
@@ -355,8 +355,8 @@ C="$T/desk-client/current/c.json"
 is "client member sees peers and explicit grants, not private or team rows" \
    "$(jq -r '.sessions|map(.slug)|sort|join(" ")' "$C")" "granted peer"
 is "every client peer has member sight" "$(jq -r '[.sessions[].sight]|unique|join(" ")' "$C")" member
-is "client peer fields exclude account MCP, mail and activity age" \
-   "$(jq -r 'all(.sessions[]; (has("mcp")|not) and (has("mail")|not) and (.liveness|has("ageSeconds")|not))' "$C")" true
+is "client peer fields exclude account MCP and mail but retain activity age" \
+   "$(jq -r 'all(.sessions[]; (has("mcp")|not) and (has("mail")|not) and (.liveness|has("ageSeconds")))' "$C")" true
 is "client member sees the project's descriptor" \
    "$(jq -r '.projects|map(.id)|join(" ")' "$C")" client-work
 

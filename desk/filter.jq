@@ -1,7 +1,15 @@
-# The shell decides session sight; lib/visibility.sh's positive field lists
-# are authoritative. New raw keys never travel without an explicit grant.
-# memberOf governs entity/project metadata only, not session authorization.
-# readAll selects the owner projection, never bypasses the field allowlist.
+# THIS IS A POSITIVE PROJECTION, NOT A BLOCKLIST. The raw snapshot deliberately
+# contains fields no ordinary viewer may receive; a newly added raw key must
+# stay absent until lib/visibility.sh explicitly grants its path.
+#
+# SESSION SIGHT IS DECIDED ONCE IN SHELL. The sight map carries that decision
+# here; memberOf only selects entity/project metadata and must never manufacture
+# session authorization. readAll wins over the shell sight classification, but
+# still selects the owner allowlist rather than exposing the raw row.
+#
+# projectFields recursively walks dotted paths through objects and arrays so a
+# nested allowlist grants only the named leaves. Copying a containing object
+# wholesale would make every future child field public by accident.
 def projectFields($paths):
   if type == "array" then map(projectFields($paths))
   else . as $row
@@ -21,8 +29,9 @@ def isVisibleEntity($id; $managerOf):
     | .sight = (if $readAll then "owner" else (.sight[$viewer] // "none") end)
     | select(.sight == "owner" or .sight == "member")
     | .mine = (.owner == $viewer)
-    # Account, entity and project assets travel only in the owner projection.
-    # Unknown axes are dropped even for owners/readAll; new axes need policy.
+    # Account, entity and project are the complete known MCP-axis vocabulary.
+    # Unknown axes are dropped even for owners/readAll: permitting an axis the
+    # policy cannot interpret would turn schema growth into an implicit grant.
     | .mcp = [(.mcp // [])[] | select(.axis == "account" or .axis == "entity" or .axis == "project")]
     | projectFields((if .sight == "owner" then $ownerFields else $memberFields end) | map(split(".")))
   ] as $sessions

@@ -52,7 +52,7 @@ chmod +x "$FX/live"
 # wins regardless of entity membership, which is why one viewer covers alpha,
 # beta, orphan and broken alike.
 run() { STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
-        STEWARD_LIVENESS_CMD="$FX/live" STEWARD_VIEWER="a" bash "$STEWARD" sessions "$@" 2>"$FX/run.err"; }
+        STEWARD_LIVENESS_CMD="$FX/live" STEWARD_VIEWER="a" bash "$STEWARD" sessions "$@" 2>&1; }
 
 echo "== the json contract =="
 j="$(run --json)"; rc=$?
@@ -63,6 +63,7 @@ is "ok is true"       "$(printf '%s' "$j" | jq -r '.ok')" "true"
 # host — without it, the cockpit attached a remote-host session to the local
 # tmux and got "can't find session", measured on the real hub.
 is "hub declared"     "$(printf '%s' "$j" | jq -r '.hub')" "h1"
+is "resolved viewer declared" "$(printf '%s' "$j" | jq -r '.viewer')" "a"
 is "two sessions"     "$(printf '%s' "$j" | jq -r '.sessions | length')" "2"
 is "identity joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.owner')" "a"
 is "entity joined"    "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.entity.name')" "Acme"
@@ -74,6 +75,16 @@ is "relation joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="al
 is "lineage joined"   "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.lineage')" "Team One→Acme"
 is "liveness joined"  "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "up"
 is "model joined"     "$(printf '%s' "$j" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.model')" "opus"
+
+echo "== the Unix login resolves through the account register =="
+mkdir -p "$FX/accounts.d"
+printf 'PRINCIPAL="a"\nHOST="%s"\nUSERNAME="%s"\nusername="decoy"\nprincipal="decoy"\nf="decoy"\ncandidate="decoy"\n' \
+  "$(hostname -s)" "$(id -un)" > "$FX/accounts.d/current.conf"
+printf 'PRINCIPAL="z"\nHOST="another-host"\nUSERNAME="%s"\n' "$(id -un)" > "$FX/accounts.d/remote.conf"
+j_login="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
+  STEWARD_LIVENESS_CMD="$FX/live" env -u STEWARD_VIEWER bash "$STEWARD" sessions --json 2>&1)"
+is "the default viewer is the account principal" "$(printf '%s' "$j_login" | jq -r '.viewer')" "a"
+is "the principal sees its rows" "$(printf '%s' "$j_login" | jq -r '.sessions|length')" "2"
 
 # ASSETS IS ALWAYS A LIST. A consumer that had to handle both a string and a
 # list would get it wrong once; an empty list says "declares nothing" in the
@@ -117,7 +128,7 @@ is "an unmeasured session says the seam did not mention it" \
 # then be unknown — never healthy, never missing from the list.
 echo "== with no liveness command, every session is still listed and unknown =="
 j2="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
-      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>"$FX/run.err")"
+      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>&1)"
 is "both sessions still listed" "$(printf '%s' "$j2" | jq -r '.sessions | length')" "2"
 is "alpha is unknown too"       "$(printf '%s' "$j2" | jq -r '.sessions[]|select(.name=="alpha")|.liveness.tmux')" "unknown"
 is "and every one of them says WHY it is unknown" \
@@ -314,7 +325,7 @@ chmod +x "$FX2/env-shim"
 echo "== resolution: an explicit STEWARD_LIVENESS_CMD wins over the estate field =="
 rm -f "$FX2/env-shim.ran" "$FX2/estate-shim.ran"
 j4="$(STEWARD_REGISTRY_DIR="$FX2/sessions.d" STEWARD_ESTATE_ROOT="$FX2" STEWARD_VIEWER="a" \
-      STEWARD_LIVENESS_CMD="$FX2/env-shim" bash "$STEWARD" sessions --json 2>"$FX/run.err")"
+      STEWARD_LIVENESS_CMD="$FX2/env-shim" bash "$STEWARD" sessions --json 2>&1)"
 is "the env stub ran"          "$( [ -e "$FX2/env-shim.ran" ]    && echo yes || echo no )" "yes"
 is "the estate stub did not run" "$( [ -e "$FX2/estate-shim.ran" ] && echo yes || echo no )" "no"
 is "liveness measured via the env stub" \
@@ -324,7 +335,7 @@ is "liveness measured via the env stub" \
 echo "== resolution: with STEWARD_LIVENESS_CMD unset, the estate's own shim runs =="
 rm -f "$FX2/env-shim.ran" "$FX2/estate-shim.ran"
 j5="$(STEWARD_REGISTRY_DIR="$FX2/sessions.d" STEWARD_ESTATE_ROOT="$FX2" STEWARD_VIEWER="a" \
-      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>"$FX/run.err")"
+      env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>&1)"
 is "the estate stub ran"     "$( [ -e "$FX2/estate-shim.ran" ] && echo yes || echo no )" "yes"
 is "the env stub did not run" "$( [ -e "$FX2/env-shim.ran" ]    && echo yes || echo no )" "no"
 is "liveness measured via the estate stub" \

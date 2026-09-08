@@ -254,7 +254,7 @@ printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$HOS/entities.d/acme.conf"
 # and a newline that opens what looks like a second eight-field row.
 {
   printf 'HOST="h1"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="alpha"\n'
-  printf 'ASSETS="one\nzz-ghost\tzz-ghost\troot\tprod\thub9\tMegaCorp\tclient\tsecret"\n'
+  printf 'ASSETS="one\nzz-ghost\tzz-ghost\troot\tprod\thub9\tMegaCorp\tclient\tsecret\n"\n'
 } > "$HOS/sessions.d/alpha.conf"
 hos_out="$(STEWARD_REGISTRY_DIR="$HOS/sessions.d" STEWARD_ESTATE_ROOT="$HOS" session_identity_rows 2>/dev/null)"
 is "one conf in the registry is one row out" \
@@ -277,6 +277,8 @@ is "the session that does exist is still named correctly" \
    "$(field "$hos_out" alpha 1)" "alpha"
 is "and its owner is not overwritten by the injection" \
    "$(field "$hos_out" alpha 3)" "alice"
+is "the asset value keeps its embedded and trailing newline bytes escaped" \
+   "$(field "$hos_out" alpha 8)" 'one\nzz-ghost\tzz-ghost\troot\tprod\thub9\tMegaCorp\tclient\tsecret\n'
 
 # THE ENTITY DISPLAY NAME IS THE SECOND VECTOR. Nothing validates its charset,
 # and a tab in it shifts every column to its right — turning `relation` into

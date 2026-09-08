@@ -263,12 +263,32 @@ OUT="$(
 for heading in 'Same project:' 'Same client:' 'Same team:' 'People on this project: c'; do
   is "summary includes $heading" "$(printf '%s\n' "$OUT" | grep -Fc "$heading")" 1
 done
+row outsider d 'TARGET_PROJECT="work"'
+printf 'project="forged"\nteam="forged"\npeople="forged"\nviewer="forged"\n' >> "$SESS/outsider.conf"
+OUT="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$SESS" STEWARD_CONFIG_FILE="$FX/no-such-config"
+  . "$here/lib/registry.sh"
+  registry_mates_summary outsider
+)"
+is "project people are withheld when the owner has no sight through the parent" \
+  "$(printf '%s\n' "$OUT" | grep -Fc 'People on this project: none')" 1
+hasnt "subject-row locals cannot forge the summary" "$OUT" forged
 
 mkdir -p "$FX/accounts.d"
-printf 'PRINCIPAL="c"\nHOST="h1"\nUSERNAME="service"\n' > "$FX/accounts.d/service.conf"
+printf 'PRINCIPAL="c"\nHOST="h1"\nUSERNAME="service"\nsid="decoy"\nviewer="decoy"\nfield="decoy"\nvalue="decoy"\nrow="decoy"\nlevel="decoy"\n' > "$FX/accounts.d/service.conf"
 printf 'OWNER="service"\nHOST="h1"\nACCOUNT="service"\nTARGET_PROJECT="client-work"\nREPO_PATH="/tmp/repo"\n' > "$SESS/service.conf"
 mates service mates_team
 is "team membership uses the account principal, not the Unix owner" "$(printf '%s\n' "$OUT" | grep -c '^peer ')" 1
+hasnt "account-row locals cannot inject a mate" "$OUT" decoy
+
+echo "== team summary is bounded =="
+for i in 0 1 2 3 4 5 6 7 8 9; do row "many$i" b 'TARGET_ENTITY="team"'; done
+OUT="$(
+  export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$SESS" STEWARD_CONFIG_FILE="$FX/no-such-config"
+  . "$here/lib/registry.sh"
+  registry_mates_summary e1
+)"
+is "team summary reports omitted rows" "$(printf '%s\n' "$OUT" | grep -c '(+[0-9][0-9]* more)')" 1
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

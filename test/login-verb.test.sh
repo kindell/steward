@@ -193,6 +193,19 @@ has     "refusal names the owner"     "$out" "owned by b"
 absent  "claude stub did not run"     "$FX/claude.ran"
 absent  "opencode stub did not run"   "$FX/opencode.ran"
 
+echo "== the default Unix viewer resolves to the account principal =="
+mkdir -p "$FX/accounts.d"
+printf 'PRINCIPAL="a"\nHOST="h1"\nUSERNAME="%s"\n' "$(id -un)" > "$FX/accounts.d/a-h1.conf"
+printf 'HOST="h1"\nOWNER="service"\nACCOUNT="a-h1"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="account-owned"\n' \
+  > "$FX/sessions.d/account-owned.conf"
+clear_markers
+out="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_ESTATE_ROOT="$FX" \
+  STEWARD_CONFIG_FILE="$FX/no-such-operator-config" STEWARD_HOSTNAME_CMD="$hub_host" \
+  STEWARD_LOGIN_CMD_CLAUDE="$claude_stub" STEWARD_LOGIN_CMD_OPENCODE="$opencode_stub" \
+  STEWARD_LOGIN_ASSUME_TTY=1 bash "$STEWARD" login account-owned </dev/null 2>&1)"; rc=$?
+present "the principal may login to its account-backed session" "$FX/claude.ran"
+is "the runtime exit code still passes through" "$rc" "42"
+
 echo "== a non-hub machine is refused, never run =="
 clear_markers
 out="$(run "$other_host" "$claude_stub" "$opencode_stub" 1 work)"; rc=$?

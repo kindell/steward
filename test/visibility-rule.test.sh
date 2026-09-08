@@ -24,7 +24,7 @@ yes() { if session_visible_to "$2" "$3" 2>/dev/null; then ok "$1"; else bad "$1"
 no()  { if session_visible_to "$2" "$3" 2>/dev/null; then bad "$1" "expected HIDDEN"; else ok "$1"; fi; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/entities.d" "$FX/estate"
+mkdir -p "$FX/sessions.d" "$FX/entities.d" "$FX/accounts.d" "$FX/estate"
 printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="t"\n' \
   > "$FX/estate/steward.conf"
 
@@ -63,6 +63,24 @@ export STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX"
 echo "== the owner always sees their own =="
 yes "alice sees her own session"                 alice own
 yes "even when it is private"                    bob   hidden
+
+echo "== account principals, not Unix owners, define ownership =="
+printf 'PRINCIPAL="carol"\nHOST="h1"\nUSERNAME="service"\n' > "$FX/accounts.d/service.conf"
+sess account-owned service team-a 'ACCOUNT="service"\nVISIBILITY="private"\nviewer="service"\nsession="other"\nresolved_principal="service"\n'
+yes "the account principal owns private work" carol account-owned
+no  "the raw Unix owner does not become a principal" service account-owned
+no  "a principal slug colliding with OWNER gets no owner grant" service account-owned
+
+sess unresolved fallback team-a 'ACCOUNT="missing-account"\nVISIBILITY="private"\n'
+fallback_err="$(session_visible_to fallback unresolved 2>&1 >/dev/null)"; fallback_rc=$?
+is_fallback=hidden; [ "$fallback_rc" -eq 0 ] && is_fallback=visible
+if [ "$is_fallback" = visible ]; then ok "an unresolved account falls back to OWNER"
+else bad "an unresolved account falls back to OWNER" "expected VISIBLE"; fi
+case "$fallback_err" in *"could not resolve ACCOUNT 'missing-account'"*) ok "the unresolved account fallback is diagnosed" ;;
+  *) bad "the unresolved account fallback is diagnosed" "$fallback_err" ;; esac
+legacy_err="$(session_visible_to alice own 2>&1 >/dev/null)"
+if [ -z "$legacy_err" ]; then ok "an absent ACCOUNT falls back silently"
+else bad "an absent ACCOUNT falls back silently" "$legacy_err"; fi
 
 echo "== the derived team view =="
 yes "a teammate sees a shared session"           alice shared

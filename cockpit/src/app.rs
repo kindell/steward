@@ -63,12 +63,8 @@ pub struct App {
     pub probes: HashMap<String, ProbeResult>,
     pub quit: bool,
     pub mode: Mode,
-    // THE VIEWER IS RESOLVED ONCE, AT CONSTRUCTION — not read fresh from the
-    // environment on every Enter. The seam is the same one the engine uses
-    // (lib/sessions.sh: STEWARD_VIEWER, falling back to `id -un`), but a test
-    // that wants a deterministic owner/viewer pair sets this field directly
-    // rather than mutating process environment a parallel test thread might
-    // also be reading.
+    // THE VIEWER IS THE ENGINE'S EXACT ANSWER. Resolving the Unix login again
+    // here would put Enter in a different identity namespace than the list.
     pub viewer: String,
     // A REFUSAL IS A THING TO SHOW, NOT A THING TO LOG. `enter` on a session
     // someone else owns must stay visible until the operator moves on or
@@ -79,38 +75,17 @@ pub struct App {
 
 impl App {
     pub fn new(fleet: Fleet) -> App {
+        let viewer = fleet.viewer.clone();
         App {
             fleet,
             selected: 0,
             probes: HashMap::new(),
             quit: false,
             mode: Mode::Browsing,
-            viewer: resolve_viewer(),
+            viewer,
             refusal: None,
         }
     }
-}
-
-// resolve_viewer — STEWARD_VIEWER first, `id -un` as the fallback. THE SAME
-// SEAM THE ENGINE USES: a caller that already knows who is asking (a wrapper
-// script, a test harness) sets the variable rather than trusting whichever
-// account happens to be running this binary. An empty result is not a
-// wildcard — verb::enter_allowed already refuses an empty viewer on its own,
-// so a failed `id -un` fails closed rather than admitting everyone.
-fn resolve_viewer() -> String {
-    if let Ok(v) = std::env::var("STEWARD_VIEWER") {
-        if !v.is_empty() {
-            return v;
-        }
-    }
-    std::process::Command::new("id")
-        .arg("-un")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
 }
 
 // is_detach — the one chord that means "leave Attached", recognized by its
@@ -290,6 +265,7 @@ mod tests {
     // left at "unknown" because nothing here reads it.
     fn fleet_of(names: &[&str]) -> Fleet {
         Fleet {
+            viewer: "alice".to_string(),
             sessions: names
                 .iter()
                 .map(|n| Session {
@@ -318,6 +294,7 @@ mod tests {
     // independently, which fleet_of's hardcoded "alice" cannot express.
     fn fleet_owned_by(name: &str, owner: &str) -> Fleet {
         Fleet {
+            viewer: "alice".to_string(),
             sessions: vec![Session {
                 name: name.to_string(),
                 slug: None,
@@ -348,6 +325,7 @@ mod tests {
         assert!(app.probes.is_empty());
         assert!(!app.quit);
         assert_eq!(app.mode, Mode::Browsing);
+        assert_eq!(app.viewer, "alice");
     }
 
     // SELECTION SATURATES. Wrapping teleports the eye; a list this short has no

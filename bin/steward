@@ -5827,13 +5827,14 @@ cmd_sessions() {
     rm -f "$ident_out" "$ident_err"
     return 70
   }
-  local ident rc diag unreadable hidden
+  local ident rc diag unreadable hidden viewer
   session_identity_rows >"$ident_out" 2>"$ident_err"; rc=$?
   ident="$(cat "$ident_out")"; diag="$(cat "$ident_err")"
   unreadable="${SESSIONS_UNREADABLE:-}"
   # SAME PRECEDENCE AS THE FILTER ITSELF, so the count printed here and the
   # rows it describes always agree on who was asking.
   hidden="${SESSIONS_HIDDEN:-0}"
+  viewer="${SESSIONS_VIEWER:-}"
   rm -f "$ident_out" "$ident_err"
 
   if [ "$rc" -ne 0 ]; then
@@ -5899,7 +5900,7 @@ cmd_sessions() {
       done)"
     # Join in jq rather than in shell string concatenation: the fields carry
     # names and timestamps, and hand-built json is where quoting bugs live.
-    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" --argjson _hidden "$hidden" --arg _hub "$hub" '
+    jq -Rn --arg _live "$joined" --arg _unreadable "$unreadable" --argjson _hidden "$hidden" --arg _hub "$hub" --arg _viewer "$viewer" '
       ($_live | split("\n") | map(select(length>0) | split("\t"))
         | map({key: .[0], value: {daemon:.[1], tmux:.[2], agent:.[3],
                                   runtime:.[4],
@@ -5915,6 +5916,9 @@ cmd_sessions() {
        # WHICH HOST IS HOME — the name each session"s own `host` is compared
        # against when a consumer asks "is this reachable locally?".
        hub: $_hub,
+       # The exact principal used to filter this document. Consumers must not
+       # independently reinterpret the Unix account and drift from this gate.
+       viewer: $_viewer,
        # A PARTIAL FAILURE MUST BE VISIBLE IN THE DOCUMENT, not only on a second
        # stream. `ok:true` beside a shorter list asserts the answer is complete;
        # a session that vanished entirely is the spec"s founding complaint with
@@ -5968,7 +5972,7 @@ cmd_sessions() {
     # table itself has rows — but the one case that line would otherwise
     # leave ambiguous, an empty table, still gets it: "hidden" and "genuinely
     # no sessions" must not look the same on a blank screen.
-    local _viewer_text; _viewer_text="${STEWARD_VIEWER:-$(id -un 2>/dev/null)}"
+    local _viewer_text; _viewer_text="$viewer"
     # A BLANK NAME IS NOT A REASON. If `id -un` fails and STEWARD_VIEWER is
     # unset there is no viewer, so lib/sessions.sh hides everything — an empty
     # viewer is not a wildcard, and refusing is right. But the line then read
@@ -6745,8 +6749,8 @@ cmd_doctor() {
 #
 # TWO GATES, IN THIS ORDER — the same reasoning the cockpit already applies:
 # ownership is the durable truth, reach is a capability.
-#   1. OWNERSHIP: the session's OWNER must be this viewer, or login stays
-#      with whoever it belongs to.
+#   1. OWNERSHIP: the session's account principal must be this viewer, or login
+#      stays with whoever it belongs to.
 #   2. HUB-LOCAL: login runs on the machine the session actually lives on,
 #      never dialed in from a laptop over ssh.
 #
@@ -6781,15 +6785,24 @@ cmd_login() {
   local key; key="$(registry_resolve_session "$session")" || key="$session"
   registry_load "$key" || return 78
 
-  local viewer="${STEWARD_VIEWER:-}"
-  [ -n "$viewer" ] || viewer="$(id -un 2>/dev/null)"
+  local viewer="${STEWARD_VIEWER:-}" username="" viewer_host="" owner_principal=""
+  if [ -z "$viewer" ]; then
+    username="$(id -un 2>/dev/null)"
+    if [ -n "${STEWARD_HOSTNAME_CMD:-}" ]; then
+      viewer_host="$("$STEWARD_HOSTNAME_CMD" 2>/dev/null)"
+    else
+      viewer_host="$(hostname -s 2>/dev/null)"
+    fi
+    [ -z "$username" ] || viewer="$(registry_principal_for_username "$username" "$viewer_host")" || viewer=""
+  fi
+  owner_principal="$(_registry_row_principal "$key")"
   # AN EMPTY VIEWER MATCHES NO ONE. registry_load already guarantees a
   # non-empty, regex-validated OWNER, so empty==empty cannot happen today —
   # but that guarantee lives in another file, and this comparison must not
   # silently reopen if the loader ever relaxes. Same construction as the
   # cockpit's enter_allowed: non-empty first, equality second.
-  if [ -z "$viewer" ] || [ "$OWNER" != "$viewer" ]; then
-    printf 'steward: %s is owned by %s — login stays with the owner\n' "$session" "$OWNER" >&2
+  if [ -z "$viewer" ] || [ "$owner_principal" != "$viewer" ]; then
+    printf 'steward: %s is owned by %s — login stays with the owner\n' "$session" "$owner_principal" >&2
     return 77
   fi
 
