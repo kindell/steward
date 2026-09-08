@@ -147,8 +147,14 @@ usage_rows() {
       kill -KILL -- "-$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
     } 2>/dev/null
+    # WHAT A HUNG SHIM MANAGED TO SAY IS KEPT, exactly as the failure path below
+    # keeps it. A shim that hung had usually already named the provider it was
+    # waiting on, and that sentence is the only thing in the whole run that says
+    # WHERE it stopped; deleting the file unread left an operator with a deadline
+    # and nothing to act on. Flattened to one line for the same reason as below.
+    local terr; terr="$(tr '\n' ' ' < "$errf")"
     rm -f "$outf" "$errf"
-    echo "usage: the usage command did not answer within ${deadline}s and was killed: '$cmd'" >&2
+    echo "usage: the usage command did not answer within ${deadline}s and was killed: '$cmd'${terr:+ - before it was killed it said: $terr}" >&2
     USAGE_SEAM_REASON="seam-timeout"; return 0
   fi
 
@@ -235,7 +241,14 @@ usage_rows() {
     # A PARSE FAILURE IS KEPT, NOT DROPPED. The row is evidence that the window
     # exists and was looked at; only the number is missing, and saying so is
     # worth more than saying nothing about the window at all.
-    if ! _usage_percent_ok "$pct"; then
+    # AND A KEPT NUMBER IS WRITTEN CANONICALLY, not as the shim spelled it. A
+    # shim that zero-pads is not lying about the number, so `0100` is accepted -
+    # but emitted verbatim it would be compared against 100 by every later
+    # reader and miss an EXHAUSTED window, and written into a document as a
+    # number it would be a document nothing can read back.
+    if _usage_percent_ok "$pct"; then
+      pct="$((10#$pct))"
+    else
       note="$(_usage_note "$note" "$pct")"
       pct="unknown"
     fi
@@ -264,13 +277,24 @@ usage_rows() {
 }
 
 # _usage_percent_ok <value> - true for an integer 0-100 and nothing else.
+# Leading zeros are allowed here and canonicalised by the caller.
 #
-# 10# IS LOAD-BEARING. Plain `[ "$v" -le 100 ]` evaluates a leading zero as
-# octal, so `08` would fail with a shell error instead of reading as 8.
+# THE SHAPE IS THE WHOLE CHECK, AND ARITHMETIC IS NOT PART OF IT. The first
+# version of this asked `[[ $v =~ ^[0-9]+$ ]]` and then `[ "$((10#$v))" -le 100 ]`,
+# which let a long digit string through: shell arithmetic is 64-bit and WRAPS, so
+# `18446744073709551617` evaluates to 1 and `99999999999999999999999999` to a
+# negative number, and both are `-le 100`. Roughly half of all long digit strings
+# wrap to something small enough to pass - MEASURED, both of those were emitted as
+# percentages of a subscription window. A percent is at most three characters, so
+# the shape alone decides it and no value this function accepts can overflow
+# anything the caller does with it afterwards.
+#
+# THE LENGTH BOUND RUNS FIRST so a pathological input is refused before the
+# regular expression engine ever sees it.
 _usage_percent_ok() {
   local v="${1:-}"
-  [[ "$v" =~ ^[0-9]+$ ]] || return 1
-  [ "$((10#$v))" -le 100 ] || return 1
+  [ "${#v}" -le 12 ] || return 1
+  [[ "$v" =~ ^0*(100|[0-9]{1,2})$ ]] || return 1
   return 0
 }
 

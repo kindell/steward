@@ -228,6 +228,18 @@ has "env-sourced root with no config file: WARN"                        "$line" 
 has "the founding case is named 'ambient-only'"                         "$line" "ambient-only"
 has "the WARN carries a config-init remedy"                             "$line" "steward config init --estate-root"
 
+# THE REMEDY MUST NOT DROP A SETTING IT WAS PRINTED TO PRESERVE. This probe is
+# the closest thing the product has to `config show`, and the remedy it prints
+# is meant to turn an ambient environment into a durable file. A key left out
+# of that line is a key the operator silently loses by following the advice, so
+# the usage seam key is carried exactly as the liveness seam key is.
+out="$(run "$FX/ambient" "$FX/ambient/hostcmd" env STEWARD_USAGE_CMD=/abs/usage-shim)"
+line="$(line_for "$out" operator-config)"
+has "an ambient usage cmd is named in the probe text" "$line" \
+  "STEWARD_USAGE_CMD=/abs/usage-shim source=process-environment"
+has "and the remedy carries it, so following the advice keeps it" "$line" \
+  "--usage-cmd /abs/usage-shim"
+
 mkfx "$FX/durable"
 mkdir -p "$FX/durable/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/durable" > "$FX/durable/cfgdir/config"

@@ -355,6 +355,18 @@ h_out="$(env -i PATH="$PATH" HOME="$FX/home13" bash "$STEWARD" -h 2>&1)"
 has "13: -h mentions 'steward doctor'" "$h_out" "steward doctor"
 has "13: -h mentions 'steward config init'" "$h_out" "steward config init"
 has "13: -h mentions 'steward config set'" "$h_out" "steward config set"
+# A FLAG NOBODY IS TOLD ABOUT IS A FLAG NOBODY USES. `config init` accepts
+# --usage-cmd and its unknown-flag refusal already names it, but an operator
+# reads the banner first, and the two seam keys are one class: whatever the
+# liveness key is shown, this one is shown.
+has "13: -h names the liveness seam flag" "$h_out" "--liveness-cmd"
+has "13: -h names the usage seam flag too" "$h_out" "--usage-cmd"
+
+echo "== 13b. the config usage refusal names every flag init accepts =="
+u_out="$(env -i PATH="$PATH" HOME="$FX/home13" bash "$STEWARD" config bogus 2>&1)"; urc=$?
+is "13b: an unknown config verb is refused, rc 64" "$urc" "64"
+has "13b: the refusal names --liveness-cmd" "$u_out" "--liveness-cmd"
+has "13b: the refusal names --usage-cmd" "$u_out" "--usage-cmd"
 
 echo "== 14. embedded newline / control byte in a value: refused, no smuggled key (C1) =="
 # THE LIVE REPRODUCTION FROM THE REVIEW: a value that carries a second

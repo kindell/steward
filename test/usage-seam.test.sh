@@ -209,6 +209,44 @@ is "a note the shim wrote keeps its place, with the parse note appended" \
    "alpha${TAB}claude-max${TAB}w-note${TAB}unknown${TAB}${TAB}${TAB}${TAB}plan pro; parse:63%"
 is "a rewritten percent is not a dropped row" "$USAGE_DROPPED" "0"
 
+echo "== a padded percent is a number; a percent longer than a percent is not =="
+# A SHIM THAT ZERO-PADS IS NOT LYING ABOUT THE NUMBER, so `007` and `0100` are
+# accepted - and rewritten to `7` and `100`, because a view that compared `0100`
+# against 100 would miss an EXHAUSTED window, and a document that wrote `0100`
+# as a number would be a document nothing can read back.
+#
+# A LONG DIGIT STRING IS REFUSED BEFORE ANY ARITHMETIC RUNS. Shell arithmetic is
+# 64-bit and WRAPS: measured, `18446744073709551617` reads back as 1 and
+# `99999999999999999999999999` as a negative, so a range check alone lets about
+# half of all long digit strings through as a plausible percent. The other
+# shapes below are the ones a text-parsing shim really produces - a signed
+# number, an exponent, a hex literal - and none of them is a percent.
+pads="$(stub pads "cat <<'ROWS'
+alpha${TAB}claude-max${TAB}p-pad-full${TAB}0100${TAB}${TAB}${TAB}${TAB}
+alpha${TAB}claude-max${TAB}p-pad-low${TAB}007${TAB}${TAB}${TAB}${TAB}
+alpha${TAB}claude-max${TAB}p-wrap${TAB}18446744073709551617${TAB}${TAB}${TAB}${TAB}
+alpha${TAB}claude-max${TAB}p-huge${TAB}99999999999999999999999999${TAB}${TAB}${TAB}${TAB}
+alpha${TAB}claude-max${TAB}p-plus${TAB}+50${TAB}${TAB}${TAB}${TAB}
+alpha${TAB}claude-max${TAB}p-exp${TAB}1e2${TAB}${TAB}${TAB}${TAB}
+alpha${TAB}claude-max${TAB}p-hex${TAB}0x10${TAB}${TAB}${TAB}${TAB}
+ROWS")"
+run_rows "$pads"
+is "0100 is a hundred, written as a hundred" "$(usage_for alpha p-pad-full "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-pad-full${TAB}100${TAB}${TAB}${TAB}${TAB}"
+is "007 is seven, written as seven" "$(usage_for alpha p-pad-low "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-pad-low${TAB}7${TAB}${TAB}${TAB}${TAB}"
+is "a value that wraps 64-bit arithmetic is not a percent" "$(usage_for alpha p-wrap "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-wrap${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:18446744073709551617"
+is "and neither is one that wraps negative" "$(usage_for alpha p-huge "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-huge${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:99999999999999999999999999"
+is "a signed number is not this contract's integer" "$(usage_for alpha p-plus "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-plus${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:+50"
+is "an exponent is not an integer" "$(usage_for alpha p-exp "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-exp${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:1e2"
+is "a hex literal is not an integer either" "$(usage_for alpha p-hex "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}p-hex${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:0x10"
+is "none of these is a dropped row - every window is still reported" "$USAGE_DROPPED" "0"
+
 echo "== a timestamp that did not parse is emptied, and says so =="
 stamps="$(stub stamps "cat <<'ROWS'
 alpha${TAB}claude-max${TAB}t-resets${TAB}10${TAB}in 47 minutes${TAB}2026-09-08T08:49:00.000Z${TAB}${TAB}
@@ -276,6 +314,38 @@ t1="$(date +%s)"
 is "hung shim: seam-timeout at a different injected limit too" "$USAGE_SEAM_REASON" "seam-timeout"
 is "hung shim: returned in under twice the injected limit" \
    "$( [ "$((t1 - t0))" -lt 6 ] && echo yes || echo no )" "yes"
+
+echo "== a hung shim keeps its last words =="
+# THE PARTIAL STDERR OF A SHIM THAT HUNG IS THE MOST USEFUL THING IT WILL EVER
+# PRODUCE: it names the provider it was still waiting on when the deadline
+# landed. A timeout path that deleted that file unread would leave an operator
+# with the deadline sentence and nothing at all to act on - the good path keeps
+# a failing shim's words for exactly this reason, and a hang is not a smaller
+# failure than a non-zero exit.
+waiting="$(stub waiting 'echo "one provider has not answered yet" >&2; sleep 100')"
+STEWARD_USAGE_TIMEOUT=1 STEWARD_USAGE_CMD="$waiting" usage_rows >"$FX/wait.out" 2>"$FX/wait.err"
+is "hung shim with words: the reason is still seam-timeout" "$USAGE_SEAM_REASON" "seam-timeout"
+is "hung shim with words: stdout stays empty" "$(cat "$FX/wait.out")" ""
+has "hung shim with words: what the shim said survived the kill" \
+   "$(cat "$FX/wait.err")" "one provider has not answered yet"
+
+# THE HAPPY PATH MUST NOT LEAK THE WATCHDOG'S OWN SLEEP - and the happy path is
+# the overwhelmingly common one. Killing the watchdog subshell by its pid alone
+# does not reach the `sleep` it forked: the subshell dies while blocked in its
+# own wait for that sleep, and the sleep is reparented and runs out the whole
+# deadline. A distinctive deadline (53 - nothing else here or on a host would
+# plausibly be sleeping on it) makes a leak unmistakable, and since a leak would
+# live 53 seconds, a short settle poll races nothing. The guard this proves is
+# in lib/usage.sh, copied from the twin, so it needs a test on this side too.
+echo "== the happy path leaves no orphaned watchdog sleep behind =="
+quick="$(stub quick "printf 'alpha\tclaude-max\tw-quick\t5\t\t\t\t\n'")"
+STEWARD_USAGE_TIMEOUT=53 STEWARD_USAGE_CMD="$quick" usage_rows >/dev/null 2>"$FX/quick.err"
+leaked="no"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if pgrep -f 'sleep 53$' >/dev/null 2>&1; then leaked="yes"; break; fi
+  sleep 0.1
+done
+is "happy path: no leftover watchdog sleep at the injected deadline" "$leaked" "no"
 
 echo "== a shim that fails, and one that answers nothing =="
 failing="$(stub failing 'echo "the provider refused" >&2; exit 3')"

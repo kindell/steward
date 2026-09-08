@@ -25,7 +25,7 @@
 #   steward mcp render <session-id>
 #   steward mcp surface <session-id> --json
 #   steward doctor
-#   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs]
+#   steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs] [--usage-cmd /abs]
 #   steward config set KEY /abs/value
 #   steward login [session]
 #   steward job start|cancel|reconcile (start reads SUBMIT_* from the environment)
@@ -671,7 +671,7 @@ cmd_config() {
   case "${1:-}" in
     init) shift; cmd_config_init "$@" ;;
     set)  shift; cmd_config_set "$@" ;;
-    *) fel "usage: steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs] | steward config set KEY /abs/value" 64 ;;
+    *) fel "usage: steward config init --estate-root /abs [--tmux-socket /abs] [--liveness-cmd /abs] [--usage-cmd /abs] | steward config set KEY /abs/value" 64 ;;
   esac
 }
 
@@ -3867,21 +3867,28 @@ _doctor_probe_operator-config() {
   # plan's founding "a session inherits it from the supervisor" case — so
   # this flattening is needed independently of C1, not merely as a backstop
   # for it.
-  local root_v sock_v live_v
+  # THE USAGE SEAM KEY IS THE LIVENESS SEAM KEY'S TWIN HERE TOO. Both name an
+  # absolute path to a program the estate supplies, both can arrive ambient, and
+  # this probe is the closest thing the product has to `config show` - a key the
+  # probe does not print is a key nobody can see the provenance of.
+  local root_v sock_v live_v usage_v
   root_v="$(_doctor_oneline "${STEWARD_ESTATE_ROOT:-}")"
   sock_v="$(_doctor_oneline "${STEWARD_TMUX_SOCKET:-}")"
   live_v="$(_doctor_oneline "${STEWARD_LIVENESS_CMD:-}")"
+  usage_v="$(_doctor_oneline "${STEWARD_USAGE_CMD:-}")"
 
-  local root_txt sock_txt live_txt
+  local root_txt sock_txt live_txt usage_txt
   root_txt="STEWARD_ESTATE_ROOT=$root_v source=$_CFG_SOURCE_STEWARD_ESTATE_ROOT"
   sock_txt="STEWARD_TMUX_SOCKET=$sock_v source=$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
   live_txt="STEWARD_LIVENESS_CMD=$live_v source=$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
+  usage_txt="STEWARD_USAGE_CMD=$usage_v source=$_CFG_SOURCE_STEWARD_USAGE_CMD"
 
   local ambient=""
   if [ -z "$have_file" ]; then
     if [ "$_CFG_SOURCE_STEWARD_ESTATE_ROOT" = "process-environment" ]; then root_txt="$root_txt (ambient-only)"; ambient=1; fi
     if [ "$_CFG_SOURCE_STEWARD_TMUX_SOCKET" = "process-environment" ]; then sock_txt="$sock_txt (ambient-only)"; ambient=1; fi
     if [ "$_CFG_SOURCE_STEWARD_LIVENESS_CMD" = "process-environment" ]; then live_txt="$live_txt (ambient-only)"; ambient=1; fi
+    if [ "$_CFG_SOURCE_STEWARD_USAGE_CMD" = "process-environment" ]; then usage_txt="$usage_txt (ambient-only)"; ambient=1; fi
   fi
 
   # THE MODE CHECK THE PARSER ITSELF DOES NOT MAKE. 0644 is ACCEPTED for
@@ -3896,17 +3903,22 @@ _doctor_probe_operator-config() {
     fi
   fi
 
-  local text="$root_txt; $sock_txt; $live_txt"
+  local text="$root_txt; $sock_txt; $live_txt; $usage_txt"
 
   if [ -n "$ambient" ]; then
-    # REUSES root_v/sock_v/live_v (already flattened above) rather than the
-    # raw env values — the remedy command text is part of the SAME
-    # single-line probe text as $root_txt/$sock_txt/$live_txt, so it is
-    # exactly as exposed to the newline/tab forgery C2 closes.
+    # REUSES root_v/sock_v/live_v/usage_v (already flattened above) rather than
+    # the raw env values - the remedy command text is part of the SAME
+    # single-line probe text as $root_txt/$sock_txt/$live_txt/$usage_txt, so it
+    # is exactly as exposed to the newline/tab forgery C2 closes.
+    #
+    # EVERY AMBIENT KEY IS CARRIED INTO THE REMEDY. This line exists to turn an
+    # ambient environment into a durable file, and a key left out of it is a key
+    # the operator loses by following the advice.
     local init_root="${root_v:-/abs/correct-estate-root}"
     local init_cmd="steward config init --estate-root $init_root"
     [ "$_CFG_SOURCE_STEWARD_TMUX_SOCKET" = "process-environment" ]  && init_cmd="$init_cmd --tmux-socket $sock_v"
     [ "$_CFG_SOURCE_STEWARD_LIVENESS_CMD" = "process-environment" ] && init_cmd="$init_cmd --liveness-cmd $live_v"
+    [ "$_CFG_SOURCE_STEWARD_USAGE_CMD" = "process-environment" ]    && init_cmd="$init_cmd --usage-cmd $usage_v"
     if [ -n "$mode_warn" ]; then
       printf 'WARN %s -- run: %s; also: %s\n' "$text" "$init_cmd" "$mode_warn"
     else
