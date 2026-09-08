@@ -694,6 +694,29 @@ fi
 # at this moment and prints both; the host's --activate takes the slug as its
 # second token and links exactly that key. Two tokens are as copy-pastable as
 # one, and unambiguous with any number of enrolments in flight.
+# ── WHO ELSE WORKS HERE ─────────────────────────────────────────────────────
+# A newborn session's first turn used to begin with no idea that anybody else
+# was on the same project. The bus could already carry a message between the
+# two of them; nothing told either side there was somebody to write to, so the
+# knowledge existed only in whichever human happened to remember it.
+#
+# COMPUTED HERE, AFTER THE ROW IS WRITTEN, so the register the hub reads is the
+# one the new session is already in — and the helper excludes the row it is
+# asked about, so the newborn never reads itself back as its own mate.
+#
+# NOTHING UNGUARDED REACHES THE MESSAGE. The value is not a request field: it
+# is built by lib/registry.sh out of registry NAMES and OWNER fields, both of
+# which registry_load refuses unless they match ^[a-z][a-z0-9-]*$. That is the
+# same reasoning the target line's comment above states for the conf heredoc —
+# a value that is interpolated must be charset-guarded where it enters, and
+# these two entered through the loader's own gates.
+#
+# A FAILURE TO READ THE REGISTER BACK IS NEVER SPELLED "none". "none" is a
+# measurement — nobody else works here — and a session acts on it. An
+# unreadable register is a different fact and says so, rather than quietly
+# telling the newborn it is alone.
+PROJECT_MATES="$(registry_project_mates_line "$ID" 2>/dev/null)" || PROJECT_MATES="unknown — the register could not be read back"
+
 APPROVE_CMD='bash ~/scripts/session-approve.sh'
 STATUS_CMD='bash ~/scripts/estate-status.sh'
 ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
@@ -710,7 +733,8 @@ ENROLL-PROOF v1
 namn=$NAMN
 from-hub=yes — that this entry reached your inbox proves the hub knows the name
 task=run: $APPROVE_CMD  and send the outcome to $NAV
-fleet-questions=answer from the estate's own data: $STATUS_CMD — never from account-wide discovery"
+fleet-questions=answer from the estate's own data: $STATUS_CMD — never from account-wide discovery
+project-mates=$PROJECT_MATES"
 
 # THE IMAGE-SYNC TRAP, LOUD. PROOF now addresses the minted id, which lives
 # only in THIS registry write — a deployed hub image running from an older

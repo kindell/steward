@@ -29,12 +29,31 @@ FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/reg" "$FX/bus/bin" "$FX/bin" \
   "$FX/accounts.d" "$FX/entities.d" "$FX/projects.d"
 
+# THE WHOLE REQUIRED KEY SET, because enrolment now READS the register back.
+# This fixture used to carry the five keys enroll itself touched: it wrote rows
+# and never loaded one. Computing the new session's project mates makes enroll a
+# registry_load reader for the first time, and that loader reads several estate
+# values unconditionally and refuses (rc 78) on a half-built estate — which is
+# not a thing a real estate can be, since every one of these keys is required
+# there too. Without them the mates line would report "the register could not be
+# read back" and the fixture, not the product, would be what was measured.
 cat > "$FX/estate/steward.conf" <<'CONF'
 ESTATE_NAME="prov"
 SCHEMA_VERSION="3"
 RC_LABEL_PREFIX="Hub: "
 HUB_SESSION="hub"
 HUB_HOST="hubhost"
+HUB_SSH="someone@hubhost"
+LABEL_PREFIX="com.fixture.claude"
+JOB_LABEL_PREFIX="com.fixture.job"
+SERVICE_LABEL_PREFIX="com.fixture.service"
+BROWSER_LABEL_PREFIX="com.fixture.browser"
+JOB_LOG_DIR="fixture-jobs"
+TMUX_SOCKET="fixture.sock"
+PING_MSG="you have mail"
+STATE_DIR_NAME="fixture-supervisor"
+PAUSED_DIR_NAME="fixture-paused"
+OP_TOKEN_FILE_NAME="fixture-token"
 CONF
 
 # THE REQUESTER MUST EXIST AND LIVE ON THE HOST IT NAMES. enroll checks both;
@@ -334,6 +353,72 @@ else bad "(c) a request whose display cannot be derived still registers" "rc=$rc
 bodyi="$(cat "$FX/reg/$idi.conf" 2>/dev/null)"
 has "(c) an undeliverable display falls back to the slug form, exactly as today" \
     "$bodyi" 'RC_LABEL="Hub: c-nope-someone"'
+
+# ── THE PROOF NAMES WHO ELSE WORKS HERE ─────────────────────────────────────
+# A session's very first turn used to begin with no idea that anybody else was
+# working on the same project. The bus could already carry a message between
+# them; nothing told either side there was somebody to write to. ENROLL-PROOF
+# is the one document the newborn reads before it does anything, so the answer
+# belongs there — computed from the register at that moment, never from a list
+# a human keeps.
+#
+# THE ROW IS WRITTEN BEFORE THE PROOF IS BUILT, so the new session is in the
+# register while its own mates are computed. It must never appear in its own
+# list, and a session on ANOTHER project must never appear at all — the whole
+# value of the line is that it is narrow enough to act on.
+echo
+echo "nav-enroll — the project mates in ENROLL-PROOF"
+
+cat > "$FX/projects.d/other.conf" <<'CONF'
+NAME="Other"
+PARENT="team"
+CONF
+cat > "$FX/projects.d/solo.conf" <<'CONF'
+NAME="Solo"
+PARENT="team"
+CONF
+# The row already at work on the project the request below enrols into. The
+# decoy is case (a)'s row, registered on project "work" under the same entity:
+# a rule that resolved each project to its PARENT would report it as a mate.
+cat > "$FX/reg/mate-other.conf" <<'CONF'
+HOST="farhost"
+OWNER="ann"
+DOMAIN="team"
+REPO_PATH="/tmp/x"
+ID="mate-other"
+TARGET_PROJECT="other"
+CONF
+
+# --no-send is the mode that prints CONFIRM and PROOF themselves. stderr is
+# dropped for the reason the same-host case above drops it: the "no estate
+# checkout" NOTE legitimately prints fixture paths, and only stdout carries
+# the proof block.
+mk_req x J 's|^namn=.*|namn=team-other-someone|; s|^doman=.*|doman=team|; s|^projekt=.*|projekt=other|'
+out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
+         STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
+         STEWARD_ENROLL_FROM=asker \
+         bash "$ENROLL" --no-send < "$FX/mut.txt" 2>/dev/null )"
+idj="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+if [ -n "$idj" ]; then ok "a request into a project somebody is already on registers"
+else bad "a request into a project somebody is already on registers" "out=$out2"; fi
+# THE WHOLE LINE IS ASSERTED, not merely that the mate is somewhere in it: an
+# equality is the only form that also proves the OTHER project's row and the
+# newborn itself are absent.
+mates_j="$(printf '%s' "$out2" | sed -n 's/^project-mates=//p' | head -1)"
+is    "PROOF names the session already on this project, with its owner" \
+      "$mates_j" "mate-other (ann)"
+lacks "and never the row on the sibling project" "$mates_j" "$idg"
+lacks "and never the newborn itself"             "$mates_j" "$idj"
+
+# NOBODY ELSE IS AN ANSWER, AND IT IS SPELLED OUT. An empty value after the
+# `=` would read as a line that broke, and a session that cannot tell "nobody
+# is here" from "this did not work" learns to ignore the line.
+mk_req x K 's|^namn=.*|namn=team-solo-someone|; s|^doman=.*|doman=team|; s|^projekt=.*|projekt=solo|'
+out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
+         STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
+         STEWARD_ENROLL_FROM=asker \
+         bash "$ENROLL" --no-send < "$FX/mut.txt" 2>/dev/null )"
+has "a project nobody is on gets the spelled-out empty answer" "$out2" "project-mates=none"
 
 # ── THE LOGIN FIELD (writer census, task 9B) ────────────────────────────────
 # A SEPARATE, SCHEMA-6 FIXTURE — the estate above is schema 3 deliberately
