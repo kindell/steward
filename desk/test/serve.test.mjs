@@ -15,19 +15,24 @@
 //
 // Nothing here touches the machine's real config: HOME, STEWARD_ESTATE_ROOT and
 // STEWARD_CONFIG_FILE are all mktemp locations, and so is the socket.
-import test, { before, after } from 'node:test';
+import test, { before, after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
 const LOOKUP_BIN = fileURLToPath(new URL('../bin/principal-for-login', import.meta.url));
+
+// The front's own two imports: a stub OpenID provider, and the minter whose
+// output the front must accept and whose forgeries it must not.
+import { startStub } from './oidc-stub.mjs';
+import { mintSession } from '../cookie.mjs';
 
 // THE FIXTURE LIVES SOMEWHERE WITH A SHORT NAME, AND THAT IS NOT FUSSINESS. A
 // unix socket path is capped by sockaddr_un (104 bytes on macOS), and this
@@ -915,4 +920,217 @@ test('loopback mode starts with STEWARD_DESK_SOCK unset entirely', async () => {
 // suite leaves the fixture exactly as it found it.
 test('the fixture is intact at the end', () => {
   assert.equal(JSON.parse(readFileSync(join(GEN, 'b.json'), 'utf8')).viewer, 'b');
+});
+
+// ---------------------------------------------------------------------------
+// THE FRONT - a second listener, for exactly one peer, whose identity is a
+// cookie this desk minted rather than a header a proxy set. Everything below
+// runs against a real child process, a real OpenID provider (the stub in
+// test/oidc-stub.mjs), and the same fixture estate the tailnet tests use, with
+// one principal bound by OIDC_LOGIN instead of TAILSCALE_LOGIN.
+//
+// THE FRONT CHILD GETS ITS OWN SOCKET PATH. The shared `child` from the root
+// `before` still holds SOCK, and a second desk aimed at that path refuses to
+// start with rc 64 - which is its own test further up, and would here hide
+// everything this block is trying to measure.
+describe('the front listener', () => {
+  let stub, port, peerHandle, KEYFILE;
+  const FRONT_ORIGIN = 'https://desk.example.test';
+  const cookieOf = (res) => (res.headers['set-cookie'] || []).map((c) => c.split(';')[0]);
+
+  // frontEstate - the same fixture rows, plus the three things a front needs
+  // the estate to name: an origin, a providers directory, and a key file.
+  function frontEstate() {
+    buildEstate(ROOT);
+    appendFileSync(join(ROOT, 'estate', 'steward.conf'),
+      'DESK_ORIGIN="' + FRONT_ORIGIN + '"\nDESK_SESSION_KEY_FILE="' + KEYFILE + '"\n');
+    mkdirSync(join(ROOT, 'desk', 'providers.d'), { recursive: true });
+    writeFileSync(join(T, 'secret'), 'shh\n');
+    writeFileSync(join(ROOT, 'desk', 'providers.d', 'stub.conf'),
+      'ISSUER="' + stub.issuer + '"\nDISCOVERY="' + stub.origin + '/.well-known/openid-configuration"\n' +
+      'CLIENT_ID="cid"\nCLIENT_SECRET_FILE="' + join(T, 'secret') + '"\n');
+    // e binds by OIDC identity; a (read-all) and b keep their tailnet logins.
+    writeFileSync(join(ROOT, 'principals.d', 'e.conf'), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+  }
+
+  const frontEnv = (over) => childEnv(Object.assign({ STEWARD_DESK_SOCK: join(T, 'front.sock') }, over));
+
+  before(async () => {
+    stub = await startStub();
+    KEYFILE = join(T, 'session.key');
+    writeFileSync(KEYFILE, 'k'.repeat(44) + '\n');
+    chmodSync(KEYFILE, 0o600);
+    frontEstate();
+    writeFileSync(join(GEN, 'e.json'), JSON.stringify(snapshotFor('e', false, [])));
+    port = await freePort();
+    peerHandle = await spawnUpTcp(frontEnv({
+      STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_FRONT_PEER: '127.0.0.1'
+    }), '127.0.0.1', port, 5000);
+  });
+
+  after(async () => {
+    if (peerHandle) await stopSpawned(peerHandle);
+    if (stub) await stub.close();
+  });
+
+  const front = (method, path, headers) => reqHttp('127.0.0.1', port, method, path, headers);
+
+  // ONE VISITOR ADDRESS PER TEST, so one test's rate-limit budget is never
+  // spent by another's - which is not a trick but exactly how the front reads
+  // the world: the socket peer is always the box, and the visitor is whoever
+  // the box says it is, so two people behind the same box have two budgets.
+  // Without this the block shares a single budget of ten auth requests and
+  // adding a test silently 429s the one after it (measured while writing
+  // these).
+  const visitor = (n) => ({ 'x-real-ip': '203.0.113.' + n });
+  const from = (n, headers) => Object.assign(visitor(n), headers || {});
+
+  it('starts both listeners: the socket still answers the header, the front ignores it', async () => {
+    const viaSock = await req('GET', '/desk/', B);
+    assert.equal(viaSock.status, 200);
+    const viaFront = await front('GET', '/desk/', B);
+    assert.equal(viaFront.status, 303);
+    assert.equal(viaFront.headers.location, '/desk/auth/login');
+  });
+
+  it('the socket ignores a cookie', async () => {
+    const key = Buffer.from('k'.repeat(44));
+    const r = await req('GET', '/desk/', { cookie: '__Host-desk-session=' + mintSession(key, 'b', Math.floor(Date.now() / 1000)) });
+    assert.equal(r.status, 403);
+  });
+
+  it('logs in end to end and lands on the desk as the bound principal', async () => {
+    const chooser = await front('GET', '/desk/auth/login', visitor(10));
+    assert.equal(chooser.status, 200);
+    assert.match(chooser.body, /href="\/desk\/auth\/login\?provider=stub"/);
+    const go = await front('GET', '/desk/auth/login?provider=stub', visitor(10));
+    assert.equal(go.status, 303);
+    const state = cookieOf(go).find((c) => c.startsWith('__Host-desk-oauth='));
+    assert.ok(state);
+    const back = await fetch(go.headers.location, { redirect: 'manual' });
+    const cb = new URL(back.headers.get('location'));
+    assert.equal(cb.origin + cb.pathname, FRONT_ORIGIN + '/desk/auth/callback');
+    const done = await front('GET', cb.pathname + cb.search, from(10, { cookie: state }));
+    assert.equal(done.status, 303);
+    assert.equal(done.headers.location, '/desk/');
+    const session = cookieOf(done).find((c) => c.startsWith('__Host-desk-session='));
+    assert.ok(session);
+    // The state cookie is cleared in the same answer: two set-cookie lines.
+    assert.ok(cookieOf(done).includes('__Host-desk-oauth='));
+    const page = await front('GET', '/desk/', from(10, { cookie: session }));
+    assert.equal(page.status, 200);
+    // The snapshot names its viewer by slug, and the index page is titled from
+    // it - the principal row's display name never reaches the file.
+    assert.match(page.body, /Desk for e/);
+    assert.match(page.headers['content-security-policy'], /form-action 'self'/);
+  });
+
+  it('a callback without its state cookie, or with a foreign state, is refused', async () => {
+    const r1 = await front('GET', '/desk/auth/callback?code=CODE&state=x', visitor(11));
+    assert.equal(r1.status, 403);
+    const go = await front('GET', '/desk/auth/login?provider=stub', visitor(11));
+    const state = cookieOf(go).find((c) => c.startsWith('__Host-desk-oauth='));
+    const r2 = await front('GET', '/desk/auth/callback?code=CODE&state=other', from(11, { cookie: state }));
+    assert.equal(r2.status, 403);
+    assert.equal(cookieOf(r2).some((c) => c.startsWith('__Host-desk-session=')), false);
+  });
+
+  it('an unknown provider is the same 404 as an unknown route', async () => {
+    const bad = await front('GET', '/desk/auth/login?provider=nope', visitor(12));
+    const nowhere = await front('GET', '/desk/auth/nothing', visitor(12));
+    assert.equal(bad.status, 404);
+    assert.equal(bad.body, nowhere.body);
+  });
+
+  it('a removed principal is out on the next request with a still-valid cookie', async () => {
+    const key = Buffer.from('k'.repeat(44));
+    const cookie = '__Host-desk-session=' + mintSession(key, 'e', Math.floor(Date.now() / 1000));
+    assert.equal((await front('GET', '/desk/', { cookie })).status, 200);
+    unlinkSync(join(ROOT, 'principals.d', 'e.conf'));
+    const gone = await front('GET', '/desk/', { cookie });
+    assert.equal(gone.status, 403);
+    assert.ok(cookieOf(gone).includes('__Host-desk-session='), 'the cookie must be cleared with the refusal');
+    writeFileSync(join(ROOT, 'principals.d', 'e.conf'), 'NAME="Eve"\nOIDC_LOGIN="stub:sub-1"\n');
+  });
+
+  it('a cookie forged under another key, or tampered, is not a session', async () => {
+    const bad = '__Host-desk-session=' + mintSession(Buffer.from('x'.repeat(44)), 'e', Math.floor(Date.now() / 1000));
+    const r = await front('GET', '/desk/', { cookie: bad });
+    assert.equal(r.status, 303);
+  });
+
+  it('logout needs same-origin and a matching Origin, then clears the cookie', async () => {
+    const key = Buffer.from('k'.repeat(44));
+    const cookie = '__Host-desk-session=' + mintSession(key, 'e', Math.floor(Date.now() / 1000));
+    assert.equal((await front('POST', '/desk/auth/logout', from(13, { cookie }))).status, 403);
+    assert.equal((await front('POST', '/desk/auth/logout', from(13, { cookie, 'sec-fetch-site': 'cross-site' }))).status, 403);
+    assert.equal((await front('POST', '/desk/auth/logout', from(13, { cookie, 'sec-fetch-site': 'same-origin', origin: 'https://evil.example.test' }))).status, 403);
+    const ok = await front('POST', '/desk/auth/logout', from(13, { cookie, 'sec-fetch-site': 'same-origin', origin: FRONT_ORIGIN }));
+    assert.equal(ok.status, 303);
+    assert.ok(cookieOf(ok).includes('__Host-desk-session='));
+  });
+
+  // The visitor address is what the box reported, so two visitors behind the
+  // same box have two budgets - which is the whole point of reading x-real-ip
+  // rather than the socket peer, since the socket peer is always the box.
+  it('rate limits the auth paths per visitor address', async () => {
+    let last;
+    for (let i = 0; i < 11; i++) last = await front('GET', '/desk/auth/login', { 'x-real-ip': '203.0.113.77' });
+    assert.equal(last.status, 429);
+    assert.equal(last.headers['retry-after'], '60');
+    const other = await front('GET', '/desk/auth/login', { 'x-real-ip': '203.0.113.78' });
+    assert.equal(other.status, 200);
+  });
+
+  it('refuses to start on a public bind, without a peer, or with a peer off the tailnet', async () => {
+    for (const over of [
+      { STEWARD_DESK_FRONT_LISTEN: '0.0.0.0:18443', STEWARD_DESK_FRONT_PEER: '127.0.0.1' },
+      { STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:18443' },
+      { STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:18443', STEWARD_DESK_FRONT_PEER: '203.0.113.1' }
+    ]) {
+      // Its own socket path, so a refusal here is the front's own and never
+      // the "another desk holds the socket" rc 64 the shared child would give.
+      const r = await runToExit(frontEnv(Object.assign({ STEWARD_DESK_SOCK: join(T, 'front-refuse.sock') }, over)));
+      assert.equal(r.code, 64, JSON.stringify(over));
+    }
+  });
+
+  it('refuses to start when the estate names no key, no providers and no origin', async () => {
+    const bare = join(T, 'front-bare');
+    mkdirSync(join(bare, 'estate'), { recursive: true });
+    mkdirSync(join(bare, 'principals.d'), { recursive: true });
+    writeFileSync(join(bare, 'estate', 'steward.conf'), readFileSync(join(ROOT, 'estate', 'steward.conf'), 'utf8')
+      .split('\n').filter((l) => !/^DESK_/.test(l)).join('\n'));
+    const env = frontEnv({
+      STEWARD_ESTATE_ROOT: bare,
+      STEWARD_DESK_SOCK: join(T, 'front-bare.sock'),
+      STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:18444',
+      STEWARD_DESK_FRONT_PEER: '127.0.0.1'
+    });
+    const r = await runToExit(env);
+    assert.equal(r.code, 78, r.err);
+    assert.ok(/origin/.test(r.err), r.err);
+  });
+});
+
+// A FRONT WHOSE PEER IS NOT US: every request is refused before identity is
+// read. It leans on the estate rows the block above wrote (origin, providers,
+// key), which is why it comes after it.
+describe('the front peer gate', () => {
+  it('refuses a socket peer other than the configured box', async () => {
+    const port = await freePort();
+    const h = await spawnUpTcp(childEnv({
+      STEWARD_DESK_SOCK: join(T, 'peer-gate.sock'),
+      STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port,
+      STEWARD_DESK_FRONT_PEER: '100.64.0.9'
+    }), '127.0.0.1', port, 5000);
+    try {
+      const r = await reqHttp('127.0.0.1', port, 'GET', '/desk/auth/login');
+      assert.equal(r.status, 403);
+      assert.equal(r.headers['content-type'], 'text/plain; charset=utf-8');
+      assert.equal(r.body, 'Forbidden: not the front peer.');
+    } finally {
+      await stopSpawned(h);
+    }
+  });
 });

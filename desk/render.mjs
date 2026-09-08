@@ -55,8 +55,19 @@ const CSS = [
 // LAYOUT - the only place a document shell is written. `title` is the heading
 // this page carries; the <title> element is the same on every page so a browser
 // tab never becomes a place where an estate's names are read out of context.
+//
+// A NULL SNAPSHOT IS A PAGE WITH NO FOOTER, NOT A PAGE WITH AN EMPTY ONE. The
+// login page (pageLogin) is the only page written before anybody is known, so
+// there is no measurement to date it by and no desk to link back to - a footer
+// reading "measured at  on " would be a claim about the estate made out of two
+// absent fields, and a link to /desk/ would send a stranger back to the login
+// page they are already reading.
 function LAYOUT(title, body, snap) {
-  const { generatedAt, host } = snap;
+  const { generatedAt, host } = snap || {};
+  const foot = snap
+    ? '<footer>measured at ' + h(generatedAt) + ' on ' + h(host) +
+      ' &middot; <a href="/desk/">desk</a></footer>'
+    : '';
   return '<!doctype html>' +
     '<meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
@@ -64,8 +75,7 @@ function LAYOUT(title, body, snap) {
     '<style>' + CSS + '</style>' +
     '<h1>' + h(title) + '</h1>' +
     body +
-    '<footer>measured at ' + h(generatedAt) + ' on ' + h(host) +
-    ' &middot; <a href="/desk/">desk</a></footer>';
+    foot;
 }
 
 // row - a label and a value, both escaped, in a two-column table. Every page is
@@ -345,6 +355,23 @@ export function pageProject(snap, id) {
   body += section('Sessions', sessionTable(v.sessions.filter((s) => s.project === p.id)));
 
   return LAYOUT(orNone(p.name), body, v);
+}
+
+// pageLogin - the front's only page for a stranger: one link per provider.
+//
+// NOTHING ABOUT THE ESTATE IS ON IT. No snapshot is read here, so a person who
+// has not logged in yet cannot learn a host, a name, a session or a
+// measurement from the page that asks them to log in. The provider slugs are
+// the estate's own file names (desk/providers.d/<slug>.conf), and they are the
+// one thing a person must see to choose which door they were invited through.
+// They are sorted so two renderings of the same set never differ, and escaped
+// like every other value in this file even though loadProviders already
+// refuses a file name that is not a slug.
+export function pageLogin(providers) {
+  const items = [...providers.keys()].sort().map((slug) =>
+    '<li><a href="/desk/auth/login?provider=' + h(slug) + '">Log in with ' + h(slug) + '</a></li>').join('');
+  return LAYOUT('Steward Desk',
+    '<p>Log in with the account you were invited with.</p><ul>' + items + '</ul>', null);
 }
 
 export function pageSession(snap, id) {

@@ -77,6 +77,35 @@
 //   STEWARD_DESK_SELF_ADDRS  extra addresses that count as this host
 //                            (space-separated); the interfaces' own
 //                            addresses are always included.
+//   STEWARD_DESK_FRONT_LISTEN  opt-in SECOND listener for the public front,
+//                       as `<addr>:<port>`. See "THE FRONT" below.
+//   STEWARD_DESK_FRONT_PEER    the one socket peer that second listener
+//                       answers. Required with the line above, refused
+//                       without it.
+//
+// THE FRONT IS A SECOND LISTENER WITH A SECOND IDENTITY SOURCE, AND THE TWO
+// NEVER MIX. The tailnet listener above believes one header and no cookie;
+// the front believes one cookie this desk minted itself (desk/cookie.mjs) and
+// no header. A request that arrives on the socket carrying a session cookie
+// is answered exactly as one carrying nothing, and a request on the front
+// carrying `tailscale-user-login` is answered exactly as one carrying
+// nothing - so neither entrance can be talked into the other's gate.
+//
+// THE FRONT ANSWERS ONE PEER. A public proxy box terminates TLS off-host and
+// forwards here; it is the only address allowed to connect (the tailnet ACL
+// says so, and front.mjs's visitorAddress says so a second time), which is
+// what makes its `x-real-ip` believable as the visitor's address - nothing
+// else can reach the port to write one. Every other peer gets 403 before a
+// header, a cookie or a path is read. The self-origin check that guards the
+// tailnet listener is NOT applied here: it exists because a node vouches for
+// a node, and the front's identity is a signed cookie, not a node.
+//
+// THE PROXY BOX HOLDS NOTHING. Discovery, the token exchange and the id_token
+// signature check all happen in this process (desk/oidc.mjs), so the box can
+// forward bytes and nothing more. The identity the provider proves is
+// resolved to a principal by the registry's own bridge, exactly as a tailnet
+// login is - and the row is checked again on EVERY front request, so removing
+// a person takes effect on their next click and not at their cookie's expiry.
 //
 // EXIT CODES
 //   64  A setting that cannot be honoured: STEWARD_DESK_MAX_AGE that is not a
@@ -85,13 +114,21 @@
 //       failure on the socket or the loopback address, a socket path another
 //       live desk already holds (never stolen - see bindSocket below), or a
 //       STEWARD_DESK_LISTEN value that does not name a loopback host with a
-//       usable port (see parseListen below).
+//       usable port (see parseListen below). With the front asked for: only
+//       one of its two variables set, a front listen address that is neither
+//       the tailnet's nor loopback, a front peer that is neither, or a bind
+//       failure on the front's own address (see desk/front.mjs).
 //   78  desk/bin/desk-paths could not answer, desk/bin/principal-for-login
 //       is not runnable (checked once at startup with accessSync), or the
 //       host's own network interfaces could not be read. A guessed path, a
 //       gate nobody could even ask, or a self-address set built on a partial
 //       read is a second desk nobody is reading, so there is no fallback for
-//       any of the three.
+//       any of the three. With the front enabled, also: desk-paths printed no
+//       origin=, providers= or session_key= line, the session key file cannot
+//       be loaded, desk/providers.d names no provider, or
+//       desk/bin/principal-exists is not runnable. A front that started
+//       without one of those would be a login page that can never finish a
+//       login, which is worse than a desk that refused to start.
 // =======================================================================
 
 import http from 'node:http';
@@ -101,8 +138,10 @@ import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync, accessSync,
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pageIndex, pageTeam, pageProject, pageSession } from './render.mjs';
-import { normalizeAddr } from './front.mjs';
+import { pageIndex, pageTeam, pageProject, pageSession, pageLogin } from './render.mjs';
+import { normalizeAddr, parseFrontListen, parseFrontPeer, visitorAddress, RateLimiter } from './front.mjs';
+import { parseCookies, serializeCookie, loadSessionKey, mintSession, verifySession, mintState, verifyState } from './cookie.mjs';
+import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from './oidc.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOOKUP = join(HERE, 'bin', 'principal-for-login');
@@ -133,6 +172,12 @@ function maxAge() {
 // deskPaths - the two defaults, asked of the bridge exactly once at startup and
 // never guessed. Only spawned when something is actually missing, so a unit
 // that names both paths never pays for it.
+//
+// THE BRIDGE PRINTS UP TO FIVE LINES AND THIS READER REQUIRES TWO. dir= and
+// sock= are always there; origin=, providers= and session_key= are printed
+// only when the estate names them, because a desk with no front has none of
+// the three and must not be refused for their absence. The front's own
+// startup block below is what requires them, and only when the front is on.
 function deskPaths() {
   let out;
   try {
@@ -144,7 +189,7 @@ function deskPaths() {
   }
   const found = {};
   for (const line of out.split('\n')) {
-    const m = line.match(/^(dir|sock)=(.+)$/);
+    const m = line.match(/^(dir|sock|origin|providers|session_key)=(.+)$/);
     if (m) found[m[1]] = m[2];
   }
   if (!found.dir || !found.sock) {
@@ -202,6 +247,68 @@ if (LISTEN) {
   const p = deskPaths();
   DIR = DIR || p.dir;
   SOCK = SOCK || p.sock;
+}
+
+// FRONT - null unless the operator asked for the second listener, and a
+// refusal rather than a half-configured one whenever they asked for it and
+// something it needs is missing. Everything below is measured ONCE, here, at
+// startup: the two variables must arrive together (one alone is a typo, and
+// guessing the other would either publish a desk nobody meant to publish or
+// open a port that answers nobody), the estate must name an origin, a
+// providers directory and a key file, at least one provider must be readable,
+// and the row bridge the cookie gate asks on every request must be runnable.
+const FRONT_LISTEN_RAW = process.env.STEWARD_DESK_FRONT_LISTEN;
+const FRONT_PEER_RAW = process.env.STEWARD_DESK_FRONT_PEER;
+let FRONT = null;
+if (FRONT_LISTEN_RAW || FRONT_PEER_RAW) {
+  if (!FRONT_LISTEN_RAW || !FRONT_PEER_RAW) {
+    console.error('desk: STEWARD_DESK_FRONT_LISTEN and STEWARD_DESK_FRONT_PEER must be set together');
+    process.exit(64);
+  }
+  let frontListen, frontPeer;
+  try {
+    frontListen = parseFrontListen(FRONT_LISTEN_RAW);
+    frontPeer = parseFrontPeer(FRONT_PEER_RAW);
+  } catch (e) {
+    console.error('desk: ' + (e && e.message ? e.message : e));
+    process.exit(64);
+  }
+  const p = deskPaths();
+  for (const k of ['origin', 'providers', 'session_key']) {
+    if (!p[k]) {
+      console.error('desk: the front needs a ' + k + '= line from desk-paths ' +
+        '(DESK_ORIGIN, desk/providers.d, DESK_SESSION_KEY_FILE in the estate)');
+      process.exit(78);
+    }
+  }
+  let sessionKey, providers;
+  try {
+    sessionKey = loadSessionKey(p.session_key);
+  } catch (e) {
+    console.error('desk: the front\'s session key cannot be used: ' + (e && e.message ? e.message : e));
+    process.exit(78);
+  }
+  try {
+    providers = loadProviders(p.providers);
+  } catch (e) {
+    console.error('desk: ' + (e && e.message ? e.message : e));
+    process.exit(78);
+  }
+  if (providers.size === 0) {
+    console.error('desk: desk/providers.d names no provider, so the front could never finish a login');
+    process.exit(78);
+  }
+  const EXISTS_BRIDGE = join(HERE, 'bin', 'principal-exists');
+  try {
+    accessSync(EXISTS_BRIDGE, constants.X_OK);
+  } catch {
+    console.error('desk: ' + EXISTS_BRIDGE + ' is missing or not executable; the front cannot start');
+    process.exit(78);
+  }
+  FRONT = {
+    listen: frontListen, peer: frontPeer, origin: p.origin, key: sessionKey,
+    providers, exists: EXISTS_BRIDGE, limiter: new RateLimiter(10, 60000)
+  };
 }
 
 // THE KERNEL TRUNCATES A LONG SOCKET PATH INSTEAD OF REFUSING IT. sockaddr_un
@@ -324,11 +431,12 @@ const LOGIN_RE = /^[A-Za-z0-9._%+@-]{1,254}$/;
 // charset, not merely a superset that happens to be safe.
 const SLUG_RE = /^[a-z0-9-]+$/;
 
-// logBridgeOutage - the ONE line an outage gets. Never the header value's own
-// text: only its length, because that value is attacker-reachable and a log
-// is not the place to reflect it back. What an operator needs is what failed
-// and how - a code, a signal, an exit status - not the login that triggered it.
-function logBridgeOutage(login, e) {
+// logBridgeOutage - the ONE line an outage gets, for either bridge. Never the
+// value's own text: only its length, because that value is attacker-reachable
+// and a log is not the place to reflect it back. What an operator needs is
+// what failed and how - a code, a signal, an exit status - not the login that
+// triggered it.
+function logBridgeOutage(value, e, bridge = 'principal-for-login') {
   const bits = [];
   if (e) {
     if (e.code) bits.push('code=' + e.code);
@@ -338,8 +446,8 @@ function logBridgeOutage(login, e) {
   } else {
     bits.push('unexpected-output');
   }
-  const len = typeof login === 'string' ? login.length : 0;
-  console.error('desk: principal-for-login failed (' + bits.join(' ') + '), login length ' + len);
+  const len = typeof value === 'string' ? value.length : 0;
+  console.error('desk: ' + bridge + ' failed (' + bits.join(' ') + '), value length ' + len);
 }
 
 // principalFor - exactly one slug, or nothing, or an outage. Never a guess.
@@ -365,6 +473,50 @@ function principalFor(login) {
   if (slug && SLUG_RE.test(slug)) return { slug, outage: false };
   logBridgeOutage(login, null);
   return { slug: null, outage: true };
+}
+
+// principalForIdentity - the same bridge, asked in its two-argument form: a
+// source and a value. The rc reading is principalFor's, word for word, and for
+// the same reasons - rc 1 and rc 65 are policy (nobody, or two people, claim
+// this identity), everything else is an outage.
+//
+// THE SHAPE IS CHECKED BEFORE THE PROCESS IS SPAWNED, exactly as LOGIN_RE is
+// checked before a tailnet login becomes an argument. This is the registry's
+// own OIDC_LOGIN word form (lib/registry.sh, _registry_oidc_login_valid):
+// an issuer slug, a colon, and a subject out of the URL-safe unreserved set -
+// which is what identityOf builds, with the tenant folded into the subject as
+// `<tid>.<sub>` when the provider is multi-tenant.
+const IDENTITY_RE = /^[a-z0-9][a-z0-9-]*:[A-Za-z0-9._~-]{1,300}$/;
+function principalForIdentity(source, value) {
+  if (typeof value !== 'string' || !IDENTITY_RE.test(value)) return { slug: null, outage: false };
+  let out;
+  try {
+    out = execFileSync(LOOKUP, [source, value], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    if (e && (e.status === 1 || e.status === 65)) return { slug: null, outage: false };
+    logBridgeOutage(value, e);
+    return { slug: null, outage: true };
+  }
+  const slug = out.trim();
+  if (slug && SLUG_RE.test(slug)) return { slug, outage: false };
+  logBridgeOutage(value, null);
+  return { slug: null, outage: true };
+}
+
+// principalExists - is the row the cookie names still there? rc 0 yes, rc 1
+// no, anything else an outage. Asked on EVERY front request: a session cookie
+// is self-contained by design, so this is the only place where removing a
+// person from the registry becomes a refusal on their next click rather than
+// at their cookie's expiry twelve hours later.
+function principalExists(slug) {
+  try {
+    execFileSync(FRONT.exists, [slug], { timeout: 5000, stdio: ['ignore', 'ignore', 'pipe'] });
+    return { exists: true, outage: false };
+  } catch (e) {
+    if (e && e.status === 1) return { exists: false, outage: false };
+    logBridgeOutage(slug, e, 'principal-exists');
+    return { exists: false, outage: true };
+  }
 }
 
 // loadSnapshot - the viewer's file out of the CURRENT generation, or null.
@@ -414,29 +566,238 @@ const server = http.createServer((req, res) => {
   if (outage) return send(res, 503, NO_MEASUREMENT); // a dead gate is an outage, never a refusal
   if (!principal) return send(res, 403, FORBIDDEN);
 
+  return servePage(req, res, principal, HEADERS);
+});
+
+// servePage - the part both entrances share: once SOMEBODY is known, the route
+// table and the snapshot decide the rest, and they decide it the same way for
+// a tailnet login and for a front cookie. The header set is a parameter
+// because that is the only thing the two answers differ in (the front allows
+// `form-action 'self'` for its logout button); every status and every body
+// below is the same on both, which is what keeps the two entrances from
+// becoming two behaviours.
+function servePage(req, res, principal, headers) {
   let path;
   try {
     path = new URL(req.url, 'http://desk').pathname;
   } catch {
-    return send(res, 404, NOT_FOUND);
+    return send(res, 404, NOT_FOUND, headers);
   }
 
   const route = ROUTES.map(([re, fn]) => [path.match(re), fn]).find(([m]) => m);
-  if (!route) return send(res, 404, NOT_FOUND);
+  if (!route) return send(res, 404, NOT_FOUND, headers);
 
   const snap = loadSnapshot(principal);
-  if (!snap) return send(res, 503, NO_MEASUREMENT);
+  if (!snap) return send(res, 503, NO_MEASUREMENT, headers);
 
   let html;
   try {
     html = route[1](snap, route[0][1]);
   } catch (e) {
     console.error('desk: render threw: ' + (e && e.message ? e.message : e));
-    return send(res, 503, NO_MEASUREMENT); // a snapshot this renderer cannot read is not a page
+    return send(res, 503, NO_MEASUREMENT, headers); // a snapshot this renderer cannot read is not a page
   }
-  if (html === null) return send(res, 404, NOT_FOUND); // same body as unknown: no oracle
-  send(res, 200, html);
+  if (html === null) return send(res, 404, NOT_FOUND, headers); // same body as unknown: no oracle
+  send(res, 200, html, headers);
+}
+
+// ===========================================================================
+// THE FRONT. A second listener, one peer, and a cookie instead of a header.
+// Everything below runs only when FRONT is set; a desk without a front never
+// evaluates a line of it.
+
+// FRONT_HEADERS - the tailnet's header set with one change: the logout button
+// is a form that posts back here, so `form-action` must allow 'self' where the
+// tailnet listener, which has no form on any page, allows nothing. Everything
+// else - no-store, nosniff, DENY, no-referrer, default-src 'none' - is the
+// same set, so a front page is no less locked down than a socket page.
+const FRONT_HEADERS = Object.assign({}, HEADERS, {
+  'content-security-policy': HEADERS['content-security-policy'].replace("form-action 'none'", "form-action 'self'")
 });
+
+// Two more fixed refusal bodies, and they are plain text rather than HTML for
+// the same reason the self-origin refusal is: neither is a page a person
+// browses to, and both are read by an operator in a log or a curl.
+const PEER_FORBIDDEN = 'Forbidden: not the front peer.';
+const TOO_MANY = 'Too many requests.';
+const PLAIN = { 'content-type': 'text/plain; charset=utf-8' };
+
+const SESSION_COOKIE = '__Host-desk-session';
+const STATE_COOKIE = '__Host-desk-oauth';
+const SESSION_MAX_AGE = 43200; // twelve hours, the same bound verifySession applies
+const STATE_MAX_AGE = 600;     // ten minutes, long enough for one login
+
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+// clearCookie - the only value other than a freshly minted one that may reach
+// serializeCookie. That function concatenates its value bare, so nothing
+// derived from a request is ever handed to it: what goes in is this empty
+// string, mintSession's output, or mintState's output, and nothing else.
+const clearCookie = (name) => serializeCookie(name, '', { maxAge: 0 });
+
+// THE OPERATOR GETS THE REASON, THE VISITOR GETS THE SAME 403 AS EVERY OTHER
+// REFUSAL, AND NEITHER EVER GETS THE MATERIAL. desk/oidc.mjs refuses with
+// messages that name a slug and a reason and nothing else; anything else came
+// from somewhere that never promised that - readFileSync on the client secret
+// names the secret's own path in its ENOENT - so an unrecognised error is
+// logged by its class alone. The token, the code and the secret appear in no
+// branch of either.
+const SAFE_REASON = /^(id_token: |discovery for |token endpoint for |jwks for )/;
+function refusalReason(e) {
+  const msg = e && typeof e.message === 'string' ? e.message.split('\n')[0] : '';
+  if (SAFE_REASON.test(msg)) return msg;
+  return e && e.constructor && e.constructor.name ? e.constructor.name : 'error';
+}
+
+// authLogin - GET /desk/auth/login. Without a provider it is the chooser page;
+// with a known one it mints the state cookie and sends the visitor on. The
+// state cookie carries the PKCE verifier and the nonce as well as the state,
+// signed under the host's key, so the callback needs no server-side store to
+// know that this browser started this login.
+async function authLogin(url, res) {
+  const slug = url.searchParams.get('provider');
+  if (slug === null) return send(res, 200, pageLogin(FRONT.providers), FRONT_HEADERS);
+  const provider = FRONT.providers.get(slug);
+  // An unknown provider is the same 404 as an unknown route: asking which
+  // slugs exist is answered by the chooser page, not by a difference here.
+  if (!provider) return send(res, 404, NOT_FOUND, FRONT_HEADERS);
+  let doc;
+  try {
+    doc = await discover(provider);
+  } catch (e) {
+    console.error('desk front: discovery failed for ' + slug + ': ' + refusalReason(e));
+    return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS); // a provider that is down is not this person's fault
+  }
+  const begun = beginLogin(provider, doc, FRONT.origin + '/desk/auth/callback');
+  const state = mintState(FRONT.key, {
+    state: begun.state, nonce: begun.nonce, verifier: begun.verifier, provider: slug, issuedAt: nowSec()
+  });
+  return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
+    location: begun.url,
+    'set-cookie': serializeCookie(STATE_COOKIE, state, { maxAge: STATE_MAX_AGE })
+  }));
+}
+
+// authCallback - GET /desk/auth/callback. The state cookie must verify AND
+// must match the state the provider echoed; then the code is exchanged and the
+// id_token verified in this process. Every failure between here and a
+// principal is the same 403 with the state cookie cleared, so the callback is
+// never an oracle about which step failed.
+async function authCallback(url, cookies, res) {
+  const refuse = () => send(res, 403, FORBIDDEN, Object.assign({}, FRONT_HEADERS, {
+    'set-cookie': clearCookie(STATE_COOKIE)
+  }));
+  const fields = verifyState(FRONT.key, cookies.get(STATE_COOKIE), nowSec());
+  if (!fields || url.searchParams.get('state') !== fields.state) return refuse();
+  const provider = FRONT.providers.get(fields.provider);
+  const code = url.searchParams.get('code');
+  if (!provider || !code) return refuse();
+  let claims;
+  try {
+    const doc = await discover(provider);
+    const token = await exchangeCode(provider, doc, {
+      code, verifier: fields.verifier, redirectUri: FRONT.origin + '/desk/auth/callback'
+    });
+    claims = await verifyIdToken(provider, doc, token, { nonce: fields.nonce });
+  } catch (e) {
+    console.error('desk front: login refused (' + fields.provider + '): ' + refusalReason(e));
+    return refuse();
+  }
+  const identity = identityOf(provider, claims);
+  const { slug, outage } = principalForIdentity('oidc', identity.slice('oidc:'.length));
+  if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
+  if (!slug) return refuse(); // invitation binding attaches here (services plan)
+  return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
+    location: '/desk/',
+    'set-cookie': [
+      serializeCookie(SESSION_COOKIE, mintSession(FRONT.key, slug, nowSec()), { maxAge: SESSION_MAX_AGE }),
+      clearCookie(STATE_COOKIE)
+    ]
+  }));
+}
+
+// authLogout - POST /desk/auth/logout. SameSite=Lax already keeps the cookie
+// off a cross-site POST, so these two checks are the second lock rather than
+// the first: `sec-fetch-site` must say the request came from this origin, and
+// an Origin header, when the browser sent one, must be this origin exactly.
+function authLogout(req, res) {
+  if (req.headers['sec-fetch-site'] !== 'same-origin') return send(res, 403, FORBIDDEN, FRONT_HEADERS);
+  if (req.headers.origin !== undefined && req.headers.origin !== FRONT.origin) {
+    return send(res, 403, FORBIDDEN, FRONT_HEADERS);
+  }
+  return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
+    location: '/desk/auth/login',
+    'set-cookie': clearCookie(SESSION_COOKIE)
+  }));
+}
+
+// handleFront - the whole front request, in the order the gates have to run:
+// the peer first (before a header, a cookie or a path is read), then the rate
+// limiter on the auth paths, then the routes, then the cookie.
+async function handleFront(req, res) {
+  const visitor = visitorAddress(req, FRONT.peer);
+  if (visitor === null) {
+    console.error('desk front: refused peer ' + normalizeAddr(req.socket.remoteAddress));
+    return send(res, 403, PEER_FORBIDDEN, Object.assign({}, FRONT_HEADERS, PLAIN));
+  }
+
+  let url;
+  try {
+    url = new URL(req.url, FRONT.origin);
+  } catch {
+    return send(res, 404, NOT_FOUND, FRONT_HEADERS);
+  }
+  const path = url.pathname;
+  const cookies = parseCookies(req.headers.cookie);
+
+  // THE AUTH PATHS ARE THE ONLY ONES A STRANGER CAN REACH, so they are the
+  // ones that carry a cost: each one spawns a bridge or talks to a provider.
+  // Ten per minute per visitor is far above what a person clicking a login
+  // button does and far below what a scan needs to be useful.
+  if (path.startsWith('/desk/auth/')) {
+    if (!FRONT.limiter.hit(visitor, Date.now())) {
+      return send(res, 429, TOO_MANY, Object.assign({}, FRONT_HEADERS, PLAIN, { 'retry-after': '60' }));
+    }
+    if (path === '/desk/auth/login' && req.method === 'GET') return authLogin(url, res);
+    if (path === '/desk/auth/callback' && req.method === 'GET') return authCallback(url, cookies, res);
+    if (path === '/desk/auth/logout' && req.method === 'POST') return authLogout(req, res);
+    return send(res, 404, NOT_FOUND, FRONT_HEADERS);
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow: 'GET, HEAD' }));
+  }
+
+  // IDENTITY IS THE COOKIE, AND THE ROW MUST STILL BE THERE. No login header
+  // is read on this listener, by any path, ever. A visitor without a valid
+  // cookie is sent to the login page rather than refused, because they are not
+  // refused - they have not said who they are yet.
+  const principal = verifySession(FRONT.key, cookies.get(SESSION_COOKIE), nowSec());
+  if (!principal) {
+    return send(res, 303, '', Object.assign({}, FRONT_HEADERS, { location: '/desk/auth/login' }));
+  }
+  const { exists, outage } = principalExists(principal);
+  if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
+  if (!exists) {
+    return send(res, 403, FORBIDDEN, Object.assign({}, FRONT_HEADERS, {
+      'set-cookie': clearCookie(SESSION_COOKIE)
+    }));
+  }
+  return servePage(req, res, principal, FRONT_HEADERS);
+}
+
+// frontServer - handleFront is async, and an unhandled rejection would take
+// the whole desk down, tailnet listener included. So every throw that no
+// branch above caught lands here as the ordinary 503, logged by its class.
+function frontServer() {
+  return http.createServer((req, res) => {
+    handleFront(req, res).catch((e) => {
+      console.error('desk front: request failed: ' + refusalReason(e));
+      if (res.headersSent) res.end();
+      else send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
+    });
+  });
+}
 
 // cleanUp only ever touches SOCK, so in loopback mode - where SOCK is cleared
 // to undefined right after the mode branch above, whatever the environment
@@ -504,6 +865,28 @@ if (LISTEN) {
   bindSocket();
 }
 
+// The front is a SECOND listener, never a replacement: the tailnet entrance
+// above binds either way, and a bind failure here is the same rc 64 a bind
+// failure there is.
+let FRONT_SERVER = null;
+if (FRONT) {
+  FRONT_SERVER = frontServer();
+  FRONT_SERVER.on('error', (e) => {
+    console.error('desk: could not bind the front at ' + FRONT.listen.host + ':' + FRONT.listen.port +
+      ': ' + (e && e.code ? e.code : e));
+    process.exit(64);
+  });
+  FRONT_SERVER.listen(FRONT.listen.port, FRONT.listen.host, () => {
+    console.error('desk: front listening on ' + FRONT.listen.host + ':' + FRONT.listen.port +
+      ' for peer ' + FRONT.peer);
+  });
+}
+
 for (const sig of ['SIGTERM', 'SIGINT']) {
-  process.on(sig, () => { server.close(); cleanUp(); process.exit(0); });
+  process.on(sig, () => {
+    server.close();
+    if (FRONT_SERVER) FRONT_SERVER.close();
+    cleanUp();
+    process.exit(0);
+  });
 }
