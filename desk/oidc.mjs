@@ -83,22 +83,43 @@ function timedFetch(fetchImpl, url, init) {
 // trusted party by construction, so this is the compromised-provider case: a
 // discovery document or a JWKS of a gigabyte would otherwise be read whole
 // into this process, and every key in such a JWKS handed to createPublicKey.
-// A declared content-length over the cap is refused before the body is read;
-// without one the body is read and then measured, which bounds what is
-// PARSED rather than what is received. 64 KiB is far above any real document
-// of either kind - a JWKS of a hundred keys is a few kilobytes - so the cap
-// also bounds the key count without counting keys.
+// 64 KiB is far above any real document of either kind - a JWKS of a hundred
+// keys is a few kilobytes - so the cap also bounds the key count without
+// counting keys.
+//
+// THE CAP IS MEASURED WHILE THE BODY ARRIVES, NOT AFTER IT HAS. A declared
+// content-length over the cap is refused before a byte of the body is read,
+// but a chunked answer declares nothing, and reading such a body to the end
+// first bounds what is PARSED rather than what is RECEIVED - which is the
+// wrong thing to bound when the sender is the one being defended against.
+// Measured in review 2026-09-08 against a hostile provider on loopback: 512
+// MiB chunked took the process from 45 to 598 MiB of RSS and then refused
+// with V8's own "Cannot create a string longer than 0x1fffffe8" - not this
+// cap's message at all, so the operator's log said "Error" and not why. So
+// the chunks are summed as they land and the stream is abandoned the moment
+// the sum passes the cap: leaving the for-await early cancels it, and the
+// transfer stops.
 //
 // The message keeps the caller's own prefix, because serve.mjs allowlists
 // those four prefixes for the operator's log and degrades anything else to a
 // class name.
 const MAX_BODY_BYTES = 65536;
+async function boundedText(res, tooBig) {
+  if (!res.body) return await res.text(); // no stream to read: an empty body
+  let total = 0;
+  const chunks = [];
+  for await (const chunk of res.body) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) throw new Error(tooBig);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 async function boundedJson(res, what) {
   const declared = res.headers.get('content-length');
   const tooBig = what + ' answered a body over ' + MAX_BODY_BYTES + ' bytes';
   if (declared !== null && Number(declared) > MAX_BODY_BYTES) throw new Error(tooBig);
-  const text = await res.text();
-  if (Buffer.byteLength(text) > MAX_BODY_BYTES) throw new Error(tooBig);
+  const text = await boundedText(res, tooBig);
   try {
     return JSON.parse(text);
   } catch {

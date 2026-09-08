@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, generateKeyPairSync, createSign } from 'node:crypto';
+import http from 'node:http';
 import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from '../oidc.mjs';
 import { startStub } from './oidc-stub.mjs';
 
@@ -296,4 +297,43 @@ test('a JWKS over the cap is refused rather than parsed into keys', async (t) =>
   const doc = Object.assign({}, f.doc, { jwks_uri: f.stub.origin + '/jwks-fat' });
   await assert.rejects(verifyIdToken(f.prov, doc, f.stub.mintIdToken(), { nonce: f.begun.nonce }, fat),
     /id_token: jwks unavailable/);
+});
+
+// THE CAP IS MEASURED WHILE THE BODY ARRIVES. The test above streams from a
+// Blob, which is a stream the runtime already holds whole; this one is a real
+// socket sending real chunks with no content-length, which is what a hostile
+// provider looks like. The refusal must therefore arrive after a few chunks
+// and not after all of them - so the server counts what it managed to send,
+// and that count is the assertion. Reading the body to the end first would
+// pass the message check and fail this one, which is exactly the difference.
+test('a chunked body past the cap is refused while it arrives, not after it', async (t) => {
+  const CHUNK = Buffer.alloc(65536, 0x20);
+  const TOTAL = 32 * 1024 * 1024;
+  let served = 0;
+  const server = http.createServer((req, res) => {
+    // No content-length: the answer is chunked, so the declared-length gate
+    // above has nothing to say and the reader is the only thing left.
+    res.writeHead(200, { 'content-type': 'application/json' });
+    let closed = false;
+    res.on('close', () => { closed = true; });
+    res.on('error', () => { closed = true; });
+    const pump = () => {
+      while (!closed && served < TOTAL) {
+        served += CHUNK.length;
+        if (!res.write(CHUNK)) return res.once('drain', pump);
+      }
+      if (!closed) res.end();
+    };
+    pump();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise((r) => server.close(r)));
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const prov = {
+    slug: 'streamer', issuer: origin, issuerTemplate: null, clientId: 'cid',
+    clientSecretFile: '/f', discovery: origin + '/.well-known/openid-configuration'
+  };
+  await assert.rejects(discover(prov), /discovery for streamer answered a body over 65536 bytes/);
+  assert.ok(served < 4 * 1024 * 1024,
+    'the transfer must be abandoned at the cap, not read to the end: the provider sent ' + served + ' bytes');
 });
