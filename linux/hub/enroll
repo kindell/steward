@@ -648,13 +648,18 @@ fi
 # existed) and neither ENROLL-CONFIRM nor ENROLL-PROOF would have arrived. The
 # ENROLL-CONFIRM/PROOF markers stay as the second line — the approval script
 # and nav-enroll.test.sh look for them in the TEXT, not specifically on line one.
-# THE APPROVE PATH DEPENDS ON WHOSE MACHINE THE RECIPIENT IS ON. A recipient on
-# the hub's own machine shares the hub's layout, so $here (checkout or deployed
-# alike) is a path they can run. A recipient on a session host has the deployed
-# layout under their OWN home — an absolute hub path would name the hub owner's
-# home on a machine where it does not exist, so the tilde is left for THEIR
-# shell to expand. The old text hardcoded the deployed form for everyone, which
-# broke every checkout-run estate (measured on a live hub 2026-08-21).
+# THE COMMANDS RUN IN THE RECIPIENT'S OWN HOME, NEVER THE HUB'S, EVEN WHEN
+# THE RECIPIENT SHARES THE HUB'S HOST. The hub and a session owner are
+# routinely separate unix accounts on the same machine, and homes are not
+# world-readable — an absolute hub path ($here) names a directory the owner
+# cannot read, so it fails with a permission error instead of running. Every
+# home on every host, including the hub's own, carries the deploy image at
+# ~/scripts, so the tilde form is correct for same-host and cross-host alike
+# and is left for THE RECIPIENT'S OWN shell to expand. The old text hardcoded
+# the deployed form for everyone, which broke every checkout-run estate
+# (measured on a live hub 2026-08-21); a same-host hard-coded $here broke it
+# again wherever the hub's home differs from the owner's (measured on a
+# separate-account host, 2026-09-08).
 #
 # THE ACTIVATE COMMAND CARRIES BOTH HALVES OF THE PAIRING: <id> AND <slug>.
 # It used to print the id alone, which made the command copy-pastable and
@@ -672,15 +677,9 @@ fi
 # at this moment and prints both; the host's --activate takes the slug as its
 # second token and links exactly that key. Two tokens are as copy-pastable as
 # one, and unambiguous with any number of enrolments in flight.
-if [ "$VARD" = "$NAV_VARD" ]; then
-  APPROVE_CMD="bash $here/session-approve.sh"
-  STATUS_CMD="bash $here/estate-status.sh"
-  ACTIVATE_CMD="bash $here/session-new.sh --activate $ID $NAMN"
-else
-  APPROVE_CMD='bash ~/scripts/session-approve.sh'
-  STATUS_CMD='bash ~/scripts/estate-status.sh'
-  ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
-fi
+APPROVE_CMD='bash ~/scripts/session-approve.sh'
+STATUS_CMD='bash ~/scripts/estate-status.sh'
+ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1
 namn=$NAMN

@@ -226,6 +226,58 @@ id3="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1
 has "the activate command carries id and slug" "$out2" "--activate $id3 acme-cog-someone"
 has "CONFIRM still carries the id" "$out2" "id=$id3"
 
+# ── THE SAME-HOST CASE: CONFIRM/PROOF MUST NAME THE OWNER'S OWN ~/scripts ──
+# A requester whose vard= names the HUB'S OWN host takes the "same host"
+# branch. The owner still runs the printed commands in THEIR OWN home, which
+# is unreadable to the hub account on a host where the two are separate unix
+# accounts — so this branch must print exactly the same tilde form as every
+# other host, never the hub's own absolute path.
+lacks() { case "$2" in *"$3"*) bad "$1" "found unwanted '$3' in: $2" ;; *) ok "$1" ;; esac; }
+cat > "$FX/reg/asker-hub.conf" <<'CONF'
+HOST="hubhost"
+OWNER="someone"
+DOMAIN="d"
+RC_LABEL="Asker"
+REPO_PATH="/tmp/x"
+ID="asker-hub"
+CONF
+cat > "$FX/accounts.d/someone-hubhost.conf" <<'CONF'
+PRINCIPAL="someone"
+HOST="hubhost"
+CONF
+cat > "$FX/samehost-req.txt" <<'REQ'
+DRIFT enroll: acme-samehost-someone requests registration
+ENROLL-REQUEST v1
+namn=acme-samehost-someone
+doman=acme
+projekt=samehost
+person=someone
+vard=hubhost
+repo=/srv/homes/someone/Projects/samehost
+pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYSAMEHOSTxxxxxxxxxxxxxxxxxxxx test-only
+REQ
+# STDOUT AND STDERR ARE KEPT APART ON PURPOSE: the "no estate checkout" NOTE
+# on stderr legitimately prints the fixture's own conf path (it is telling the
+# operator where the row lives), so mixing it into $out_sh would make the
+# "never the fixture HOME" check below fail for a reason that has nothing to
+# do with CONFIRM/PROOF. Only stdout carries the --no-send printf block
+# (CONFIRM, PROOF) and the final "registered as" line.
+out_sh="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
+           STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
+           STEWARD_ENROLL_FROM=asker-hub \
+           bash "$ENROLL" --no-send < "$FX/samehost-req.txt" 2>/dev/null )"
+id_sh="$(printf '%s' "$out_sh" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+has "same host: the activate command uses the owner's own ~/scripts" \
+    "$out_sh" "activate=bash ~/scripts/session-new.sh --activate $id_sh acme-samehost-someone"
+has "same host: the approval gate uses the owner's own ~/scripts" \
+    "$out_sh" "gate=the approval runs FROM the new session: bash ~/scripts/session-approve.sh"
+has "same host: PROOF's task uses the owner's own ~/scripts" \
+    "$out_sh" "task=run: bash ~/scripts/session-approve.sh"
+has "same host: PROOF's fleet-questions uses the owner's own ~/scripts" \
+    "$out_sh" "fleet-questions=answer from the estate's own data: bash ~/scripts/estate-status.sh"
+lacks "same host: CONFIRM/PROOF never name the hub's own absolute path" "$out_sh" "$here"
+lacks "same host: CONFIRM/PROOF never name the fixture HOME" "$out_sh" "$FX"
+
 # ── THE LOGIN FIELD (writer census, task 9B) ────────────────────────────────
 # A SEPARATE, SCHEMA-6 FIXTURE — the estate above is schema 3 deliberately
 # (the transition case, proved above), so the LOGIN-required gate needs its
