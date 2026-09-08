@@ -13,7 +13,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, createPublicKey, createVerify } from 'node:crypto';
 
 const SLUG_RE = /^[a-z0-9-]+$/;
 const REQUIRED = ['DISCOVERY', 'CLIENT_ID', 'CLIENT_SECRET_FILE'];
@@ -58,11 +58,19 @@ function cacheKey(provider) {
   return provider.slug + '::' + provider.discovery;
 }
 
+// EVERY CALL TO A PROVIDER IS BOUNDED. A provider that accepts the connection
+// and never answers would otherwise hang a login forever; ten seconds is
+// longer than any healthy discovery, JWKS or token exchange takes.
+const FETCH_TIMEOUT_MS = 10000;
+function timedFetch(fetchImpl, url, init) {
+  return fetchImpl(url, Object.assign({}, init || {}, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }));
+}
+
 export async function discover(provider, fetchImpl = fetch) {
   const key = cacheKey(provider);
   const hit = discoveryCache.get(key);
   if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.doc;
-  const res = await fetchImpl(provider.discovery, { headers: { accept: 'application/json' } });
+  const res = await timedFetch(fetchImpl, provider.discovery, { headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error('discovery for ' + provider.slug + ' answered ' + res.status);
   const doc = await res.json();
   for (const k of ['issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri']) {
@@ -87,4 +95,83 @@ export function beginLogin(provider, doc, redirectUri) {
   u.searchParams.set('code_challenge', createHash('sha256').update(verifier).digest('base64url'));
   u.searchParams.set('code_challenge_method', 'S256');
   return { url: u.toString(), state, nonce, verifier };
+}
+
+export async function exchangeCode(provider, doc, { code, verifier, redirectUri }, fetchImpl = fetch) {
+  // The secret is read at call time, never held: a rotated file takes effect
+  // on the next login without a restart, and no copy lives in this process
+  // between logins.
+  const secret = readFileSync(provider.clientSecretFile, 'utf8').trim();
+  const form = new URLSearchParams({
+    grant_type: 'authorization_code', code, redirect_uri: redirectUri,
+    client_id: provider.clientId, client_secret: secret, code_verifier: verifier
+  });
+  const res = await timedFetch(fetchImpl, doc.token_endpoint, {
+    method: 'POST', body: form.toString(),
+    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }
+  });
+  if (!res.ok) throw new Error('token endpoint for ' + provider.slug + ' answered ' + res.status);
+  const body = await res.json();
+  if (typeof body.id_token !== 'string' || !body.id_token) throw new Error('token endpoint for ' + provider.slug + ' returned no id_token');
+  return body.id_token;
+}
+
+const jwksCache = new Map(); // slug + '::' + jwks_uri -> { keys: Map<kid, KeyObject>, at }
+
+async function jwksFor(provider, doc, kid, fetchImpl) {
+  const cacheKey = provider.slug + '::' + doc.jwks_uri;
+  let entry = jwksCache.get(cacheKey);
+  if (!entry || !entry.keys.has(kid)) {
+    // Refresh once on an unknown kid (rotation), never more: a second miss is
+    // a token this provider did not sign, not a cache that is behind.
+    const res = await timedFetch(fetchImpl, doc.jwks_uri, { headers: { accept: 'application/json' } });
+    if (!res.ok) throw new Error('jwks for ' + provider.slug + ' answered ' + res.status);
+    const body = await res.json();
+    const keys = new Map();
+    for (const k of (body.keys || [])) {
+      if (k.kty !== 'RSA' || !k.kid) continue;
+      if (k.use && k.use !== 'sig') continue;
+      keys.set(k.kid, createPublicKey({ key: k, format: 'jwk' }));
+    }
+    entry = { keys, at: Date.now() };
+    jwksCache.set(cacheKey, entry);
+  }
+  return entry.keys.get(kid) || null;
+}
+
+const fromB64u = (s) => Buffer.from(s, 'base64url');
+const refuse = (what) => { throw new Error('id_token: ' + what); };
+
+export async function verifyIdToken(provider, doc, token, { nonce, now = Math.floor(Date.now() / 1000) }, fetchImpl = fetch) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) refuse('malformed');
+  let header, claims;
+  try {
+    header = JSON.parse(fromB64u(parts[0]).toString('utf8'));
+    claims = JSON.parse(fromB64u(parts[1]).toString('utf8'));
+  } catch { refuse('malformed'); }
+  if (!header || header.alg !== 'RS256') refuse('alg');
+  if (typeof header.kid !== 'string') refuse('kid');
+  const key = await jwksFor(provider, doc, header.kid, fetchImpl);
+  if (!key) refuse('kid unknown');
+  const ok = createVerify('RSA-SHA256').update(parts[0] + '.' + parts[1]).verify(key, fromB64u(parts[2]));
+  if (!ok) refuse('signature');
+  // From here the claims are the provider's words.
+  let tid = null;
+  if (provider.issuerTemplate) {
+    if (typeof claims.tid !== 'string' || !/^[A-Za-z0-9-]+$/.test(claims.tid)) refuse('tid');
+    tid = claims.tid;
+    if (claims.iss !== provider.issuerTemplate.replace('<tid>', tid)) refuse('iss');
+  } else if (claims.iss !== provider.issuer) refuse('iss');
+  const aud = Array.isArray(claims.aud) ? (claims.aud.length === 1 ? claims.aud[0] : null) : claims.aud;
+  if (aud !== provider.clientId) refuse('aud');
+  if (typeof claims.exp !== 'number' || claims.exp <= now) refuse('exp');
+  if (typeof claims.iat !== 'number' || Math.abs(claims.iat - now) > 300) refuse('iat');
+  if (claims.nonce !== nonce) refuse('nonce');
+  if (typeof claims.sub !== 'string' || !claims.sub) refuse('sub');
+  return { sub: claims.sub, tid, email: typeof claims.email === 'string' ? claims.email : null };
+}
+
+export function identityOf(provider, claims) {
+  return 'oidc:' + provider.slug + ':' + (claims.tid ? claims.tid + '.' : '') + claims.sub;
 }
