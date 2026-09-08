@@ -126,15 +126,25 @@ function readSnapshot(snap) {
   };
 }
 
-// age - the liveness answer as a reader wants it: a state word, and how old the
-// activity behind it is. A missing age is `unknown`, never blank and never the
-// language's word for absence.
-const age = (ageSeconds) =>
-  (ageSeconds === null || ageSeconds === undefined || Number.isNaN(Number(ageSeconds))
-    ? 'unknown'
-    : String(ageSeconds) + 's');
+// formatAge - how old the activity behind a liveness answer is, IN THE UNIT THE
+// READER THINKS IN. A raw second count is exact and unreadable the moment it
+// passes a minute or two: `7200s` is a number to divide, `2 h` is an answer. The
+// three thresholds are the ones a person uses out loud - seconds up to a minute,
+// minutes up to an hour, hours after that - and the value is floored, never
+// rounded up, so a desk never reports a session as fresher than it is.
+//
+// A MISSING AGE IS `unknown`, never blank and never the language's word for
+// absence: "nobody could measure this" is a fact the reader has to be told.
+export function formatAge(ageSeconds) {
+  if (ageSeconds === null || ageSeconds === undefined) return 'unknown';
+  const n = Number(ageSeconds);
+  if (Number.isNaN(n)) return 'unknown';
+  if (n < 60) return Math.floor(n) + ' s';
+  if (n < 3600) return Math.floor(n / 60) + ' min';
+  return Math.floor(n / 3600) + ' h';
+}
 
-const livenessWord = (lv) => orNone(lv.state) + ', last activity ' + age(lv.ageSeconds);
+const livenessWord = (lv) => orNone(lv.state) + ', last activity ' + formatAge(lv.ageSeconds);
 
 // sessionLine - one session as a table row: its handle links to its page, the
 // label and the liveness answer sit beside it, and `mine` is marked so a viewer
@@ -151,6 +161,117 @@ const sessionTable = (list) =>
     : empty('No sessions in this view.'));
 
 // ---------------------------------------------------------------------------
+// THE TREE. A desk's first question is not "what rows are in my file" but "who
+// is doing what, for whom" - team, then the client that team manages, then the
+// project, then the session working on it. Four lists, one per kind, made the
+// reader rebuild that shape in their head from three tables that never named
+// each other; one nested list IS the shape.
+//
+// EVERY ROW IN THE FILE APPEARS EXACTLY ONCE. The filter decided what the
+// viewer may see; a view that then dropped a row because its parent happened
+// not to be in the same file would be a second, invisible filter - and the
+// rows it would drop are precisely the ones the visibility rule works hardest
+// to include (a project reached through the viewer's own session, whose entity
+// is not theirs to see). So each row hangs under its parent WHEN THAT PARENT IS
+// IN THIS FILE, and stands as a root of its own when it is not.
+
+// Order inside a level: by the display name, then by id so equal names never
+// swap between two renderings of the same file. A session's display name is its
+// `label` - the contract gives it no `name`, and sorting every session under one
+// empty string would make the level's order the accident of the array.
+const labelOf = (x) => {
+  const n = (x.name === null || x.name === undefined) ? x.label : x.name;
+  return (n === null || n === undefined) ? '' : String(n);
+};
+const idOf = (x) => (x.id === null || x.id === undefined ? '' : String(x.id));
+function byNameThenId(a, b) {
+  const an = labelOf(a); const bn = labelOf(b);
+  if (an !== bn) return an < bn ? -1 : 1;
+  return idOf(a) < idOf(b) ? -1 : idOf(a) > idOf(b) ? 1 : 0;
+}
+
+const push = (m, k, x) => { const l = m.get(k); if (l) l.push(x); else m.set(k, [x]); };
+
+// plan - one pass that decides where every row hangs, before a byte of HTML is
+// written. The walk below then only has to read these maps, so the placement
+// rule is in one place and the recursion has nothing to decide.
+function plan(v) {
+  const entities = v.entities.slice().sort(byNameThenId);
+  const projects = v.projects.slice().sort(byNameThenId);
+  const sessions = v.sessions.slice().sort(byNameThenId);
+  const entityIds = new Set(entities.map((e) => e.id));
+  const projectIds = new Set(projects.map((p) => p.id));
+
+  const childEntities = new Map(); const rootEntities = [];
+  for (const e of entities) {
+    // AN ENTITY WHOSE MANAGER IS NOT IN THIS FILE IS A ROOT, never a dropped
+    // row: the viewer reached it through some other door, and the door it did
+    // not reach is not a reason to hide it.
+    if (e.managedBy && entityIds.has(e.managedBy)) push(childEntities, e.managedBy, e);
+    else rootEntities.push(e);
+  }
+  const entityProjects = new Map(); const rootProjects = [];
+  for (const p of projects) {
+    if (p.parent && entityIds.has(p.parent)) push(entityProjects, p.parent, p);
+    else rootProjects.push(p);
+  }
+  const projectSessions = new Map(); const entitySessions = new Map(); const rootSessions = [];
+  for (const s of sessions) {
+    if (s.project && projectIds.has(s.project)) push(projectSessions, s.project, s);
+    else if (s.domain && entityIds.has(s.domain)) push(entitySessions, s.domain, s);
+    else rootSessions.push(s);
+  }
+  return { entities, rootEntities, childEntities, entityProjects,
+           projectSessions, entitySessions, rootProjects, rootSessions };
+}
+
+const li = (head, kids) => '<li>' + head + (kids.length ? '<ul>' + kids.join('') + '</ul>' : '') + '</li>';
+
+const entityHead = (e) =>
+  link('team', e.id, labelOf(e) || orNone(e.id)) + (e.member ? tag('member') : tag('through a manager'));
+const projectHead = (p) => link('project', p.id, labelOf(p) || orNone(p.id));
+// The session node answers the three things a reader asks of a running session
+// without opening it: whose it is, whether it is alive, and how stale that
+// answer is. `mine` is marked exactly as the session table marks it.
+const sessionHead = (s) =>
+  link('session', s.id, orNone(s.slug)) + (s.mine ? tag('mine') : '') +
+  ' - ' + h(orNone(s.label)) + ' - ' + h(orNone(s.owner)) +
+  ' - ' + h(orNone(s.liveness.state) + ' - ' + formatAge(s.liveness.ageSeconds));
+
+const sessionNode = (s) => li(sessionHead(s), []);
+const projectNode = (P, p) => li(projectHead(p), (P.projectSessions.get(p.id) || []).map(sessionNode));
+
+// entityKids - a managed entity's whole subtree, then its own projects, then
+// the sessions that hang on the entity itself. `seen` is what makes a MANAGED_BY
+// CYCLE terminate: the registry refuses to load one, but a desk renders the
+// document it was handed, and a document that carries a loop must still produce
+// a page rather than a stack overflow.
+function entityKids(P, e, seen) {
+  const kids = [];
+  for (const c of P.childEntities.get(e.id) || []) if (!seen.has(c.id)) kids.push(entityNode(P, c, seen));
+  for (const p of P.entityProjects.get(e.id) || []) kids.push(projectNode(P, p));
+  for (const s of P.entitySessions.get(e.id) || []) kids.push(sessionNode(s));
+  return kids;
+}
+function entityNode(P, e, seen) {
+  seen.add(e.id);
+  return li(entityHead(e), entityKids(P, e, seen));
+}
+
+function forest(P) {
+  const seen = new Set();
+  const items = [];
+  for (const e of P.rootEntities) items.push(entityNode(P, e, seen));
+  for (const p of P.rootProjects) items.push(projectNode(P, p));
+  for (const s of P.rootSessions) items.push(sessionNode(s));
+  // A cycle has no root - every member names a manager that is present - so
+  // nothing above reached it. Each unvisited entity is taken as a root here, in
+  // order, and its own walk marks the rest of its loop as seen.
+  for (const e of P.entities) if (!seen.has(e.id)) items.push(entityNode(P, e, seen));
+  return items.length ? '<ul>' + items.join('') + '</ul>' : empty('Nothing in this view.');
+}
+
+// ---------------------------------------------------------------------------
 // The pages. Each returns an HTML string, or null when the id names nothing
 // this viewer's file carries - the server turns that null into the SAME 404 an
 // unknown route gets, so the page functions never have to know the difference
@@ -158,35 +279,7 @@ const sessionTable = (list) =>
 
 export function pageIndex(snap) {
   const v = readSnapshot(snap);
-  let body = '';
-
-  body += section('Teams', v.entities.length
-    ? table(v.entities.map((e) =>
-        rawRow(e.name === undefined ? e.id : e.name,
-          link('team', e.id, e.id) + (e.member ? tag('member') : tag('through a manager')))))
-    : empty('No teams in this view.'));
-
-  body += section('Projects', v.projects.length
-    ? table(v.projects.map((p) =>
-        rawRow(p.name === undefined ? p.id : p.name,
-          link('project', p.id, p.id) +
-          (p.parent ? ' under ' + link('team', p.parent, p.parent) : ''))))
-    : empty('No projects in this view.'));
-
-  // Sessions are grouped by the entity that owns them, because that is the
-  // question a reader arrives with: what is my team running right now.
-  const groups = [];
-  for (const s of v.sessions) {
-    const key = orNone(s.domain);
-    let g = groups.find((x) => x.key === key);
-    if (!g) { g = { key, list: [] }; groups.push(g); }
-    g.list.push(s);
-  }
-  body += section('Sessions', groups.length
-    ? groups.map((g) => '<h3>' + h(g.key) + '</h3>' + sessionTable(g.list)).join('')
-    : empty('No sessions in this view.'));
-
-  return LAYOUT('Desk for ' + orNone(v.viewer), body, v);
+  return LAYOUT('Desk for ' + orNone(v.viewer), forest(plan(v)), v);
 }
 
 export function pageTeam(snap, id) {
@@ -202,12 +295,13 @@ export function pageTeam(snap, id) {
     row('you are a member', e.member ? 'yes' : 'no')
   ]);
 
-  const projects = v.projects.filter((p) => p.parent === e.id);
-  body += section('Projects', projects.length
-    ? table(projects.map((p) => rawRow(p.name === undefined ? p.id : p.name, link('project', p.id, p.id))))
-    : empty('No projects in this view.'));
-
-  body += section('Sessions', sessionTable(v.sessions.filter((s) => s.domain === e.id)));
+  // THE SAME TREE, ROOTED HERE. The entity itself is the page, so the node for
+  // it is not repeated - what follows is everything under it, to any depth: the
+  // entities it manages, its own projects, and the sessions that hang on it.
+  const kids = entityKids(plan(v), e, new Set([e.id]));
+  body += section('Under this team', kids.length
+    ? '<ul>' + kids.join('') + '</ul>'
+    : empty('Nothing hangs under this team in this view.'));
 
   return LAYOUT(orNone(e.name), body, v);
 }
@@ -244,7 +338,7 @@ export function pageSession(snap, id) {
     row('repository', orNone(s.repo)),
     row('liveness', orNone(s.liveness.state)),
     row('measured at', orNone(s.liveness.measuredAt)),
-    row('last activity', age(s.liveness.ageSeconds))
+    row('last activity', formatAge(s.liveness.ageSeconds))
   ]);
 
   // THE ASSET TABLE NAMES THE GRANT, NEVER THE MEANS. id, axis and source say
