@@ -1274,6 +1274,59 @@ _registry_stat_id() {
   return 1
 }
 
+# _registry_lock_path <dir> - the register's write lock, named in ONE place so
+# the writer, the replacer and the refusal prose can never disagree about it.
+_registry_lock_path() { printf '%s' "$1/.write.lock"; }
+
+# _registry_lock_take <dir> <label> - take that lock, or refuse.
+#   rc 0  the lock is ours; EVERY return path in the caller must rmdir it
+#   rc 75 somebody else holds it (bounded retries, never stolen)
+#   rc 78 mkdir cannot succeed at all - an unwritable register, not contention
+#
+# SHARED BY registry_row_write AND registry_row_replace, not copied into each.
+# The two transactions differ in what they do under the lock, never in how they
+# take it, and a second copy of this loop would be a second place for the retry
+# bound, the 75/78 split and the refusal prose to drift apart.
+_registry_lock_take() {
+  local dir="$1" label="$2" lock
+  lock="$(_registry_lock_path "$dir")"
+  local tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    # A failed mkdir that left NO lock dir on disk AND an unwritable register
+    # dir is a genuine ENOENT/EACCES that no retry resolves — fail fast (the
+    # original defect was blamed for a multi-second stall). But a WRITABLE dir
+    # with no lock present means a holder rmdir'd it in the window between our
+    # failed mkdir and this check: pure contention, not unwritability.
+    # Concluding 78 there (measured under a 60-way session-add race) reports a
+    # merely-busy register as broken; require BOTH conditions, then loop and
+    # let the next mkdir take the freed lock.
+    if [ ! -d "$lock" ] && [ ! -w "$dir" ]; then
+      echo "registry: could not create the write lock — the $label register is not writable: $lock" >&2
+      return 78
+    fi
+    tries=$((tries+1))
+    if [ "$tries" -ge 20 ]; then
+      echo "registry: another write holds the registry lock, refusing: $lock" >&2
+      echo "registry: if no write is in progress, remove it with: rmdir $lock" >&2
+      return 75
+    fi
+    sleep 0.1
+  done
+  return 0
+}
+
+# _registry_stage_file <dir> <prefix> - a fresh empty file named
+# .<prefix>.XXXXXX inside the register directory, path on stdout, or empty and
+# non-zero when it cannot be made.
+#
+# A NON-.conf NAME so a reader globbing *.conf never observes a half-written
+# row, and the umask is narrowed INSIDE A SUBSHELL: these functions run in the
+# CALLER's shell, so a umask changed there would leak into every command the
+# caller runs afterwards. The subshell cannot leak it at all.
+_registry_stage_file() {
+  ( umask 077; mktemp "$1/.$2.XXXXXX" 2>/dev/null )
+}
+
 # ── THE ROW WRITER TRANSACTION — ONE SHARED PRIMITIVE ──────────────────────
 #
 # registry_row_write <dir> <slug> <content> <validate_fn> <readback_fn> <label>
@@ -1391,29 +1444,8 @@ registry_row_write() {
   local final="$dir/$slug.conf"
   # 1. LOCK. Derived from the DIRECTORY THE CALLER PASSED, not the estate
   # root — see the header above.
-  local lock="$dir/.write.lock"
-  local tries=0
-  while ! mkdir "$lock" 2>/dev/null; do
-    # A failed mkdir that left NO lock dir on disk AND an unwritable register
-    # dir is a genuine ENOENT/EACCES that no retry resolves — fail fast (the
-    # original defect was blamed for a multi-second stall). But a WRITABLE dir
-    # with no lock present means a holder rmdir'd it in the window between our
-    # failed mkdir and this check: pure contention, not unwritability.
-    # Concluding 78 there (measured under a 60-way session-add race) reports a
-    # merely-busy register as broken; require BOTH conditions, then loop and
-    # let the next mkdir take the freed lock.
-    if [ ! -d "$lock" ] && [ ! -w "$dir" ]; then
-      echo "registry: could not create the write lock — the $label register is not writable: $lock" >&2
-      return 78
-    fi
-    tries=$((tries+1))
-    if [ "$tries" -ge 20 ]; then
-      echo "registry: another write holds the registry lock, refusing: $lock" >&2
-      echo "registry: if no write is in progress, remove it with: rmdir $lock" >&2
-      return 75
-    fi
-    sleep 0.1
-  done
+  local lock; lock="$(_registry_lock_path "$dir")"
+  _registry_lock_take "$dir" "$label" || return $?
   # Save whatever EXIT trap the caller already had, so this function's own
   # cleanup can restore it rather than wipe it out — a caller's own
   # `trap ... EXIT` (a test fixture's cleanup, say) must survive a call into
@@ -1438,14 +1470,11 @@ registry_row_write() {
     return 65
   fi
 
-  # 3. STAGE (umask 077 for the create, saved/restored immediately — this
-  # function runs in the CALLER's shell, so leaving the umask changed would
-  # leak into every command the caller runs afterward).
-  local _prev_umask; _prev_umask="$(umask)"
-  umask 077
+  # 3. STAGE (umask 077 for the create, inside _registry_stage_file's own
+  # subshell: this function runs in the CALLER's shell, so a umask changed
+  # here would leak into every command the caller runs afterward).
   local stage
-  stage="$(mktemp "$dir/.stage.XXXXXX" 2>/dev/null)"
-  umask "$_prev_umask"
+  stage="$(_registry_stage_file "$dir" stage)"
   if [ -z "$stage" ]; then
     echo "registry: could not create a staging file in $dir" >&2
     rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
@@ -1528,6 +1557,185 @@ registry_row_write() {
   return 0
 }
 
+# registry_row_replace <dir> <slug> <content> <validate_fn> <readback_fn> <label>
+# - the IN-PLACE twin of registry_row_write, for the rows whose STATE changes
+# after they are written: an invitation moving from open to revoked, an
+# entity's MEMBERS gaining a person.
+#
+# WHY A SEPARATE FUNCTION AND NOT A FLAG ON THE WRITER. The writer's step 2 and
+# step 6 both refuse a destination that exists, and they refuse it twice on
+# purpose - "this row is new" is the one guarantee every caller of that
+# function has. A flag would put "create" and "overwrite" one typo apart in
+# every call site in the product. Two names, two intentions.
+#
+# THE TRANSACTION IS THE SAME, step for step - and the steps that are the same
+# are SHARED CODE, not a copy of it: _registry_lock_take is the same lock with
+# the same bound and the same 75/78 split, _registry_stage_file the same
+# staging file, _registry_restore_exit_trap the same release, _registry_stat_id
+# the same "is the file under that name still mine" question.
+#
+# THREE DIFFERENCES, AND ONLY THREE:
+#   * the recheck INVERTS - the destination must EXIST and be a regular file.
+#     A missing row is rc 65 (there is nothing to replace, and creating one
+#     here would let a typo mint a row through the update path); a symlink is
+#     rc 65 too, because a link's target can be swapped between the check and
+#     the write.
+#   * the publish is `mv`, atomic over an existing name. The writer's
+#     no-clobber `ln` would be exactly wrong here: clobbering is the job.
+#   * the CURRENT bytes are copied to a second stage BEFORE the publish, so a
+#     failed readback can put them back. registry_row_write simply deletes what
+#     it published; this function must not, because deleting would take the
+#     previous row with it.
+#
+# rc 64 invalid slug - 65 no such row, or the destination is not a regular
+# file - 75 lock held - 78 the register directory is unreadable or unwritable
+# - 70 any other write/validate/chmod/publish/readback failure.
+registry_row_replace() {
+  local dir="$1" slug="$2" content="$3" validate_fn="$4" readback_fn="$5" label="$6"
+  # 0. SLUG, validated HERE and not only in the caller - the same boundary
+  # registry_row_write draws, and for the same reason: no path is built out of
+  # an unchecked slug.
+  if ! [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: refusing - invalid slug '$slug' (allowed: a-z0-9-, must start a-z0-9)" >&2
+    return 64
+  fi
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING - the $label register is not readable: $dir" >&2
+    return 78
+  fi
+  local final="$dir/$slug.conf"
+
+  # 1. LOCK - the register's one lock, keyed on the directory the caller
+  # passed, so a replace and a write of the same register serialise against
+  # each other rather than each against a lock of its own.
+  local lock; lock="$(_registry_lock_path "$dir")"
+  _registry_lock_take "$dir" "$label" || return $?
+  # THE CALLER'S EXIT TRAP IS NOT OURS TO HOLD - see registry_row_write: we
+  # install one only when the caller reported none, and every return path below
+  # removes the lock explicitly anyway.
+  local _prev_trap; _prev_trap="$(trap -p EXIT)"
+  if [ -z "$_prev_trap" ]; then
+    trap 'rmdir "'"$lock"'" 2>/dev/null' EXIT
+  fi
+
+  # 2. RECHECK, INVERTED, under the lock - a caller's own pre-check happened
+  # before the lock was held and cannot be trusted against a concurrent writer.
+  if [ -L "$final" ]; then
+    echo "registry: refusing - the $label row is a symlink: $final" >&2
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 65
+  fi
+  if [ ! -f "$final" ]; then
+    if [ -e "$final" ]; then
+      echo "registry: refusing - the $label row is not a regular file: $final" >&2
+    else
+      echo "registry: refusing - no such $label row to replace: $final" >&2
+    fi
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 65
+  fi
+
+  # 3. STAGE the new bytes, and BACK UP the old ones - both under non-.conf
+  # names in the same directory, so neither is ever globbed as a row.
+  local stage backup
+  stage="$(_registry_stage_file "$dir" stage)"
+  backup="$(_registry_stage_file "$dir" backup)"
+  if [ -z "$stage" ] || [ -z "$backup" ]; then
+    echo "registry: could not create a staging file in $dir" >&2
+    rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+  # `cat` into the already-created stage, never `cp` over it: cp would carry
+  # the source's mode across and the backup is what may become the published
+  # row again in step 7.
+  if ! cat "$final" > "$backup"; then
+    echo "registry: could not back up the current $label row: $final" >&2
+    rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+  if ! printf '%s' "$content" > "$stage"; then
+    echo "registry: could not write the staged $label file: $stage" >&2
+    rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 4. VALIDATE THE STAGED BYTES - before anything replaces the row a reader
+  # can already see.
+  if ! "$validate_fn" "$stage"; then
+    rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 5. chmod, hard refuse on failure - publishing a file whose mode could not
+  # be verified narrow is worse than not publishing at all.
+  if ! chmod 0600 "$stage"; then
+    echo "registry: could not set the mode of the staged $label file: $stage" >&2
+    rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 6. PUBLISH by rename over the existing name. `mv` is atomic within the
+  # directory: a reader either sees the whole previous row or the whole new
+  # one, never a truncated file under the row's own name.
+  if ! mv "$stage" "$final"; then
+    echo "registry: could not publish the staged $label file over $final" >&2
+    rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+
+  # 7. CANONICAL READBACK, same lock, the register's OWN loader - "replaced ok"
+  # means exactly what a reader will see. On failure the backup goes back: the
+  # caller asked for a change, not for a loss.
+  local published_id; published_id="$(_registry_stat_id "$final")"
+  if ! ( "$readback_fn" "$slug" >/dev/null 2>&1 ); then
+    local now_id; now_id="$(_registry_stat_id "$final" 2>/dev/null)"
+    if [ -n "$published_id" ] && [ -n "$now_id" ] && [ "$published_id" != "$now_id" ]; then
+      # stat POSITIVELY proves $final is no longer the file we published: some
+      # other writer's row sits there now. Restoring over it would delete a row
+      # this transaction never touched, so the previous bytes are LEFT NAMED
+      # rather than forced back. The mirror image of the writer's rule - it
+      # refuses to delete a foreign row, this refuses to overwrite one.
+      echo "registry: $final was replaced by another writer during the readback - the previous $label row is at $backup, refusing" >&2
+      rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+      return 70
+    fi
+    if ! mv "$backup" "$final"; then
+      echo "registry: REFUSING and COULD NOT RESTORE - the previous $label row is at $backup" >&2
+      rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+      return 70
+    fi
+    chmod 0600 "$final" 2>/dev/null
+    echo "registry: replaced $final but it does not load back through the registry - the previous row was restored, refusing" >&2
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
+  rm -f "$backup"
+
+  # 8. RELEASE.
+  rmdir "$lock" 2>/dev/null
+  _registry_restore_exit_trap "$_prev_trap"
+  return 0
+}
+
+# _registry_sha256 - the digest of STDIN, lowercase hex, on stdout.
+#
+# TWO TOOLS, IN ORDER, because neither exists on both platforms this library
+# runs on: sha256sum (Linux) and shasum -a 256 (macOS). Both print
+# "<hex>  <name>", so the first space-delimited field is the digest. Neither
+# present is a REFUSAL, never an empty string: an empty digest compared against
+# a stored one would make every token match nothing, which reads as "wrong
+# token" instead of "this machine cannot check tokens".
+_registry_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    echo "registry: REFUSING - no sha256 tool on PATH (looked for sha256sum and shasum)" >&2
+    return 78
+  fi
+}
+
 # registry_entity_write <slug> <content> <validate_fn> — THIN WRAPPER over
 # registry_row_write: resolves the entity directory (honoring
 # STEWARD_ENTITY_DIR), reads back through registry_entity_load, and labels
@@ -1541,6 +1749,17 @@ registry_entity_write() {
   local slug="$1" content="$2" validate_fn="$3"
   local dir; dir="$(registry_entity_dir)" || return 78
   registry_row_write "$dir" "$slug" "$content" "$validate_fn" registry_entity_load "entity"
+}
+
+# registry_entity_replace <slug> <content> <validate_fn> - THIN WRAPPER over
+# registry_row_replace, the in-place twin of registry_entity_write: same
+# directory (honoring STEWARD_ENTITY_DIR), same loader, same "entity" label.
+# It exists because MEMBERS grows - a person joins a team long after the row
+# was written.
+registry_entity_replace() {
+  local slug="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_entity_dir)" || return 78
+  registry_row_replace "$dir" "$slug" "$content" "$validate_fn" registry_entity_load "entity"
 }
 
 # registry_project_write <slug> <content> <validate_fn> — THIN WRAPPER over
@@ -1930,7 +2149,7 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
   local RC_LABEL_PREFIX="" HUB_SESSION="" JOB_LOG_DIR="" HUB_SSH="" TMUX_SOCKET="" PING_MSG="" HUB_HOST="" \
         JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" \
         STATE_DIR_NAME="" PAUSED_DIR_NAME="" MAIL_ACCOUNT_FILE="" ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" \
-        JOB_TIMEZONE=""
+        JOB_TIMEZONE="" DESK_ORIGIN=""
   # shellcheck source=/dev/null
   if ! source "$_estate"; then
     echo "registry: REFUSING — the estate file could not be read: $_estate" >&2
@@ -1951,6 +2170,7 @@ _registry_estate_value() { # <key> <regex> -> the value, or rc 78
     OP_TOKEN_FILE_NAME)   _varde="$OP_TOKEN_FILE_NAME" ;;
     STATE_DIR_NAME)       _varde="$STATE_DIR_NAME" ;;
     PAUSED_DIR_NAME)      _varde="$PAUSED_DIR_NAME" ;;
+    DESK_ORIGIN)          _varde="$DESK_ORIGIN" ;;
     MAIL_ACCOUNT_FILE) _varde="$MAIL_ACCOUNT_FILE" ;;
     ALERT_TO)          _varde="$ALERT_TO" ;;
     JOB_STATUS_CMD)    _varde="$JOB_STATUS_CMD" ;;
@@ -2080,6 +2300,14 @@ registry_op_token_name()        { _registry_estate_value OP_TOKEN_FILE_NAME   '^
 # JOB_LOG_DIR: a slash would let a typo wander out of the state tree.
 registry_state_dir_name()       { _registry_estate_value STATE_DIR_NAME       '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
 registry_paused_dir_name()      { _registry_estate_value PAUSED_DIR_NAME      '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
+
+# DESK_ORIGIN - the browser-facing origin of this estate's desk, scheme and
+# authority only. It is what an invitation link is built from, and it is the
+# estate's to state: another installation's desk answers on another name, and
+# a product that guessed one would print a link that reaches somebody else's
+# machine. A trailing slash is refused rather than trimmed - a value that is
+# quietly repaired is a value nobody fixes.
+registry_desk_origin()          { _registry_estate_value DESK_ORIGIN          '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$'; }
 
 # LEGACY_LOGIN — the ONE login row this estate allows to name the runtime's
 # unnamed default directory during a migration. Optional, and its absence is
