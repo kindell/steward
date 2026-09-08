@@ -178,6 +178,10 @@ desk/render.mjs                  scripts/desk/render.mjs              644  scrip
 desk/SCHEMA.md                   scripts/desk/SCHEMA.md               644  scripts
 desk/bin/desk-paths              scripts/desk/bin/desk-paths          755  scripts
 desk/bin/principal-for-login     scripts/desk/bin/principal-for-login 755  scripts
+desk/front.mjs                   scripts/desk/front.mjs               644  scripts
+desk/cookie.mjs                  scripts/desk/cookie.mjs              644  scripts
+desk/oidc.mjs                    scripts/desk/oidc.mjs                644  scripts
+desk/bin/principal-exists        scripts/desk/bin/principal-exists    755  scripts
 # The desk's units. Written and daemon-reloaded by the deploy, enabled once by
 # hand - the operator's sequence is in desk/SCHEMA.md.
 linux/steward-desk.service           .config/systemd/user/steward-desk.service           644  systemd

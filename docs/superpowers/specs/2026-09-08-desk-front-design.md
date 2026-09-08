@@ -72,9 +72,11 @@ straight from the socket and refuses any peer but the configured box
 (`STEWARD_DESK_FRONT_PEER=<box tailnet addr>`), and the Tailscale ACL
 lets only the box's tag reach that port. `X-Real-IP` is trusted because
 the box is the only thing that can reach the port; per-address rate
-limiting keys on it. The listener binds the tailnet address only - never
-`0.0.0.0` - and refuses to start when the address is not a CGNAT
-(`100.64.0.0/10`) address. Own origin for cookies comes for free: a
+limiting keys on it. The listener binds the tailnet address (CGNAT,
+100.64.0.0/10) or a loopback address - never 0.0.0.0 or :: - and refuses
+to start on anything else. Loopback is allowed because it reaches nobody
+off the host and the test suite needs it (plan 2026-09-08-desk-front.md).
+Own origin for cookies comes for free: a
 different host:port from the tailnet Desk.
 
 mTLS between box and host is not needed in v1 for the same reason. The

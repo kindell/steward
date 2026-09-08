@@ -31,6 +31,9 @@ already use — it starts it, watches it, addresses it, and updates it.
   Claude conf, and rendering it as anything else would make a healthy estate
   look unmeasured. The second runtime is OpenCode; the contract for adding
   another is in [docs/opencode-runtime.md](docs/opencode-runtime.md).
+- **Desk** — a read-only estate view, and a public front (OpenID Connect
+  login, the box is only a proxy) - desk/SCHEMA.md, "Reaching it from the
+  public front".
 
 ## Design rules
 

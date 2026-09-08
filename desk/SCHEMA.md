@@ -217,6 +217,50 @@ The server needs no restart when a generation changes; it reads
 `<STEWARD_DESK_DIR>/current` per request. Restart it only when `serve.mjs`,
 `render.mjs` or the unit itself changed.
 
+### Reaching it from the public front
+
+A second door for people who are not on the tailnet: a public proxy box
+terminates TLS for the estate's hostname and forwards to a second listener
+on this host's tailnet address. The box holds no secret; the OpenID Connect
+login runs here. Design: `docs/superpowers/specs/2026-09-08-desk-front-design.md`.
+
+The estate provides, in this order:
+
+1. `DESK_ORIGIN="https://<public hostname>"` and
+   `DESK_SESSION_KEY_FILE="<absolute path>"` in `estate/steward.conf`. The key
+   file is generated once, 0600, owned by the desk account, at least 32
+   bytes: `umask 077; head -c 32 /dev/urandom | base64 > <path>`.
+2. `desk/providers.d/<slug>.conf` beside the registry, one per provider:
+   `ISSUER` (or `ISSUER_TEMPLATE` with a literal `<tid>` for a multi-tenant
+   provider that discovers through a common endpoint), `DISCOVERY`,
+   `CLIENT_ID`, `CLIENT_SECRET_FILE` (0600, the desk account's). The
+   provider's redirect URI is `<DESK_ORIGIN>/desk/auth/callback`.
+3. A drop-in `~/.config/systemd/user/steward-desk.service.d/50-estate.conf`:
+
+       [Service]
+       Environment=STEWARD_DESK_FRONT_LISTEN=<this host's tailnet addr>:<port>
+       Environment=STEWARD_DESK_FRONT_PEER=<the box's tailnet addr>
+
+   The bind must be a tailnet (100.64.0.0/10) or loopback address; the desk
+   exits 64 on anything else. The peer is the only address whose requests
+   are answered; every other peer gets a plain-text 403 before identity is
+   read.
+4. The tailnet ACL lets only the box's tag reach this host on that port.
+5. The box: a reverse proxy with automatic certificates, forwarding to
+   `<tailnet addr>:<port>` with the visitor's address as `X-Real-IP`.
+
+What a visitor sees: `/desk/auth/login` lists the providers; after the
+provider's login the desk verifies the `id_token` (signature against the
+provider's JWKS, issuer, audience, expiry, nonce), maps
+`oidc:<slug>:<subject>` to a principal row through `desk/bin/principal-for-login`
+and sets `__Host-desk-session` for 12 hours. Every request re-checks that the
+principal row still exists (`desk/bin/principal-exists`), so removing a row
+logs the person out on their next click. `POST /desk/auth/logout` clears the
+cookie. `/desk/auth/*` is rate limited to 10 requests per minute per visitor.
+
+The front never reads the `tailscale-user-login` header; the tailnet socket
+never reads a cookie.
+
 ## What is deliberately absent
 
 The raw document the producer builds carries more than any of this, and none of

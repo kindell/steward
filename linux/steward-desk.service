@@ -26,6 +26,13 @@
 # anyone logged in, and is enabled by hand once - the deploy writes unit files
 # and daemon-reloads, and never enables or starts anything (see
 # test/deploy-policy.test.sh). desk/SCHEMA.md has the operator's sequence.
+#
+# THE FRONT IS THE ESTATE'S CHOICE, SO ITS TWO KNOBS ARE NOT HERE EITHER. A host
+# with a public front sets STEWARD_DESK_FRONT_LISTEN and STEWARD_DESK_FRONT_PEER
+# in a drop-in the estate deploys (steward-desk.service.d/50-estate.conf); the
+# product's unit stays the same file on every host. Everything else the front
+# needs - origin, providers, key file - is read from the estate through
+# desk/bin/desk-paths, never from here.
 [Unit]
 Description=steward desk - read-only estate view on a unix socket
 
