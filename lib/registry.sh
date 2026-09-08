@@ -2233,6 +2233,29 @@ registry_liveness_cmd() {
   printf '%s\n' "$LIVENESS_CMD"
 }
 
+# registry_usage_cmd - the estate's own usage shim, or the empty string.
+#
+# THE TWIN IS registry_liveness_cmd, just above: same three outcomes, same
+# optional-field reasoning, same "local before source" discipline, same
+# absolute-path form. Read its essay rather than a second copy of it here.
+registry_usage_cmd() {
+  local _estate; _estate="$(registry_estate_file)"
+  [ -f "$_estate" ] || { printf ''; return 0; }
+  local USAGE_CMD=""
+  # shellcheck source=/dev/null
+  if ! source "$_estate"; then
+    echo "registry: REFUSING - the estate file could not be read: $_estate" >&2
+    return 78
+  fi
+  [ -n "$USAGE_CMD" ] || { printf ''; return 0; }
+  if ! [[ "$USAGE_CMD" =~ ^/[A-Za-z0-9/._-]+$ ]]; then
+    echo "registry: REFUSING - USAGE_CMD in $_estate is not an absolute path: '$USAGE_CMD'" >&2
+    echo "registry: expected the form ^/[A-Za-z0-9/._-]+\$ - got '$USAGE_CMD'" >&2
+    return 78
+  fi
+  printf '%s\n' "$USAGE_CMD"
+}
+
 # registry_estate_checkout — where the estate's own git working copy lives, or
 # the empty string.
 #

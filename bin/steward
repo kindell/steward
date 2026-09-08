@@ -79,7 +79,7 @@ usage() {
 # steer them.
 #
 # PRECEDENCE: the process environment always wins; the file only fills in
-# what is unset. Every one of the three allowlisted variables gets a
+# what is unset. Every one of the allowlisted variables gets a
 # _CFG_SOURCE_<KEY> of process-environment | config-file | unset, set
 # unconditionally so a caller never has to ask "did this even run."
 #
@@ -93,10 +93,10 @@ usage() {
 # `steward config init`/`set` (further down) both decide "is this key
 # writable" through this one predicate and this one piece of text — never
 # two independently maintained copies that could quietly drift apart.
-_CFG_ALLOWED_KEYS_TEXT="STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD"
-_CFG_ALLOWED_KEY() { # <key> — true iff key is one of the three writable operator-config keys.
+_CFG_ALLOWED_KEYS_TEXT="STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD, STEWARD_USAGE_CMD"
+_CFG_ALLOWED_KEY() { # <key> - true iff key is one of the writable operator-config keys.
   case "$1" in
-    STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD) return 0 ;;
+    STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD|STEWARD_USAGE_CMD) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -186,9 +186,11 @@ _operator_config_load() {
   _CFG_SOURCE_STEWARD_ESTATE_ROOT="unset"
   _CFG_SOURCE_STEWARD_TMUX_SOCKET="unset"
   _CFG_SOURCE_STEWARD_LIVENESS_CMD="unset"
+  _CFG_SOURCE_STEWARD_USAGE_CMD="unset"
   [ -n "${STEWARD_ESTATE_ROOT:-}" ]  && _CFG_SOURCE_STEWARD_ESTATE_ROOT="process-environment"
   [ -n "${STEWARD_TMUX_SOCKET:-}" ]  && _CFG_SOURCE_STEWARD_TMUX_SOCKET="process-environment"
   [ -n "${STEWARD_LIVENESS_CMD:-}" ] && _CFG_SOURCE_STEWARD_LIVENESS_CMD="process-environment"
+  [ -n "${STEWARD_USAGE_CMD:-}" ]    && _CFG_SOURCE_STEWARD_USAGE_CMD="process-environment"
 
   # A SYMLINK IS REFUSED OUTRIGHT, before anything else is asked of it —
   # including the "no file at all" check just below. `-L` does NOT follow
@@ -235,7 +237,7 @@ _operator_config_load() {
   fi
 
   local lineno=0 saw_format="" line key value
-  local have_root="" have_socket="" have_liveness=""
+  local have_root="" have_socket="" have_liveness="" have_usage=""
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno+1))
 
@@ -307,6 +309,20 @@ EOF
         if [ -z "${STEWARD_LIVENESS_CMD:-}" ]; then
           STEWARD_LIVENESS_CMD="$value"; export STEWARD_LIVENESS_CMD
           _CFG_SOURCE_STEWARD_LIVENESS_CMD="config-file"
+        fi
+        ;;
+      # THE USAGE SEAM IS THE SAME CLASS OF KEY AS THE LIVENESS SEAM: an
+      # absolute path to a program the estate supplies. Same duplicate
+      # refusal, same "the environment wins" rule, same provenance.
+      STEWARD_USAGE_CMD)
+        if [ -n "$have_usage" ]; then
+          _CFG_ERROR="steward: $f:$lineno: duplicate key 'STEWARD_USAGE_CMD'"
+          return 78
+        fi
+        have_usage=1
+        if [ -z "${STEWARD_USAGE_CMD:-}" ]; then
+          STEWARD_USAGE_CMD="$value"; export STEWARD_USAGE_CMD
+          _CFG_SOURCE_STEWARD_USAGE_CMD="config-file"
         fi
         ;;
     esac
@@ -446,7 +462,7 @@ _cfg_refuse_writable_dir() {
 }
 
 cmd_config_init() {
-  local estate_root="" tmux_socket="" liveness_cmd=""
+  local estate_root="" tmux_socket="" liveness_cmd="" usage_cmd=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --estate-root)
@@ -458,7 +474,10 @@ cmd_config_init() {
       --liveness-cmd)
         [ $# -ge 2 ] || fel "config init: --liveness-cmd needs a value" 64
         liveness_cmd="$2"; shift 2 ;;
-      *) fel "config init: unknown flag '$1' (allowed: --estate-root, --tmux-socket, --liveness-cmd)" 64 ;;
+      --usage-cmd)
+        [ $# -ge 2 ] || fel "config init: --usage-cmd needs a value" 64
+        usage_cmd="$2"; shift 2 ;;
+      *) fel "config init: unknown flag '$1' (allowed: --estate-root, --tmux-socket, --liveness-cmd, --usage-cmd)" 64 ;;
     esac
   done
   [ -n "$estate_root" ] || fel "config init: --estate-root is required" 64
@@ -470,6 +489,7 @@ cmd_config_init() {
   _CFG_VALUE_OK STEWARD_ESTATE_ROOT "$estate_root" || fel "config init: $_CFG_VALUE_REASON" 64
   [ -z "$tmux_socket" ]  || { _CFG_VALUE_OK STEWARD_TMUX_SOCKET "$tmux_socket"   || fel "config init: $_CFG_VALUE_REASON" 64; }
   [ -z "$liveness_cmd" ] || { _CFG_VALUE_OK STEWARD_LIVENESS_CMD "$liveness_cmd" || fel "config init: $_CFG_VALUE_REASON" 64; }
+  [ -z "$usage_cmd" ]    || { _CFG_VALUE_OK STEWARD_USAGE_CMD "$usage_cmd"       || fel "config init: $_CFG_VALUE_REASON" 64; }
 
   local f; f="$(_cfg_file)"
   local dir; dir="$(dirname "$f")"
@@ -513,6 +533,8 @@ STEWARD_ESTATE_ROOT=$estate_root
   [ -z "$tmux_socket" ]  || content="${content}STEWARD_TMUX_SOCKET=$tmux_socket
 "
   [ -z "$liveness_cmd" ] || content="${content}STEWARD_LIVENESS_CMD=$liveness_cmd
+"
+  [ -z "$usage_cmd" ] || content="${content}STEWARD_USAGE_CMD=$usage_cmd
 "
 
   _cfg_atomic_write "$f" "$content" || fel "$_CFG_WRITE_ERROR" 70
@@ -562,7 +584,7 @@ cmd_config_set() {
   # true: the file _operator_config_load refused before this call is one
   # this call's own output is guaranteed to pass.
   local body="" line lineno=0 is_first=1 lkey lvalue
-  local saw_STEWARD_ESTATE_ROOT="" saw_STEWARD_TMUX_SOCKET="" saw_STEWARD_LIVENESS_CMD=""
+  local saw_STEWARD_ESTATE_ROOT="" saw_STEWARD_TMUX_SOCKET="" saw_STEWARD_LIVENESS_CMD="" saw_STEWARD_USAGE_CMD=""
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno+1))
     # COMMENTS/BLANKS ARE CHECKED BEFORE "is_first", MATCHING THE PARSER
@@ -614,6 +636,12 @@ cmd_config_set() {
           continue
         fi
         saw_STEWARD_LIVENESS_CMD=1 ;;
+      STEWARD_USAGE_CMD)
+        if [ -n "$saw_STEWARD_USAGE_CMD" ]; then
+          echo "steward: config set: dropping unreadable line $lineno: '$line'" >&2
+          continue
+        fi
+        saw_STEWARD_USAGE_CMD=1 ;;
     esac
     if [ "$lkey" = "$key" ]; then
       body="$body$key=$value
@@ -629,6 +657,8 @@ cmd_config_set() {
     STEWARD_TMUX_SOCKET)  [ -n "$saw_STEWARD_TMUX_SOCKET" ]  || body="$body$key=$value
 " ;;
     STEWARD_LIVENESS_CMD) [ -n "$saw_STEWARD_LIVENESS_CMD" ] || body="$body$key=$value
+" ;;
+    STEWARD_USAGE_CMD)    [ -n "$saw_STEWARD_USAGE_CMD" ]    || body="$body$key=$value
 " ;;
   esac
 
@@ -5037,7 +5067,7 @@ if [ "$_cfg_rc" -ne 0 ]; then
   fi
   exit "$_cfg_rc"
 fi
-# TEST-ONLY SEAM. Prints the three allowlisted values and their provenance,
+# TEST-ONLY SEAM. Prints the allowlisted values and their provenance,
 # then exits — before any subcommand dispatch. Nothing user-facing sets
 # this; it exists so operator-config.test.sh can observe
 # _CFG_SOURCE_<KEY> from outside the process without a `steward config get`
@@ -5046,6 +5076,7 @@ if [ -n "${STEWARD_CFG_DEBUG:-}" ]; then
   printf 'STEWARD_ESTATE_ROOT=%s source=%s\n'  "${STEWARD_ESTATE_ROOT:-}"  "$_CFG_SOURCE_STEWARD_ESTATE_ROOT"
   printf 'STEWARD_TMUX_SOCKET=%s source=%s\n'  "${STEWARD_TMUX_SOCKET:-}" "$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
   printf 'STEWARD_LIVENESS_CMD=%s source=%s\n' "${STEWARD_LIVENESS_CMD:-}" "$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
+  printf 'STEWARD_USAGE_CMD=%s source=%s\n'    "${STEWARD_USAGE_CMD:-}"    "$_CFG_SOURCE_STEWARD_USAGE_CMD"
   exit 0
 fi
 

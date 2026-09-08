@@ -54,6 +54,7 @@ is "no file: rc 0" "$rc" "0"
 has "no file: estate root source unset" "$out" "STEWARD_ESTATE_ROOT= source=unset"
 has "no file: tmux socket source unset" "$out" "STEWARD_TMUX_SOCKET= source=unset"
 has "no file: liveness cmd source unset" "$out" "STEWARD_LIVENESS_CMD= source=unset"
+has "no file: usage cmd source unset" "$out" "STEWARD_USAGE_CMD= source=unset"
 
 echo "== 2. valid file, unset env: value from file, source config-file =="
 cat > "$FX/valid" <<'EOF'
@@ -69,6 +70,23 @@ echo "== 3. same file, variable already set in the environment: env wins =="
 out="$(debug "$FX/valid" env STEWARD_ESTATE_ROOT=/from/env)"; rc=$?
 is "precedence: rc 0" "$rc" "0"
 has "precedence: environment value untouched" "$out" "STEWARD_ESTATE_ROOT=/from/env source=process-environment"
+
+# THE USAGE SEAM IS THE SAME KIND OF KEY AS THE LIVENESS SEAM: an absolute path
+# to a program the estate supplies, read from the file only when the process
+# environment has not already named one. Every rule the liveness key gets, this
+# one gets - the two are one class, and a class with an exception in it is a
+# class somebody will get wrong later.
+echo "== 3b. the usage seam key: from the file, and the environment still wins =="
+cat > "$FX/valid-usage" <<'EOF'
+FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/estate/root
+STEWARD_USAGE_CMD=/abs/usage-shim
+EOF
+out="$(debug "$FX/valid-usage")"; rc=$?
+is "usage cmd: rc 0" "$rc" "0"
+has "usage cmd: taken from the file" "$out" "STEWARD_USAGE_CMD=/abs/usage-shim source=config-file"
+out="$(debug "$FX/valid-usage" env STEWARD_USAGE_CMD=/from/env-shim)"
+has "usage cmd: the environment value is untouched" "$out" "STEWARD_USAGE_CMD=/from/env-shim source=process-environment"
 
 echo "== 4. refusal branches: each one rc 78 =="
 
@@ -101,6 +119,19 @@ check_refuse "duplicate key" \
 STEWARD_ESTATE_ROOT=/abs/one
 STEWARD_ESTATE_ROOT=/abs/two
 "
+
+check_refuse "duplicate usage cmd key" \
+  "FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/one
+STEWARD_USAGE_CMD=/abs/one-shim
+STEWARD_USAGE_CMD=/abs/two-shim
+" "STEWARD_USAGE_CMD"
+
+check_refuse "relative usage cmd value" \
+  "FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/one
+STEWARD_USAGE_CMD=relative/shim
+" "STEWARD_USAGE_CMD"
 
 check_refuse "relative path value" \
   "FORMAT=1

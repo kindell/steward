@@ -155,13 +155,34 @@ out="$(run "$FX/does-not-exist/config" set STEWARD_ESTATE_ROOT "$FX/whatever")";
 nonzero "set on missing file: non-zero rc" "$rc"
 has "set on missing file: names config init" "$out" "config init"
 
-echo "== 8. init's optional flags: --tmux-socket and --liveness-cmd =="
+echo "== 8. init's optional flags: --tmux-socket, --liveness-cmd and --usage-cmd =="
 mkdir -p "$FX/optflags/home"
 run "$FX/optflags/cfgdir/config" init --estate-root "$FX/optflags/estate" \
-  --tmux-socket "$FX/optflags/socket.sock" --liveness-cmd "$FX/optflags/liveness" >/dev/null
+  --tmux-socket "$FX/optflags/socket.sock" --liveness-cmd "$FX/optflags/liveness" \
+  --usage-cmd "$FX/optflags/usage" >/dev/null
 content="$(cat "$FX/optflags/cfgdir/config")"
 has "init: tmux socket line present" "$content" "STEWARD_TMUX_SOCKET=$FX/optflags/socket.sock"
 has "init: liveness cmd line present" "$content" "STEWARD_LIVENESS_CMD=$FX/optflags/liveness"
+has "init: usage cmd line present" "$content" "STEWARD_USAGE_CMD=$FX/optflags/usage"
+# WHAT init WRITES, THE REAL PARSER MUST READ BACK - the same round-trip
+# contract group 9 proves for the other keys, checked here for the new one
+# through the same STEWARD_CFG_DEBUG seam, which also names its source.
+debug="$(env -i PATH="$PATH" HOME="$FX/optflags/home" STEWARD_CONFIG_FILE="$FX/optflags/cfgdir/config" \
+  STEWARD_CFG_DEBUG=1 bash "$STEWARD" ls 2>&1)"
+has "init: the usage cmd reads back from the file" "$debug" "STEWARD_USAGE_CMD=$FX/optflags/usage source=config-file"
+
+echo "== 8b. set writes the usage key too, and leaves the others alone =="
+out="$(run "$FX/optflags/cfgdir/config" set STEWARD_USAGE_CMD "$FX/optflags/usage-two")"; rc=$?
+is "8b: set rc 0" "$rc" "0"
+content="$(cat "$FX/optflags/cfgdir/config")"
+has "8b: the new usage cmd landed" "$content" "STEWARD_USAGE_CMD=$FX/optflags/usage-two"
+is "8b: exactly one usage cmd line, the new one" \
+  "$(printf '%s\n' "$content" | grep -c '^STEWARD_USAGE_CMD=' | tr -d ' ')" "1"
+has "8b: the liveness cmd is untouched" "$content" "STEWARD_LIVENESS_CMD=$FX/optflags/liveness"
+has "8b: the estate root is untouched" "$content" "STEWARD_ESTATE_ROOT=$FX/optflags/estate"
+env -i PATH="$PATH" HOME="$FX/optflags/home" STEWARD_CONFIG_FILE="$FX/optflags/cfgdir/config" \
+  bash "$STEWARD" -h >/dev/null 2>&1
+is "8b: the real dispatcher gate accepts the rewritten file" "$?" "0"
 
 echo "== 9. round trip: what config writes, the real parser reads back without refusal =="
 mkdir -p "$FX/roundtrip/home" "$FX/roundtrip/estate" "$FX/roundtrip/registry"
