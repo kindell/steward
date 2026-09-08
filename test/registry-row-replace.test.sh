@@ -128,6 +128,37 @@ is  "a later replace still gets the lock" "$rc" "0"
   && bad "the lock is gone after a successful replace" "still there" \
   || ok "the lock is gone after a successful replace"
 
+# A NON-REGULAR FILE UNDER THE ROW'S NAME AT PUBLISH TIME. `mv` is the one
+# publish that does NOT refuse a directory: it moves the stage INSIDE it and
+# exits 0. The validator runs under the lock and before the publish, so a
+# validator that swaps the destination reproduces that race exactly - and
+# without a guard the restore moves the backup in there too, chmods the
+# DIRECTORY to 0600, and reports "the previous row was restored" over a
+# squatted slug with both copies locked inside it.
+racing_dir_ok() {
+  rm -f "$ROOT/entities.d/acme.conf"
+  mkdir -p "$ROOT/entities.d/acme.conf"
+  return 0
+}
+registry_entity_replace acme 'NAME="Acme"
+MEMBERS="alice bo"
+' racing_dir_ok 2>"$T/err"; rc=$?
+is  "a raced non-regular destination is rc 70" "$rc" "70"
+case "$(cat "$T/err")" in
+  *"was restored"*) bad "and never claims a restore that did not happen" "claimed a restore: $(cat "$T/err")" ;;
+  *) ok "and never claims a restore that did not happen" ;;
+esac
+has "and says what it found" "$(cat "$T/err")" "not a regular file"
+is  "and nothing of ours is left inside the raced directory" \
+    "$(ls -A "$ROOT/entities.d/acme.conf" 2>/dev/null | wc -l | tr -d ' ')" "0"
+is  "and the previous bytes are still readable where the refusal says" \
+    "$(sed -n 's/.*previous entity row is at \(.*\), refusing.*/\1/p' "$T/err" | xargs cat | grep -c 'MEMBERS="alice"')" "1"
+chmod 700 "$ROOT/entities.d/acme.conf" 2>/dev/null
+rm -rf "$ROOT/entities.d/acme.conf"
+rm -f "$ROOT"/entities.d/.backup.* "$ROOT"/entities.d/.stage.*
+printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$ROOT/entities.d/acme.conf"
+chmod 600 "$ROOT/entities.d/acme.conf"
+
 # THE CALLER'S OWN FIXTURE SURVIVES. This suite's own `trap ... EXIT` is what
 # cleans up $T; a writer that armed or fired somebody else's EXIT handler
 # would have deleted the fixture out from under the run by now.

@@ -1682,6 +1682,21 @@ registry_row_replace() {
     rm -f "$stage" "$backup"; rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 70
   fi
+  # A DIRECTORY under the row's name is the one shape `mv` does not refuse:
+  # `mv SRC DIR` moves the stage INSIDE it and exits 0. Without this check the
+  # readback below fails, the restore moves the BACKUP in there too, chmods the
+  # DIRECTORY to 0600, and reports "the previous row was restored" over a
+  # squatted slug holding both copies. registry_row_write re-guards the same
+  # shape after its `ln` for the same reason. The staged bytes are taken back
+  # out; the raced directory is left alone (it is not ours to delete) and the
+  # backup is left NAMED, because a refusal that loses the previous row is the
+  # thing this function exists to prevent.
+  if [ ! -f "$final" ] || [ -L "$final" ]; then
+    rm -f "$final/$(basename "$stage")" 2>/dev/null
+    echo "registry: refusing - $final is not a regular file (something raced the publish) - the previous $label row is at $backup, refusing" >&2
+    rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
+    return 70
+  fi
 
   # 7. CANONICAL READBACK, same lock, the register's OWN loader - "replaced ok"
   # means exactly what a reader will see. On failure the backup goes back: the
