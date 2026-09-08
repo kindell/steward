@@ -4637,9 +4637,24 @@ registry_invite_load() {
     return 1
   fi
   dir="$(registry_invite_dir)" || return 78
+  # THE REGISTER DIRECTORY'S OWN STATE COMES BEFORE THE ROW'S, the login
+  # reader's rule for the login reader's reason: a row at mode 600 inside a
+  # directory anybody can write to is not protected by its mode, because
+  # anybody can rename it away and put their own file there under the same
+  # name - and the mode check on that new file passes. The boundary is the
+  # whole chain, not the leaf. Copied rather than called: the message names
+  # THIS register, and the two categories must be free to diverge.
   if [ -L "$dir" ]; then
     echo "registry: the invite register is a symlink, refusing: $dir" >&2
     return 78
+  fi
+  if [ -d "$dir" ]; then
+    local dmode; dmode="$(_registry_mode_of "$dir")" || {
+      echo "registry: cannot read the mode of the invite register: $dir" >&2; return 78; }
+    if _registry_group_or_other_writable "$dmode"; then
+      echo "registry: the invite register is group- or other-writable (mode $dmode), refusing: $dir" >&2
+      return 78
+    fi
   fi
   f="$dir/$id.conf"
   if [ -L "$f" ]; then
@@ -4649,6 +4664,12 @@ registry_invite_load() {
   if [ ! -f "$f" ]; then
     echo "registry: no such invite: $id" >&2
     return 1
+  fi
+  # A ROW SOMEBODY ELSE OWNS IS A ROW SOMEBODY ELSE CAN REWRITE, whatever its
+  # mode says right now. Same refusal the login reader makes.
+  if [ ! -O "$f" ]; then
+    echo "registry: invite '$id' is not owned by the current user, refusing: $f" >&2
+    return 78
   fi
   local mode; mode="$(_registry_mode_of "$f")" || {
     echo "registry: cannot read the mode of invite '$id': $f" >&2; return 78; }
@@ -4744,9 +4765,15 @@ registry_invite_load() {
     echo "registry: $f: TOKEN_SHA256 must be 64 lowercase hex digits" >&2
     return 1
   fi
+  # THE WIDTH IS PART OF THE SHAPE. "all digits" alone admits a number wider
+  # than the shell's integers, and the expiry comparison at the foot of this
+  # function would then print `integer expression expected` to stderr while
+  # this loader returned 0 and the row read as open - a loader that succeeds
+  # must not print, and a row that cannot be measured must not be trusted.
+  # Twelve digits reaches the year 33658, which outlives the register.
   for nm in ISSUED_AT EXPIRES_AT; do
     eval "value=\$v_$nm"
-    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    if ! [[ "$value" =~ ^[0-9]{1,12}$ ]]; then
       echo "registry: $f: $nm must be epoch seconds, got '$(registry_printable "$value")'" >&2
       return 1
     fi
@@ -4756,8 +4783,16 @@ registry_invite_load() {
     *) echo "registry: $f: invalid STATE '$(registry_printable "$v_STATE")' (one of: $_REGISTRY_INVITE_STATES)" >&2
        return 1 ;;
   esac
-  if [ -n "$v_REDEEMED_AT" ] && ! [[ "$v_REDEEMED_AT" =~ ^[0-9]+$ ]]; then
+  if [ -n "$v_REDEEMED_AT" ] && ! [[ "$v_REDEEMED_AT" =~ ^[0-9]{1,12}$ ]]; then
     echo "registry: $f: REDEEMED_AT must be epoch seconds, got '$(registry_printable "$v_REDEEMED_AT")'" >&2
+    return 1
+  fi
+  # REDEEMED_LOGIN NAMES A ROW IN THE LOGIN REGISTER, so it carries that
+  # register's own slug shape (registry_login_load's). Empty stays legal: an
+  # invitation nobody has redeemed has nothing to name, and the STATE
+  # vocabulary above is what says whether a redemption happened.
+  if [ -n "$v_REDEEMED_LOGIN" ] && ! [[ "$v_REDEEMED_LOGIN" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: $f: invalid REDEEMED_LOGIN '$(registry_printable "$v_REDEEMED_LOGIN")' (a login slug: a-z 0-9 and hyphen)" >&2
     return 1
   fi
 
@@ -4775,14 +4810,27 @@ registry_invite_load() {
   return 0
 }
 
+# THE ID SHAPE IS CHECKED BEFORE THE TRANSACTION, not by the readback inside
+# it. The row primitive validates a generic register slug, so an id like 'abc'
+# would pass it, publish a file, and only then fail the readback - a refusal
+# that has already written is not a refusal. rc 64, the primitive's own code
+# for a slug it will not take.
 registry_invite_write() {
   local id="$1" content="$2" validate_fn="$3"
+  if ! registry_invite_id_valid "$id"; then
+    echo "registry: refusing - invalid invite id '$(registry_printable "$id")' (expected inv- and eight hex digits)" >&2
+    return 64
+  fi
   local dir; dir="$(registry_invite_dir)" || return 78
   registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_invite_load "invite"
 }
 
 registry_invite_replace() {
   local id="$1" content="$2" validate_fn="$3"
+  if ! registry_invite_id_valid "$id"; then
+    echo "registry: refusing - invalid invite id '$(registry_printable "$id")' (expected inv- and eight hex digits)" >&2
+    return 64
+  fi
   local dir; dir="$(registry_invite_dir)" || return 78
   registry_row_replace "$dir" "$id" "$content" "$validate_fn" registry_invite_load "invite"
 }

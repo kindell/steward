@@ -63,6 +63,13 @@ registry_invite_load inv-nosuch 2>"$T/err"; rc=$?
 is  "a missing row is rc 1" "$rc" "1"
 is  "a refused load leaves nothing behind" "$INVITE_PRINCIPAL" ""
 
+# THE ID SHAPE AND THE ABSENT ROW ARE TWO DIFFERENT REFUSALS. 'inv-nosuch'
+# above never reaches the file test at all - it dies on the shape - so the
+# "no such invite" branch needs an id the shape check accepts.
+registry_invite_load inv-00000099 2>"$T/err"; rc=$?
+is  "a well-shaped id with no row is rc 1" "$rc" "1"
+has "and says which invite is missing" "$(cat "$T/err")" "no such invite"
+
 printf 'NAME="X"\nPRINCIPAL="alice"\n' > "$ROOT/invites.d/inv-0000000c.conf"
 chmod 600 "$ROOT/invites.d/inv-0000000c.conf"
 registry_invite_load inv-0000000c 2>"$T/err"; rc=$?
@@ -93,6 +100,48 @@ registry_invite_load inv-0000000f >/dev/null 2>&1; rc=$?
 is  "a substitution in a value is refused" "$rc" "1"
 if [ -e "$T/DETONATED" ]; then bad "the payload must never run" "found $T/DETONATED"; else ok "the payload never ran"; fi
 rm -f "$ROOT/invites.d/inv-0000000f.conf"
+
+# AN EPOCH FIELD LONGER THAN AN INTEGER IS A REFUSAL, NOT A WARNING. A digit
+# string of 23 characters passes a bare "all digits" test and then breaks the
+# arithmetic comparison that measures expiry - which would print to stderr
+# while the loader returned 0 and the row read as open.
+write_row inv-00000011 open "99999999999999999999999" "$D1"
+registry_invite_load inv-00000011 2>"$T/err"; rc=$?
+is  "an EXPIRES_AT wider than an integer is rc 1" "$rc" "1"
+has "and names the field" "$(cat "$T/err")" "EXPIRES_AT must be epoch seconds"
+case "$(cat "$T/err")" in
+  *"integer expression"*) bad "and the shell's own arithmetic error never leaks" "$(cat "$T/err")" ;;
+  *) ok "and the shell's own arithmetic error never leaks" ;;
+esac
+rm -f "$ROOT/invites.d/inv-00000011.conf"
+
+# REDEEMED_LOGIN NAMES A ROW IN THE LOGIN REGISTER, so it carries that
+# register's own slug shape. Empty stays legal - an invitation nobody has
+# redeemed yet has nothing to name.
+write_row inv-00000012 open "$FUTURE" "$D1"
+printf 'REDEEMED_LOGIN="../../etc/passwd oops"\n' >> "$ROOT/invites.d/inv-00000012.conf"
+registry_invite_load inv-00000012 2>"$T/err"; rc=$?
+is  "a REDEEMED_LOGIN that is not a login slug is rc 1" "$rc" "1"
+has "and names the key" "$(cat "$T/err")" "REDEEMED_LOGIN"
+write_row inv-00000012 open "$FUTURE" "$D1"
+printf 'REDEEMED_LOGIN="login-a"\n' >> "$ROOT/invites.d/inv-00000012.conf"
+registry_invite_load inv-00000012 2>"$T/err"; rc=$?
+is  "a well-shaped REDEEMED_LOGIN loads" "$rc" "0"
+is  "and is exposed" "$INVITE_REDEEMED_LOGIN" "login-a"
+rm -f "$ROOT/invites.d/inv-00000012.conf"
+
+# THE REGISTER DIRECTORY'S OWN STATE COMES BEFORE THE ROW'S. A mode-600 row
+# inside a directory anybody can write to is not protected by its mode: the row
+# can be renamed away and replaced, and the new file's mode check passes.
+dir_mode="$(_registry_mode_of "$ROOT/invites.d")"
+chmod 777 "$ROOT/invites.d"
+registry_invite_load inv-0000000a 2>"$T/err"; rc=$?
+is  "a world-writable register is rc 78" "$rc" "78"
+has "and names the directory" "$(cat "$T/err")" "$ROOT/invites.d"
+is  "and leaves nothing behind" "$INVITE_PRINCIPAL" ""
+chmod "$dir_mode" "$ROOT/invites.d"
+registry_invite_load inv-0000000a; rc=$?
+is  "and the restored register loads again" "$rc" "0"
 
 echo "== lookups =="
 is  "the digest lookup finds the row" "$(registry_invite_for_digest "$D1")" "inv-0000000a"
@@ -135,6 +184,17 @@ registry_invite_replace inv-00000010 "$(printf '%s\n' "$content" | sed 's/^STATE
 is  "the replace succeeds" "$rc" "0"
 registry_invite_load inv-00000010
 is  "and the state moved" "$INVITE_EFFECTIVE_STATE" "revoked"
+
+# THE WRITERS GUARD THE INVITE ID THEMSELVES. The row primitive underneath
+# accepts any register slug, so an id like 'bad' would publish a file and only
+# then fail the readback - a refusal after the write is not a refusal.
+registry_invite_write bad "$content
+" _invite_ok 2>"$T/err"; rc=$?
+is  "the writer refuses an id that is not an invite id" "$rc" "64"
+if [ -e "$ROOT/invites.d/bad.conf" ]; then bad "and writes no file" "found $ROOT/invites.d/bad.conf"; else ok "and writes no file"; fi
+registry_invite_replace bad "$content
+" _invite_ok 2>"$T/err"; rc=$?
+is  "the replace refuses it too" "$rc" "64"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
