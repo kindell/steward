@@ -3,8 +3,8 @@
 #
 # The watch reads sessions, hosts and the estate through lib/registry.sh, never
 # with a parser of its own: this bridge sources the library and prints what it
-# says. An ordinary malformed row is skipped and named; invalid account
-# identity refuses the dump rather than publishing an incomplete watch set. An
+# says. A row the registry refuses is skipped and named, an invalid account
+# identity included - one bad row must never unwatch the whole fleet. An
 # RC-free row and a migrated row without a label line both come out with an
 # empty rcLabel (supervised on the pane); the required estate keys refuse, the
 # optional ones come out empty.
@@ -80,11 +80,17 @@ is  "the row it tried to impersonate is still itself" \
 is  "and every row is still present exactly once" "$(printf '%s\n' "$out" | grep -c .)" "4"
 rm -f "$FX/reg/sneaky.conf"
 
+# ONE BAD ROW IS ONE BAD ROW. The watch is the fleet's supervision, and a
+# refusal that emptied this dump would stop every OTHER session being watched
+# because one conf names an account that is not there. docs/client-spec.md says
+# the same thing for the engine's own sweep: a row that could not be loaded is
+# named and left out, and the answer for the rest stays complete.
 printf 'ACCOUNT="missing-account"\nOWNER="operator-a"\nHOST="host-one"\nDOMAIN="entity-one"\nRC_LABEL="Bad"\nREPO_PATH="/tmp/x"\n' > "$FX/reg/account-broken.conf"
 out="$(run sessions 2>"$FX/account-err")"; rc=$?
-is  "invalid account identity refuses the whole dump with rc 78" "$rc" "78"
-is  "the refused dump prints no partial rows" "$out" ""
-has "the account refusal is diagnosed" "$(cat "$FX/account-err")" "missing-account"
+is  "invalid account identity does not refuse the dump" "$rc" "0"
+is  "the broken row is absent" "$(printf '%s\n' "$out" | jq -rc 'select(.name=="account-broken")')" ""
+is  "and every healthy row is still dumped" "$(printf '%s\n' "$out" | grep -c .)" "3"
+has "the skipped row is named on stderr" "$(cat "$FX/account-err")" "account-broken"
 rm -f "$FX/reg/account-broken.conf"
 
 echo "2. hosts"

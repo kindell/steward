@@ -213,12 +213,21 @@ session_identity_rows() {
     local _snapshot
     _snapshot="$(_sessions_registry_snapshot "$n" 2>"$_diagfile")"; _lrc=$?
     _cause="$(tr '\n' ' ' < "$_diagfile")"
-    if [ "$_lrc" -eq 78 ]; then
-      [ -n "$_cause" ] || _cause="no reason given (rc 78)"
-      printf 'sessions: REFUSING — %s\n' "$_cause" >&2
-      rm -f "$_diagfile"
-      return 78
-    fi
+    # A ROW THE REGISTRY REFUSES IS ONE ROW, NEVER THE FLEET. rc 78 out of a
+    # single load is an identity refusal for THAT conf - the registry itself
+    # was readable, this row was not - and docs/client-spec.md already says
+    # what that answer looks like: "ok stays true, because ok answers 'was the
+    # registry readable', not 'is every row here'". So an identity refusal
+    # takes the same skip-and-name path as any other unloadable row and lands
+    # in SESSIONS_UNREADABLE, where a consumer is told exactly which session it
+    # is not being shown.
+    #
+    # A REGISTRY THAT REALLY CANNOT BE READ STILL REFUSES, and does it without
+    # a special case here: the schema gate and the estate keys fail for EVERY
+    # row, so the all-fail branch after this loop returns non-zero with an
+    # empty stdout. The fleet-wide stop survives only where it has an argument
+    # of its own - desk/snapshot.sh, which publishes one file per principal and
+    # would otherwise write a file with an owner guessed in it.
     if [ "$_lrc" -ne 0 ]; then
       # A SESSION THAT EXISTS BUT WON'T LOAD IS DIAGNOSIS, NOT SILENCE. This
       # layer's contract is data on stdout, diagnosis on stderr, meaning in the

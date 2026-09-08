@@ -261,13 +261,32 @@ case "$hout" in
 esac
 has "but the diagnosis survives — on stderr" "$herrtext" "skipping 'broken'"
 
-echo "== a present but unreadable ACCOUNT is a fleet refusal, not a skipped row =="
+echo "== a present but unreadable ACCOUNT is one unreadable row, not a blank fleet =="
+# THE SPEC SENTENCE THIS PINS, verbatim from docs/client-spec.md:
+#   "unreadable is always present, and empty means nothing failed. It names
+#    every session that is in the registry and could not be loaded. Those
+#    sessions are absent from sessions -- a half-read row would be worse than
+#    none -- and ok stays true, because ok answers 'was the registry readable',
+#    not 'is every row here'."
+# An identity refusal is a row that could not be loaded. The registry was
+# readable; one conf was not. So it is named in unreadable beside ok:true, and
+# every other session in the fleet is still answered for.
+serr="$(mktemp)"
 printf 'HOST="h1"\nOWNER="a"\nACCOUNT="missing-account"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="bad-account"\n' \
   > "$FX/sessions.d/bad-account.conf"
-bad_account="$(run --json)"; bad_account_rc=$?
-is "account-integrity failure preserves rc 78" "$bad_account_rc" "78"
-is "account-integrity failure returns a JSON refusal" "$(printf '%s' "$bad_account" | jq -r '.ok')" "false"
-has "the refusal names the broken account" "$(printf '%s' "$bad_account" | jq -r '.reason')" "missing-account"
+bad_account="$(STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \
+                STEWARD_LIVENESS_CMD="$FX/live" bash "$STEWARD" sessions --json 2>"$serr")"
+bad_account_rc=$?
+bad_account_err="$(cat "$serr")"; rm -f "$serr"
+is "an account-integrity failure keeps rc 0" "$bad_account_rc" "0"
+is "and ok stays true" "$(printf '%s' "$bad_account" | jq -r '.ok')" "true"
+is "the refused row is absent from the session list" \
+   "$(printf '%s' "$bad_account" | jq -r '[.sessions[].name] | index("bad-account") // "absent"')" "absent"
+is "but it is named in unreadable" \
+   "$(printf '%s' "$bad_account" | jq -r '.unreadable | index("bad-account") != null')" "true"
+is "and the rest of the fleet is still answered for" \
+   "$(printf '%s' "$bad_account" | jq -r '[.sessions[].name] | index("alpha") != null')" "true"
+has "the cause names the broken account on stderr" "$bad_account_err" "missing-account"
 rm -f "$FX/sessions.d/bad-account.conf"
 
 # AN UNREADABLE REGISTRY REFUSES, in both forms, and the json form must still be

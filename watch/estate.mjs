@@ -15,8 +15,9 @@ const DUMP = join(dirname(fileURLToPath(import.meta.url)), 'bin', 'registry-dump
 
 async function dump(what) {
   const { stdout, stderr } = await exec('bash', [DUMP, what], { maxBuffer: 8 * 1024 * 1024 })
-  // Ordinary malformed rows are named and skipped. Invalid account identity
-  // makes the bridge fail, so the watch never accepts an incomplete fleet.
+  // A row the registry refused is named on stderr and skipped; it is not the
+  // watch's to supervise, and not the watch's to hide either. One bad row must
+  // never take supervision away from every other session on the host.
   for (const line of String(stderr).split('\n')) if (line.trim()) console.error(line)
   return stdout
 }

@@ -48,9 +48,11 @@ case "${1:-}" in
     while IFS= read -r n; do
       [ -n "$n" ] || continue
       # EACH ROW IN ITS OWN SUBSHELL: registry_load sets globals, and a row that
-      # fails to load must not leave the previous row's values behind. Ordinary
-      # malformed rows are skipped and named; an invalid ACCOUNT refuses the
-      # whole dump because an incomplete watch set must not look authoritative.
+      # fails to load must not leave the previous row's values behind. EVERY
+      # refusal is skipped and named, an invalid ACCOUNT included: the watch
+      # supervises the fleet, and one mis-administered row must never silence
+      # supervision for all the others. The name on stderr is what tells the
+      # operator which row stopped being watched.
       #
       # AND ONE SUBSHELL DEEPER STILL FOR THE LOAD ITSELF. A conf is SOURCED
       # here, so it can assign the lowercase names around it - `n` above all,
@@ -65,7 +67,6 @@ case "${1:-}" in
             '{id:$id,slug:$slug,rcLabel:$rcLabel,host:$host,owner:$owner}'
         )"; load_rc=$?
         if [ "$load_rc" -ne 0 ]; then
-          [ "$load_rc" -eq 78 ] && exit 78
           echo "registry-dump: $n: the registry refuses the row - skipped" >&2
           exit 0
         fi
@@ -76,7 +77,6 @@ case "${1:-}" in
           '{name:$name, id:(if .id == "" then $name else .id end), slug:.slug,
             rcLabel:.rcLabel, label:$label, host:.host, owner:.owner}' <<< "$fields"
       )"; row_rc=$?
-      [ "$row_rc" -eq 78 ] && exit 78
       [ "$row_rc" -eq 0 ] || continue
       [ -n "$row" ] || continue
       if [ -z "$rows" ]; then rows="$row"; else rows="$rows
