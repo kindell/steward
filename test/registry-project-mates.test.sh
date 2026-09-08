@@ -32,6 +32,7 @@ ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 hasnt(){ case "$2" in *"$3"*) bad "$1" "unexpectedly present '$3' in: $2" ;; *) ok "$1" ;; esac; }
+has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/sessions.d" "$FX/entities.d" "$FX/projects.d"
@@ -119,6 +120,22 @@ mates_line() { # the same, through the one-line rendering the consumers share
   RC=$?
 }
 
+# mates_err <session> [level] — the same call with STDERR captured instead of
+# stdout. A refusal that stops the whole enumeration has to say why: the row's
+# load is deliberately quiet about the ordinary faults it skips, and a silent
+# rc 78 would leave a consumer with "the register could not be read back" and
+# nothing to act on.
+mates_err() {
+  ERR="$(
+    export STEWARD_REGISTRY_DIR="$SESS" STEWARD_ESTATE_ROOT="$FX" \
+           STEWARD_ENTITY_DIR="$ENT" STEWARD_PROJECT_DIR="$PROJ" \
+           STEWARD_CONFIG_FILE="$FX/no-such-config"
+    . "$here/lib/registry.sh"
+    registry_project_mates "$1" "${2:-mates_project}" 2>&1 >/dev/null
+  )"
+  RC=$?
+}
+
 echo "== 1. THE PROJECT CASE — the other rows on this row's TARGET_PROJECT =="
 mates p1
 is "1: rc 0"                       "$RC"  "0"
@@ -160,6 +177,14 @@ is "5b: an invalid candidate ACCOUNT refuses the whole set with rc 78" "$RC" "78
 is "5b: no partial mate set is printed" "$OUT" ""
 mates_line p1
 is "5b: the one-line renderer preserves rc 78" "$RC" "78"
+# AND IT SAYS WHY. The identity refusal stops every mate level, so it must
+# carry the registry's own sentence out to the caller - a stop with an empty
+# stderr is indistinguishable from a crash, and the consumers turn it into
+# "the register could not be read back", which names nothing an operator can fix.
+mates_err p1
+is "5b: the refusal keeps rc 78 with stderr captured" "$RC" "78"
+has "5b: the refusal names the unreadable ACCOUNT" "$ERR" "missing-account"
+has "5b: and the row it sits on" "$ERR" "account-broken"
 rm -f "$SESS/account-broken.conf"
 
 echo "== 6. TWO MATES: one per line, sorted by name =="

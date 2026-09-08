@@ -703,6 +703,16 @@ registry_project_mates() {
     fi
     local rows row line lines=""
     rows="$(registry_list 2>/dev/null)" || exit 1
+    # ONE SCRATCH FILE FOR THE WHOLE SWEEP, and it exists so a refusal is not
+    # silent. Each row's load has to be quiet about the ORDINARY faults - a
+    # malformed conf that is skipped, one line per row, would bury the answer
+    # this function was asked for - but an IDENTITY refusal is not skipped, it
+    # stops the whole enumeration, and a stop with no sentence is the failure
+    # mode the strict reader was written against. So the load's stderr is
+    # captured here and replayed only on rc 78.
+    local row_err; row_err="$(mktemp)" || {
+      echo "registry: project mates: could not create a temporary file" >&2; exit 70; }
+    trap 'rm -f "$row_err"' EXIT
     while IFS= read -r row; do
       [ -n "$row" ] || continue
       [ "$row" != "$sid" ] || continue
@@ -724,7 +734,11 @@ registry_project_mates() {
         local candidate candidate_domain candidate_vis candidate_grants
         local candidate_project candidate_entity candidate_owner candidate_slug
         candidate="$(
-          registry_load "$row" >/dev/null 2>&1 || exit $?
+          registry_load "$row" >/dev/null 2>"$row_err"; local load_rc=$?
+          if [ "$load_rc" -ne 0 ]; then
+            [ "$load_rc" -eq 78 ] && cat "$row_err" >&2
+            exit "$load_rc"
+          fi
           candidate_owner="$(_registry_row_principal "$row")" || exit $?
           printf '%s|%s|%s|%s|%s|%s|%s' "$candidate_owner" "${DOMAIN:-}" \
             "${VISIBILITY:-}" "${VISIBLE_TO:-}" "${TARGET_PROJECT:-}" \
