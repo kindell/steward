@@ -377,14 +377,16 @@ cat > "$T/raw5.json" <<'EOF'
  "sessions":[{"id":"s1","slug":"work-a","label":"Work A","owner":"a","domain":"team","project":"work",
               "runtime":"claude-code","host":"h","repo":"repo",
               "liveness":{"state":"unknown","measuredAt":"g","ageSeconds":null},
-              "mcp":[{"id":"orphan","name":"orphan","axis":"project","source":null}]}]}
+               "sight":{"b":"member"},
+               "mcp":[{"id":"orphan","name":"orphan","axis":"project","source":null}]}]}
 EOF
-rc5="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' --argjson visible '["s1"]' \
+rc5="$(jq --arg viewer b --argjson readAll false --argjson memberOf '["team"]' \
+           --argjson ownerFields "$owner_fields" --argjson memberFields "$member_fields" \
           -f "$here/desk/filter.jq" "$T/raw5.json" >"$T/out5.json" 2>"$T/err5b"; echo $?)"
 is  "the snapshot succeeds with a null-source project asset" "$rc5" "0"
 [ "$rc5" = "0" ] || printf '     stderr: %s\n' "$(cat "$T/err5b")"
 is  "and the null-source asset is absent" \
-    "$(jq -r '.sessions[0].mcp|length' "$T/out5.json" 2>/dev/null)" "0"
+    "$(jq -r '.sessions[0]|has("mcp")' "$T/out5.json" 2>/dev/null)" "false"
 
 echo "== one visibility rule: what hangs under a visible entity is visible =="
 # THE DEFECT THIS SECTION WAS WRITTEN AGAINST, measured on a real estate. A
@@ -437,9 +439,8 @@ is  "and the project that hangs under that client" \
     "$(jq -r '.projects|map(.id)|sort|join(" ")' "$D6/current/b.json")" "work"
 is  "and the session working on it" \
     "$(jq -r '.sessions|map(.slug)|join(" ")' "$D6/current/b.json")" "work-a"
-is  "and the project-axis grant that project made" \
-    "$(jq -r '.sessions[]|.mcp|map(select(.axis=="project")|.source)|join(" ")' "$D6/current/b.json")" \
-    "work"
+is  "member session visibility does not expose the MCP surface" \
+    "$(jq -r '.sessions[]|has("mcp")' "$D6/current/b.json")" "false"
 # THE RULE WIDENS ONE HOP, NOT ALL OF THEM. `e1` is managed by nobody Ben
 # belongs to, so neither it nor what hangs under it may follow the client in.
 is  "a project under an unrelated entity stays absent for Ben" \

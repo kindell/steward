@@ -150,7 +150,7 @@ printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme-client"\nRC_LABEL="L"\nREPO_PATH="/tm
   > "$FX/sessions.d/s1.conf"
 sj="$(STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d" \
       STEWARD_CONFIG_FILE="$FX/no-such-config" STEWARD_VIEWER="a" \
-      bash "$STEWARD" sessions --json 2>&1)"
+      bash "$STEWARD" sessions --json 2>"$FX/sessions.err")"
 is "9: relation is client" \
   "$(printf '%s' "$sj" | jq -r '.sessions[]|select(.name=="s1")|.entity.relation')" "client"
 is "9: entity name is the client's NAME" \
