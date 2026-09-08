@@ -625,8 +625,8 @@ cp "$AUTH_KEYS" "$AUTH_KEYS.bak-$(date +%s)" 2>/dev/null || true
 # environment to inherit and no later hook to set one in - the only place left
 # to carry the root is the command string itself, so the line assigns it fresh
 # on every inbound call, from the very root this run of enroll already
-# resolved and exported above (lines 46-57 refuse before this point is ever
-# reached, so it is always set here).
+# resolved and exported near the top of this file (the estate-root guard up
+# there refuses before execution ever gets this far, so it is always set here).
 printf 'restrict,command="STEWARD_ESTATE_ROOT=%s /bin/bash %s/bus/bin/bus-relay-in %s" %s\n' \
   "$STEWARD_ESTATE_ROOT" "$RELAY_ROOT" "$ID" "$PUBKEY" >> "$AUTH_KEYS" || { rm -f "$conf"; exit 70; }
 
