@@ -335,6 +335,31 @@ noest_rc=$?
 is "a missing estate key refuses" "$( [ "$noest_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$noest" | jq -r '.ok')" "false"
 has "and the reason names the key" "$(printf '%s' "$noest" | jq -r '.reason')" "HUB_HOST"
+
+# THE SAME BRANCH FOR THE OTHER TWO KEYS. registry_load passes four estate-wide
+# gates, and the probe that decides ok used to name two of them. An estate that
+# carries LABEL_PREFIX and HUB_HOST but no OP_TOKEN_FILE_NAME answered ok:true
+# with every row in unreadable and no session listed - "the registry is
+# readable, there is nothing on this machine" for a machine where everything
+# runs. Both remaining keys get their own case so the pair cannot rot back to
+# one.
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\n' \
+  > "$FX5/estate/steward.conf"
+nooptok="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEWARD_VIEWER="a" \
+           env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>/dev/null)"
+nooptok_rc=$?
+is "a missing OP_TOKEN_FILE_NAME refuses" "$( [ "$nooptok_rc" -ne 0 ] && echo yes || echo no )" "yes"
+is "and ok is false" "$(printf '%s' "$nooptok" | jq -r '.ok')" "false"
+has "and the reason names the key" "$(printf '%s' "$nooptok" | jq -r '.reason')" "OP_TOKEN_FILE_NAME"
+
+printf 'HUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX5/estate/steward.conf"
+noprefix="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEWARD_VIEWER="a" \
+            env -u STEWARD_LIVENESS_CMD bash "$STEWARD" sessions --json 2>/dev/null)"
+noprefix_rc=$?
+is "a missing LABEL_PREFIX refuses" "$( [ "$noprefix_rc" -ne 0 ] && echo yes || echo no )" "yes"
+is "and ok is false" "$(printf '%s' "$noprefix" | jq -r '.ok')" "false"
+has "and the reason names the key" "$(printf '%s' "$noprefix" | jq -r '.reason')" "LABEL_PREFIX"
 rm -rf "$FX5"
 
 echo "== a legitimate host gap is said ONCE per row per run =="

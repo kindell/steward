@@ -153,16 +153,24 @@ _sessions_registry_snapshot() (
 # first is "the registry could not be read"; the second is a fleet of
 # unreadable rows, and docs/client-spec.md says what that answer looks like.
 #
-# SO IT MEASURES INSTEAD OF GUESSING FROM THE CAUSE STRINGS. These are the
-# two estate-wide gates registry_load passes through before it ever opens a
-# session conf - the schema gate and the hub host - so if both answer, the
-# estate was readable and every failure below was a per-row one.
+# SO IT MEASURES INSTEAD OF GUESSING FROM THE CAUSE STRINGS, AND IT MEASURES
+# THE LOADER'S OWN GATE SET. registry_estate_gates (lib/registry.sh) is the one
+# place that set is written down - schema version, hub host, op token file
+# name, label prefix - and registry_load runs the same function before it ever
+# opens a session conf. So if it answers, the estate was readable and every
+# failure below was a per-row one.
+#
+# IT USED TO BE A HAND-COPIED PAIR, and the copy was short by two. An estate
+# with LABEL_PREFIX and HUB_HOST but no OP_TOKEN_FILE_NAME passed this probe
+# while registry_load refused every row on it, so the sweep answered ok:true,
+# every row unreadable, no session listed - a machine where everything runs,
+# reported as a readable registry with nothing on it. The probe now calls what
+# the loader calls; there is nothing left to keep in sync by hand.
 #
 # A SUBSHELL because registry_schema_check publishes _REGISTRY_SCHEMA_SEEN,
 # and this probe is a question, not a state change for the caller's shell.
 _sessions_estate_readable() (
-  registry_schema_check >/dev/null || exit $?
-  registry_hub_host >/dev/null || exit $?
+  registry_estate_gates >/dev/null || exit $?
 )
 
 session_identity_rows() {

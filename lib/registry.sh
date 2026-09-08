@@ -2976,17 +2976,57 @@ registry_resolve_session() { # <handle> -> key on stdout; rc 1 unknown/ambiguous
   printf '%s' "$hit"
 }
 
+# registry_estate_gates - rc 0 when THE ESTATE ITSELF reads.
+#
+# THE ONE PLACE THE ESTATE-WIDE GATE SET IS WRITTEN DOWN. registry_load passes
+# through four gates that have nothing to do with any particular row: the
+# schema version, the hub host, the op token file name and the launchd label
+# prefix. Every one of them refuses rc 78, and every one of them refuses EVERY
+# row when it refuses at all.
+#
+# IT EXISTS BECAUSE A SECOND READER HAD TO KNOW THE SAME SET. lib/sessions.sh
+# asks "was it the estate or was it the rows" after a sweep in which nothing
+# loaded, and it asked with a hand-copied list of two of the four. An estate
+# carrying LABEL_PREFIX and HUB_HOST but no OP_TOKEN_FILE_NAME then answered
+# ok:true with every row named unreadable and no session listed - a machine
+# where everything runs, reported as a readable registry with nothing on it.
+# A gate set copied into a second file is a gate set that drifts, so there is
+# one function and both callers run it.
+#
+# NOT A SUBSHELL, on purpose: registry_schema_check publishes
+# _REGISTRY_SCHEMA_SEEN and registry_load reads it further down. A caller that
+# wants the question without the publication wraps this in its own subshell,
+# which is what the probe in lib/sessions.sh does.
+#
+# LOGIN_REQUIRED_FOR IS NOT IN HERE. registry_login_required_for is also read
+# from the estate and also refuses 78, but only for a row that carries no
+# LOGIN on a schema-6 estate - so it is a row-conditional gate, and a probe
+# that ran it would refuse for estates whose rows all load.
+registry_estate_gates() {
+  registry_schema_check >/dev/null || return 78
+  registry_hub_host >/dev/null || return 78
+  registry_op_token_name >/dev/null || return 78
+  registry_label_prefix >/dev/null || return 78
+}
+
 registry_load() {
-  # THE SCHEMA GATE, WIRED. Until 2026-08-25 registry_schema_check existed and
+  # THE ESTATE GATES, WIRED. Until 2026-08-25 registry_schema_check existed and
   # nothing called it: the estate declared a version, the library knew how to
   # compare it, and no path ever asked. A gate with no caller is indistinguishable
   # from no gate at all, and the difference only shows up as damage.
   #
-  # IT COMES FIRST, before the conf is even located. A checkout that cannot
+  # THEY COME FIRST, before the conf is even located. A checkout that cannot
   # understand this register must not begin interpreting it — refusing on a field
   # it half-knows would report the wrong cause and send the reader after the
-  # wrong bug.
-  registry_schema_check || return 78
+  # wrong bug. The same argument covers the other three: an estate that cannot
+  # name its own token file or its own label prefix cannot produce a whole row
+  # either, and the loader used to discover that four hundred lines later,
+  # after the conf had already been sourced.
+  #
+  # ONE CALL, so the set has one definition. The values are still resolved
+  # individually below where they are needed; this line is the gate, and
+  # registry_estate_gates is what lib/sessions.sh probes with.
+  registry_estate_gates || return 78
   local project="${1:-}"
   if ! registry_valid_name "$project"; then
     echo "registry: invalid project name '$project' (allowed: a-z 0-9 -)" >&2
