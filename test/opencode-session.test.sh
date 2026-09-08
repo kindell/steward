@@ -175,6 +175,54 @@ check_file_contains "config denial wins beneath broad allowance" "$config_file" 
 check_file_contains "instructions name snapshot" "$instructions_file" "$snapshot"
 check_file_contains "instructions name proposals" "$instructions_file" "$proposals"
 
+# -- A CHANGED MODEL STARTS A NEW THREAD -------------------------------------
+# Measured on two hosts, twice, 2026-09-08: OpenCode ignores --model for a
+# resumed thread - the thread keeps the model it was created with. A row whose
+# MODEL field changed went on answering on the old model, silently, until the
+# session file was moved aside by hand. The model record below is how the
+# adapter tells a changed row from an unchanged one - there is no server left
+# to ask once the temporary one used for creation is gone.
+model_file="$state/steward-opencode.opencode-model"
+check_eq "model record carries the row's model" "$(cat "$model_file" 2>/dev/null)" "openai/gpt-5.3-codex"
+check_eq "model record mode is 600" "$(mode "$model_file" 2>/dev/null)" 600
+
+sed -i.bak 's#^MODEL=.*#MODEL="openai/gpt-5.4"#' "$estate/sessions.d/steward-opencode.conf" && rm -f "$estate/sessions.d/steward-opencode.conf.bak"
+changed_err="$(FAKE_SESSION_ID=ses_second999 run_adapter 2>&1 >/dev/null)"
+changed_rc=$?
+check_eq "a changed model still starts successfully" "$changed_rc" 0
+check_eq "session file now carries the new thread's id" "$(cat "$session_file" 2>/dev/null)" "ses_second999"
+archived_count="$(ls "$state"/steward-opencode.opencode-session.[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "exactly one archived session file exists" "$archived_count" 1
+archived_file="$(ls "$state"/steward-opencode.opencode-session.[0-9]* 2>/dev/null | head -1)"
+check_eq "the archived file carries the old id" "$(cat "$archived_file" 2>/dev/null)" "ses_bootstrap123"
+check_eq "model record now carries the new model" "$(cat "$model_file" 2>/dev/null)" "openai/gpt-5.4"
+case "$changed_err" in
+  *"openai/gpt-5.3-codex"*"openai/gpt-5.4"*"new thread"*) ok ;;
+  *) bad "stderr does not name both models and a new thread" "$changed_err" ;;
+esac
+check_arg "TUI receives the new thread's session" "ses_second999"
+
+curl_before_same="$(grep -c '/session' "$capture_curl" 2>/dev/null)"
+FAKE_SESSION_ID=ses_unused777 run_adapter >/dev/null 2>&1
+same_rc=$?
+check_eq "rerun with the same model succeeds" "$same_rc" 0
+check_eq "rerun with the same model keeps the session id" "$(cat "$session_file" 2>/dev/null)" "ses_second999"
+archived_count_after_same="$(ls "$state"/steward-opencode.opencode-session.[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "rerun with the same model archives nothing new" "$archived_count_after_same" 1
+curl_after_same="$(grep -c '/session' "$capture_curl" 2>/dev/null)"
+check_eq "rerun with the same model never calls the session creation route" "$curl_after_same" "$curl_before_same"
+
+rm -f "$model_file"
+missing_record_err="$(FAKE_SESSION_ID=ses_should_not_be_used run_adapter 2>&1 >/dev/null)"
+missing_record_rc=$?
+check_eq "rerun with the record missing succeeds" "$missing_record_rc" 0
+check_eq "rerun with the record missing keeps the session id" "$(cat "$session_file" 2>/dev/null)" "ses_second999"
+check_eq "the record is recreated with the row's model" "$(cat "$model_file" 2>/dev/null)" "openai/gpt-5.4"
+case "$missing_record_err" in
+  *"no model record"*) ok ;;
+  *) bad "stderr does not mention the missing model record" "$missing_record_err" ;;
+esac
+
 # ── THE BASE INSTRUCTION MUST EXIST, OR NOT BE PROMISED ────────────────────
 # Measured 2026-08-25 on the first live OpenCode session: the generated
 # instructions said "Use the Steward bus instructions already present in the
@@ -216,11 +264,11 @@ run_adapter >/dev/null 2>&1 || true
 if grep -qi "global agent instructions" "$instructions_file" 2>/dev/null; then
   bad "unset: the text still promises a global instruction file"
 else ok "unset: no promise of a file that does not exist"; fi
-check_arg "TUI receives exact session" "ses_bootstrap123"
+check_arg "TUI receives exact session" "ses_second999"
 check_arg "TUI receives auto approval" "--auto"
 check_arg "TUI receives loopback hostname" "127.0.0.1"
 check_arg "TUI receives registry port" "4097"
-check_arg "TUI receives first model" "openai/gpt-5.3-codex"
+check_arg "TUI receives first model" "openai/gpt-5.4"
 check_file_contains "TUI receives generated config environment" "$capture_tui" "OPENCODE_CONFIG=$config_file"
 check_file_contains "curl uses stdin config" "$capture_curl" "--config"
 if grep -Ex -- '-u|--user' "$capture_curl" >/dev/null 2>&1; then
@@ -239,8 +287,8 @@ run_adapter
 second_rc=$?
 check_eq "second adapter run succeeds" "$second_rc" 0
 check "existing proposal directory is restored writable" test -w "$proposals"
-check_eq "second run does not create another API session" "$(grep -c '/session' "$capture_curl" 2>/dev/null)" 1
-check_eq "second run reuses exact session" "$(cat "$session_file" 2>/dev/null)" "ses_bootstrap123"
+check_eq "second run does not create another API session" "$(grep -c '/session' "$capture_curl" 2>/dev/null)" 2
+check_eq "second run reuses exact session" "$(cat "$session_file" 2>/dev/null)" "ses_second999"
 
 write_conf "openai/gpt-5.5" "$memory"
 run_adapter

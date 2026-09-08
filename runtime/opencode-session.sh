@@ -58,6 +58,7 @@ umask 077
 mkdir -p "$STATE_DIR" || refuse 70 "could not create state directory: $STATE_DIR"
 
 SESSION_FILE="$STATE_DIR/$SESSION_NAME.opencode-session"
+MODEL_FILE="$STATE_DIR/$SESSION_NAME.opencode-model"
 PASSWORD_FILE="$STATE_DIR/$SESSION_NAME.opencode-password"
 CONFIG_FILE="$STATE_DIR/$SESSION_NAME.opencode.json"
 INSTRUCTIONS_FILE="$STATE_DIR/$SESSION_NAME.opencode-instructions.md"
@@ -185,10 +186,20 @@ curl_with_password() {
     "$CURL_BIN" --config - -fsS "$@"
 }
 
-if [ -f "$SESSION_FILE" ]; then
-  SESSION_ID="$(cat "$SESSION_FILE")"
-  [[ "$SESSION_ID" =~ ^ses_[A-Za-z0-9_-]+$ ]] || refuse 65 "saved OpenCode session ID is malformed"
-else
+write_model_record() {
+  local temporary
+  temporary="$(mktemp "$MODEL_FILE.XXXXXX")" || refuse 70 "could not make model record temporary file"
+  printf '%s\n' "$MODEL" > "$temporary" || refuse 70 "could not write model record temporary file"
+  chmod 600 "$temporary" || refuse 70 "could not secure model record temporary file"
+  mv -f "$temporary" "$MODEL_FILE" || refuse 70 "could not atomically persist model record"
+}
+
+# Everything a fresh thread needs: password, temporary server, health loop,
+# session creation, and the durable records - the session id AND the model it
+# was born with (see the resume branch below for why the model is recorded
+# here). Called from the first-start path and from the resume path when the
+# row's model no longer matches the thread's.
+create_thread() {
   if [ ! -f "$PASSWORD_FILE" ]; then create_password; fi
   chmod 600 "$PASSWORD_FILE" || refuse 70 "could not secure server password"
   OPENCODE_SERVER_PASSWORD="$(cat "$PASSWORD_FILE")"
@@ -217,7 +228,45 @@ else
   printf '%s\n' "$SESSION_ID" > "$session_temporary" || refuse 70 "could not write session temporary file"
   chmod 600 "$session_temporary" || refuse 70 "could not secure session temporary file"
   mv -f "$session_temporary" "$SESSION_FILE" || refuse 70 "could not atomically persist OpenCode session"
+  write_model_record
   cleanup_server
+}
+
+if [ -f "$SESSION_FILE" ]; then
+  SESSION_ID="$(cat "$SESSION_FILE")"
+  [[ "$SESSION_ID" =~ ^ses_[A-Za-z0-9_-]+$ ]] || refuse 65 "saved OpenCode session ID is malformed"
+
+  # A SAVED THREAD KEEPS THE MODEL IT WAS BORN WITH. Measured on two hosts,
+  # twice, 2026-09-08: OpenCode resumes a thread with `--session <id> --model
+  # $MODEL`, but a resumed thread ignores --model - it goes on answering on
+  # whatever model created it. A row's MODEL field was changed and restarted,
+  # and the thread kept answering on the old model with no error; the fix was
+  # moving the session file aside by hand.
+  #
+  # A RECORD, NOT A QUERY: there is no server to ask a resumed thread what
+  # model it holds. The temporary server exists only long enough to create a
+  # session, then it is gone (see create_thread's cleanup_server). So the
+  # model the thread was born with has to be written down at creation time,
+  # beside the session id, and compared to the row on every resume.
+  #
+  # A THREAD FROM BEFORE THIS RECORD EXISTED IS RECORDED, NOT ROTATED. Rotating
+  # every legacy thread once would silently start a fresh thread - and lose
+  # the history - for every session already running, on the one occasion
+  # operators already know how to handle by hand: move the session file aside.
+  if [ -f "$MODEL_FILE" ]; then
+    RECORDED_MODEL="$(cat "$MODEL_FILE")"
+    if [ "$RECORDED_MODEL" != "$MODEL" ]; then
+      ARCHIVED_SESSION_FILE="$SESSION_FILE.$(date +%s)"
+      mv -f "$SESSION_FILE" "$ARCHIVED_SESSION_FILE" || refuse 70 "could not archive the previous OpenCode session"
+      echo "opencode-session: MODEL changed from $RECORDED_MODEL to $MODEL - a saved thread keeps the model it was born with, so a new thread is started; the old id is kept at $ARCHIVED_SESSION_FILE" >&2
+      create_thread
+    fi
+  else
+    write_model_record
+    echo "opencode-session: no model record for the saved thread; recorded $MODEL as its model - if the thread was born on another model, move the session file aside once" >&2
+  fi
+else
+  create_thread
 fi
 
 if [ "$AUTO_APPROVE" = "true" ]; then
