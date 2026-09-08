@@ -1,0 +1,25 @@
+# linux/steward-desk-snapshot.service - one producer run: rebuild every
+# principal's file into a fresh generation and swap the symlink onto it.
+#
+# Type=oneshot, because it is a ROUND and not a service - it writes a
+# generation and exits, and the server in front of it never restarts. The two
+# units are deliberately independent: a producer that cannot run leaves the
+# desk serving the last good generation until it goes stale, which the server
+# reports; a server that is down does not stop the generations from being
+# written.
+#
+# KillMode=process for the reason agent-session@.service documents at length:
+# without it systemd tidies the whole cgroup when the round exits. Nothing here
+# is handed off today, but the round shells out (jq, git, the estate's liveness
+# command) and a round that must not take its own children with it is the
+# cheaper default.
+#
+# NO ENVIRONMENT LINES. The directory comes from desk/bin/desk-paths, the same
+# bridge the server reads. See steward-desk.service.
+[Unit]
+Description=steward desk snapshot - rebuild the per-principal files
+
+[Service]
+Type=oneshot
+KillMode=process
+ExecStart=/bin/bash %h/scripts/desk/snapshot.sh

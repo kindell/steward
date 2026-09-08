@@ -37,6 +37,19 @@ cp "$here/linux/deploy-self.sh"   "$FX/repo/linux/deploy-self.sh"
 cp "$here/linux/deploy-apply.sh"  "$FX/repo/linux/deploy-apply.sh"
 cp "$here/lib/deploy-core.sh"     "$FX/repo/lib/deploy-core.sh"
 printf 'x\n' > "$FX/repo/linux/tool-a"
+# THE PRODUCT'S OWN COMMAND, STUBBED. After a successful apply the deploy
+# regenerates the desk by calling `bin/steward desk snapshot` in its own
+# checkout - so the fixture's checkout needs that file, and a stub is what
+# makes the call measurable without a registry, a snapshot or jq. It records
+# its argv and returns whatever the case under test asks for.
+mkdir -p "$FX/repo/bin"
+cat > "$FX/repo/bin/steward" <<EOF
+#!/bin/bash
+echo "\$*" >> "$FX/steward.calls"
+exit "\${STEWARD_STUB_RC:-0}"
+EOF
+chmod 755 "$FX/repo/bin/steward"
+: > "$FX/steward.calls"
 cat > "$FX/repo/linux/deploy-manifest" <<'EOF'
 linux/tool-a  bin/tool-a  755  bin
 EOF
@@ -112,6 +125,33 @@ case "$u" in *"apply"*) ok ;; *) bad "apply is not named in the rc 1 text — BO
 u="$(SUDO_RC=127 run testhost testhost)"; rc=$?
 check "sudo stub rc 127: rc 70" [ "$rc" -eq 70 ]
 case "$u" in *"execution failure"*"command not found"*) ok ;; *) bad "wrong text for rc 127: $u" ;; esac
+
+echo "== the deploy REGENERATES THE DESK, and only after an apply that worked =="
+# THE DEPLOY IS THE REVOCATION. A home that lost a person, or a person who lost
+# a row, keeps being described by the generation on disk until somebody writes
+# a new one - and the timer's next round is five minutes away. So the deploy
+# writes it: seconds after the rollout, the desk shows the estate the rollout
+# installed. The refresh timer exists for liveness, not for this.
+: > "$FX/steward.calls"
+u="$(SUDO_RC=0 run testhost testhost)"; rc=$?
+check "a successful apply still exits 0" [ "$rc" -eq 0 ]
+case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) ok ;; *) bad "the deploy did not regenerate the desk after a successful apply: '$(cat "$FX/steward.calls")'" ;; esac
+
+# A FAILED APPLY MUST NOT PUBLISH A NEW GENERATION. What went onto the disk is
+# then unknown, and a desk regenerated from a half-applied rollout describes an
+# estate that does not exist on that host.
+: > "$FX/steward.calls"
+u="$(SUDO_RC=1 run testhost testhost)"; rc=$?
+case "$(cat "$FX/steward.calls")" in *"desk snapshot"*) bad "the desk was regenerated after an apply that FAILED" ;; *) ok ;; esac
+
+# A SNAPSHOT THAT FAILED IS NOT A CLEAN DEPLOY. The files landed, so the run is
+# not a refusal - but the desk is now describing the previous generation, and a
+# green exit code would hide that until somebody happened to read a page.
+: > "$FX/steward.calls"
+u="$(SUDO_RC=0 STEWARD_STUB_RC=3 run testhost testhost)"; rc=$?
+check "apply 0, snapshot 3: rc 70" [ "$rc" -eq 70 ]
+case "$u" in *desk*) ok ;; *) bad "the failure text does not name the desk: $u" ;; esac
+case "$u" in *SUDO-CALL*) ok ;; *) bad "the apply itself never ran, so the case measures the wrong failure: $u" ;; esac
 
 echo "== the stage gets an UNPREDICTABLE name — measured on the BEHAVIOUR =="
 # The old variant looked for the string 'mktemp' on a non-comment line in the

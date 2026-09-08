@@ -101,6 +101,38 @@ The axis decides who sees the asset at all:
 - anything else - dropped. A new axis has to be granted deliberately in
   `filter.jq`; it is never inherited.
 
+## Operating the desk on a session host
+
+The deploy writes the files and the unit files, and daemon-reloads. It never
+enables and never starts anything - that verb is refused by design
+(`test/deploy-policy.test.sh`). So after the first rollout that carries the
+desk, the hub account turns it on once, by hand:
+
+    loginctl enable-linger <the hub account>     # once per account, if not already
+    systemctl --user daemon-reload
+    systemctl --user enable --now steward-desk.service steward-desk-snapshot.timer
+
+`enable-linger` is what lets the units run with nobody logged in; without it
+the desk stops the moment the last session ends. Later deploys need none of
+this repeated - they overwrite the unit files and reload, and systemd keeps
+what was enabled.
+
+**How quickly a change reaches a desk.** Two different answers, and confusing
+them is the trap:
+
+- **A withdrawal is the deploy's own latency - seconds.** Every file was
+  filtered when it was written, so a person keeps seeing what the last
+  generation gave them until a new one exists. `linux/deploy-self.sh` therefore
+  runs `steward desk snapshot` itself after an apply that succeeded, and a
+  failed snapshot makes the deploy exit 70: the rollout happened, the view of
+  it did not.
+- **Liveness is the timer's - up to five minutes.** That is all
+  `steward-desk-snapshot.timer` is for. It is not the revocation path.
+
+The server needs no restart when a generation changes; it reads
+`<STEWARD_DESK_DIR>/current` per request. Restart it only when `serve.mjs`,
+`render.mjs` or the unit itself changed.
+
 ## What is deliberately absent
 
 The raw document the producer builds carries more than any of this, and none of

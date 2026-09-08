@@ -1,0 +1,30 @@
+# linux/steward-desk-snapshot.timer - the desk's refresh round.
+#
+# WHAT THIS TIMER IS FOR, AND WHAT IT IS NOT FOR. It refreshes LIVENESS: a
+# session that stopped an hour ago must not still be drawn as running. It is
+# NOT how a withdrawal reaches the desk - the deploy regenerates the snapshot
+# itself the moment an apply succeeds (linux/deploy-self.sh), so a person who
+# lost a row loses the page in seconds rather than in five minutes. Reading
+# this timer as the revocation path is the mistake that would make five minutes
+# look acceptable for something it was never asked to do.
+#
+# OnActiveSec, NOT OnBootSec, AND THE OnCalendar FLOOR UNDER BOTH: see
+# linux/browser-stack.timer, where the same anchor bug is written up from two
+# measurements. A user timer cannot arm before the user manager exists, so a
+# boot-anchored trigger is already in the past when the timer comes into being,
+# and a monotonic chain with no first link has no next elapse at all.
+#
+# The 2min delay keeps its purpose: a freshly booted host is still assembling
+# itself, and a snapshot taken of that half-built state records every session
+# as not running.
+[Unit]
+Description=steward desk snapshot - liveness refresh
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=5min
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

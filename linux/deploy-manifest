@@ -47,6 +47,15 @@ lib/registry.sh                    scripts/lib/registry.sh              755  lib
 # looks: it sources these from the directory it found registry.sh in.
 lib/mcprender.sh                   scripts/lib/mcprender.sh             755  lib
 lib/mcpspawn.sh                    scripts/lib/mcpspawn.sh              755  lib
+# THE LIVENESS SEAM TRAVELS WITH THE REGISTRY, and the desk is what made that
+# visible. The desk's producer refuses to run without it (rc 78) and takes the
+# seam from THE SAME DIRECTORY the registry library came from, by design: an
+# override that aimed one at one tree and the other at a second would measure
+# one estate and describe another. A home with registry.sh and no liveness.sh
+# is therefore a home whose snapshot round exits 78 every five minutes, into a
+# journal, while the desk keeps serving the last generation it managed to
+# write.
+lib/liveness.sh                    scripts/lib/liveness.sh              755  lib
 # bus clients + browser (executable locations — the loneliness sweep's core targets)
 linux/bus-send                     bin/bus-send                         755  bin
 linux/bus-read                     bin/bus-read                         755  bin
@@ -103,3 +112,40 @@ watch/package.json               scripts/watch/package.json           644  scrip
 watch/bin/registry-dump          scripts/watch/bin/registry-dump      755  scripts
 watch/bin/session-watch.sh       scripts/watch/bin/session-watch.sh   755  scripts
 watch/bin/restart-session.sh     scripts/watch/bin/restart-session.sh 755  scripts
+# THE DESK: a read-only page per person, served on a unix socket in the hub's
+# own home. Two halves, and both of them land here.
+#
+# THE PRODUCER (snapshot.sh + filter.jq) runs where the estate is - it reads
+# the registry and the liveness seam, and writes one already-filtered file per
+# principal. The filter is the security boundary and it is a manifest row like
+# any other: a home running an older filter.jq is a home whose files carry more
+# than the current rules allow, and nothing downstream would notice.
+#
+# THE SERVER (serve.mjs + render.mjs) IS SHIPPED BECAUSE THE HUB SERVES. It is
+# the one process here that a network reaches, and it runs from the deployed
+# home like everything else a unit starts - the unit's ExecStart names
+# %h/scripts/desk/serve.mjs, so a home without these two files has a service
+# that fails to start on every boot. package.json travels with them because it
+# is what makes the directory an ES-module package for the runtime.
+#
+# THE BRIDGES ARE 755 BECAUSE THEY ARE SPAWNED, not sourced. desk-paths answers
+# "where does the desk live" for both languages, and principal-for-login is the
+# gate itself: the server EXECUTES it once per request to turn a login into a
+# principal, and checks its executable bit at startup precisely because a
+# deploy that dropped the bit would otherwise leave every person looking at
+# "no desk for this login" forever.
+#
+# NOT desk/test/ - see test/deploy-manifest.test.sh, which guards that.
+desk/snapshot.sh                 scripts/desk/snapshot.sh             755  scripts
+desk/filter.jq                   scripts/desk/filter.jq               644  scripts
+desk/serve.mjs                   scripts/desk/serve.mjs               644  scripts
+desk/render.mjs                  scripts/desk/render.mjs              644  scripts
+desk/package.json                scripts/desk/package.json            644  scripts
+desk/SCHEMA.md                   scripts/desk/SCHEMA.md               644  scripts
+desk/bin/desk-paths              scripts/desk/bin/desk-paths          755  scripts
+desk/bin/principal-for-login     scripts/desk/bin/principal-for-login 755  scripts
+# The desk's units. Written and daemon-reloaded by the deploy, enabled once by
+# hand - the operator's sequence is in desk/SCHEMA.md.
+linux/steward-desk.service           .config/systemd/user/steward-desk.service           644  systemd
+linux/steward-desk-snapshot.service  .config/systemd/user/steward-desk-snapshot.service  644  systemd
+linux/steward-desk-snapshot.timer    .config/systemd/user/steward-desk-snapshot.timer    644  systemd

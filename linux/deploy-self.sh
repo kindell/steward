@@ -172,4 +172,31 @@ case "$rc" in
        rc=70 ;;
   127) echo "execution failure: command not found — either sudo is missing, or the stage carries no deploy-apply.sh ($STAGE/deploy-apply.sh)." >&2; rc=70 ;;
 esac
+
+# --- 7. THE DESK: REGENERATED HERE, BECAUSE THE DEPLOY IS THE REVOCATION ---
+# The desk hands each person a file that was FILTERED WHEN IT WAS WRITTEN, so
+# what a person may see is decided by the last snapshot and by nothing at
+# request time. A rollout that removes somebody's row, or moves a session out
+# of their reach, therefore changes nothing at all until a new generation is
+# written: the old one keeps answering, correctly, about an estate that is no
+# longer there. The refresh timer would get to it within five minutes. Five
+# minutes is the wrong latency for a withdrawal, and it is the deploy - not the
+# timer - that knows a withdrawal just happened.
+#
+# ONLY AFTER AN APPLY THAT WORKED. A failed apply leaves the homes in a state
+# nobody has measured, and a desk regenerated from that describes an estate
+# that exists on no machine.
+#
+# ITS FAILURE IS NOT A DETAIL. The files landed, so this is not a refusal - but
+# the desk is now serving the PREVIOUS generation while claiming to be current,
+# and a green exit code hides that until somebody happens to read a page. Rc 70
+# says: the rollout happened, the view of it did not.
+if [ "$rc" -eq 0 ]; then
+  bash "$PRODUCT/bin/steward" desk snapshot
+  snap_rc=$?
+  if [ "$snap_rc" -ne 0 ]; then
+    echo "deploy-self: desk snapshot failed (rc $snap_rc) - the desk shows the previous generation until the timer runs" >&2
+    rc=70
+  fi
+fi
 exit "$rc"

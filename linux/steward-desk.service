@@ -1,0 +1,39 @@
+# linux/steward-desk.service - the desk server, in the hub account, on a unix
+# socket. One instance per host: the desk reads files that were already written
+# for every principal, so there is nothing per-person to run.
+#
+# THE ONE LONG-LIVED SERVICE IN THIS TREE, AND IT EARNS IT. Everything else
+# here is a supervision ROUND under a timer, because the thing being supervised
+# is owned by somebody else (tmux owns the session processes, and a Restart
+# would fight it). This unit owns something itself: the listening socket. There
+# is no other process to hand it to and no round that could re-check it, so a
+# server that died must come back, which is what Restart=on-failure is for.
+# RestartSec keeps a server that refuses its configuration (rc 64, rc 78) from
+# spinning the journal while it does so.
+#
+# NO STEWARD_DESK_DIR, NO STEWARD_DESK_SOCK. Both default to what
+# desk/bin/desk-paths prints, which reads the estate's own STATE_DIR_NAME - the
+# same bridge the producer reads, which is the whole reason the bridge exists.
+# A path written here would be a second opinion about where the desk lives, and
+# a second opinion is a directory somebody is serving and nobody is writing.
+#
+# PATH IS NOT CONFIGURATION, it is how node is found: a systemd user manager's
+# PATH does not include ~/.local/bin, which is where a version manager puts the
+# runtime. agent-job@.service carries the same line for the same reason.
+#
+# Requires linger (loginctl enable-linger <user>) so the unit runs without
+# anyone logged in, and is enabled by hand once - the deploy writes unit files
+# and daemon-reloads, and never enables or starts anything (see
+# test/deploy-policy.test.sh). desk/SCHEMA.md has the operator's sequence.
+[Unit]
+Description=steward desk - read-only estate view on a unix socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node %h/scripts/desk/serve.mjs
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

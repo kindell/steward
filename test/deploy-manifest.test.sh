@@ -138,6 +138,18 @@ REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/lib/mcprender.sh scripts/lib/mcpspaw
 # a home has a job runner and no way to turn the estate's job rows into timers,
 # so every scheduled job on that host is silently never scheduled.
 REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/install-user-jobs.sh"
+# THE DESK IS FOUR FILES AND TWO UNITS, and every one of them fails QUIETLY.
+# A home that lost scripts/desk/bin/desk-paths has a server that exits 78 the
+# moment systemd starts it and says so only in the journal - the socket is
+# simply never there, and the reader in front of it reports a connection
+# refused that names nothing. The producer fails the same way: without
+# scripts/desk/snapshot.sh the timer runs a unit whose ExecStart does not
+# exist, and the desk keeps serving the generation it happened to have. The
+# units are here because a deploy that writes the files and not the units
+# leaves a host with a desk nobody starts.
+REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/desk/snapshot.sh scripts/desk/serve.mjs"
+REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/desk/bin/desk-paths scripts/desk/bin/principal-for-login"
+REQUIRED_TARGETS="$REQUIRED_TARGETS .config/systemd/user/steward-desk.service .config/systemd/user/steward-desk-snapshot.timer"
 [ -n "$ESTATE_MANIFEST" ] && REQUIRED_TARGETS="$REQUIRED_TARGETS scripts/docs/tysta-fel.md"
 for required in $REQUIRED_TARGETS; do
   grep -v '^#' "$M" | awk '{print $2}' | grep -qx "$required" && ok || bad "core target missing: $required"
@@ -156,6 +168,16 @@ for relay in bus-relay-in bus-relay-deliver bus-relay-peer; do
   is_mode="$(printf '%s' "$row")"
   [ "$is_mode" = "755" ] && ok || bad "the hub's receiving side: scripts/bus/bin/$relay is not a 755 manifest row (got '${is_mode:-no row}')"
 done
+
+# 8c. THE TEST TREE IS NOT PART OF THE IMAGE.
+#
+# desk/ ships file by file, and the directory holds its own tests beside the
+# files they measure. A row that swept them along would put a test fixture into
+# somebody's home, where nothing runs it and nothing prunes it - and the desk's
+# tests write sockets and generation directories. What belongs in a home is the
+# part a unit starts.
+leaked="$(grep -v '^#' "$M" | awk '$1 ~ /^desk\/test\// {print $1}')"
+[ -z "$leaked" ] && ok || bad "a desk test file is a manifest source: $leaked"
 
 # 9. THE TOOLS ARE NEVER PART OF WHAT THEY WRITE.
 #
