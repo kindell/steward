@@ -56,6 +56,12 @@ lib/mcpspawn.sh                    scripts/lib/mcpspawn.sh              755  lib
 # journal, while the desk keeps serving the last generation it managed to
 # write.
 lib/liveness.sh                    scripts/lib/liveness.sh              755  lib
+# THE VISIBILITY RULE TRAVELS WITH THE REGISTRY THE SAME WAY. The desk's
+# producer sources it from the registry library's own directory, right after
+# liveness.sh, and refuses the same way when it is absent. A home with
+# registry.sh and no visibility.sh fails the same way liveness.sh did above —
+# measured 2026-09-08 on a deployed home.
+lib/visibility.sh                  scripts/lib/visibility.sh            755  lib
 # bus clients + browser (executable locations — the loneliness sweep's core targets)
 linux/bus-send                     bin/bus-send                         755  bin
 linux/bus-read                     bin/bus-read                         755  bin

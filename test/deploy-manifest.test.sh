@@ -248,6 +248,78 @@ for t in $TOOLS; do
     && bad "tool as a manifest target — points into the checkout: $t" || ok
 done
 
+# 10. EVERY LIBRARY A DEPLOYED FILE SOURCES TRAVELS WITH IT, not only the ones
+# named in the required-target list above. desk/snapshot.sh sources three
+# files from THE SAME DIRECTORY the registry library came from — registry.sh,
+# liveness.sh, and now visibility.sh — and a home missing any one of them
+# fails on the sourcing line, at rc 78, into a journal nobody reads. This
+# check reads every file the manifest deploys under desk/, runtime/, and
+# linux/hub/ (the three trees that source a library the SAME WAY, from a
+# variable directory, ending in a literal repo-relative `lib/<name>.sh`) and
+# proves the manifest carries a row for what it finds. TWO ROWS WERE MISSING
+# BEFORE THIS CHECK EXISTED: bin/steward, on a different day, and
+# lib/visibility.sh, measured 2026-09-08. Both failed the same way — quietly,
+# on a deployed home, never on the checkout that wrote the manifest.
+#
+# A VARIABLE BASENAME IS SKIPPED, NEVER GUESSED. A line whose final path
+# segment is itself a variable — `. "$STEWARD_REGISTRY_LIB"`,
+# `. "$_MCP_LIB_DIR/$_c"` — names no literal file this check could look up, so
+# it is left to the required-target list above, or to a human, rather than
+# invented here.
+#
+# THE DIRECTORY HOP IS READ FROM ITS OWN LAST COMPONENT, not from a fixed
+# string. `$lib_dir/visibility.sh` never contains the four characters `lib/`
+# — the variable is named `lib_dir`, not `lib` — so a check that only grepped
+# for a literal `lib/` segment would have missed the very row this check
+# exists to guard. What decides a match is the path segment immediately
+# before the literal basename: a directory called `lib` (as in
+# `$here/../lib/registry.sh`) or a variable whose own name says so (as in
+# `$lib_dir/visibility.sh`). The hub's own `$here/lib.sh` has neither — the
+# name is a variable that says nothing about a library directory, and the
+# library it names is not under `lib/` at all — so it is correctly left out.
+LIB_SOURCERS="$(grep -v '^#' "$M" | awk '{print $1}' | grep -E '^(desk/|runtime/|linux/hub/)')"
+for srcfile in $LIB_SOURCERS; do
+  [ -f "$here/$srcfile" ] || continue
+  hits="$(grep -nE '(\. "\$|source "\$)' "$here/$srcfile" 2>/dev/null)"
+  [ -z "$hits" ] && continue
+  while IFS=: read -r lineno linetext; do
+    [ -z "${lineno:-}" ] && continue
+    first="$(printf '%s' "$linetext" | sed -n 's/^[[:space:]]*\(.\).*/\1/p')"
+    [ "$first" = '#' ] && continue
+    path="$(printf '%s' "$linetext" | sed -n 's/.*"\([^"]*\)".*/\1/p')"
+    [ -z "$path" ] && continue
+    case "$path" in
+      */*) basename="${path##*/}" ;;
+      *) basename="$path" ;;
+    esac
+    case "$basename" in
+      *'$'*) continue ;;
+    esac
+    case "$basename" in
+      *.sh) : ;;
+      *) continue ;;
+    esac
+    prefix="${path%/*}"
+    case "$prefix" in
+      */*) lpc="${prefix##*/}" ;;
+      *) lpc="$prefix" ;;
+    esac
+    case "$lpc" in
+      *lib*) : ;;
+      *) continue ;;
+    esac
+    libname="${basename%.sh}"
+    want="lib/${libname}.sh"
+    if grep -v '^#' "$M" | awk '{print $1}' | grep -qx "$want"; then
+      ok
+    else
+      bad "$srcfile sources lib/${libname}.sh (line $lineno) but the manifest has no row for $want"
+    fi
+  done <<EOF
+$hits
+EOF
+done
+
 [ "$unverified" -gt 0 ] && echo "NOTE: $unverified estate rows could not be verified (no estate checkout found)"
 [ -z "$ESTATE_MANIFEST" ] && echo "NOTE: estate manifest not found; product rows only checked"
 echo "pass=$pass fail=$fail"
