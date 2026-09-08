@@ -104,7 +104,7 @@ out="$( STEWARD_ESTATE_ROOT="$FX" \
         STEWARD_RELAY_ROOT="$FX" \
         STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
         STEWARD_BUS_SEND="$FX/bin/send" \
-        STEWARD_ENROLL_FROM=asker \
+        STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
         bash "$ENROLL" --send < "$req" 2>&1 )"
 rc=$?
 
@@ -177,7 +177,7 @@ run_req() { # <file> [extra env assignments are the caller's business]
   STEWARD_ESTATE_CHECKOUT="${CHECKOUT_OVERRIDE:-}" \
   STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
   STEWARD_BUS_SEND="$FX/bin/send" \
-  STEWARD_ENROLL_FROM=asker \
+  STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
   bash "$ENROLL" --send < "$1" 2>&1
 }
 # A FRESH KEY PER CASE — one key, one identity, so a reused key would refuse
@@ -251,7 +251,7 @@ has "no checkout prints the conf itself" "$out2" 'SLUG="acme-sprocket-someone"'
 mk_req x F 's|^namn=.*|namn=acme-cog-someone|; s|^projekt=.*|projekt=cog|'
 out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
          STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
-         STEWARD_ENROLL_FROM=asker \
+         STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
          bash "$ENROLL" --no-send < "$FX/mut.txt" 2>&1 )"
 id3="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 has "the activate command carries id and slug" "$out2" "--activate $id3 acme-cog-someone"
@@ -295,7 +295,7 @@ REQ
 # (CONFIRM, PROOF) and the final "registered as" line.
 out_sh="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
            STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
-           STEWARD_ENROLL_FROM=asker-hub \
+           STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker-hub \
            bash "$ENROLL" --no-send < "$FX/samehost-req.txt" 2>/dev/null )"
 id_sh="$(printf '%s' "$out_sh" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 has "same host: the activate command uses the owner's own ~/scripts" \
@@ -409,7 +409,7 @@ CONF
 mk_req x J 's|^namn=.*|namn=team-other-someone|; s|^doman=.*|doman=team|; s|^projekt=.*|projekt=other|'
 out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
          STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
-         STEWARD_ENROLL_FROM=asker \
+         STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
          bash "$ENROLL" --no-send < "$FX/mut.txt" 2>/dev/null )"
 idj="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 if [ -n "$idj" ]; then ok "a request into a project somebody is already on registers"
@@ -429,7 +429,7 @@ lacks "and never the newborn itself"             "$mates_j" "$idj"
 mk_req x K 's|^namn=.*|namn=team-solo-someone|; s|^doman=.*|doman=team|; s|^projekt=.*|projekt=solo|'
 out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
          STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
-         STEWARD_ENROLL_FROM=asker \
+         STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
          bash "$ENROLL" --no-send < "$FX/mut.txt" 2>/dev/null )"
 has "a project nobody is on gets the spelled-out empty answer" "$out2" "project-mates=none"
 
@@ -494,7 +494,7 @@ printf '#!/bin/bash\nexit 0\n' > "$LFX/bin/send"; chmod +x "$LFX/bin/send"
 run_lreq() { # <request-file>
   STEWARD_ESTATE_ROOT="$LFX" STEWARD_REGISTRY_DIR="$LFX/sessions.d" \
   STEWARD_RELAY_ROOT="$LFX" STEWARD_AUTHORIZED_KEYS="$LFX/authorized_keys" \
-  STEWARD_BUS_SEND="$LFX/bin/send" STEWARD_ENROLL_FROM=asker \
+  STEWARD_BUS_SEND="$LFX/bin/send" STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
   bash "$ENROLL" --send < "$1" 2>&1
 }
 lreq() { # <file> <namn/projekt-suffix> <login-line-or-empty>
@@ -654,7 +654,7 @@ printf '#!/bin/bash\nexit 0\n' > "$GFX/bin/send"; chmod +x "$GFX/bin/send"
 run_greq() { # <request-file> <from>
   STEWARD_ESTATE_ROOT="$GFX" STEWARD_REGISTRY_DIR="$GFX/sessions.d" \
   STEWARD_RELAY_ROOT="$GFX" STEWARD_AUTHORIZED_KEYS="$GFX/authorized_keys" \
-  STEWARD_BUS_SEND="$GFX/bin/send" STEWARD_ENROLL_FROM="$2" \
+  STEWARD_BUS_SEND="$GFX/bin/send" STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM="$2" \
   bash "$ENROLL" --send < "$1" 2>&1
 }
 
@@ -759,7 +759,16 @@ REPO_PATH="/tmp/x"
 ID="asker"
 CONF
 printf '#!/bin/bash\n' > "$UFX/bus/bin/bus-relay-in"; chmod +x "$UFX/bus/bin/bus-relay-in"
-printf '#!/bin/bash\nexit 0\n' > "$UFX/bin/send"; chmod +x "$UFX/bin/send"
+# THE STUB RECORDS THE CONFIRM. The other fixtures' send stubs only exit 0,
+# which is enough to prove a send happened and nothing about what it said - and
+# the mate list travels in the confirm, not on stdout.
+cat > "$UFX/bin/send" <<'SEND'
+#!/bin/bash
+# The text arrives on STDIN, the recipient as $1 - the shape enroll pipes into.
+cat >> "$UFX_SEND_LOG"
+exit 0
+SEND
+chmod +x "$UFX/bin/send"
 : > "$UFX/authorized_keys"
 cat > "$UFX/u1.txt" <<'REQ'
 DRIFT enroll: acme-widgetu-ann requests registration
@@ -774,7 +783,7 @@ pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYUFXAAAAAAAAAAAAAAAAAAAAAAAA t
 REQ
 uout="$( STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.d" \
          STEWARD_RELAY_ROOT="$UFX" STEWARD_AUTHORIZED_KEYS="$UFX/authorized_keys" \
-         STEWARD_BUS_SEND="$UFX/bin/send" STEWARD_ENROLL_FROM=asker \
+         STEWARD_BUS_SEND="$UFX/bin/send" UFX_SEND_LOG="$UFX/sent.log" STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
          bash "$ENROLL" --send < "$UFX/u1.txt" 2>&1 )"; urc=$?
 is "U1: a new-shape requester enrols, rc 0" "$urc" "0"
 uid="$(printf '%s' "$uout" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
@@ -797,6 +806,36 @@ uread="$( export STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.
   printf '%s' "$_p" )"; urrc=$?
 is "U1: the written row loads and satisfies the STRICT writer rule" "$urrc" "0"
 is "U1: and it resolves to the human the account names" "$uread" "ann"
+
+# U2. THE MATES READ-BACK: THE STATUS AND THE SENTENCE ARE BOTH KEPT.
+# The call used to be `2>/dev/null || PROJECT_MATES=unknown`, which threw away
+# the registry's own cause AND flattened every failure into one word. A row on
+# the same entity whose ACCOUNT does not load stops the mates enumeration with
+# rc 78 - somebody ELSE's fault, in another home. The new row this run wrote
+# reads, so the enrolment stands and the confirm says the list is incomplete;
+# refusing here would punish a requester for a conf it cannot see.
+cat > "$UFX/sessions.d/mate-broken.conf" <<'CONF'
+HOST="farhost"
+OWNER="ben"
+ACCOUNT="missing-account"
+DOMAIN="acme"
+TARGET_ENTITY="acme"
+RC_LABEL="Broken"
+REPO_PATH="/tmp/x"
+ID="mate-broken"
+CONF
+sed 's/widgetu/widgetv/g; s/UFXAAAAAAAAAAAAAAAAAAAAAAAA/UFXBBBBBBBBBBBBBBBBBBBBBBBB/' \
+  "$UFX/u1.txt" > "$UFX/u2.txt"
+u2out="$( STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.d" \
+          STEWARD_RELAY_ROOT="$UFX" STEWARD_AUTHORIZED_KEYS="$UFX/authorized_keys" \
+          STEWARD_BUS_SEND="$UFX/bin/send" UFX_SEND_LOG="$UFX/sent.log" STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
+          bash "$ENROLL" --send < "$UFX/u2.txt" 2>&1 )"; u2rc=$?
+is  "U2: a colleague's refused identity does not refuse the enrolment" "$u2rc" "0"
+has "U2: the code is named"                    "$u2out" "rc 78"
+has "U2: as a degradation, not a refusal"      "$u2out" "nav-enroll: DEGRADED"
+has "U2: and the registry's own cause survives the read-back" "$u2out" "missing-account"
+has "U2: the confirm says the mate list is incomplete" \
+    "$(cat "$UFX/sent.log" 2>/dev/null)" "project-mates=unknown"
 rm -rf "$UFX"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────

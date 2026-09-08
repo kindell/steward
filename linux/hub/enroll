@@ -781,7 +781,32 @@ ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
 # measurement — nobody else works here — and a session acts on it. An
 # unreadable register is a different fact and says so, rather than quietly
 # telling the newborn it is alone.
-PROJECT_MATES="$(registry_project_mates_line "$ID" 2>/dev/null)" || PROJECT_MATES="unknown - the register could not be read back"
+#
+# AND THE HELPER'S OWN SENTENCE IS KEPT. It was thrown away with 2>/dev/null
+# together with the status, so a hub that could not read the register back said
+# only "unknown" and never which fault it was - the register names the row and
+# the cause, and that is the half an operator can act on.
+#
+# rc 78 ASKS WHOSE IT IS BEFORE IT DECIDES. The helper stops its enumeration on
+# ANY candidate whose identity claim the register refuses, so a 78 here means
+# either the row this run just wrote or somebody else's row on the same
+# project. Those two deserve opposite answers: confirming a row that no reader
+# will accept hands a requester a session that does not exist for anything
+# else, while refusing an enrolment over a colleague's broken conf punishes the
+# wrong person for a fault in another home. So the new row is measured on its
+# own, and only its own refusal is fatal.
+PROJECT_MATES="$(registry_project_mates_line "$ID")"; _mates_rc=$?
+if [ "$_mates_rc" -eq 78 ]; then
+  # SUBSHELLED, like every other load in this file: registry_load sources a
+  # session conf, and this script's uppercase state is what such a conf sets.
+  if ! ( registry_load "$ID" >/dev/null 2>&1 ); then
+    fel "the register refuses the row just written for '$ID' (rc 78, cause above) — the row is on disk; repair its identity claim rather than re-enrolling" 78
+  fi
+  echo "nav-enroll: DEGRADED — another row's identity claim was refused while reading the mates back (rc 78, cause above); '$ID' itself reads, so the confirm goes out with an incomplete mate list" >&2
+  PROJECT_MATES="unknown - the register refused a row's identity claim while reading the mates back (rc 78)"
+elif [ "$_mates_rc" -ne 0 ]; then
+  PROJECT_MATES="unknown - the register could not be read back"
+fi
 
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1

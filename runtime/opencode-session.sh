@@ -125,8 +125,30 @@ fi
 #
 # THE HELPER IS SUBSHELLED, so the row this adapter has loaded — REPO_PATH,
 # MODEL, the port it is about to bind — survives the call intact.
-PROJECT_MATES="$(registry_mates_summary "$NAME")" \
-  || PROJECT_MATES="unknown - the register could not be read back"
+#
+# THE STATUS IS READ, AND rc 78 IS NAMED AS ITSELF. It used to collapse into
+# the same four words as every other failure, so an identity refusal and a
+# missing register were indistinguishable in the log.
+#
+# AND IT DEGRADES RATHER THAN REFUSING, WHICH IS MEASURED, NOT PREFERRED. This
+# session's OWN identity claim is already fail-closed at line 38:
+# registry_load "$NAME" refuses 78 when the row does not read, which is exactly
+# what a dangling or borrowed ACCOUNT on this row produces. So every rc 78 that
+# can reach this line belongs to a DIFFERENT row - a colleague on the same
+# project whose ACCOUNT will not load, which stops registry_project_mates'
+# enumeration. Refusing here would let one broken conf in somebody else's home
+# stop a healthy session from starting, which is the fleet-wide stop this
+# product removed everywhere else. So the list degrades and the code is stated,
+# rather than the session not coming up after a restart.
+_mates_rc=0
+PROJECT_MATES="$(registry_mates_summary "$NAME")" || _mates_rc=$?
+if [ "$_mates_rc" -eq 78 ]; then
+  echo "opencode-session: DEGRADED — the register refused another row's identity claim while reading the mates (rc 78, cause above); this session's own row reads, so it starts with an incomplete mate list" >&2
+  PROJECT_MATES="unknown - the register refused a row's identity claim while reading the mates back (rc 78)"
+elif [ "$_mates_rc" -ne 0 ]; then
+  echo "opencode-session: DEGRADED — the mates could not be read back (rc $_mates_rc)" >&2
+  PROJECT_MATES="unknown - the register could not be read back"
+fi
 
 cat > "$INSTRUCTIONS_FILE" <<EOF
 You are the OpenCode Steward bootstrap session named $SESSION_NAME.

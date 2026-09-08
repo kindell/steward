@@ -370,5 +370,45 @@ if grep -F "mate-work" "$instructions_file" >/dev/null 2>&1; then
   bad "the departed mate is still named in the rewritten instructions"
 else ok; fi
 
+# A MATES RC 78 IS SAID OUT LOUD, AND IT IS NOT WHY A SESSION FAILS TO START.
+# This session's own identity claim is fail-closed far earlier - registry_load
+# refuses the row and the adapter exits 78 before a port is bound - so every
+# rc 78 the mates helper can still return belongs to a DIFFERENT row: a
+# colleague on the same project whose ACCOUNT will not load. One broken conf in
+# somebody else's home must not stop this session from coming up after a
+# restart, so the list degrades, the code is named in the log, and the start
+# proceeds.
+mates_err="$state/mates-err.txt"
+cat > "$estate/sessions.d/mate-broken.conf" <<EOF
+REPO_PATH="$repo"
+OWNER="ben"
+DOMAIN="steward"
+TARGET_PROJECT="work"
+ACCOUNT="missing-account"
+EOF
+printf 'TARGET_PROJECT="work"\n' >> "$estate/sessions.d/steward-opencode.conf"
+run_adapter >/dev/null 2>"$mates_err"; mates_rc=$?
+check_eq "a colleague's refused identity does not stop the start" "$mates_rc" 0
+check_file_contains "the log names the code" "$mates_err" "rc 78"
+check_file_contains "and says it is a degradation, not a refusal" \
+  "$mates_err" "opencode-session: DEGRADED"
+check_file_contains "and that this session's own row reads" \
+  "$mates_err" "this session's own row reads"
+check_file_contains "the registry's own cause survives" "$mates_err" "missing-account"
+check_file_contains "the instructions say the list is incomplete" \
+  "$instructions_file" "rc 78"
+rm -f "$estate/sessions.d/mate-broken.conf"
+
+# AND THE SESSION'S OWN IDENTITY STILL REFUSES, at the line that owns that
+# question. The two outcomes are the point: somebody else's broken row costs a
+# name in a list; THIS row's broken identity costs the start.
+cp "$estate/sessions.d/steward-opencode.conf" "$state/own-row.bak"
+printf 'ACCOUNT="missing-account"\n' >> "$estate/sessions.d/steward-opencode.conf"
+run_adapter >/dev/null 2>"$mates_err"; own_rc=$?
+check_eq "this session's own refused identity stops the start" "$own_rc" 78
+check_file_contains "and says it is refusing" "$mates_err" "opencode-session: REFUSING"
+check_file_contains "naming the session it would not load" "$mates_err" "steward-opencode"
+cp "$state/own-row.bak" "$estate/sessions.d/steward-opencode.conf"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

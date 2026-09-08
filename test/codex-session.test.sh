@@ -290,5 +290,41 @@ has "rewritten every round: with the mate gone the line says none" \
 hasnt "and the departed mate is not left behind in the file" \
     "$(cat "$INSTR" 2>/dev/null)" "mate-work"
 
+# 17. A MATES RC 78 IS SAID OUT LOUD, AND IT IS NOT WHY A SESSION FAILS TO
+# START. This session's own identity claim is fail-closed one screen earlier -
+# registry_load refuses the row and the adapter exits 78 before it reaches the
+# instructions - so every rc 78 the mates helper can still return belongs to a
+# DIFFERENT row: a colleague on the same project whose ACCOUNT will not load.
+# One broken conf in somebody else's home must not stop this session from
+# coming up after a restart, so the list degrades, the code is named in the
+# log, and the round proceeds.
+echo "== 17. a colleague's refused identity degrades the mate list, it does not stop the start =="
+printf 'OWNER="ben"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s"\nID="mate-broken"\nTARGET_PROJECT="work"\nACCOUNT="missing-account"\n' \
+  "$HOMEDIR/Projects/repo" > "$ROOT/sessions.d/mate-broken.conf"
+letter m17 someone subj Headline "body" SAMORDNING
+rc="$(run "$CODEX_ID")"
+mate_err="$(cat "$T/err")"
+is  "17: the round still exits 0" "$rc" "0"
+has "17: the log names the code"  "$mate_err" "rc 78"
+has "17: and says it is a degradation, not a refusal" "$mate_err" "codex-session: DEGRADED"
+has "17: and that this session's own row reads"       "$mate_err" "this session's own row reads"
+has "17: the registry's own cause survives"           "$mate_err" "missing-account"
+has "17: the instructions say the list is incomplete" \
+    "$(cat "$INSTR" 2>/dev/null)" "rc 78"
+rm -f "$ROOT/sessions.d/mate-broken.conf"
+
+# AND THE SESSION'S OWN IDENTITY STILL REFUSES, at the line that owns that
+# question. The two outcomes are the point: somebody else's broken row costs a
+# name in a list; THIS row's broken identity costs the start.
+echo "== 18. this session's own refused identity stops the start, rc 78 =="
+cp "$ROOT/sessions.d/$CODEX_ID.conf" "$T/codex-row.bak"
+printf 'ACCOUNT="missing-account"\n' >> "$ROOT/sessions.d/$CODEX_ID.conf"
+rc="$(run "$CODEX_ID")"
+own_err="$(cat "$T/err")"
+is  "18: the adapter exits 78" "$rc" "78"
+has "18: and says it is refusing" "$own_err" "codex-session: REFUSING"
+has "18: naming the session it would not load" "$own_err" "$CODEX_ID"
+cp "$T/codex-row.bak" "$ROOT/sessions.d/$CODEX_ID.conf"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

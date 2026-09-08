@@ -137,8 +137,33 @@ LABEL="$(registry_session_display "$NAME" 2>/dev/null)"
 #
 # THE HELPER IS SUBSHELLED, so the row this adapter has loaded - ID, REPO_PATH,
 # the inbox it is about to read - survives the call intact.
-PROJECT_MATES="$(registry_mates_summary "$NAME")" \
-  || PROJECT_MATES="unknown - the register could not be read back"
+#
+# THE STATUS IS READ, AND rc 78 IS NAMED AS ITSELF. It used to be folded into
+# one sentence with every other failure, so an identity refusal and a missing
+# register produced the same four words and the thread was told nothing it
+# could act on.
+#
+# AND IT DEGRADES RATHER THAN REFUSING, WHICH IS MEASURED, NOT PREFERRED. This
+# session's OWN identity claim is already fail-closed, one screen up: line 59
+# runs registry_load "$NAME" and refuses 78 when the row does not read, which
+# is exactly what a dangling or borrowed ACCOUNT on this row produces. So by
+# the time this call runs, every rc 78 it can return belongs to a DIFFERENT
+# row - a colleague on the same project whose ACCOUNT will not load
+# (registry_project_mates stops the enumeration on such a candidate). Refusing
+# here would mean one broken conf in somebody else's home stops a healthy
+# session from starting, which is the fleet-wide stop this product spent a
+# round removing everywhere else. The mate list is degraded, and the fact is
+# stated with its code so an operator reading the log knows a name is missing
+# rather than absent.
+_mates_rc=0
+PROJECT_MATES="$(registry_mates_summary "$NAME")" || _mates_rc=$?
+if [ "$_mates_rc" -eq 78 ]; then
+  echo "codex-session: DEGRADED - the register refused another row's identity claim while reading the mates (rc 78, cause above); this session's own row reads, so it starts with an incomplete mate list" >&2
+  PROJECT_MATES="unknown - the register refused a row's identity claim while reading the mates back (rc 78)"
+elif [ "$_mates_rc" -ne 0 ]; then
+  echo "codex-session: DEGRADED - the mates could not be read back (rc $_mates_rc)" >&2
+  PROJECT_MATES="unknown - the register could not be read back"
+fi
 
 # The thread's standing instructions. Rewritten every run so a changed row
 # reaches the thread on its next turn; the thread itself is never recreated.
