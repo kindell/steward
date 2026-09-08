@@ -744,8 +744,10 @@ function noteRefusedPeer(addr) {
 
 // handleFront - the whole front request, in the order the gates have to run:
 // the peer first (before a header, a cookie or a path is read), then the
-// method, then the rate limiter on the auth paths, then the routes, then the
-// cookie.
+// method, then the route, then the navigation check, then the rate limiter on
+// the auth paths, then the cookie. EVERYTHING FREE COMES BEFORE THE BUDGET:
+// a hit is a scarce thing a visitor gets ten of a minute, and only a request
+// this desk is actually going to work for may spend one.
 async function handleFront(req, res) {
   const visitor = visitorAddress(req, FRONT.peer);
   if (visitor === null) {
@@ -792,14 +794,36 @@ async function handleFront(req, res) {
   // button does and far below what a scan needs to be useful. The 429 still
   // comes before any provider is contacted.
   if (path.startsWith('/desk/auth/')) {
+    // THE ROUTE IS MATCHED BEFORE THE BUDGET IS SPENT, for the same reason the
+    // method is: a request this desk answers with 404 costs it nothing, so it
+    // must cost the visitor nothing either. It used to cost a hit, and that
+    // was reachable from any other site: ten `<img src=".../desk/auth/logout">`
+    // on a page or in an HTML mail make the victim's own browser spend the
+    // victim's own ten hits from the victim's own address, and the first real
+    // click on /desk/auth/login then meets 429 for a minute, renewably.
+    const matched = (req.method === 'GET' && (path === '/desk/auth/login' || path === '/desk/auth/callback')) || logoutPost;
+    if (!matched) return send(res, 404, NOT_FOUND, FRONT_HEADERS);
+
+    // AND A SUBRESOURCE IS NOT A CLICK. The route match above closes the 404
+    // path; /desk/auth/login is a real route, so ten image loads of it would
+    // still be ten 200s and ten hits. `sec-fetch-dest` is the browser's own
+    // word for what the answer is going to be used as: `document` is a
+    // navigation - the only way a person reaches these three - and image,
+    // script, style, empty and the rest are a subresource some page asked
+    // for. A request without the header at all is allowed through: old
+    // browsers and curl send none, and this is a second lock rather than the
+    // first, exactly as `sec-fetch-site` is in authLogout.
+    const dest = req.headers['sec-fetch-dest'];
+    if (dest !== undefined && dest !== 'document') return send(res, 403, FORBIDDEN, FRONT_HEADERS);
+
     if (!FRONT.limiter.hit(visitor, Date.now())) {
       return send(res, 429, TOO_MANY, Object.assign({}, FRONT_HEADERS, PLAIN, { 'retry-after': '60' }));
     }
-    // GET is the only read method left on these paths: HEAD was refused above.
-    if (path === '/desk/auth/login' && req.method === 'GET') return authLogin(url, res);
-    if (path === '/desk/auth/callback' && req.method === 'GET') return authCallback(url, cookies, res);
-    if (logoutPost) return authLogout(req, res);
-    return send(res, 404, NOT_FOUND, FRONT_HEADERS);
+    // One of the three, or `matched` would be false: GET is the only read
+    // method left on these paths, because HEAD was refused above.
+    if (path === '/desk/auth/login') return authLogin(url, res);
+    if (path === '/desk/auth/callback') return authCallback(url, cookies, res);
+    return authLogout(req, res);
   }
 
   // Past the auth block the method is a read: logoutPost is the only other

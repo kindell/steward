@@ -1204,6 +1204,43 @@ describe('the front listener', () => {
     assert.equal(ok.status, 200, 'the budget must be untouched by the refused methods');
   });
 
+  // NEITHER DOES A PATH THIS DESK DOES NOT ANSWER. GET is reachable from any
+  // other site - a page or an HTML mail with ten
+  // `<img src="https://.../desk/auth/logout">` in it - so a 404 that spent a
+  // hit let a stranger lock a person out of their own login from that
+  // person's own address, for a minute at a time, renewably.
+  it('a path the desk does not answer does not spend the auth budget', async () => {
+    for (let i = 0; i < 10; i++) {
+      const r = await front('GET', '/desk/auth/nonsense', visitor(18));
+      assert.equal(r.status, 404, 'an unrouted auth path is 404, never 429');
+    }
+    // GET /desk/auth/logout is the attack's own URL: the logout answers POST,
+    // so this is the 404 above by another name.
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await front('GET', '/desk/auth/logout', visitor(18))).status, 404);
+    }
+    const ok = await front('GET', '/desk/auth/login', visitor(18));
+    assert.equal(ok.status, 200, 'the budget must be untouched by the paths the desk does not answer');
+  });
+
+  // AND THE ROUTES THAT DO EXIST ARE NOT SPENDABLE AS SUBRESOURCES. Closing
+  // the 404 path alone leaves /desk/auth/login itself: ten image loads of it
+  // would be ten 200s and ten hits. The browser says what it wants the answer
+  // for, and only a navigation - `document` - is a person at this desk.
+  it('a subresource GET of an auth path is refused before the budget', async () => {
+    for (const dest of ['image', 'script', 'style', 'empty', 'iframe']) {
+      const r = await front('GET', '/desk/auth/login', from(19, { 'sec-fetch-dest': dest }));
+      assert.equal(r.status, 403, 'sec-fetch-dest: ' + dest + ' is a subresource, not a click');
+    }
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await front('GET', '/desk/auth/login', from(19, { 'sec-fetch-dest': 'image' }))).status, 403);
+    }
+    // The person's own click, and a client that sends no such header at all,
+    // both still get the page - and the budget is still whole for them.
+    assert.equal((await front('GET', '/desk/auth/login', from(19, { 'sec-fetch-dest': 'document' }))).status, 200);
+    assert.equal((await front('GET', '/desk/auth/login', visitor(19))).status, 200);
+  });
+
   // The 405 names the one method the path answers, so a client that meets it
   // is told what to do rather than only what not to.
   it('a HEAD on an auth path names the method that path answers', async () => {
