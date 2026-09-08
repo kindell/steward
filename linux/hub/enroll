@@ -694,6 +694,11 @@ fi
 # at this moment and prints both; the host's --activate takes the slug as its
 # second token and links exactly that key. Two tokens are as copy-pastable as
 # one, and unambiguous with any number of enrolments in flight.
+
+APPROVE_CMD='bash ~/scripts/session-approve.sh'
+STATUS_CMD='bash ~/scripts/estate-status.sh'
+ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
+
 # ── WHO ELSE WORKS HERE ─────────────────────────────────────────────────────
 # A newborn session's first turn used to begin with no idea that anybody else
 # was on the same project. The bus could already carry a message between the
@@ -704,22 +709,23 @@ fi
 # one the new session is already in — and the helper excludes the row it is
 # asked about, so the newborn never reads itself back as its own mate.
 #
-# NOTHING UNGUARDED REACHES THE MESSAGE. The value is not a request field: it
-# is built by lib/registry.sh out of registry NAMES and OWNER fields, both of
-# which registry_load refuses unless they match ^[a-z][a-z0-9-]*$. That is the
-# same reasoning the target line's comment above states for the conf heredoc —
-# a value that is interpolated must be charset-guarded where it enters, and
-# these two entered through the loader's own gates.
+# WHAT REACHES THE MESSAGE IS GUARDED, NOT UNGUARDED, but not by one gate. The
+# value is not a request field: it is built by lib/registry.sh out of registry
+# NAMES and OWNER fields (registry_load refuses either unless it matches
+# ^[a-z][a-z0-9-]*$) plus, per mate, whatever registry_session_display returns
+# for that row: an RC_LABEL, free text but denied shell metacharacters and
+# control characters where it entered the register (the same gate the
+# rc_label= field above passes through), or a derived project/entity NAME,
+# denied control characters, the arrow separator, and Unicode bidirectional
+# controls by registry_display_for. Every route into this string passes
+# through one of those gates before it lands here.
 #
 # A FAILURE TO READ THE REGISTER BACK IS NEVER SPELLED "none". "none" is a
 # measurement — nobody else works here — and a session acts on it. An
 # unreadable register is a different fact and says so, rather than quietly
 # telling the newborn it is alone.
-PROJECT_MATES="$(registry_project_mates_line "$ID" 2>/dev/null)" || PROJECT_MATES="unknown — the register could not be read back"
+PROJECT_MATES="$(registry_project_mates_line "$ID" 2>/dev/null)" || PROJECT_MATES="unknown - the register could not be read back"
 
-APPROVE_CMD='bash ~/scripts/session-approve.sh'
-STATUS_CMD='bash ~/scripts/estate-status.sh'
-ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
 CONFIRM="DRIFT enroll: $NAMN registered
 ENROLL-CONFIRM v1
 namn=$NAMN

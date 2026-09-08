@@ -633,6 +633,12 @@ registry_session_owning_entity() {
 #   TARGET_PROJECT set  — the rows whose own TARGET_PROJECT is the same.
 #   otherwise           — the rows whose own TARGET_ENTITY is this row's.
 #   neither             — nothing. A row that names no target is nobody's mate.
+# THE COMPARISON IS KEYED ON THE SUBJECT'S OWN FIELD, NOT THE CANDIDATE'S: a
+# row is found only through whichever one field the subject's own row set, so
+# a project-targeting subject and an entity-targeting subject asking about the
+# same tree can get asymmetric answers about each other. The typed-union guard
+# in registry_load already forbids a row from setting both, so no row is ever
+# the one being asked about twice.
 #
 # THE ENTITY FALLBACK IS DELIBERATELY NARROW, and this is the part that would be
 # wrong if it were written the obvious way. Every project hangs under an entity,
@@ -709,7 +715,7 @@ registry_project_mates() {
         # or a forged NAME must not turn a real mate into no mate at all, so
         # a failed lookup here falls back to the bare form rather than
         # exiting 1 and losing the row through the same `|| continue` above.
-        disp="$(registry_session_display "$row" 2>/dev/null)"
+        local disp; disp="$(registry_session_display "$row" 2>/dev/null)"
         if [ -n "$disp" ]; then
           printf '%s (%s) %s' "$row" "$OWNER" "$disp"
         else
@@ -723,14 +729,26 @@ ROWS
   )
 }
 
-# registry_project_mates_line <session-name> — the same answer as one line:
-# `<name> (<owner>), <name> (<owner>)`, or the word `none`.
+# registry_project_mates_line <session-name> - the same answer as one line:
+# each mate as `<name> (<owner>)` or `<name> (<owner>) <display>`, whichever
+# registry_project_mates printed for that row, joined with `; `, or the word
+# `none`.
 #
-# ONE SPELLING OF THE JOIN, AND ONE OF THE EMPTY ANSWER. Three consumers print
-# this string — the hub's ENROLL-PROOF and both runtime adapters' rendered
-# instructions — and three hand-written joins would drift: one of them would say
-# "none", another "-", a third an empty value after the `=`, and a session
-# reading its own instructions could not tell "nobody" from "the line broke".
+# THE JOIN IS `; `, NOT `, `. A display can itself carry commas (a project or
+# entity NAME is free text past the arrow-and-control-character gates in
+# registry_display_for), and a comma-joined line would then be ambiguous about
+# where one mate ends and the next begins. `;` is not a character
+# registry_display_for lets through a NAME component, so it cannot collide.
+#
+# ONE SPELLING OF THE JOIN, AND ONE OF THE EMPTY ANSWER, INSIDE THIS FUNCTION.
+# Three consumers print this string - the hub's ENROLL-PROOF and both runtime
+# adapters' rendered instructions - and three hand-written joins would drift:
+# one of them would say "none", another "-", a third an empty value after the
+# `=`, and a session reading its own instructions could not tell "nobody" from
+# "the line broke". This guarantee covers the join and the empty answer only:
+# each consumer still hand-writes its OWN fallback text for when this call
+# fails outright (rc 1); keeping those three spellings identical is a
+# convention across the callers, not something this function enforces.
 # rc is registry_project_mates's own, unchanged.
 registry_project_mates_line() {
   local sid="${1:-}" out line joined=""
@@ -738,7 +756,7 @@ registry_project_mates_line() {
   [ -n "$out" ] || { printf 'none\n'; return 0; }
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    if [ -z "$joined" ]; then joined="$line"; else joined="$joined, $line"; fi
+    if [ -z "$joined" ]; then joined="$line"; else joined="$joined; $line"; fi
   done <<MATES
 $out
 MATES

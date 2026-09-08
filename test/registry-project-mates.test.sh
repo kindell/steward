@@ -163,10 +163,11 @@ is "6: both, sorted"    "$OUT" "$(printf 'p0 (c) Team→Work\np2 (b) Ben')"
 echo "== 7. THE ONE-LINE RENDERING the three consumers share =="
 # One spelling of the joined form and one spelling of the empty answer, in the
 # library — the hub's proof line and both runtime adapters print the same
-# string, and "none" cannot drift into "-" in one of them.
+# string, and "none" cannot drift into "-" in one of them. The join is `; `,
+# not `, `: a display is free text and can itself carry a comma.
 mates_line p1
 is "7: rc 0"                 "$RC"  "0"
-is "7: comma-joined"         "$OUT" "p0 (c) Team→Work, p2 (b) Ben"
+is "7: semicolon-joined"     "$OUT" "p0 (c) Team→Work; p2 (b) Ben"
 mates_line p3
 is "7: the empty answer is spelled out" "$OUT" "none"
 mates_line no-such-session
@@ -189,6 +190,16 @@ OUT="$(
   printf '%s|%s|%s' "$SESSION_NAME" "$OWNER" "$TARGET_PROJECT"
 )"
 is "8: the caller's loaded row is untouched" "$OUT" "p1|a|work"
+
+echo "== 9. A MATE WHOSE TARGET DOES NOT RESOLVE IS STILL A MATE =="
+# g2 targets a project with no projects.d/ghostproj.conf at all (renamed away,
+# or never created). registry_session_display cannot derive a display for it,
+# and the fallback in the loop above must carry the row through anyway, bare.
+row g1 c 'TARGET_PROJECT="ghostproj"'
+row g2 d 'TARGET_PROJECT="ghostproj"'
+mates g1
+is "9: rc 0"                                 "$RC"  "0"
+is "9: the mate survives with the bare form" "$OUT" "g2 (d)"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
