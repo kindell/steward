@@ -497,9 +497,26 @@ tmpc="$(mktemp)" || exit 70
 # server that stays in a human's list afterwards — a name nobody asked for,
 # which cannot be removed from the machines.
 #
-# The construction remains the fallback, so a requester that has not been
-# updated behaves exactly as before.
-RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
+# WHEN THE REQUEST NAMES NO LABEL, the default is the same derived display
+# every other row in the estate already carries — registry_display_for on
+# the resolving project, or failing that the domain's own entity — not the
+# constructed slug. The slug form ("<prefix><doman>-<projekt>-<person>") is a
+# name nobody asked for; the derived form is the one a human already reads
+# everywhere else the estate shows this session.
+#
+# The construction ("$RC_PREFIX$NAMN") remains the LAST fallback: an
+# unresolvable slug (which registry_display_for's own guards can produce,
+# e.g. a NAME carrying the display separator) never hard-fails the
+# registration, it just keeps today's behaviour.
+RC_ETIKETT_VISNING=""
+if ! RC_ETIKETT_VISNING="$(registry_display_for project "$PROJEKT" 2>/dev/null)"; then
+  RC_ETIKETT_VISNING="$(registry_display_for entity "$DOMAN" 2>/dev/null)" || RC_ETIKETT_VISNING=""
+fi
+if [ -n "$RC_ETIKETT_VISNING" ]; then
+  RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$RC_ETIKETT_VISNING}"
+else
+  RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
+fi
 # THE TARGET LINE IS A TYPED UNION, built before the heredoc so the heredoc
 # itself stays the same flat interpolation every other field uses. THAT IS SAFE
 # ONLY BECAUSE EVERY FIELD IT INTERPOLATES IS CHARSET-GUARDED FIRST — see the

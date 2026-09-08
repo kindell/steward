@@ -278,6 +278,63 @@ has "same host: PROOF's fleet-questions uses the owner's own ~/scripts" \
 lacks "same host: CONFIRM/PROOF never name the hub's own absolute path" "$out_sh" "$here"
 lacks "same host: CONFIRM/PROOF never name the fixture HOME" "$out_sh" "$FX"
 
+# ── THE DEFAULT RC LABEL IS THE DERIVED DISPLAY NAME, NOT THE SLUG ──────────
+# Measured on a live estate: a request with no rc_label= got
+# "<prefix><slug>" (e.g. "Hub: acme-widget-someone") while every other row in
+# the estate shows the "Parent->Project" form registry_display_for derives.
+# The label a session RUNS under becomes a pairing name a human keeps, so the
+# construction default should match what the rest of the estate shows.
+echo
+echo "nav-enroll — the default RC label"
+
+# A second-level org tree (a project under an entity, not just the domain's
+# own entity row) so the project-display branch has something real to derive.
+cat > "$FX/entities.d/team.conf" <<'CONF'
+NAME="Team"
+CONF
+cat > "$FX/projects.d/work.conf" <<'CONF'
+NAME="Work"
+PARENT="team"
+CONF
+
+# (a) NO rc_label=, and the project resolves — the default is the prefix plus
+# the derived "Entity->Project" display, not the constructed slug.
+mk_req x G 's|^namn=.*|namn=team-work-someone|; s|^doman=.*|doman=team|; s|^projekt=.*|projekt=work|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+idg="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+if [ "$rc2" -eq 0 ] && [ -n "$idg" ]; then ok "(a) a request naming a resolving project registers"
+else bad "(a) a request naming a resolving project registers" "rc=$rc2 out=$out2"; fi
+bodyg="$(cat "$FX/reg/$idg.conf" 2>/dev/null)"
+has "(a) no rc_label defaults to the prefix plus the derived display name" \
+    "$bodyg" "$(printf 'RC_LABEL="Hub: Team%sWork"' '→')"
+
+# (b) rc_label= IN THE REQUEST STILL WINS, UNCHANGED — today's rule takes the
+# field verbatim, with no prefix added (RC_ETIKETT="${RC_ONSKAD:-...}"), and
+# that has to stay true after this fix.
+mk_req x H 's|^namn=.*|namn=acme-widgetzz-someone|; s|^doman=.*|doman=acme|; s|^projekt=.*|projekt=widgetzz|; s|^pubkey=|rc_label=Custom\
+pubkey=|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+idh="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+bodyh="$(cat "$FX/reg/$idh.conf" 2>/dev/null)"
+has "(b) rc_label= in the request still wins, unprefixed, exactly as today" \
+    "$bodyh" 'RC_LABEL="Custom"'
+
+# (c) THE FALLBACK NEVER HARD-FAILS. An entity whose NAME carries the display
+# separator itself makes registry_display_for refuse (it is the guard that
+# stops a NAME from spoofing the "->" join), even though the entity row loads
+# fine for the earlier org-tree precondition. Neither the project (does not
+# exist) nor the entity display resolves, so the row must fall back to
+# exactly today's construction: prefix plus the constructed slug.
+printf 'NAME="Bad%sName"\n' '→' > "$FX/entities.d/c.conf"
+mk_req x I 's|^namn=.*|namn=c-nope-someone|; s|^doman=.*|doman=c|; s|^projekt=.*|projekt=nope|'
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+idi="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+if [ "$rc2" -eq 0 ] && [ -n "$idi" ]; then ok "(c) a request whose display cannot be derived still registers"
+else bad "(c) a request whose display cannot be derived still registers" "rc=$rc2 out=$out2"; fi
+bodyi="$(cat "$FX/reg/$idi.conf" 2>/dev/null)"
+has "(c) an undeliverable display falls back to the slug form, exactly as today" \
+    "$bodyi" 'RC_LABEL="Hub: c-nope-someone"'
+
 # ── THE LOGIN FIELD (writer census, task 9B) ────────────────────────────────
 # A SEPARATE, SCHEMA-6 FIXTURE — the estate above is schema 3 deliberately
 # (the transition case, proved above), so the LOGIN-required gate needs its
