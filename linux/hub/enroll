@@ -726,10 +726,12 @@ ACTIVATE_CMD="bash ~/scripts/session-new.sh --activate $ID $NAMN"
 # asked about, so the newborn never reads itself back as its own mate.
 #
 # WHAT REACHES THE MESSAGE IS GUARDED, NOT UNGUARDED, but not by one gate. The
-# value is not a request field: it is built by lib/registry.sh out of registry
-# NAMES and OWNER fields (registry_load refuses either unless it matches
-# ^[a-z][a-z0-9-]*$) plus, per mate, whatever registry_session_display returns
-# for that row: an RC_LABEL, free text but denied shell metacharacters and
+# value is not a request field: it is built by lib/registry.sh out of each
+# mate's SLUG when its row carries one, its registry NAME otherwise (a row
+# from before the identity model), and its OWNER field (registry_load refuses
+# any of the three unless it matches ^[a-z][a-z0-9-]*$) plus, per mate,
+# whatever registry_session_display returns for that row: an RC_LABEL, free
+# text but denied shell metacharacters and
 # control characters where it entered the register (the same gate the
 # rc_label= field above passes through), or a derived project/entity NAME,
 # denied control characters, the arrow separator, and Unicode bidirectional

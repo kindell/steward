@@ -617,11 +617,14 @@ registry_session_owning_entity() {
 }
 
 # registry_project_mates <session-name> — the OTHER sessions that work on the
-# same thing this one does, one `<name> (<OWNER>) <Display>` per line on
-# stdout — the trailing display is whatever registry_session_display returns
-# for that row, and the line falls back to `<name> (<OWNER>)` alone when that
-# lookup does not resolve (see the loop below: a mate that exists but cannot
-# derive a label is still a mate, and is never dropped for it).
+# same thing this one does, one `<slug> (<OWNER>) <Display>` per line on
+# stdout - the first field is the row's SLUG when it carries one, its
+# registry NAME otherwise (every row born before the identity model, which
+# never gained a SLUG); the trailing display is whatever
+# registry_session_display returns for that row, and the line falls back to
+# `<slug> (<OWNER>)` alone when that lookup does not resolve (see the loop
+# below: a mate that exists but cannot derive a label is still a mate, and is
+# never dropped for it).
 #
 # WHY THE REGISTER ANSWERS THIS. Two sessions aimed at the same project can
 # already reach each other on the bus, and until now nothing told either of them
@@ -716,10 +719,21 @@ registry_project_mates() {
         # a failed lookup here falls back to the bare form rather than
         # exiting 1 and losing the row through the same `|| continue` above.
         local disp; disp="$(registry_session_display "$row" 2>/dev/null)"
+        # THE FIRST FIELD IS THE SLUG WHEN THE ROW CARRIES ONE, THE NAME
+        # OTHERWISE. Humans and the estate docs speak slug; every row born
+        # under the identity model carries the opaque id as its NAME, and
+        # printing that instead of the slug is what turns a rendered bus-send
+        # line into text that names an id nobody typed. registry_load resets
+        # SLUG to empty on every load, so a candidate row can never inherit
+        # the SLUG of the subject being asked about; a row from before the
+        # identity model carries no SLUG at all and falls back to its name
+        # exactly as before. No apostrophes and no parens in this comment
+        # block, same rule as above.
+        local nm="${SLUG:-$row}"
         if [ -n "$disp" ]; then
-          printf '%s (%s) %s' "$row" "$OWNER" "$disp"
+          printf '%s (%s) %s' "$nm" "$OWNER" "$disp"
         else
-          printf '%s (%s)' "$row" "$OWNER"
+          printf '%s (%s)' "$nm" "$OWNER"
         fi
       )" || continue
       printf '%s\n' "$line"
@@ -730,9 +744,10 @@ ROWS
 }
 
 # registry_project_mates_line <session-name> - the same answer as one line:
-# each mate as `<name> (<owner>)` or `<name> (<owner>) <display>`, whichever
-# registry_project_mates printed for that row, joined with `; `, or the word
-# `none`.
+# each mate as `<slug> (<owner>)` or `<slug> (<owner>) <display>`, whichever
+# registry_project_mates printed for that row - the first field is the row's
+# SLUG when it carries one, its registry NAME otherwise - joined with `; `,
+# or the word `none`.
 #
 # THE JOIN IS `; `, NOT `, `. A display can itself carry commas (a project or
 # entity NAME is free text past the arrow-and-control-character gates in

@@ -67,7 +67,7 @@ printf 'NAME="Team"\n' > "$ENT/team.conf"
 printf 'NAME="Work"\nPARENT="team"\n'  > "$PROJ/work.conf"
 printf 'NAME="Other"\nPARENT="team"\n' > "$PROJ/other.conf"
 
-row() { # <name> <owner> <target-line> [rc-label]
+row() { # <name> <owner> <target-line> [rc-label] [slug]
   { printf 'OWNER="%s"\nDOMAIN="team"\nREPO_PATH="/tmp/x"\n' "$2"
     # A ROW THAT NAMES NO TARGET MUST NAME ITS LABEL. registry_load derives the
     # display from the target and refuses a row that can do neither — so the
@@ -80,6 +80,10 @@ row() { # <name> <owner> <target-line> [rc-label]
     # proves the line shows what registry_session_display actually returns,
     # not a re-derivation of the target done a second way here.
     [ -n "${4:-}" ] && printf 'RC_LABEL="%s"\n' "$4"
+    # THE OPTIONAL FIFTH ARGUMENT gives a row a SLUG (registry_load requires
+    # none of ACCOUNT/TARGET_* alongside it - the identity fields are read
+    # leniently, shape only, with no cross-field requirement at load time).
+    [ -n "${5:-}" ] && printf 'SLUG="%s"\n' "$5"
   } > "$SESS/$1.conf"
 }
 
@@ -200,6 +204,26 @@ row g2 d 'TARGET_PROJECT="ghostproj"'
 mates g1
 is "9: rc 0"                                 "$RC"  "0"
 is "9: the mate survives with the bare form" "$OUT" "g2 (d)"
+
+echo "== 10. A CANDIDATE WITH A SLUG IS NAMED BY ITS SLUG, NOT ITS ROW NAME =="
+# Humans and the estate docs speak slug; the rendered instruction ("Reach one
+# with: bus-send <slug> ...") must name a slug, not the opaque id every row
+# born under the identity model carries as its name.
+row slugsubj a 'TARGET_PROJECT="slugwork"'
+row slugcand b 'TARGET_PROJECT="slugwork"' '' mate-one
+mates slugsubj
+is "10: rc 0"                                      "$RC"  "0"
+is "10: the candidate is named by its SLUG"        "$OUT" "mate-one (b)"
+
+echo "== 11. A SUBJECT'S OWN SLUG NEVER LEAKS ONTO A SLUG-LESS CANDIDATE =="
+# registry_load resets SLUG="" on every load, so a row without SLUG cannot
+# inherit the subject's - pinned here rather than trusted.
+row slugsubj2 a 'TARGET_PROJECT="slugwork2"' '' subject-slug
+row barecand  b 'TARGET_PROJECT="slugwork2"'
+mates slugsubj2
+is "11: rc 0"                                                       "$RC"  "0"
+is "11: the slug-less candidate is named by its row name, never the subject's slug" \
+   "$OUT" "barecand (b)"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
