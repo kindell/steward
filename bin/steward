@@ -42,6 +42,7 @@
 #   steward invite ls [--json]
 #   steward invite revoke <inv-id> [--json]
 #   steward invite redeem <token> --identity <tailscale|oidc>:<value> [--email E] [--json]
+#   steward offboard <principal> [--keep-home] [--json]
 set -uo pipefail
 
 # THE ROOT IS WHERE THE FILE LIVES, NOT WHERE IT WAS CALLED FROM. Operators
@@ -3470,6 +3471,48 @@ _redeem_runas_fail() {
   return 70
 }
 
+# _account_helper_spoke <combined-output> - rc 0 when the words in that output
+# are the ACCOUNT HELPER's own, rc 1 when they are sudo's. ONE classifier, two
+# callers: `invite redeem` creates the account, `offboard` locks it, and both
+# have to tell "the helper ran and refused" (a failed step, rc 70, quoting the
+# helper) from "sudo could not run it at all" (rc 77, naming the sudoers line).
+# A second copy of this rule is a second answer to the same question.
+#
+# rc 77 IS RESERVED FOR "sudo COULD NOT RUN IT AT ALL". The helper's own
+# refusals are a step that RAN and said no - telling the operator to fix
+# sudoers when the helper is already reachable sends them to the wrong repair.
+#
+# WHICH OF THE TWO HAPPENED IS READ OFF THE OUTPUT, because a shell has no
+# other way to ask: sudo passes the command's exit status straight through, so
+# the number alone cannot say whose it is. Nearly every line the helper prints
+# - receipt and refusal alike - is prefixed "helper: ", so output with no line
+# beginning "helper:" is nearly always output the helper never wrote.
+#
+# THE ONE THING IT PRINTS WITHOUT THAT PREFIX IS ITS USAGE BANNER, and that is
+# not a corner: the helper answers with the banner, on rc 64, for a name
+# outside its argument guard and for a sub-command it does not have - the two
+# refusals a caller passing a bad argument actually produces. Read as sudo's
+# words they became rc 77 "the estate has not installed the sudoers line",
+# quoting the helper's own usage text as what sudo said, and sending the reader
+# to /etc/sudoers on a host whose sudoers line is working exactly as designed.
+# The banner's first line names the binary, so it is as recognisable as the
+# prefix is.
+#
+# THE OUTPUT MUST BE CAPTURED WITH 2>&1 BY THE CALLER, because the receipts and
+# refusals the helper writes go to STDERR by contract. A capture that took
+# stdout alone would leave this classifier with nothing to read at all.
+#
+# THE MATCH IS ANCHORED TO THE START OF A LINE, and that anchor is the whole
+# finding. The helper's binary is called steward-account-HELPER, so sudo's own
+# "unable to execute /usr/local/sbin/steward-account-helper: No such file or
+# directory" - the first thing a host without the helper says, and the exact
+# case rc 77 exists for - contains the substring "helper: " and used to be
+# reported as a helper that ran and refused, with the sudoers line never
+# printed.
+_account_helper_spoke() {
+  printf '%s\n' "${1:-}" | grep -qE '^(helper:|usage: steward-account-helper)'
+}
+
 # _redeem_session_id <account> <slug> - the id of the row carrying that pair,
 # or nothing. A resumed run has to find the session it created LAST time; the
 # id was minted then and is not derivable from anything.
@@ -3709,42 +3752,10 @@ cmd_invite_redeem() {
   else
     helper_out="$(sudo -n /usr/local/sbin/steward-account-helper add "$unix_user" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
-      # rc 77 IS RESERVED FOR "sudo COULD NOT RUN IT AT ALL". The helper's own
-      # refusals are a step that RAN and said no, and they are a failed step
-      # (rc 70) carrying the helper's words - telling the operator to fix
-      # sudoers when the helper is already reachable sends them to the wrong
-      # repair.
-      #
-      # WHICH OF THE TWO HAPPENED IS READ OFF THE OUTPUT, because a shell has
-      # no other way to ask: sudo passes the command's exit status straight
-      # through, so the number alone cannot say whose it is. Nearly every line
-      # the helper prints - receipt and refusal alike - is prefixed "helper: ",
-      # so output with no line beginning "helper:" is nearly always output the
-      # helper never wrote.
-      #
-      # THE ONE THING IT PRINTS WITHOUT THAT PREFIX IS ITS USAGE BANNER, and
-      # that is not a corner: the helper answers with the banner, on rc 64, for
-      # a name outside its argument guard and for a sub-command it does not
-      # have - the two refusals a caller passing a bad argument actually
-      # produces. Read as sudo's words they became rc 77 "the estate has not
-      # installed the sudoers line", quoting the helper's own usage text as what
-      # sudo said, and sending the reader to /etc/sudoers on a host whose
-      # sudoers line is working exactly as designed. The banner's first line
-      # names the binary, so it is as recognisable as the prefix is.
-      #
-      # THE HELPER'S OUTPUT IS CAPTURED WITH 2>&1 ABOVE, and the receipts and
-      # refusals it writes go to STDERR by contract. Both arms below read that
-      # combined capture; narrowing it to stdout would leave this classifier
-      # with nothing to read at all.
-      #
-      # THE MATCH IS ANCHORED TO THE START OF A LINE, and that anchor is the
-      # whole finding. The helper's binary is called steward-account-HELPER, so
-      # sudo's own "unable to execute /usr/local/sbin/steward-account-helper:
-      # No such file or directory" - the first thing a host without the helper
-      # says, and the exact case rc 77 exists for - contains the substring
-      # "helper: " and used to be reported as a helper that ran and refused,
-      # with the sudoers line never printed.
-      if printf '%s\n' "$helper_out" | grep -qE '^(helper:|usage: steward-account-helper)'; then
+      # WHOSE WORDS THESE ARE DECIDES THE REPAIR, and the output is the only
+      # thing that can say - see _account_helper_spoke above, the one
+      # classifier this verb and `steward offboard` both call.
+      if _account_helper_spoke "$helper_out"; then
         _redeem_fail "step 3 (unix account): the account helper ran and refused (rc $rc): $helper_out" 70
         return 70
       fi
@@ -4072,6 +4083,424 @@ cmd_invite() {
     redeem) shift; cmd_invite_redeem "$@" ;;
     *) fel "steward invite: unknown verb '${1:-}' (allowed: issue, ls, revoke, redeem)" 64 ;;
   esac
+}
+
+# -- OFFBOARDING ------------------------------------------------------------
+#
+# The exact reverse of a redemption, in reverse order: stop the work, unbind
+# the bus, remove the rows, lock the account, archive the home. It prints one
+# line per thing removed, and THAT LIST IS WHY THE VERB EXISTS - a rehearsal
+# is only worth running if it can be cleaned up afterwards, and a cleanup is
+# only trustworthy if it says what it did.
+#
+# NOTHING IRREPLACEABLE IS DELETED. The home is MOVED, by the helper, under
+# /home/.offboarded; the invitation row stays exactly as it is, redeemed, as
+# the history of how the person arrived. Removing either is an operator's word,
+# not a verb's.
+#
+# EVERY LOCAL IN cmd_offboard IS LOWER CASE, for the reason cmd_invite_redeem
+# records: bash scopes dynamically, so a local named ACCOUNT or HOST here would
+# be visible inside every register loader this verb calls, and a loader
+# sourcing a conf that assigns the same name would overwrite it mid-run.
+
+_OFFBOARD_REMOVED=""
+_OFFBOARD_RECEIPT=""
+_OFFBOARD_PRINCIPAL=""
+_OFFBOARD_JSON=""
+
+# _offboard_say <text> - one line of prose, printed and not recorded.
+#
+# UNDER --json IT GOES TO STDERR, the convention every verb on this branch
+# follows: one JSON value on stdout and nothing else, because a caller that
+# reads stdout as JSON gets a parse error from a list of prose in front of it.
+# The lines are not lost - they are the receipt's whole content, and both the
+# receipt and the JSON carry them.
+_offboard_say() {
+  if [ -n "$_OFFBOARD_JSON" ]; then printf 'offboard: %s\n' "$1" >&2
+  else printf 'offboard: %s\n' "$1"; fi
+}
+
+# _offboard_note <text> - one thing that was done, printed and recorded.
+_offboard_note() {
+  _offboard_say "$1"
+  _OFFBOARD_REMOVED="$_OFFBOARD_REMOVED$1
+"
+}
+
+# _offboard_warn <text> - something that did not stop the offboarding but is
+# the operator's business anyway. ALWAYS stderr, json or not: it is not part of
+# the answer, and it must not be swallowed either.
+_offboard_warn() {
+  printf 'offboard: %s\n' "$1" >&2
+  _OFFBOARD_REMOVED="$_OFFBOARD_REMOVED$1
+"
+}
+
+# _offboard_receipt <state> - the receipt file. 0700 directory, 0600 file.
+# Written when the run ends, and when it stops early: a run that locked one
+# account and then met a refusal on the next must leave behind what it DID do,
+# or the operator has to guess how far it got.
+_offboard_receipt() { # <state>
+  [ -n "$_OFFBOARD_RECEIPT" ] || return 0
+  local dir; dir="$(dirname "$_OFFBOARD_RECEIPT")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  chmod 700 "$dir" 2>/dev/null
+  local tmp; tmp="$(mktemp "$dir/.receipt.XXXXXX")" || return 0
+  printf '%s' "$_OFFBOARD_REMOVED" | jq -R -s -c \
+    --arg p "$_OFFBOARD_PRINCIPAL" --arg st "$1" --argjson at "$(date -u +%s)" \
+    '{schemaVersion:1,principal:$p,state:$st,at:$at,
+      removed:(split("\n")|map(select(length>0)))}' > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  chmod 600 "$tmp" 2>/dev/null
+  mv "$tmp" "$_OFFBOARD_RECEIPT" 2>/dev/null
+  return 0
+}
+
+# _offboard_json - the one value stdout carries under --json. It names the
+# receipt AND repeats its list: a caller that cannot read the hub's home still
+# gets to see what went.
+_offboard_json() {
+  printf '%s' "$_OFFBOARD_REMOVED" | jq -R -s -c \
+    --arg p "$_OFFBOARD_PRINCIPAL" --arg r "$_OFFBOARD_RECEIPT" \
+    '{ok:true,kind:"offboard",principal:$p,receipt:$r,
+      removed:(split("\n")|map(select(length>0)))}'
+}
+
+# _offboard_fail <msg> <rc> - a refusal that writes the receipt before it
+# leaves, in the shape the caller asked for. The refusal goes INTO the receipt
+# too, for _redeem_fail's reason: a receipt carrying only the steps that worked
+# leaves the reader with "state: failed" and no way to tell what said no.
+_offboard_fail() {
+  local msg="steward offboard: $1"
+  _OFFBOARD_REMOVED="${_OFFBOARD_REMOVED}stopped here: $msg
+"
+  _reg_fail "$_OFFBOARD_JSON" "$msg"
+  _offboard_receipt failed
+  return "${2:-70}"
+}
+
+# _offboard_helper_fail <what> <rc> <output> - the two ways one `sudo -n
+# steward-account-helper` call can go wrong, told apart by _account_helper_spoke
+# and never by the exit status. Returns the rc it reported.
+_offboard_helper_fail() {
+  local what="$1" hrc="$2" out="$3"
+  if _account_helper_spoke "$out"; then
+    _offboard_fail "$what - the account helper ran and refused (rc $hrc): $out" 70
+    return 70
+  fi
+  _offboard_fail "$what - and it could not be run through 'sudo -n' at all. The estate installs exactly one line for it: steward ALL=(root) NOPASSWD: /usr/local/sbin/steward-account-helper. sudo said: $out" 77
+  return 77
+}
+
+# _offboard_accounts <principal> - the account slugs belonging to the person.
+# SUBSHELLED SOURCE, the same reason registry_account_slug_available gives: a
+# hostile or malformed row must not overwrite this loop's own operands.
+_offboard_accounts() {
+  local want="$1" d f slug p
+  d="$(registry_account_dir)" || return 78
+  [ -d "$d" ] || return 0
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    slug="$(basename "$f" .conf)"
+    registry_valid_name "$slug" || continue
+    p="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+    [ "$p" = "$want" ] && printf '%s\n' "$slug"
+  done
+  return 0
+}
+
+# _offboard_sessions <account-slug> - the session ids filed under that account.
+# The subshelled source is what _redeem_session_id does one screen up, for the
+# same reason and with the same set -u-safe default: sessions.d has no
+# single-row loader that leaves the caller's own names alone (registry_load
+# sets two dozen globals in the caller's scope, ACCOUNT and HOST among them).
+_offboard_sessions() {
+  local want="$1" d f a sid
+  d="$(registry_dir)"
+  [ -d "$d" ] || return 0
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    sid="$(basename "$f" .conf)"
+    registry_valid_name "$sid" || continue
+    a="$( ACCOUNT=""; source "$f" 2>/dev/null; printf '%s' "$ACCOUNT" )"
+    [ "$a" = "$want" ] && printf '%s\n' "$sid"
+  done
+  return 0
+}
+
+# _offboard_logins <principal> - the login slugs belonging to the person.
+_offboard_logins() {
+  local want="$1" slug p
+  registry_login_list 2>/dev/null | while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    p="$( registry_login_load "$slug" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
+    [ "$p" = "$want" ] && printf '%s\n' "$slug"
+  done
+  return 0
+}
+
+cmd_offboard() {
+  local want_json="" principal="" keep_home="" a
+  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) shift ;;
+      --keep-home) keep_home=1; shift ;;
+      -*) _reg_fail "$want_json" "steward offboard: unknown flag '$1'"; return 64 ;;
+      *) if [ -n "$principal" ]; then _reg_fail "$want_json" "steward offboard: one principal at a time"; return 64; fi
+         principal="$1"; shift ;;
+    esac
+  done
+  [ -n "$principal" ] || { _reg_fail "$want_json" "steward offboard: a principal is required"; return 64; }
+  if ! [[ "$principal" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward offboard: invalid principal '$principal' (a-z, then a-z 0-9 and hyphen)"
+    return 64
+  fi
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  _OFFBOARD_JSON="$want_json"; _OFFBOARD_REMOVED=""; _OFFBOARD_RECEIPT=""
+  _OFFBOARD_PRINCIPAL="$principal"
+
+  local pconf accounts
+  pconf="$(registry_principal_dir)/$principal.conf"
+  accounts="$(_offboard_accounts "$principal")" || {
+    _reg_fail "$want_json" "steward offboard: the account register could not be read, so who belongs to '$principal' is unknown"
+    return 78; }
+
+  if [ ! -e "$pconf" ] && [ -z "$accounts" ]; then
+    local probe=""
+    probe="$(registry_state_dir_name 2>/dev/null)" || probe=""
+    if [ -n "$probe" ] && [ -f "$HOME/.local/state/$probe/offboards/$principal.receipt.json" ]; then
+      # ALREADY OFFBOARDED. A second run is a no-op, not a refusal: a cleanup
+      # somebody re-runs to be sure must be safe to re-run. AND IT LEAVES THE
+      # RECEIPT ALONE - this run removed nothing, so writing one from here
+      # would publish an empty list over the record of what the first run did.
+      _OFFBOARD_RECEIPT="$HOME/.local/state/$probe/offboards/$principal.receipt.json"
+      _offboard_say "nothing left to remove for $principal"
+      [ -n "$want_json" ] && _offboard_json
+      return 0
+    fi
+    _reg_fail "$want_json" "steward offboard: no such principal '$principal' - nothing to offboard"
+    return 78
+  fi
+
+  # THE HELPER IS LOCAL, AND SO IS EVERYTHING IT TOUCHES: it locks an account
+  # in THIS machine's account database and moves a home on THIS machine's disk.
+  # A person whose account row names another host would come out half
+  # offboarded - rows gone here, account still open there - so the refusal
+  # comes before the first side effect, exactly as `invite redeem` refuses an
+  # invitation for another machine before it makes anything.
+  #
+  # OFFBOARDING A PERSON WHO HAS ACCOUNTS ON SEVERAL HOSTS IS LATER WORK. It
+  # needs the verb to reach the other machines (or the operator to run it on
+  # each), and the receipt to say which hosts it covered. Refusing is the
+  # honest half of that until it exists.
+  local self_host acct
+  self_host="$(_registry_self_host)"
+  for acct in $accounts; do
+    registry_account_load "$acct" >/dev/null 2>&1 || {
+      _reg_fail "$want_json" "steward offboard: account row '$acct' does not load - repair it before offboarding '$principal'"
+      return 78; }
+    if [ "$ACCOUNT_HOST" != "$self_host" ]; then
+      _reg_fail "$want_json" "steward offboard: account $acct lives on host $ACCOUNT_HOST; run offboard on that host (this verb touches only the host it runs on)"
+      return 65
+    fi
+  done
+
+  local state_dir
+  state_dir="$(registry_state_dir_name)" || {
+    _reg_fail "$want_json" "steward offboard: the estate does not name a state directory, so no receipt could be written"
+    return 78; }
+  _OFFBOARD_RECEIPT="$HOME/.local/state/$state_dir/offboards/$principal.receipt.json"
+
+  local out rc username home locked=""
+  local hub_ak="${STEWARD_AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"
+
+  # 1. STOP THE WORK, THROUGH THE HELPER. `lock` disables lingering, which
+  # takes the account's user manager down and every session unit with it. It is
+  # the only way the steward account can stop another person's sessions without
+  # a shell in their home.
+  for acct in $accounts; do
+    registry_account_load "$acct" >/dev/null 2>&1 || continue
+    username="$ACCOUNT_USERNAME"
+    [ -n "$username" ] || continue
+    # THE HOME IS RESOLVED WHILE THE ROW STILL EXISTS. Once the account row is
+    # gone there is nothing left that names the unix account, and the archive
+    # step below would have nothing to ask about.
+    home="$(_registry_owner_home "$username" 2>/dev/null)" || home=""
+    out="$(sudo -n /usr/local/sbin/steward-account-helper lock "$username" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      _offboard_helper_fail "the unix account '$username' could not be locked" "$rc" "$out"
+      return $?
+    fi
+    _offboard_note "unix account $username locked, lingering disabled (its session units are down)"
+    locked="$locked$acct	$username	$home
+"
+  done
+
+  # 2. UNBIND THE BUS. The relay ROW lives in the hub's own authorized_keys and
+  # is ours to remove; the relay KEY and the delivery key live in the person's
+  # home and travel with it into the archive.
+  local sid sids="" tmp_ak
+  for acct in $accounts; do
+    for sid in $(_offboard_sessions "$acct"); do
+      sids="$sids $sid"
+      if grep -q "bus-relay-in $sid\"" "$hub_ak" 2>/dev/null; then
+        # ONE BACKUP, UNDER ONE NAME. A timestamped copy per offboarding turns
+        # the hub's .ssh into a pile of files that each authorize something,
+        # and the oldest of them authorizes everybody who ever left.
+        if cp "$hub_ak" "$hub_ak.bak-offboard" 2>/dev/null; then
+          chmod 600 "$hub_ak.bak-offboard" 2>/dev/null
+        else
+          _offboard_warn "no backup of $hub_ak could be made; the relay row for $sid is removed anyway - a row that stays is a channel that stays open"
+        fi
+        tmp_ak="$(mktemp "$(dirname "$hub_ak")/.authorized_keys.XXXXXX")" || {
+          _offboard_fail "no temporary file could be made beside $hub_ak, so the relay row for $sid was left in place" 70
+          return 70; }
+        grep -v "bus-relay-in $sid\"" "$hub_ak" > "$tmp_ak" \
+          || true   # grep exits 1 on an empty result, which is a valid outcome
+        mv "$tmp_ak" "$hub_ak" || { rm -f "$tmp_ak"; _offboard_fail "could not rewrite $hub_ak" 70; return 70; }
+        _offboard_note "relay row for $sid removed from $hub_ak"
+      fi
+    done
+  done
+
+  # 3. THE ROWS, INNERMOST FIRST. A session references a login and an account;
+  # removing the account first would leave a row referencing nothing, and every
+  # reader in the fleet is a concurrent reader.
+  for sid in $sids; do
+    if [ -e "$(registry_dir)/$sid.conf" ]; then
+      rm -f "$(registry_dir)/$sid.conf" || { _offboard_fail "could not remove sessions.d/$sid.conf" 70; return 70; }
+      _offboard_note "sessions.d/$sid.conf removed"
+    fi
+  done
+  local lg
+  for lg in $(_offboard_logins "$principal"); do
+    rm -f "$(registry_login_dir)/$lg.conf" || { _offboard_fail "could not remove logins.d/$lg.conf" 70; return 70; }
+    _offboard_note "logins.d/$lg.conf removed"
+  done
+  for acct in $accounts; do
+    if [ -e "$(registry_account_dir)/$acct.conf" ]; then
+      rm -f "$(registry_account_dir)/$acct.conf" || { _offboard_fail "could not remove accounts.d/$acct.conf" 70; return 70; }
+      _offboard_note "accounts.d/$acct.conf removed"
+    fi
+  done
+
+  # 4. MEMBERSHIP, in every entity that carries the person. The rewrite goes
+  # through the redemption's own validate_fn, and it is handed the SAME two
+  # globals: a MEMBERS that moved between this read and the write under the
+  # lock is refused rc 70, never merged and never published over. This run
+  # measured its decision against a state that no longer exists, and the right
+  # answer is to run the verb again.
+  local ent_ids eid newm w ent_key ec ent_content kv_err ent_line
+  ent_ids="$(registry_entity_list 2>/dev/null)" || {
+    _offboard_fail "the entity register could not be listed, so the memberships of '$principal' are unknown" 78
+    return 78; }
+  for eid in $ent_ids; do
+    registry_entity_load "$eid" >/dev/null 2>&1 || continue
+    case " $ENTITY_MEMBERS " in *" $principal "*) ;; *) continue ;; esac
+    # SPLIT THROUGH _registry_words, NEVER BY A BARE EXPANSION. MEMBERS is
+    # exposed by the loader without being validated word by word, so an
+    # unquoted `for w in $ENTITY_MEMBERS` is word splitting AND pathname
+    # expansion: a row carrying an asterisk would rewrite the entity with this
+    # directory's file names as its members. Same lesson, same instrument, as
+    # the grant lists in lib/visibility.sh.
+    newm=""
+    _registry_words "$ENTITY_MEMBERS"
+    for w in "${REGISTRY_WORDS[@]+"${REGISTRY_WORDS[@]}"}"; do
+      [ "$w" = "$principal" ] && continue
+      newm="${newm:+$newm }$w"
+    done
+    _REDEEM_ENT_RECHECK="$eid"
+    _REDEEM_ENT_MEMBERS_SEEN="$ENTITY_MEMBERS"
+    _REGW_EXPECT_ENT_NAME="$ENTITY_NAME"
+    _REGW_EXPECT_ENT_MEMBERS="$newm"
+    _REGW_EXPECT_ENT_MANAGED_BY="$ENTITY_MANAGED_BY"
+    _REGW_EXPECT_ENT_MCP_ASSETS="$ENTITY_MCP_ASSETS"
+    kv_err="$(mktemp)" || { _offboard_fail "cannot create a temporary file" 70; return 70; }
+    ent_content="# $eid - entity, updated by steward offboard."
+    for ent_key in NAME MEMBERS MANAGED_BY MCP_ASSETS; do
+      eval "ec=\"\${_REGW_EXPECT_ENT_$ent_key:-}\""
+      case "$ent_key" in
+        MANAGED_BY|MCP_ASSETS) [ -n "$ec" ] || continue ;;
+      esac
+      ent_line="$(_registry_emit_kv "$ent_key" "$ec" 2>"$kv_err")"; rc=$?
+      if [ "$rc" -ne 0 ]; then
+        rm -f "$kv_err"
+        _offboard_fail "entity '$eid' carries a control character in $ent_key" 64
+        return 64
+      fi
+      ent_content="$ent_content
+$ent_line"
+    done
+    rm -f "$kv_err"
+    ent_content="$ent_content
+"
+    out="$(registry_entity_replace "$eid" "$ent_content" _redeem_validate_entity 2>&1)"; rc=$?
+    [ "$rc" -eq 0 ] || { _offboard_fail "could not update entity '$eid': $out" "$rc"; return "$rc"; }
+    _offboard_note "membership of entity $eid removed"
+  done
+
+  # 5. THE PRINCIPAL.
+  if [ -e "$pconf" ]; then
+    rm -f "$pconf" || { _offboard_fail "could not remove principals.d/$principal.conf" 70; return 70; }
+    _offboard_note "principals.d/$principal.conf removed"
+  fi
+
+  # 6. THE HOME. Archived by the helper, never deleted, and only when there is
+  # still a home to archive - a resumed run must not fail on a move that has
+  # already happened. A SECOND `lock` CALL, on an account step 1 already
+  # locked: the helper's lock is idempotent by contract, and keeping the two
+  # apart is what lets the rows come out between them, in the reverse of the
+  # order a redemption put them in.
+  # FED BY A HEREDOC, NOT A PIPE. A `while ... done` on the right of a pipe
+  # runs in a subshell, where this function's `return` would end the subshell
+  # and the run would carry on as if the helper had never refused.
+  local lacct lname lhome archived
+  while IFS='	' read -r lacct lname lhome; do
+    [ -n "$lname" ] || continue
+    if [ -n "$keep_home" ]; then
+      _offboard_note "home of $lname kept in place (--keep-home)"
+    elif [ -n "$lhome" ] && [ -d "$lhome" ]; then
+      out="$(sudo -n /usr/local/sbin/steward-account-helper lock "$lname" --archive-home 2>&1)"; rc=$?
+      if [ "$rc" -ne 0 ]; then
+        _offboard_helper_fail "the home of '$lname' could not be archived" "$rc" "$out"
+        return $?
+      fi
+      archived="$(printf '%s\n' "$out" | sed -n 's/^helper: archived //p' | head -1)"
+      [ -n "$archived" ] || archived="(the helper named no path)"
+      _offboard_note "home of $lname archived, not deleted: $archived"
+    fi
+  done <<EOF
+$locked
+EOF
+
+  # 7. THE INVITATION STAYS. Said out loud, because "the exact reverse" would
+  # otherwise read as "the invitation goes too".
+  local inv inv_state
+  for inv in $(registry_invite_list 2>/dev/null); do
+    inv_state="$( registry_invite_load "$inv" >/dev/null 2>&1 && \
+                  [ "$INVITE_PRINCIPAL" = "$principal" ] && printf '%s' "$INVITE_STATE" )"
+    [ -n "$inv_state" ] || continue
+    _offboard_note "invitation $inv KEPT as history (state $inv_state)"
+  done
+
+  # THE SNAPSHOT IS NOT FATAL AND NOT SILENT. It is a projection of the
+  # register, and the register has already changed - so its failure undoes
+  # nothing. It is still the operator's business: until somebody runs it, the
+  # desk keeps showing a person who is gone.
+  bash "$HERE/bin/steward" desk snapshot >/dev/null 2>&1; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _offboard_warn "desk snapshot failed (rc $rc); rows are removed, run 'steward desk snapshot' by hand"
+  fi
+
+  if [ -z "$_OFFBOARD_REMOVED" ]; then
+    _offboard_say "nothing left to remove for $principal"
+  fi
+  _offboard_receipt done
+  [ -n "$want_json" ] && _offboard_json
+  return 0
 }
 
 # _migrate_snap <conf> <FIELD> — prints the value FIELD holds after sourcing
@@ -6440,6 +6869,7 @@ case "${1:-}" in
   # happened to be named "team" or "client". `registry` is the one word this
   # dispatcher does not already use for a dispatch route into an estate.
   invite)   shift; cmd_invite "$@"; exit $? ;;
+  offboard) shift; cmd_offboard "$@"; exit $? ;;
   registry) shift; cmd_registry "$@"; exit $? ;;
   -h|--help) usage 0 ;;
   "")
