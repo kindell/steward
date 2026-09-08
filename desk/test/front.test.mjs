@@ -9,6 +9,12 @@ test('normalizeAddr strips brackets, ports, zones and the v4-in-v6 prefix', () =
   assert.equal(normalizeAddr('FE80::1%eth0'), 'fe80::1');
 });
 
+test('normalizeAddr matches the original serve.mjs behaviour exactly', () => {
+  assert.equal(normalizeAddr('::ffff:'), '');
+  assert.equal(normalizeAddr('example.com:8080'), 'example.com');
+  assert.equal(normalizeAddr('fe80::1:443'), 'fe80::1:443');
+});
+
 test('isCgnat is exactly 100.64.0.0/10', () => {
   assert.equal(isCgnat('100.64.0.0'), true);
   assert.equal(isCgnat('100.127.255.255'), true);

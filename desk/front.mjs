@@ -12,14 +12,22 @@
 // a real comparison: brackets and an IPv4 port stripped, an IPv6 zone
 // stripped, the ::ffff: prefix of an IPv4-mapped address stripped, lowercased.
 export function normalizeAddr(raw) {
-  let s = String(raw || '').trim().toLowerCase();
-  const br = s.match(/^\[([^\]]+)\](?::\d+)?$/);
-  if (br) s = br[1];
-  else if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(s)) s = s.slice(0, s.lastIndexOf(':'));
-  const zone = s.indexOf('%');
-  if (zone !== -1) s = s.slice(0, zone);
-  if (s.startsWith('::ffff:') && /^\d+\.\d+\.\d+\.\d+$/.test(s.slice(7))) s = s.slice(7);
-  return s;
+  let a = String(raw).trim().toLowerCase();
+  if (a.startsWith('[')) {
+    const close = a.indexOf(']');
+    if (close !== -1) a = a.slice(1, close);
+  } else {
+    const lastColon = a.lastIndexOf(':');
+    if (lastColon !== -1) {
+      const portPart = a.slice(lastColon + 1);
+      const hostPart = a.slice(0, lastColon);
+      if (/^[0-9]+$/.test(portPart) && !hostPart.includes(':')) a = hostPart;
+    }
+  }
+  const zone = a.indexOf('%');
+  if (zone !== -1) a = a.slice(0, zone);
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  return a;
 }
 
 // isCgnat - 100.64.0.0/10: the tailnet's own address range. The second octet
