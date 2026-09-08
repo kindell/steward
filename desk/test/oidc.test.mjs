@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, generateKeyPairSync, createSign } from 'node:crypto';
@@ -48,6 +48,39 @@ test('discover fetches the four endpoints once and caches them', async () => {
   await discover(prov, counting);
   assert.equal(calls, 1);
   await stub.close();
+});
+
+test('discover refuses a document that names another issuer', async () => {
+  const stub = await startStub({ issuer: 'https://accounts.example.test' });
+  const prov = { slug: 'iss-mismatch', issuer: 'https://provider.example.test', issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
+  await assert.rejects(discover(prov), /discovery for iss-mismatch names another issuer/);
+  await stub.close();
+});
+
+test('discover refuses an endpoint on another origin', async () => {
+  const stub = await startStub({ jwksUri: 'https://provider.example.test/jwks' });
+  const prov = { slug: 'off-origin', issuer: stub.issuer, issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
+  await assert.rejects(discover(prov), /discovery for off-origin points jwks_uri off its own origin/);
+  await stub.close();
+});
+
+test('discover refuses a plaintext endpoint on a host that is not loopback', async () => {
+  // The endpoints sit on the issuer's own origin, so the origin check has
+  // nothing to say and the scheme check is the one that must refuse. Only
+  // loopback may be plaintext, and this host is not loopback.
+  const stub = await startStub({ issuer: 'http://provider.example.test', endpointBase: 'http://provider.example.test' });
+  const prov = { slug: 'plaintext', issuer: 'http://provider.example.test', issuerTemplate: null, clientId: 'cid', clientSecretFile: '/f', discovery: stub.origin + '/.well-known/openid-configuration' };
+  await assert.rejects(discover(prov), /discovery for plaintext names a plaintext authorization_endpoint/);
+  await stub.close();
+});
+
+test('loadProviders refuses a DISCOVERY that is not https and not loopback', () => {
+  const row = (d) => 'ISSUER="https://a.example.test"\nDISCOVERY="' + d + '"\nCLIENT_ID="c"\nCLIENT_SECRET_FILE="/f"\n';
+  assert.throws(() => loadProviders(providersDir({ 'x.conf': row('http://provider.example.test/.well-known/openid-configuration') })),
+    /x\.conf: DISCOVERY must be https, or loopback/);
+  assert.throws(() => loadProviders(providersDir({ 'x.conf': row('not a url') })), /x\.conf: DISCOVERY is not a URL/);
+  // Loopback over plaintext is the one exception, and it is what the suite uses.
+  assert.equal(loadProviders(providersDir({ 'x.conf': row('http://127.0.0.1:9/.well-known/openid-configuration') })).size, 1);
 });
 
 test('beginLogin builds a PKCE S256 authorization URL with fresh state and nonce', async () => {

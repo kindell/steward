@@ -29,7 +29,18 @@ export async function startStub(opts = {}) {
     const u = new URL(req.url, stub.origin);
     const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
     if (u.pathname === '/.well-known/openid-configuration') {
-      return json(200, { issuer: stub.issuer, authorization_endpoint: stub.origin + '/authorize', token_endpoint: stub.origin + '/token', jwks_uri: stub.origin + '/jwks' });
+      // opts.endpointBase and opts.jwksUri let a test advertise endpoints the
+      // discovery document has no business naming - plaintext http on a
+      // public host, or one endpoint on another origin - so discover()'s two
+      // refusals each have a fixture that reaches them. They exist only in
+      // this stub; the product has no such knob.
+      const base = opts.endpointBase || stub.origin;
+      return json(200, {
+        issuer: stub.issuer,
+        authorization_endpoint: base + '/authorize',
+        token_endpoint: base + '/token',
+        jwks_uri: opts.jwksUri || base + '/jwks'
+      });
     }
     if (u.pathname === '/jwks') return json(200, { keys: [Object.assign({ kid, use: 'sig', alg: 'RS256' }, jwk)] });
     if (u.pathname === '/authorize') {

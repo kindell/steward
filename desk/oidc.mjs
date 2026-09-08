@@ -18,6 +18,16 @@ import { randomBytes, createHash, createPublicKey, createVerify } from 'node:cry
 const SLUG_RE = /^[a-z0-9-]+$/;
 const REQUIRED = ['DISCOVERY', 'CLIENT_ID', 'CLIENT_SECRET_FILE'];
 
+// A PROVIDER IS REACHED OVER TLS OR NOT AT ALL. Loopback is the exception,
+// and only as a literal: a name that resolves to loopback today resolves
+// somewhere else tomorrow, so only the three spellings the socket layer can
+// produce are accepted. The test suite's stub provider lives there; a real
+// provider never does.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]']);
+function isSecureUrl(u) {
+  return u.protocol === 'https:' || LOOPBACK_HOSTS.has(u.hostname);
+}
+
 function parseRow(text) {
   const out = {};
   for (const line of text.split('\n')) {
@@ -39,6 +49,9 @@ export function loadProviders(dir) {
     const hasIss = Boolean(row.ISSUER); const hasTpl = Boolean(row.ISSUER_TEMPLATE);
     if (hasIss === hasTpl) throw new Error('provider ' + file + ': exactly one of ISSUER and ISSUER_TEMPLATE');
     if (hasTpl && !row.ISSUER_TEMPLATE.includes('<tid>')) throw new Error('provider ' + file + ': ISSUER_TEMPLATE must contain the literal <tid>');
+    let discoveryUrl;
+    try { discoveryUrl = new URL(row.DISCOVERY); } catch { throw new Error('provider ' + file + ': DISCOVERY is not a URL'); }
+    if (!isSecureUrl(discoveryUrl)) throw new Error('provider ' + file + ': DISCOVERY must be https, or loopback');
     out.set(slug, {
       slug, issuer: hasIss ? row.ISSUER : null, issuerTemplate: hasTpl ? row.ISSUER_TEMPLATE : null,
       clientId: row.CLIENT_ID, clientSecretFile: row.CLIENT_SECRET_FILE, discovery: row.DISCOVERY
@@ -75,6 +88,31 @@ export async function discover(provider, fetchImpl = fetch) {
   const doc = await res.json();
   for (const k of ['issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri']) {
     if (typeof doc[k] !== 'string' || !doc[k]) throw new Error('discovery for ' + provider.slug + ' lacks ' + k);
+  }
+  // A DISCOVERY DOCUMENT IS NOT A LICENCE TO POINT ANYWHERE. Until here the
+  // document is a stranger's JSON: whoever answers the discovery URL gets to
+  // name the endpoint the desk will post the client secret to and the JWKS it
+  // will verify signatures against. So the document must stay inside what the
+  // estate already named.
+  //
+  // The issuer: a fixed-ISSUER provider's document must name that issuer byte
+  // for byte, exactly as the id_token's iss is compared later. A template
+  // provider's issuer varies by tenant and is checked per token instead, so
+  // its endpoints are held to the discovery URL's own origin.
+  let base;
+  if (provider.issuer) {
+    if (doc.issuer !== provider.issuer) throw new Error('discovery for ' + provider.slug + ' names another issuer');
+    base = doc.issuer;
+  } else {
+    base = provider.discovery;
+  }
+  let baseOrigin;
+  try { baseOrigin = new URL(base).origin; } catch { throw new Error('discovery for ' + provider.slug + ' has no usable origin'); }
+  for (const k of ['authorization_endpoint', 'token_endpoint', 'jwks_uri']) {
+    let u;
+    try { u = new URL(doc[k]); } catch { throw new Error('discovery for ' + provider.slug + ' points ' + k + ' off its own origin'); }
+    if (u.origin !== baseOrigin) throw new Error('discovery for ' + provider.slug + ' points ' + k + ' off its own origin');
+    if (!isSecureUrl(u)) throw new Error('discovery for ' + provider.slug + ' names a plaintext ' + k);
   }
   const kept = { issuer: doc.issuer, authorization_endpoint: doc.authorization_endpoint, token_endpoint: doc.token_endpoint, jwks_uri: doc.jwks_uri };
   discoveryCache.set(key, { doc: kept, at: Date.now() });
@@ -183,7 +221,10 @@ export async function verifyIdToken(provider, doc, token, { nonce, now = Math.fl
   if (aud !== provider.clientId) refuse('aud');
   if (!Number.isFinite(claims.exp) || claims.exp <= now) refuse('exp');
   if (!Number.isFinite(claims.iat) || Math.abs(claims.iat - now) > 300) refuse('iat');
-  if (claims.nonce !== nonce) refuse('nonce');
+  // The nonce must be a string as well as equal: a caller with no nonce at
+  // hand would otherwise pass undefined, and a token that simply carries no
+  // nonce claim would match it.
+  if (typeof nonce !== 'string' || claims.nonce !== nonce) refuse('nonce');
   if (typeof claims.sub !== 'string' || !claims.sub) refuse('sub');
   return { sub: claims.sub, tid, email: typeof claims.email === 'string' ? claims.email : null };
 }
