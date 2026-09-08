@@ -115,7 +115,7 @@ Node 22 standard library only, like the rest of the Desk.
    when the request carries an open invitation token, binds to it
    (companion spec). Otherwise 403.
 5. Issues the session cookie `__Host-desk-session`: HttpOnly, Secure,
-   SameSite=Lax, Path=/, 12 hours, value = `<principal>.<issued>.<hmac>`
+   SameSite=Lax, Path=/, 12 hours, value = `<base64url(identity)>.<issued>.<hmac>` (the identity `oidc:<slug>:<sub>`, not the principal it resolved to: a cookie that named the principal would survive the removal of the person's `OIDC_LOGIN` word until it expired - measured in review 2026-09-08)
    with the HMAC key from a 0600 file the estate generates once. No server
    side session store: the cookie is self-contained and the principal is
    re-resolved on every request, so a removed principal is out on the next
