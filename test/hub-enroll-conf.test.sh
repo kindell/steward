@@ -219,7 +219,23 @@ else bad "no refused request left a row behind" "$before_n -> $after_n"; fi
 # reached the host that was supposed to run it.
 mkdir -p "$FX/checkout/sessions.d"
 CHECKOUT_OVERRIDE="$FX/checkout"
-mk_req x D 's|^namn=.*|namn=acme-gadget-someone|; s|^projekt=.*|projekt=gadget|'
+# ── EVERY CASE BELOW NAMES ITS OWN rc_label=, AND THAT IS THE FIXTURE BEING
+# HONEST, NOT A CLAIM BEING SOFTENED ────────────────────────────────────────
+# Since 2026-09-09 enroll refuses a second row carrying an RC_LABEL another row
+# in the SAME HOME already carries: the label is what supervision's orphan reap
+# pgreps for and what --remote-control pairs on, so two rows sharing one cannot
+# be told apart (that collision cross-killed 13 conversations on a live host).
+#
+# THIS FIXTURE'S projects.d IS EMPTY, so registry_display_for falls back to the
+# domain's ENTITY for every request — one label, "Hub: Acme", for the whole
+# home. Every case from here on registers a further session as person=someone
+# on farhost, i.e. into that one home, and each is about something else
+# entirely (the checkout copy, the activation line, RUNTIME, the mates
+# read-back). Naming a distinct label per case is what a real estate does
+# through its projects; here it is spelled out so the case under test is the
+# one that decides the outcome.
+mk_req x D 's|^namn=.*|namn=acme-gadget-someone|; s|^projekt=.*|projekt=gadget|; s|^pubkey=|rc_label=Case Gadget\
+pubkey=|'
 out2="$(run_req "$FX/mut.txt")"; rc2=$?
 id2="$(printf '%s' "$out2" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 if [ "$rc2" -eq 0 ] && [ -n "$id2" ] && [ -f "$FX/checkout/sessions.d/$id2.conf" ]; then
@@ -233,7 +249,8 @@ has "the operator is told to commit it" "$out2" "COMMIT AND PUSH IT"
 # NO CHECKOUT: still registered, but LOUD — the conf and its destination are
 # printed, because the alternative is a row that quietly disappears.
 CHECKOUT_OVERRIDE=""
-mk_req x E 's|^namn=.*|namn=acme-sprocket-someone|; s|^projekt=.*|projekt=sprocket|'
+mk_req x E 's|^namn=.*|namn=acme-sprocket-someone|; s|^projekt=.*|projekt=sprocket|; s|^pubkey=|rc_label=Case Sprocket\
+pubkey=|'
 out2="$(run_req "$FX/mut.txt")"; rc2=$?
 if [ "$rc2" -eq 0 ]; then ok "no checkout still registers"
 else bad "no checkout still registers" "rc=$rc2 out=$out2"; fi
@@ -248,7 +265,8 @@ has "no checkout prints the conf itself" "$out2" 'SLUG="acme-sprocket-someone"'
 # that other session's name. The slug is what the requester filed its key
 # under, so the hub, which knows both names here, prints both.
 # --no-send, because that is the mode that prints the messages themselves.
-mk_req x F 's|^namn=.*|namn=acme-cog-someone|; s|^projekt=.*|projekt=cog|'
+mk_req x F 's|^namn=.*|namn=acme-cog-someone|; s|^projekt=.*|projekt=cog|; s|^pubkey=|rc_label=Case Cog\
+pubkey=|'
 out2="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/reg" \
          STEWARD_RELAY_ROOT="$FX" STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
          STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
@@ -518,6 +536,11 @@ run_lreq() { # <request-file>
   STEWARD_BUS_SEND="$LFX/bin/send" STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker \
   bash "$ENROLL" --send < "$1" 2>&1
 }
+# ONE LABEL PER CASE, for the reason spelled out at case D above: these all
+# enrol into the one home (someone on farhost) of an estate whose projects do
+# not resolve, so without an explicit label every one of them would derive
+# "Hub: Acme" and the second would be refused as a duplicate. None of L1-L4,
+# R1-R3 or G1-G2 is about the label.
 lreq() { # <file> <namn/projekt-suffix> <login-line-or-empty>
   cat > "$1" <<EOF2
 DRIFT enroll: acme-$2-someone requests registration
@@ -528,6 +551,7 @@ projekt=$2
 person=someone
 vard=farhost
 repo=/srv/homes/someone/Projects/$2
+rc_label=Case $2
 ${3}pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY$2xxxxxxxxxxxxxxxxxxxxxxx test-only
 EOF2
 }
@@ -801,6 +825,7 @@ projekt=widgetu
 person=ann
 vard=farhost
 repo=/srv/homes/ann/Projects/widgetu
+rc_label=Case widgetu
 pubkey=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEYUFXAAAAAAAAAAAAAAAAAAAAAAAA test-only
 REQ
 uout="$( STEWARD_ESTATE_ROOT="$UFX" STEWARD_REGISTRY_DIR="$UFX/sessions.d" \
@@ -879,10 +904,15 @@ urun() { # <from-key> <request-file> -> UOUT, URC
            STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM="$1" \
            bash "$ENROLL" --send < "$2" 2>&1 )"; URC=$?
 }
+# THE LABEL IS REWRITTEN WITH THE REST. Two of these cases enrol a SECOND row
+# into svc-ann's home (U1 already took one), and since 2026-09-09 a home holds
+# one row per label - see case D. The label follows the case, so what decides
+# each outcome is the gate the case is about.
 ureq() { # <name-suffix> <person> <key-suffix> -> a request file, path in UREQ
   UREQ="$UFX/req-$1.txt"
   sed "s/^namn=.*/namn=acme-widget$1-$2/; s/^projekt=.*/projekt=widget$1/; \
-       s/^person=.*/person=$2/; s/UFXAAAAAAAAAAAAAAAAAAAAAAAA/UFX$3/" \
+       s/^person=.*/person=$2/; s/^rc_label=.*/rc_label=Case widget$1 $2/; \
+       s/UFXAAAAAAAAAAAAAAAAAAAAAAAA/UFX$3/" \
       "$UFX/u1.txt" > "$UREQ"
 }
 

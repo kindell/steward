@@ -668,6 +668,31 @@ if [ -n "$RC_ETIKETT_VISNING" ]; then
 else
   RC_ETIKETT="${RC_ONSKAD:-$RC_PREFIX$NAMN}"
 fi
+
+# ── ONE LABEL, ONE ROW, PER HOME ─────────────────────────────────────────────
+# The (ACCOUNT, SLUG) gate above asks whether this session's NAME is free. This
+# asks whether the string it will be ADDRESSED by is — and it is a different
+# question, because the label is derived when the request names none, so two
+# distinct slugs can resolve to one label without anybody typing it twice.
+#
+# THE CHECK IS HERE, AFTER THE DERIVATION AND BEFORE THE HEREDOC, because the
+# value that matters is the one that will be WRITTEN, not the one that was
+# asked for. RC_ONSKAD is empty for most requests.
+#
+# MEASURED 2026-09-09: two rows in one home carried one label. Supervision's
+# orphan reap finds its candidates BY that label, so each session's repair
+# killed the other's live claude — 13 destroyed conversations in 55 minutes —
+# and two processes answering to one --remote-control name is why the hub
+# logged "RENAME NOT CONFIRMED" all morning. The reap is bound to panes now;
+# this is the other half, and it is a WRITE-time refusal on purpose. A
+# load-time one would break every estate that already carries a duplicate,
+# including the one this happened on — loading is how an operator SEES the
+# problem.
+#
+# NOTHING HAS BEEN WRITTEN AT THIS POINT: no conf, no key line, no backup. The
+# refusal is total and there is nothing to withdraw.
+_RC_INNEHAVARE="$(registry_session_rc_label_holder "$ID" "$ACCOUNT_LOGIN" "$VARD" "$RC_ETIKETT" 2>/dev/null)" && \
+  fel "the label \"$RC_ETIKETT\" is already carried by session '$_RC_INNEHAVARE' in the same home (OWNER=$ACCOUNT_LOGIN on $VARD) — refusing to register '$NAMN' under it. One home, one label: supervision's orphan reap finds a session's process BY the label and --remote-control pairs on it, so two rows sharing one cannot be told apart. Ask again with a different label — session-new.sh --label '<a name of its own>', which travels as rc_label= — or give the label on '$_RC_INNEHAVARE' away first."
 # THE TARGET LINE IS A TYPED UNION, built before the heredoc so the heredoc
 # itself stays the same flat interpolation every other field uses. THAT IS SAFE
 # ONLY BECAUSE EVERY FIELD IT INTERPOLATES IS CHARSET-GUARDED FIRST — see the

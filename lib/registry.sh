@@ -2206,6 +2206,66 @@ registry_account_slug_available() {
   return 0
 }
 
+# registry_session_rc_label_holder <own-id> <owner> <host> <rc-label> — prints
+# the id of ANOTHER session row in the SAME HOME that already carries this
+# RC_LABEL (rc 0), or rc 1 when the label is free there. A WRITER'S question,
+# asked before a row is published; nothing here refuses a row that already
+# exists.
+#
+# WHY THE REGISTER HAS TO ANSWER IT. An RC_LABEL is not decoration: it is the
+# string a session is ADDRESSED by. Supervision's orphan reap builds its
+# candidate pattern out of it (`pgrep -u <uid> -f ... --remote-control
+# "<label>"`), and Claude Code's --remote-control pairing is keyed on it. Two
+# rows in one home carrying one label therefore cannot be told apart by either.
+#
+# MEASURED ON A LIVE LINUX HOST 2026-09-09: two sessions in one home under one
+# uid, same label. Each session's zombie repair killed the OTHER's live claude
+# — 13 destroyed conversations in 55 minutes — and the hub logged "RENAME NOT
+# CONFIRMED after 5 attempts" all morning because two processes answered to one
+# remote-control name. The reap is bound to panes now and cannot repeat it; the
+# addressing ambiguity is what this closes.
+#
+# THE SCOPE IS THE HOME — (OWNER, HOST) — AND THAT IS A MEASUREMENT, NOT A
+# CONVENIENCE. The reap's finder is `pgrep -u "$(id -u)"` and a tmux socket
+# lives in one home on one host, so neither harm can cross a unix account or a
+# machine. The same estate carries six CROSS-home duplicate labels today by
+# design (two people with a "Chalmers" session each); refusing those would be a
+# refusal with no failure behind it.
+#
+# AN EMPTY LABEL IS NEVER A COLLISION. RC_LABEL="" is the RC-FREE CHOICE, not
+# an unset label — such a session runs with no --remote-control at all, so
+# there is no name for a second one to shadow, and the supervisor's
+# pane-descendant check is what has told those apart since 2026-08-12.
+#
+# SUBSHELLED PER FIELD, COMPARED IN THE PARENT — the same containment
+# registry_account_slug_available above documents: `source` can set ANY
+# variable, so a row declaring this function's own `owner`/`host`/`label`
+# would otherwise overwrite the query and make the scan miss the very
+# collision it exists to find.
+registry_session_rc_label_holder() {
+  local own="${1:-}" owner="${2:-}" host="${3:-}" label="${4:-}" d f
+  [ -n "$label" ] || return 1
+  [ -n "$owner" ] && [ -n "$host" ] || return 1
+  d="$(registry_dir)"
+  [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    local f_owner f_host f_label f_id
+    f_owner="$( OWNER="";    source "$f" 2>/dev/null; printf '%s' "$OWNER" )"
+    f_host="$(  HOST="";     source "$f" 2>/dev/null; printf '%s' "$HOST" )"
+    f_label="$( RC_LABEL=""; source "$f" 2>/dev/null; printf '%s' "$RC_LABEL" )"
+    f_id="$(    ID="";       source "$f" 2>/dev/null; printf '%s' "$ID" )"
+    # THE SAME DEFAULT registry_load USES for a row with no ID line, so the id
+    # this function names is the one every other reader names.
+    [ -n "$f_id" ] || { f_id="$(basename "$f")"; f_id="${f_id%.conf}"; }
+    [ "$f_id" = "$own" ] && continue
+    [ "$f_owner" = "$owner" ] && [ "$f_host" = "$host" ] && [ "$f_label" = "$label" ] || continue
+    printf '%s\n' "$f_id"
+    return 0
+  done
+  return 1
+}
+
 # ── PRINCIPALS — one row per HUMAN, across hosts and accounts ───────────────
 # accounts.d names a (principal, host) pair; the human behind it has no row
 # of their own, and the identities a tailnet hands us — the logins — belong
