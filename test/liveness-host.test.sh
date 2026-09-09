@@ -446,9 +446,22 @@ eq "list-panes uses the =name form" \
 echo "== a probe that cannot be made is NAMED, never invented =="
 # systemctl absent: supervision state is unknowable here. The rows must not
 # appear in `sessions` wearing a guessed daemon word.
+#
+# THE DIRECTORY MUST BE THE WHOLE PATH, NOT A PREFIX OF IT. `PATH="$T/bin2:/usr/bin:/bin"`
+# does not remove systemctl on a machine that HAS one - Linux keeps it in
+# /usr/bin, the shim finds it there, and the three claims below then measure a
+# host where nothing is missing. Green on a mac, red on every Linux host, for a
+# reason that has nothing to do with the product: measured 2026-09-09, these
+# three were the only red in the suite on basement and they are red at the
+# commit that introduced them. Built like the `stat` case below instead - every
+# command on this machine EXCEPT the one under test - so the absence is real
+# wherever the suite runs.
 mkdir -p "$T/bin2"
-for f in tmux pgrep ps; do cp "$T/bin/$f" "$T/bin2/$f"; done
-out2="$( env -i HOME="$T/home" PATH="$T/bin2:/usr/bin:/bin" \
+ln -s /usr/bin/* "$T/bin2/" 2>/dev/null
+ln -s /bin/*     "$T/bin2/" 2>/dev/null
+rm -f "$T/bin2/systemctl"
+for f in tmux pgrep ps; do rm -f "$T/bin2/$f"; cp "$T/bin/$f" "$T/bin2/$f"; done
+out2="$( env -i HOME="$T/home" PATH="$T/bin2" \
           STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
           TMUX_LOG="$T/tmuxlog2" bash "$CMD" 2>/dev/null )"
