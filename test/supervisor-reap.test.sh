@@ -82,7 +82,7 @@ row "$MINE" "$LABEL"
 row "$SIB"  "$LABEL"
 row "$FREE" ""
 
-# ── THE FIXTURE MACHINE ────────────────────────────────────────────────────
+# -- THE FIXTURE MACHINE ----------------------------------------------------
 # One table, three readers. Columns: pid ppid argv...
 PROCTAB="$T/proctab"
 PANES="$T/panes-all"

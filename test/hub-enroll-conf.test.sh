@@ -219,15 +219,15 @@ else bad "no refused request left a row behind" "$before_n -> $after_n"; fi
 # reached the host that was supposed to run it.
 mkdir -p "$FX/checkout/sessions.d"
 CHECKOUT_OVERRIDE="$FX/checkout"
-# ── EVERY CASE BELOW NAMES ITS OWN rc_label=, AND THAT IS THE FIXTURE BEING
-# HONEST, NOT A CLAIM BEING SOFTENED ────────────────────────────────────────
+# -- EVERY CASE BELOW NAMES ITS OWN rc_label=, AND THAT IS THE FIXTURE BEING
+# HONEST, NOT A CLAIM BEING SOFTENED ----------------------------------------
 # Since 2026-09-09 enroll refuses a second row carrying an RC_LABEL another row
 # in the SAME HOME already carries: the label is what supervision's orphan reap
 # pgreps for and what --remote-control pairs on, so two rows sharing one cannot
 # be told apart (that collision cross-killed 13 conversations on a live host).
 #
 # THIS FIXTURE'S projects.d IS EMPTY, so registry_display_for falls back to the
-# domain's ENTITY for every request — one label, "Hub: Acme", for the whole
+# domain's ENTITY for every request - one label, "Hub: Acme", for the whole
 # home. Every case from here on registers a further session as person=someone
 # on farhost, i.e. into that one home, and each is about something else
 # entirely (the checkout copy, the activation line, RUNTIME, the mates

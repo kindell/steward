@@ -2206,7 +2206,7 @@ registry_account_slug_available() {
   return 0
 }
 
-# registry_session_rc_label_holder <own-id> <owner> <host> <rc-label> — prints
+# registry_session_rc_label_holder <own-id> <owner> <host> <rc-label> - prints
 # the id of ANOTHER session row in the SAME HOME that already carries this
 # RC_LABEL (rc 0), or rc 1 when the label is free there. A WRITER'S question,
 # asked before a row is published; nothing here refuses a row that already
@@ -2220,12 +2220,12 @@ registry_account_slug_available() {
 #
 # MEASURED ON A LIVE LINUX HOST 2026-09-09: two sessions in one home under one
 # uid, same label. Each session's zombie repair killed the OTHER's live claude
-# — 13 destroyed conversations in 55 minutes — and the hub logged "RENAME NOT
+# - 13 destroyed conversations in 55 minutes - and the hub logged "RENAME NOT
 # CONFIRMED after 5 attempts" all morning because two processes answered to one
 # remote-control name. The reap is bound to panes now and cannot repeat it; the
 # addressing ambiguity is what this closes.
 #
-# THE SCOPE IS THE HOME — (OWNER, HOST) — AND THAT IS A MEASUREMENT, NOT A
+# THE SCOPE IS THE HOME - (OWNER, HOST) - AND THAT IS A MEASUREMENT, NOT A
 # CONVENIENCE. The reap's finder is `pgrep -u "$(id -u)"` and a tmux socket
 # lives in one home on one host, so neither harm can cross a unix account or a
 # machine. The same estate carries six CROSS-home duplicate labels today by
@@ -2233,11 +2233,11 @@ registry_account_slug_available() {
 # refusal with no failure behind it.
 #
 # AN EMPTY LABEL IS NEVER A COLLISION. RC_LABEL="" is the RC-FREE CHOICE, not
-# an unset label — such a session runs with no --remote-control at all, so
+# an unset label - such a session runs with no --remote-control at all, so
 # there is no name for a second one to shadow, and the supervisor's
 # pane-descendant check is what has told those apart since 2026-08-12.
 #
-# SUBSHELLED PER FIELD, COMPARED IN THE PARENT — the same containment
+# SUBSHELLED PER FIELD, COMPARED IN THE PARENT - the same containment
 # registry_account_slug_available above documents: `source` can set ANY
 # variable, so a row declaring this function's own `owner`/`host`/`label`
 # would otherwise overwrite the query and make the scan miss the very

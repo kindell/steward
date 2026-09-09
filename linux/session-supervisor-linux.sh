@@ -1040,12 +1040,12 @@ runtime_alive_in_session() {
 # THE VETO IS THE WHOLE SOCKET'S PANES, NOT THIS SESSION'S. The guard above
 # says only that MY session is gone; it says nothing about anyone else's. The
 # kill set used to be "every pid in this home whose argv matches CLAUDE_PAT",
-# bound to no pane at all — and CLAUDE_PAT is a LABEL, which is not an
+# bound to no pane at all - and CLAUDE_PAT is a LABEL, which is not an
 # identity: two rows in one home may carry the same one.
 #
 # MEASURED ON A LIVE LINUX HOST 2026-09-09: two sessions in one home, one uid,
 # the same RC_LABEL. The zombie repair calls kill-session BEFORE spawn_session,
-# so the has-session guard is always false on that path — and each repair
+# so the has-session guard is always false on that path - and each repair
 # SIGTERMed the OTHER session's live claude, which two rounds later became the
 # other's zombie verdict. An alternating mutual kill, 13 destroyed
 # conversations in 55 minutes. The label collision is fixed in its own place
@@ -1053,14 +1053,14 @@ runtime_alive_in_session() {
 # not depend on labels being unique to avoid killing a live conversation.
 #
 # THE LATENT CASE THIS ALSO CLOSES IS WIDER THAN THE ONE THAT FIRED. An
-# RC-FREE row (RC_LABEL="") sets CLAUDE_PAT='^[^ ]*claude( |$)' — ANY claude in
+# RC-FREE row (RC_LABEL="") sets CLAUDE_PAT='^[^ ]*claude( |$)' - ANY claude in
 # the home. One respawn of such a row would have killed every claude that home
 # was running. No such row exists on the affected host today; the pane binding
 # means none ever can.
 #
 # STRICTLY NARROWER, BY CONSTRUCTION: every candidate that used to be killed is
 # still considered, and the only thing added is a reason to SKIP one. This can
-# kill fewer processes than before, never more — which is the property that
+# kill fewer processes than before, never more - which is the property that
 # makes the change reviewable. The empty pane set (no tmux server, no session
 # anywhere) skips nothing, so the deploy-day sweep case is unchanged.
 #
