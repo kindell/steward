@@ -710,6 +710,68 @@ case "$err" in *"which model account"*) bad "unscoped: login policy does not mas
   *) ok "unscoped: login policy does not mask account corruption" ;; esac
 
 echo
+echo "the gate's answers are out of a row's reach"
+
+# THE REGRESSION THIS PINS. registry_estate_gates publishes what it measured
+# into _REGISTRY_*_SEEN globals so registry_load need not source the estate
+# file a second time per key. registry_load then sources the ROW, in its own
+# shell, between the gate and every consumer of those globals - so a conf line
+# naming one of them rewrote the gate's answer about itself. Measured before
+# the fix, on the fixture below: a schema-6 estate and a row with no LOGIN
+# refuses rc 78, and the same row plus
+# _REGISTRY_LOGIN_REQUIRED_FOR_SEEN="nobody" loaded rc 0. The other four moved
+# the same way: the row picked its own schema number, its own launchd label,
+# its own token path and its own host.
+#
+# ALL FIVE PUBLICATIONS GET A CASE, because they fail differently: two decide
+# whether the load is refused at all, three decide a value the load derives,
+# and a test that only measured rc would have missed the last three entirely.
+full_estate 6
+
+konf leverlogin 'REPO_PATH="/x"' 'RC_LABEL="LL"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  '_REGISTRY_LOGIN_REQUIRED_FOR_SEEN="nobody"'
+rc="$(laddarc leverlogin)"
+[ "$rc" = "78" ] && ok "a row setting _REGISTRY_LOGIN_REQUIRED_FOR_SEEN is still refused" \
+  || bad "a row setting _REGISTRY_LOGIN_REQUIRED_FOR_SEEN is still refused" "rc=$rc"
+
+konf leverschema 'REPO_PATH="/x"' 'RC_LABEL="LS"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  '_REGISTRY_SCHEMA_SEEN="5"'
+rc="$(laddarc leverschema)"
+[ "$rc" = "78" ] && ok "a row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" \
+  || bad "a row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" "rc=$rc"
+
+# THE CONTROL GROUP for the two above: the same row without the lever line and
+# with a LOGIN loads, so the refusals above measure the gate and not a broken
+# fixture.
+konf leverok 'REPO_PATH="/x"' 'RC_LABEL="LO"' 'OWNER="alice"' 'DOMAIN="acme"' 'LOGIN="acme-team"'
+rc="$(laddarc leverok)"
+[ "$rc" = "0" ] && ok "the same row without a lever and with a LOGIN loads" \
+  || bad "the same row without a lever and with a LOGIN loads" "rc=$rc"
+
+konf leverprefix 'REPO_PATH="/x"' 'RC_LABEL="LP"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'LOGIN="acme-team"' '_REGISTRY_LABEL_PREFIX_SEEN="com.intruder.claude"'
+got="$(ladda leverprefix LAUNCHD_LABEL)"
+[ "$got" = "com.example.claude.leverprefix" ] \
+  && ok "a row cannot choose its own launchd label through _REGISTRY_LABEL_PREFIX_SEEN" \
+  || bad "a row cannot choose its own launchd label through _REGISTRY_LABEL_PREFIX_SEEN" "got '$got'"
+
+konf levertoken 'REPO_PATH="/x"' 'RC_LABEL="LT"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'LOGIN="acme-team"' '_REGISTRY_OP_TOKEN_NAME_SEEN="intruder-token"'
+got="$(ladda levertoken OP_TOKEN_FILE)"
+case "$got" in
+  *"/token") ok "a row cannot choose its own token path through _REGISTRY_OP_TOKEN_NAME_SEEN" ;;
+  *) bad "a row cannot choose its own token path through _REGISTRY_OP_TOKEN_NAME_SEEN" "got '$got'" ;;
+esac
+
+# NO HOST LINE ON PURPOSE: HOST defaults to the estate's hub, and the default is
+# the only place the published hub host is read.
+konf leverhost 'REPO_PATH="/x"' 'RC_LABEL="LH"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'LOGIN="acme-team"' '_REGISTRY_HUB_HOST_SEEN="intruder-host"'
+got="$(ladda leverhost HOST)"
+[ "$got" = "hub" ] && ok "a row cannot choose its own host through _REGISTRY_HUB_HOST_SEEN" \
+  || bad "a row cannot choose its own host through _REGISTRY_HUB_HOST_SEEN" "got '$got'"
+
+echo
 echo "the schema gate widens to the job and service loaders"
 
 # UNTIL THIS TASK NEITHER LOADER CALLED registry_schema_check AT ALL. A reader

@@ -3104,6 +3104,28 @@ registry_load() {
   # individually below where they are needed; this line is the gate, and
   # registry_estate_gates is what lib/sessions.sh probes with.
   registry_estate_gates || return 78
+  # THE GATE'S ANSWERS ARE COPIED OUT OF REACH, HERE, BEFORE ANY ROW IS READ.
+  # registry_estate_gates publishes into _REGISTRY_*_SEEN globals, and `source`
+  # runs in this function's own scope - so between the gate and the consumers
+  # further down there is a `source "$conf"`, and a row that assigned one of
+  # those global names REWROTE THE GATE'S ANSWER. Measured on the shape that
+  # introduced this: a schema-6 estate with a row carrying no LOGIN refuses
+  # with rc 78, and the same row plus one line
+  # (_REGISTRY_LOGIN_REQUIRED_FOR_SEEN="nobody") loaded rc 0. The schema, hub
+  # host, op-token and label-prefix publications moved the same way: the row
+  # chose its own launchd label, its own token path and its own host.
+  #
+  # The copies below are LOCAL, so a row cannot reach the value the gate
+  # measured through the published name, and every consumer in this function
+  # reads the copy rather than the global. A conf that assigned these local
+  # names would still land in the local - dynamic scope has no wall - but
+  # these names are private to this loader and are not what a conf carries,
+  # while the published names are documented and read from three other files.
+  local _gate_schema="${_REGISTRY_SCHEMA_SEEN:-}"
+  local _gate_hub_host="${_REGISTRY_HUB_HOST_SEEN:-}"
+  local _gate_op_token_name="${_REGISTRY_OP_TOKEN_NAME_SEEN:-}"
+  local _gate_label_prefix="${_REGISTRY_LABEL_PREFIX_SEEN:-}"
+  local _gate_login_required_for="${_REGISTRY_LOGIN_REQUIRED_FOR_SEEN:-}"
   local project="${1:-}"
   if ! registry_valid_name "$project"; then
     echo "registry: invalid project name '$project' (allowed: a-z 0-9 -)" >&2
@@ -3161,7 +3183,10 @@ registry_load() {
   # an answer that cannot have changed inside one load. Empty is impossible
   # here - the gate refuses rather than publish an empty hub host - so the
   # guard is a statement of that invariant, not a second measurement.
-  local _hubhost="${_REGISTRY_HUB_HOST_SEEN:-}"
+  #
+  # THROUGH THE LOCAL COPY, taken before the conf was sourced: the global this
+  # was read from is writable by the row that is being loaded.
+  local _hubhost="$_gate_hub_host"
   [ -n "$_hubhost" ] || return 78
   : "${HOST:=$_hubhost}"
   if ! [[ "$HOST" =~ ^[a-z][a-z0-9-]*$ ]]; then
@@ -3275,14 +3300,17 @@ registry_load() {
   # a command line, so a row that cannot say who pays never becomes a running
   # session. A session that runs on the ambient account is indistinguishable
   # from a healthy one from the outside, and the bill arrives a month later.
-  if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
-     && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
-    # THE GATE'S PUBLICATION AGAIN, and here empty is a real answer: an absent
-    # LOGIN_REQUIRED_FOR is rc 0 with no value and MEANS every principal, which
-    # is what the branch below reads it as. A malformed one never reaches this
-    # line - registry_estate_gates refused the whole load for it.
+  if [ -z "$LOGIN" ] && [ -n "$_gate_schema" ] \
+     && [ "$_gate_schema" -ge 6 ]; then
+    # THE GATE'S PUBLICATION AGAIN, through the local copy, and here empty is a
+    # real answer: an absent LOGIN_REQUIRED_FOR is rc 0 with no value and MEANS
+    # every principal, which is what the branch below reads it as. A malformed
+    # one never reaches this line - registry_estate_gates refused the whole
+    # load for it. Both values are the copies taken before the source, because
+    # a row that sets either published name would otherwise decide for itself
+    # whether this gate applies to it.
     local _req _who=""
-    _req="${_REGISTRY_LOGIN_REQUIRED_FOR_SEEN:-}"
+    _req="$_gate_login_required_for"
     # THE PRINCIPAL IS RESOLVED ONLY WHEN A QUESTION IS ACTUALLY ASKED. With
     # LOGIN_REQUIRED_FOR absent (the ABSENT KEY = EVERY PRINCIPAL case, and the
     # estate's actual state today), every principal is refused regardless of
@@ -3295,7 +3323,7 @@ registry_load() {
     fi
     if [ -z "$_req" ] || _registry_word_in_list "$_who" "$_req"; then
       echo "registry: $project.conf REFUSING — no LOGIN: nothing states which model account pays" >&2
-      echo "registry: for this session's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2
+      echo "registry: for this session's calls. The estate is schema $_gate_schema, where the field is required" >&2
       echo "registry: for ${_req:-every principal}${_req:+ (LOGIN_REQUIRED_FOR)}." >&2
       echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
       return 78
@@ -3579,7 +3607,7 @@ registry_load() {
   fi
   OWNER_HOME="/Users/$OWNER"
   # Per-project secrets service account (a domain may have its own vault and account).
-  local _optok="${_REGISTRY_OP_TOKEN_NAME_SEEN:-}"
+  local _optok="$_gate_op_token_name"
   [ -n "$_optok" ] || return 78
   : "${OP_TOKEN_FILE:=$OWNER_HOME/.config/op/$_optok}"
   SESSION_NAME="$project"
@@ -3587,7 +3615,7 @@ registry_load() {
   # cannot be. The alternative — letting the label become empty or unset and be
   # discovered later — is exactly the silent failure the rest of this file is
   # built against.
-  local _prefix="${_REGISTRY_LABEL_PREFIX_SEEN:-}"
+  local _prefix="$_gate_label_prefix"
   if [ -z "$_prefix" ]; then
     echo "registry: $project.conf could not be given a launchd label (see the lines above)" >&2
     return 78
