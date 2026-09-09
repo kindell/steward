@@ -346,20 +346,32 @@ else
 fi
 
 # 11. EVERY SHIPPED FILE'S lib/<name>.sh STRINGS HAVE A ROW - swept over EVERY
-# manifest source, not only the desk/runtime/hub trees check 10 restricts
-# itself to. Check 10 parses a source STATEMENT (". \"\$dir/x.sh\"") in three
-# named trees; this check is a plain `grep -o 'lib/[a-z_-]*\.sh'` over every
-# file the manifest ships, wherever it lives. bin/steward is outside all three
-# of check 10's trees and shipped with SIX missing lib rows - a deployed
-# host's `steward sessions --json` died on `lib/sessions.sh: No such file or
-# directory`, measured 2026-09-09. Check 10 could not have caught it; this
-# check would have.
+# manifest source OF A KIND THAT CAN SOURCE, not only the desk/runtime/hub
+# trees check 10 restricts itself to. Check 10 parses a source STATEMENT
+# (". \"\$dir/x.sh\"") in three named trees; this check is a plain
+# `grep -o 'lib/[a-z_-]*\.sh'` over every file the manifest ships, wherever it
+# lives. bin/steward is outside all three of check 10's trees and shipped
+# with SIX missing lib rows - a deployed host's `steward sessions --json`
+# died on `lib/sessions.sh: No such file or directory`, measured 2026-09-09.
+# Check 10 could not have caught it; this check would have.
+#
+# THE KIND FILTER IS A POSITIVE LIST, not "every kind but docs". A `docs`
+# row's file is never sourced by anything - it is prose - and prose that
+# happens to NAME a library in passing is not a missing manifest row. With
+# STEWARD_ESTATE_ROOT set (the canonical aggregate, both manifests read
+# together) the estate ships docs/deployvagen.md, kind `docs`, which mentions
+# lib/deploy-core.sh while explaining what it is - a real false failure this
+# suite produced with an estate root, measured 2026-09-09, the day after this
+# check was added. Restricting the sweep to the kinds that CAN source a
+# library - scripts, lib, bin - rather than excluding docs by name keeps the
+# next non-executing kind out too, without this check having to learn its
+# name.
 #
 # A file that does not exist locally (an estate row with no estate checkout)
 # is skipped, the same as check 2's own "unverified" branch - this check
 # widens the sweep, it does not tighten what counting a source as present
 # requires.
-ALL_SOURCES="$(grep -v '^#' "$M" | awk 'NF>=4{print $1}')"
+ALL_SOURCES="$(grep -v '^#' "$M" | awk 'NF>=4 && ($4=="scripts"||$4=="lib"||$4=="bin"){print $1}')"
 for srcfile in $ALL_SOURCES; do
   libfile=""
   if [ -f "$here/$srcfile" ]; then
@@ -378,6 +390,45 @@ for srcfile in $ALL_SOURCES; do
     fi
   done
 done
+
+# 11b. PROOF: a `docs` row naming a library in prose produces no failure; a
+# `scripts` row with the identical content produces one. One real fixture
+# file, mentioning lib/nothing.sh (a name guaranteed to have no manifest
+# row), run through the FULL check-11 pipeline twice on a synthetic one-row
+# manifest - once as if its row were `docs`, once as if its row were
+# `scripts` - not a restatement of the filter line alone: the kind filter,
+# the content grep, and the row lookup all run, exactly as check 11 runs
+# them, so this proves the behavior the ruling asked for, not just the
+# expression it named.
+PROOF_FIXTURE="$here/test/.deploy-manifest-guard-fixture-$$"
+printf 'this is prose, not code, and it names lib/nothing.sh in passing\n' > "$PROOF_FIXTURE"
+trap 'rm -f "$M" "$PROOF_FIXTURE"' EXIT
+PROOF_REL="test/.deploy-manifest-guard-fixture-$$"
+for proof_kind in docs scripts; do
+  proof_row="$PROOF_REL	scripts/fixture	644	$proof_kind"
+  proof_sources="$(printf '%s\n' "$proof_row" | awk 'NF>=4 && ($4=="scripts"||$4=="lib"||$4=="bin"){print $1}')"
+  proof_failed=0
+  for proof_srcfile in $proof_sources; do
+    proof_libfile=""
+    [ -f "$here/$proof_srcfile" ] && proof_libfile="$here/$proof_srcfile"
+    [ -n "$proof_libfile" ] || continue
+    proof_wanted="$(grep -o 'lib/[a-z_-]*\.sh' "$proof_libfile" 2>/dev/null | sort -u)"
+    [ -z "$proof_wanted" ] && continue
+    for proof_want in $proof_wanted; do
+      if grep -v '^#' "$M" | awk '{print $1}' | grep -qx "$proof_want"; then
+        :
+      else
+        proof_failed=1
+      fi
+    done
+  done
+  if [ "$proof_kind" = "docs" ]; then
+    [ "$proof_failed" -eq 0 ] && ok || bad "PROOF FAILED: a docs row naming lib/nothing.sh in prose produced a failure — $PROOF_REL"
+  else
+    [ "$proof_failed" -eq 1 ] && ok || bad "PROOF FAILED: a scripts row naming lib/nothing.sh produced no failure — $PROOF_REL"
+  fi
+done
+rm -f "$PROOF_FIXTURE"
 
 [ "$unverified" -gt 0 ] && echo "NOTE: $unverified estate rows could not be verified (no estate checkout found)"
 [ -z "$ESTATE_MANIFEST" ] && echo "NOTE: estate manifest not found; product rows only checked"
