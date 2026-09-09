@@ -62,6 +62,10 @@
 #      DISCARD A LIVE HUMAN'S VETO. A fatal arithmetic error aborts the whole
 #      client loop and everything after it, including the deferral - so the
 #      veto fails OPEN on a value it merely failed to read.
+#  15. A deferral says how long the session has been ZOMBIE-shaped. The veto
+#      cannot tell a re-attaching wrapper from a human who has just attached,
+#      so it must not try - but an indefinite deferral has to be legible on one
+#      line, which is exactly what the two-hour incident lacked.
 #
 # NOTHING HERE TOUCHES THE MACHINE: tmux, pgrep and ps are shims over a fixture
 # process table, and no tmux, ssh or sudo binary is ever reached.
@@ -475,6 +479,33 @@ out14="$(cat "$T/out")"
 if untouched; then ok "14a a live human's veto survives an unarithmetic sibling"; else bad "14a a live human's veto survives an unarithmetic sibling" "tmux log: $(cat "$TMUX_LOG")"; fi
 has   "14b the deferral still names the human" "$out14" "$HUMAN_TTY"
 hasnt "14c and no arithmetic error escaped to the journal" "$out14" "value too great for base"
+
+echo "== 15. a deferral says how long this has been going on =="
+# THE RESIDUAL THE VETO CANNOT GUARD, ANSWERED BY ANNOUNCING IT. A wrapper that
+# re-attaches every round produces a genuinely NEW client each time - new pid,
+# created == activity == now - which is indistinguishable from a human who just
+# attached and has not typed yet, the exact human this veto protects. So the
+# veto cannot tell them apart, and a round cap that overrode it would be the
+# failure this whole thing exists to prevent. What it CAN do is say how long it
+# has been deferring, so an indefinite hang is legible on ONE line instead of
+# having to be diffed out of consecutive journal entries. That is what the
+# original incident cost: two hours in which nobody knew.
+arm 7200
+client "$GHOST_TTY" "$(( NOW - 30 ))" "$GHOST_PID"
+run
+out15="$(cat "$T/out")"
+if untouched; then ok "15a the deferral still stands"; else bad "15a the deferral still stands" "tmux log: $(cat "$TMUX_LOG")"; fi
+has "15b it says how long this session has been zombie-shaped" "$out15" "ZOMBIE-shaped for "
+# THE NUMBER MUST BE THE SESSION'S AGE, NOT THE CLIENT'S IDLENESS. Both are in
+# scope on this path and only one of them answers "how long has this been
+# hanging". The window is loose because `arm` reads `date +%s` a fraction of a
+# second before the supervisor does.
+zage="$(printf '%s\n' "$out15" | sed -n 's/.*ZOMBIE-shaped for \([0-9][0-9]*\)s.*/\1/p' | head -1)"
+if [ -n "$zage" ] && [ "$zage" -ge 7200 ] && [ "$zage" -le 7260 ]; then
+  ok "15c and the number is the session's age, not the client's idleness"
+else
+  bad "15c and the number is the session's age, not the client's idleness" "wanted 7200..7260, got '${zage:-none}'"
+fi
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

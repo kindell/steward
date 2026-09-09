@@ -1959,6 +1959,19 @@ EOF
   [ -n "$_debris" ] && printf '%s\n' "$_debris" >&2
   if [ -n "$_keep" ]; then
     echo "session-supervisor: $NAME - ZOMBIE-shaped, but tmux client $_keep $_keep_why - deferring the kill." >&2
+    # HOW LONG THIS HAS BEEN GOING ON, ON ONE LINE. The residual this veto
+    # cannot close is a wrapper that re-attaches every round: each attach is a
+    # genuinely new client with created == activity == now, which is exactly a
+    # human who has just attached and not yet typed. Nothing distinguishes
+    # them, and a round cap that overrode the veto is refused above. So do not
+    # guard - ANNOUNCE. The marker's age is already measured for the debris
+    # text and costs nothing here, and it turns a silent indefinite hang into a
+    # line that says how long it has been hanging. That is precisely what the
+    # incident cost: two hours in which nobody knew. If more is ever wanted,
+    # ALARM on a long deferral; never kill on one.
+    if _is_epoch "$_death"; then
+      echo "session-supervisor: $NAME - it has been ZOMBIE-shaped for $(( _now - 10#$_death ))s and the veto has deferred throughout." >&2
+    fi
     echo "session-supervisor: $NAME - a human may be working in that window; repair resumes the first round after that client has been silent for ${HUMAN_GRACE_SEC}s, or the round after it detaches." >&2
     exit 0
   fi
