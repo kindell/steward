@@ -417,7 +417,7 @@ F_ACCOUNT="${_frest%%$'\n'*}"
 # until somebody realigns them - which is the direction a stamping verb should
 # fail in.
 F_PRINCIPAL=""
-_fa_p=""; _fa_u=""; _fa_h=""
+_fa_p=""; _fa_u=""; _fa_h=""; _fa_shape=""
 # A conf without HOST lives on the hub - the same default registry_load applies,
 # and the host check below reads it the same way.
 F_ROWHOST="${F_HOST:-$NAV_VARD}"
@@ -442,8 +442,20 @@ fi
 if [ -n "$F_ACCOUNT" ]; then
   [ -n "$_fa_p" ] || \
     fel "owner check: '$FROM' names account '$F_ACCOUNT', and this hub cannot read it - a row that claims an account is measured through it, and an unreadable account measures nothing"
+  # TWO SHAPES REACH THIS REFUSAL AND THEY ARE DIFFERENT FAULTS. The common one
+  # is the lenient row: OWNER carries the account's PRINCIPAL where the strict
+  # rule wants its USERNAME, and naming that IS the diagnosis. The other is a
+  # row whose OWNER is neither field - a row pointed at an account that is not
+  # its own - and the static sentence told that reader their OWNER was the
+  # account's principal when it was not, which is a wrong cause and sends them
+  # to a verb that cannot fix it.
+  if [ "$_fa_p" = "$F_OWNER" ]; then
+    _fa_shape="names as its PRINCIPAL and not as its USERNAME='${_fa_u:-<empty>}'"
+  else
+    _fa_shape="names neither as its PRINCIPAL='${_fa_p:-<empty>}' nor as its USERNAME='${_fa_u:-<empty>}'"
+  fi
   [ "$_fa_u" = "$F_OWNER" ] || \
-    fel "owner check: '$FROM' has OWNER='${F_OWNER:-<empty>}', which account '$F_ACCOUNT' names as its PRINCIPAL and not as its USERNAME='${_fa_u:-<empty>}' - enrolment stamps a row under the account it resolves, and a principal id is not a login. Run 'steward registry session realign $FROMKEY' to end the ambiguity, then request again"
+    fel "owner check: '$FROM' has OWNER='${F_OWNER:-<empty>}', which account '$F_ACCOUNT' $_fa_shape - enrolment stamps a row under the account it resolves, and a principal id is not a login. Run 'steward registry session realign $FROMKEY' to end the ambiguity, then request again"
   [ "$_fa_h" = "$F_ROWHOST" ] || \
     fel "owner check: '$FROM' runs on host '$F_ROWHOST', and account '$F_ACCOUNT' lives on '${_fa_h:-<empty>}' - an account is a (principal, host) pair, so an account on another host settles nothing about a row on this one. Register the account for '$F_ROWHOST', or point the row at the account that already exists there, then request again"
   [ "$F_PRINCIPAL" = "$PERSON" ] || \

@@ -928,6 +928,32 @@ is  "U5: a row its own account names only by PRINCIPAL is refused" "$URC" "65"
 has "U5: and the refusal quotes the OWNER the loader reads"  "$UOUT" "OWNER='ann'"
 has "U5: and the USERNAME the account actually names"        "$UOUT" "svc-ann"
 has "U5: and points at the verb that ends the ambiguity"     "$UOUT" "registry session realign"
+has "U5: and says which of the two names the OWNER actually is" "$UOUT" "names as its PRINCIPAL and not as its USERNAME"
+
+# U5b. THE SAME GATE, THE OTHER SHAPE. OWNER here is neither the account's
+# PRINCIPAL nor its USERNAME - a row pointed at an account that is not its own
+# - and the sentence used to tell this reader that their OWNER was the
+# account's principal. It was not, so the stated cause was wrong and the verb
+# it recommends cannot fix the row. The branch names both fields instead.
+cat > "$UFX/sessions.d/neitherowner.conf" <<'CONF'
+HOST="farhost"
+OWNER="zed"
+ACCOUNT="ann-farhost"
+DOMAIN="acme"
+RC_LABEL="Neither"
+REPO_PATH="/tmp/x"
+ID="neitherowner"
+CONF
+ureq w5b zed FFFFFFFFFFFFFFFFFFFFFFFFFF
+urun neitherowner "$UREQ"
+is  "U5b: a row whose OWNER is neither field is refused" "$URC" "65"
+has "U5b: and the refusal names the account's PRINCIPAL" "$UOUT" "neither as its PRINCIPAL='ann'"
+has "U5b: and the account's USERNAME"                    "$UOUT" "nor as its USERNAME='svc-ann'"
+case "$UOUT" in
+  *"names as its PRINCIPAL and not"*)
+    bad "U5b: and never claims the OWNER is the account's principal" "$UOUT" ;;
+  *) ok "U5b: and never claims the OWNER is the account's principal" ;;
+esac
 
 # U6. THE COLLISION, WHOLE. Account A is PRINCIPAL="ann" USERNAME="svc-ann";
 # account B is PRINCIPAL="bob" USERNAME="ann". The row above is A's row - it
