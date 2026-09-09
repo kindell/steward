@@ -506,6 +506,18 @@ is  "a token read from a file redeems, rc 0" "$rc" "0"
 no  "and the token reached no child's argv" "$(cat "$FX/argv" "$FX/calls")" "$TOK"
 no  "and nothing the run printed carries it" "$out" "$TOK"
 no  "and the receipt does not" "$(cat "$HUBHOME/.local/state/fixture-state/invites/$INVID.receipt.json")" "$TOK"
+# A TOKEN FILE WRITTEN WITH CRLF LINE ENDINGS IS AN ORDINARY TOKEN FILE - one
+# saved by an editor that kept the line ending of whatever it opened, or copied
+# off a machine that writes them. `read` splits on the newline alone, so the
+# carriage return stayed on the value and the digest was taken over a token
+# nobody was ever given. The refusal that followed said the token did not match
+# the invitation, which sends the operator to reissue an invitation that was
+# never wrong.
+issue zev
+printf '%s\r\n' "$TOK" > "$FX/token-file-crlf"
+out="$(run invite redeem --token-file "$FX/token-file-crlf" --identity oidc:issuer-z:SUB-CR 2>&1)"; rc=$?
+is  "a CRLF token file redeems exactly as an LF one, rc 0" "$rc" "0"
+has "and the run reached the last step" "$out" "12/12"
 issue sam
 : > "$FX/argv"; : > "$FX/calls"
 out="$(printf '%s\n' "$TOK" | run invite redeem - --identity oidc:issuer-z:SUB-S 2>&1)"; rc=$?

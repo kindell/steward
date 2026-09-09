@@ -3759,6 +3759,15 @@ cmd_invite_redeem() {
                     # already assigned the partial line, so the emptiness test
                     # below is the one that decides.
                     IFS= read -r token < "$2" || :
+                    # AND A CRLF FILE IS AN ORDINARY TOKEN FILE. `read` splits
+                    # on the newline alone, so a file written by an editor that
+                    # kept CRLF line endings left the carriage return on the
+                    # token - and the digest was then taken over a value nobody
+                    # was ever given. The refusal that followed said no open
+                    # invitation matched, which sends the operator to reissue an
+                    # invitation that was never wrong. ONE carriage return, at
+                    # the end: anything else in the value is the value.
+                    token="${token%$'\r'}"
                     [ -n "$token" ] || { _reg_fail "$want_json" "steward invite redeem: the token file '$2' is empty - the token goes on its first line"; return 64; }
                     shift 2 ;;
       -)  if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
