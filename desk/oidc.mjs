@@ -87,6 +87,12 @@ export function loadProviders(dir) {
       if (!entry) continue;
       let u;
       try { u = new URL(entry); } catch { throw new Error('provider ' + file + ': ENDPOINT_ORIGINS is not a URL'); }
+      // A URL whose scheme the standard does not call special reports its
+      // origin as the literal string "null" - and so does every other such
+      // URL, including any the document might name. Such an entry has no
+      // origin to compare against, so keeping it would widen the set to that
+      // whole class rather than to one host.
+      if (u.origin === 'null') throw new Error('provider ' + file + ': ENDPOINT_ORIGINS must name an origin only, with no path, query, fragment or userinfo');
       if (!isSecureUrl(u)) throw new Error('provider ' + file + ': ENDPOINT_ORIGINS must be https, or loopback');
       if ((u.pathname && u.pathname !== '/') || u.search || u.hash || u.username || u.password) {
         throw new Error('provider ' + file + ': ENDPOINT_ORIGINS must name an origin only, with no path, query, fragment or userinfo');

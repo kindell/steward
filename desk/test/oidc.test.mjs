@@ -168,6 +168,23 @@ test('loadProviders refuses an ENDPOINT_ORIGINS entry that is not an origin the 
   assert.deepEqual(providerFrom('slash', 'https://x.example/').endpointOrigins, ['https://x.example']);
 });
 
+// AN ENTRY WHOSE ORIGIN IS THE STRING "null" IS A WILDCARD, NOT AN ORIGIN.
+// new URL('x://127.0.0.1') has an empty path, no query, no fragment, no
+// userinfo and a loopback hostname, so every guard above passes it - but a
+// URL with a scheme the standard does not call special reports its origin as
+// the literal string "null", and so does EVERY such URL. Storing one would
+// put that whole class in the allowed set at once.
+test('loadProviders refuses an ENDPOINT_ORIGINS entry that has no origin to name', async () => {
+  assert.throws(() => providerFrom('opaque', 'x://127.0.0.1'),
+    /opaque\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  // With no such entry to widen it, an endpoint of that class is held by the
+  // origin gate itself - not waved through it and caught one line later by
+  // the plaintext check.
+  const doc = Object.assign({}, SPLIT_ORIGIN_DOC, { token_endpoint: 'zz://evil.example/token' });
+  await assert.rejects(discover(providerFrom('opaque-doc'), serving(doc)),
+    /discovery for opaque-doc points token_endpoint off its own origin/);
+});
+
 test('discover refuses a plaintext endpoint on a host that is not loopback', async (t) => {
   // The endpoints sit on the issuer's own origin, so the origin check has
   // nothing to say and the scheme check is the one that must refuse. Only
