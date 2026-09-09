@@ -1003,6 +1003,37 @@ rm -f "$UFX/accounts.d/carl-farhost.conf"
 ureq w9 carl IIIIIIIIIIIIIIIIIIIIIIIIII
 urun crosshost "$UREQ"
 is "U9: the same account on the row's own host enrols" "$URC" "0"
+
+# U10. THE ACCOUNT ID IS A NAME, AND A NAME IS NOT A PATH. registry_account_load
+# builds "<accounts.d>/<slug>.conf" and sources it, and this gate reads
+# F_ACCOUNT straight out of the requester's conf without the loader's grammar.
+# The conf below is placed one directory OUTSIDE accounts.d and named by a
+# relative ACCOUNT: before the check it loaded, satisfied the owner gate, and
+# the request enrolled. The rows this hub writes are shape-checked by the
+# loader that reads them back, so no live session reaches this - it is one
+# hand-edited conf away.
+cat > "$UFX/outside.conf" <<'CONF'
+PRINCIPAL="ann"
+USERNAME="ann"
+HOST="farhost"
+CONF
+cat > "$UFX/sessions.d/escaped.conf" <<'CONF'
+HOST="farhost"
+OWNER="ann"
+ACCOUNT="../outside"
+DOMAIN="acme"
+RC_LABEL="Escaped"
+REPO_PATH="/tmp/x"
+ID="escaped"
+CONF
+ureq wa ann JJJJJJJJJJJJJJJJJJJJJJJJJJ
+urun escaped "$UREQ"
+is  "U10: a path-shaped ACCOUNT is refused before anything is sourced" "$URC" "65"
+has "U10: and the refusal names the grammar, not a read failure" "$UOUT" "not an account id"
+case "$UOUT" in
+  *"this hub cannot read it"*) bad "U10: the shape is measured before the load" "$UOUT" ;;
+  *)                           ok  "U10: the shape is measured before the load" ;;
+esac
 rm -rf "$UFX"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────

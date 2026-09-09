@@ -421,7 +421,17 @@ _fa_p=""; _fa_u=""; _fa_h=""
 # A conf without HOST lives on the hub - the same default registry_load applies,
 # and the host check below reads it the same way.
 F_ROWHOST="${F_HOST:-$NAV_VARD}"
+# THE SHAPE BEFORE THE LOAD. registry_account_load builds "<accounts.d>/<slug>.conf"
+# and SOURCES it, and F_ACCOUNT arrives here from a conf this gate sources for
+# three fields without the loader's own grammar check - so a row carrying
+# ACCOUNT="../outside" resolved through a file outside accounts.d and enrolled,
+# measured on a fixture. Unreachable from a session today, because the rows this
+# hub writes are shape-checked by the loader that reads them back; it is one
+# line here and the register is one hand-edited conf away from needing it.
+# The grammar is the loader's own for the identity fields (lib/registry.sh).
 if [ -n "$F_ACCOUNT" ]; then
+  [[ "$F_ACCOUNT" =~ ^[a-z0-9][a-z0-9-]*$ ]] || \
+    fel "owner check: '$FROM' names account '$F_ACCOUNT', which is not an account id (allowed: a-z 0-9 and hyphen, starting with a letter or digit) - the value is used to build a path into accounts.d, and a path is not a name"
   _fa_p="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )" || _fa_p=""
   _fa_u="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )" || _fa_u=""
   _fa_h="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_HOST" )" || _fa_h=""
