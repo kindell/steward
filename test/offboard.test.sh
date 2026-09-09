@@ -749,6 +749,25 @@ else
   is  "a required register that is a file refuses, rc 78" "$rc" "78"
   no  "and does not claim it is not there" "$out" "is not there"
 
+  # AND A LINK THAT POINTS AT SOMETHING IS NOT A LINK THAT POINTS AT NOTHING.
+  # The `-L` arm was reached before the `-e` one, so EVERY non-directory
+  # symlink - a link to a regular file, a link loop - was told to "repair the
+  # link (or remove it, if that register really is gone)" while `ls -lL` showed
+  # the link resolving perfectly. The refusal and the rc were right all along;
+  # only the words sent the reader after the wrong thing. (A dangling link is
+  # not `-e`, so it still falls through to the arm that names it.)
+  mv "$ROOT/hosts.d" "$ROOT/hosts.d-real"
+  printf 'this is a file, not a register\n' > "$ROOT/hosts-file"
+  ln -s "$ROOT/hosts-file" "$ROOT/hosts.d"
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rm -f "$ROOT/hosts.d" "$ROOT/hosts-file"; mv "$ROOT/hosts.d-real" "$ROOT/hosts.d"
+  is  "a register that is a link to a FILE refuses, rc 78" "$rc" "78"
+  has "and says what is actually wrong with it" "$out" "is not a directory"
+  no  "and never that it points at nothing" "$out" "points at nothing"
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  havenot "and no receipt was written" "$KIPR"
+
   # A ROW THAT IS A LINK TO NOTHING IS A ROW NOBODY CAN READ. `[ -e ]` is false
   # for a dangling symlink, so the row walk's own existence guard used to skip
   # it before the -r check ever ran. Measured: a dangling sessions.d row plus

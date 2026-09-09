@@ -4537,27 +4537,33 @@ _offboard_register_readable() {
   while read -r reg_label reg_fn reg_need; do
     [ -n "$reg_label" ] || continue
     reg_dir="$("$reg_fn" 2>/dev/null)"
-    # A LINK THAT POINTS AT NOTHING IS NOT AN ABSENT REGISTER. `[ -d ]` is
-    # false for a dangling symlink, so without this it lands in the "absent is
-    # legitimate" arm below and the run finishes at rc 0 - but an estate that
-    # points a register somewhere has SAID something is there, and what it
-    # named is gone. That is "something is there that I cannot use", the same
-    # answer as a directory this run cannot list. A link to a readable
+    # SOMETHING THAT IS THERE AND IS NOT A DIRECTORY IS NOT AN ABSENT REGISTER.
+    # A plain file at a register's path is neither -L nor -d, so it used to land
+    # in the "absent is legitimate" arm below: measured, a regular file at the
+    # host register offboarded the machine's own OWNER and OPERATOR at rc 0 with
+    # state "done" and warnings [] - the same harm as a register this run cannot
+    # list, through the one shape the gate did not classify. It is worse than
+    # the unreadable case, because a file at a register's path survives a mode
+    # sweep and reads as "never set up".
+    #
+    # THIS ARM COMES FIRST, AND THAT ORDER IS THE MESSAGE. Below the `-L` arm,
+    # every non-directory SYMLINK - a link to a regular file, a link loop -
+    # answered "points at nothing" and sent the operator to repair a link that
+    # `ls -lL` resolves perfectly. A dangling link is not `-e`, so it still
+    # falls through to the arm that names it correctly.
+    if [ -e "$reg_dir" ] && [ ! -d "$reg_dir" ]; then
+      _reg_fail "$want_json" "steward offboard: $reg_dir is not a directory, so whether anything there still names '$principal' is unknown - a register that is something else is not a register with nothing in it. Restore the register directory and run offboard again."
+      return 78
+    fi
+    # AND A LINK THAT POINTS AT NOTHING IS NOT AN ABSENT REGISTER EITHER.
+    # `[ -d ]` is false for a dangling symlink, so without this it lands in the
+    # "absent is legitimate" arm below and the run finishes at rc 0 - but an
+    # estate that points a register somewhere has SAID something is there, and
+    # what it named is gone. That is "something is there that I cannot use", the
+    # same answer as a directory this run cannot list. A link to a readable
     # directory is a register like any other: `-d`, `-r` and `-x` all follow.
     if [ -L "$reg_dir" ] && [ ! -d "$reg_dir" ]; then
       _reg_fail "$want_json" "steward offboard: $reg_dir points at nothing, so whether anything there still names '$principal' is unknown - a register the estate points somewhere is not a register with nothing in it. Repair the link (or remove it, if that register really is gone) and run offboard again."
-      return 78
-    fi
-    # AND SOMETHING THAT IS THERE AND IS NOT A DIRECTORY IS NOT AN ABSENT
-    # REGISTER EITHER. A plain file at a register's path is neither -L nor -d,
-    # so it used to land in the "absent is legitimate" arm below: measured, a
-    # regular file at the host register offboarded the machine's own OWNER and
-    # OPERATOR at rc 0 with state "done" and warnings [] - the same harm as a
-    # register this run cannot list, through the one shape the gate did not
-    # classify. It is worse than the unreadable case, because a file at a
-    # register's path survives a mode sweep and reads as "never set up".
-    if [ -e "$reg_dir" ] && [ ! -d "$reg_dir" ]; then
-      _reg_fail "$want_json" "steward offboard: $reg_dir is not a directory, so whether anything there still names '$principal' is unknown - a register that is something else is not a register with nothing in it. Restore the register directory and run offboard again."
       return 78
     fi
     if [ ! -d "$reg_dir" ]; then
