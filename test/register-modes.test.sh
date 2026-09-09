@@ -51,19 +51,79 @@ build_estate() { # <dir>
 }
 
 # -- 1. THE SCAFFOLD PINS EVERY REGISTER'S MODE -----------------------------
-# The two registers whose loaders refuse a loose directory are 0700; the rest
-# are 0755. Both are ASSERTED under a umask that would otherwise produce
+# The two registers whose loaders refuse a loose directory are 0700; every
+# other register the scaffold makes must at least not be group- or
+# other-writable. Both are ASSERTED under a umask that would otherwise produce
 # something else, in both directions.
+#
+# THE SET IS THE SCAFFOLD'S OWN LIST, NOT A COPY OF IT. This used to be a
+# hand-written line naming ten directories, and it was blind in the direction a
+# hand list is always blind: a register ADDED to the scaffold that no loader
+# reads was checked by nothing at all. Measured - `widgets.d` added to the
+# scaffold's loop at mode 0777, no resolver anywhere, and this suite stayed
+# green under both umasks. A world-writable register, silent. So the wanted set
+# is now read off the loop that creates it, which is the only place a register
+# can be added.
+#
+# Section 5 derives the OTHER direction - the registers the loaders READ - from
+# lib/registry.sh. Two derivations facing opposite ways, and no list.
+_scaffold_registers() { # <path to lib/scaffold.sh>
+  awk '
+    !/^[[:space:]]*#/ && /for _sc_reg in/ { f=1; sub(/^.*for _sc_reg in/, "") }
+    f {
+      cont = ($0 ~ /\\[[:space:]]*$/)     # the list is written over three lines
+      sub(/\\[[:space:]]*$/, "")
+      sub(/;[[:space:]]*do.*$/, "")
+      print
+      if (!cont) exit
+    }
+  ' "$1" | tr ' \t' '\n\n' | grep '\.d$' | sort -u
+}
+
+# scaffold_loose <estate> - one line per register the scaffold's list names
+# that the estate gets wrong. SILENCE IS THE PASS, and the lines are the
+# failure message, so a broken estate names the register rather than a count.
+scaffold_loose() {
+  local est="$1" r m
+  for r in $scaffolded; do
+    if [ ! -d "$est/$r" ]; then printf '%s missing\n' "$r"; continue; fi
+    m="$(mode_of "$est/$r")"
+    # THREE OCTAL DIGITS OR THE MEASUREMENT IS NOT ONE - the rule section 5
+    # states, for the same reason: stat answers "2755" for a setgid directory
+    # and nothing at all when it cannot look, and both would slip past the
+    # digit test below as "not group-writable".
+    case "$m" in
+      [0-7][0-7][0-7]) ;;
+      *) printf '%s mode "%s" is not three octal digits\n' "$r" "$m"; continue ;;
+    esac
+    case "$m" in ?[2367]?|??[2367]) printf '%s mode %s is group- or other-writable\n' "$r" "$m" ;; esac
+  done
+}
+
 echo "== the scaffold pins every register's mode =="
+scaffolded="$(_scaffold_registers "$here/lib/scaffold.sh" | tr '\n' ' ')"
+sn=0; for r in $scaffolded; do sn=$((sn+1)); done
+# A DERIVATION THAT FINDS NOTHING PASSES EVERY ASSERTION BUILT ON IT. That is
+# the one way this class of guard dies without a sound, so it is measured.
+if [ "$sn" -ge 1 ]; then ok "the scaffold's own list names $sn registers"
+else bad "the scaffold's own list names at least one register" \
+         "it named none, so every assertion built on it is vacuous"; fi
 for u in 002 077; do
   ( umask "$u"; build_estate "$FX/e-$u" ) || bad "scaffold succeeds under umask $u" "rc $?"
   for d in logins.d invites.d; do
     is "umask $u: $d is 700" "$(mode_of "$FX/e-$u/$d")" "700"
   done
-  for d in sessions.d entities.d projects.d mcp.d jobs.d services.d browsers.d hosts.d accounts.d principals.d; do
-    is "umask $u: $d is 755" "$(mode_of "$FX/e-$u/$d")" "755"
-  done
+  is "umask $u: no register the scaffold makes is group- or other-writable" \
+     "$(scaffold_loose "$FX/e-$u")" ""
 done
+
+# AND THE CHECK HAS TEETH, proved rather than assumed: one register of the
+# scaffold's own list is widened by hand and the check must name THAT register,
+# with its mode, and no other.
+( umask 022; build_estate "$FX/widened" ) || bad "estate built for the widening" "rc $?"
+chmod 0777 "$FX/widened/projects.d"
+is "a register somebody widens is named, and only it" \
+   "$(scaffold_loose "$FX/widened")" "projects.d mode 777 is group- or other-writable"
 
 # -- 2. ONBOARDING'S FIRST STEP WORKS UNDER 002 --------------------------------
 # The whole bug in one case: issue an invitation on an estate built under the
@@ -180,6 +240,19 @@ EOF
 dn=0; for r in $derived; do dn=$((dn+1)); done
 if [ "$dn" -ge 1 ]; then ok "the derivation found $dn registers"
 else bad "the derivation found at least one register" "it found none, so every assertion below is vacuous"; fi
+
+# THE TWO DERIVATIONS ARE CHECKED AGAINST EACH OTHER, at the SOURCE rather than
+# through a built estate. Every register a loader reads must appear in the
+# scaffold's own list; a register that does not is one the product reads and
+# never creates. The estate check below would also catch it, but only after a
+# scaffold ran - here the two lists are compared as the code writes them, so a
+# break in either awk shows up as a named register rather than as a shrunken
+# set nobody counted.
+unscaffolded=""
+for r in $derived; do
+  case " $scaffolded " in *" $r "*) ;; *) unscaffolded="$unscaffolded $r" ;; esac
+done
+is "every register the loaders read is named by the scaffold's own list" "$unscaffolded" ""
 
 # WHICH REGISTERS ARE THE TIGHT ONES IS DERIVED TOO. A loader that refuses a
 # group- or other-writable register says so in a sentence naming that register:
