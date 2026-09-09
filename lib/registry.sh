@@ -260,13 +260,22 @@ registry_schema_check() {
   # KEY="" cleared inside a function that sources the estate - so a key added
   # with its own reader is measured here whether or not anyone remembers this
   # line.
+  #
+  # AND A KEY WHOSE READER IS NOT IN THIS FILE STILL BELONGS HERE.
+  # DESK_SESSION_KEY_FILE is read by desk/bin/desk-paths, which parses the
+  # estate itself rather than editing the library's fixed key list; the
+  # derivation above cannot see that reader, so the key would leak through
+  # this source with nothing to notice. Naming it here is what puts it inside
+  # the derived set. DESK_ORIGIN has a reader in this file and was still
+  # missing from this line, which is the third time the list has been short.
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
         RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
         BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" \
         PAUSED_DIR_NAME="" LEGACY_LOGIN="" LOGIN_REQUIRED_FOR="" \
         LIVENESS_CMD="" USAGE_CMD="" ESTATE_CHECKOUT="" MAIL_ACCOUNT_FILE="" \
-        ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE=""
+        ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE="" \
+        DESK_ORIGIN="" DESK_SESSION_KEY_FILE=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0
