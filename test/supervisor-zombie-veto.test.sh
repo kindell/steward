@@ -68,6 +68,12 @@
 #      line, which is exactly what the two-hour incident lacked.
 #  16. On a host with no `systemd --user` ancestry is not measured at all, and
 #      the journal must say that rather than assert the negative "no orphan".
+#  17. EVERY DEFERRAL SAYS THE CLIENT IS ATTACHED, IN THAT WORD. The concrete
+#      naming this round added is an addition to the old message, not a
+#      replacement for it: "attached" is what an operator greps the journal for
+#      when a session will not repair itself, and an estate's own supervision
+#      suite asserts it on the deferral. The word is pinned HERE so the next
+#      rewording goes red in this repository instead of in one two hops away.
 #
 # NOTHING HERE TOUCHES THE MACHINE: tmux, pgrep and ps are shims over a fixture
 # process table, and no tmux, ssh or sudo binary is ever reached.
@@ -540,6 +546,60 @@ if repaired; then ok "16a the repair still proceeds on activity alone"; else bad
 has   "16b the line says ancestry was not measured" "$out16" "ancestry was not measured"
 hasnt "16c and claims no negative it never measured" "$out16" "no orphan"
 hasnt "16d nor that the system called it a left-over" "$out16" "left-over process"
+
+echo "== 17. every deferral says the client is ATTACHED, in that word =="
+# THE WORD IS PART OF THE INTERFACE. Naming the client concretely - tty, pid,
+# how long it has been silent - is what the two-hour incident lacked, and this
+# round added it. What it must not do is spend the word to buy the detail: an
+# operator looking at a session that will not repair itself greps the journal
+# for "attached", and an estate's supervision suite asserts exactly that on the
+# deferral's stderr. Losing it cost one red suite in the estate on 2026-09-09,
+# two repositories from where the wording changed. So both properties are
+# pinned together below: the word AND the concrete naming, on every one of the
+# three paths that can defer.
+#
+# WHY THE HEADLINE AND NOT THE WHOLE STDERR: the debris line ("attached tmux
+# client X is not a working human") carries the word too, so a whole-output
+# match would stay green for a deferral that never says it. The headline is the
+# line that announces the deferral - "ZOMBIE-shaped, ..." with the comma. The
+# repair path's "ZOMBIE PANE" verdict and the deferral's own age line ("it has
+# been ZOMBIE-shaped for Ns") are not headlines and are not matched.
+defer_headlines() { printf '%s\n' "$1" | grep -- 'ZOMBIE-shaped,'; }
+# Either case satisfies a reader and satisfies the estate; the case is not the
+# property, the word is.
+says_attached() {
+  if [ -z "$2" ]; then bad "$1" "no deferral headline at all"; return; fi
+  case "$(printf '%s' "$2" | tr 'A-Z' 'a-z')" in
+    *attached*) ok "$1" ;;
+    *) bad "$1" "the deferral never says the client is attached: $2" ;;
+  esac
+}
+
+# (a) THE ORDINARY DEFERRAL: a live human inside the grace.
+arm
+client "$HUMAN_TTY" "$(( NOW - 60 ))" "$HUMAN_PID"
+run
+out17="$(cat "$T/out")"
+if untouched; then ok "17a a live human still defers"; else bad "17a a live human still defers" "tmux log: $(cat "$TMUX_LOG")"; fi
+says_attached "17b and the deferral says the client is attached" "$(defer_headlines "$out17")"
+has "17c and the concrete naming survives beside the word" "$(defer_headlines "$out17")" "$HUMAN_TTY"
+has "17d including the pid"                                "$(defer_headlines "$out17")" "$HUMAN_PID"
+
+# (b) THE SERVER THAT WILL NOT DESCRIBE ITS CLIENTS (claim 9's path).
+arm
+client "$HUMAN_TTY" "$(( NOW - 3600 ))" "$HUMAN_PID"
+T_NO_FORMAT=1 run
+out17b="$(cat "$T/out")"
+if untouched; then ok "17e an undescribable client still defers"; else bad "17e an undescribable client still defers" "tmux log: $(cat "$TMUX_LOG")"; fi
+says_attached "17f and that deferral says it too" "$(defer_headlines "$out17b")"
+
+# (c) THE SERVER THAT ANSWERS ROWS DESCRIBING NOBODY (claim 11's path).
+arm
+client "$HUMAN_TTY" "$(( NOW - 30 ))" "$HUMAN_PID"
+T_EMPTY_FORMAT=1 run
+out17c="$(cat "$T/out")"
+if untouched; then ok "17g unreadable rows still defer"; else bad "17g unreadable rows still defer" "tmux log: $(cat "$TMUX_LOG")"; fi
+says_attached "17h and that deferral says it as well" "$(defer_headlines "$out17c")"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

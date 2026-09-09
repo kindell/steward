@@ -1877,7 +1877,7 @@ HUMAN_GRACE_SEC=900
 CLIENT_FMT='#{client_tty}|#{client_activity}|#{client_pid}'
 _clients="$(tmuxc list-clients -t "=$NAME" -F "$CLIENT_FMT" 2>/dev/null)"
 if [ -z "$_clients" ] && [ -n "$(tmuxc list-clients -t "=$NAME" 2>/dev/null)" ]; then
-  echo "session-supervisor: $NAME - ZOMBIE-shaped, and a tmux client is attached that this server will not describe" >&2
+  echo "session-supervisor: $NAME - ZOMBIE-shaped, but a tmux client is ATTACHED that this server will not describe" >&2
   echo "session-supervisor: $NAME - (list-clients -F '$CLIENT_FMT' answered nothing while a plain listing did) - deferring the kill." >&2
   echo "session-supervisor: $NAME - a human may be working in that window; an unreadable client is treated as one." >&2
   exit 0
@@ -1958,7 +1958,14 @@ $_clients
 EOF
   [ -n "$_debris" ] && printf '%s\n' "$_debris" >&2
   if [ -n "$_keep" ]; then
-    echo "session-supervisor: $NAME - ZOMBIE-shaped, but tmux client $_keep $_keep_why - deferring the kill." >&2
+    # THE WORD "ATTACHED" IS LOAD-BEARING, NOT DECORATION. Every deferral line
+    # this veto prints says a client is ATTACHED, in that word, because that is
+    # what an operator greps the journal for when a session will not repair
+    # itself - and an estate's own supervision suite asserts it on this line.
+    # The concrete naming below (tty, pid, why) is what the 2026-09-09 incident
+    # lacked; the word is what it had. Keep both. test/supervisor-zombie-veto
+    # claim 17 pins it on all three deferral paths.
+    echo "session-supervisor: $NAME - ZOMBIE-shaped, but an ATTACHED tmux client $_keep $_keep_why - deferring the kill." >&2
     # HOW LONG THIS HAS BEEN GOING ON, ON ONE LINE. The residual this veto
     # cannot close is a wrapper that re-attaches every round: each attach is a
     # genuinely new client with created == activity == now, which is exactly a
@@ -1976,7 +1983,7 @@ EOF
     exit 0
   fi
   if [ -z "$_debris" ]; then
-    echo "session-supervisor: $NAME - ZOMBIE-shaped, and this server answered rows that could not be read as clients" >&2
+    echo "session-supervisor: $NAME - ZOMBIE-shaped, with tmux clients ATTACHED whose rows could not be read as clients" >&2
     echo "session-supervisor: $NAME - (list-clients -F '$CLIENT_FMT' expanded every field to nothing) - deferring the kill." >&2
     echo "session-supervisor: $NAME - measuring nobody while rows came back is not a measurement of nobody; a human may be working in that window." >&2
     exit 0
