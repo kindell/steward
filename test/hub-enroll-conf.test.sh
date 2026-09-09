@@ -956,6 +956,53 @@ printf 'HOST="farhost"\nOWNER="ann"\nDOMAIN="acme"\nRC_LABEL="NoAcct"\nREPO_PATH
 ureq w7 ann GGGGGGGGGGGGGGGGGGGGGGGGGG
 urun noacct "$UREQ"
 is "U7: an account-less legacy row still enrols on its raw OWNER" "$URC" "0"
+
+# U8-U9. THE ACCOUNT LINK IS (USERNAME, HOST), NOT USERNAME ALONE. An
+# accounts.d row is a (principal, host) pair - that is what the resolution loop
+# further down matches on - so linking a session row to one on USERNAME alone
+# asks half the question. A unix login is unique within a machine and nothing
+# more: two hosts may both have an 'ann', and they need not be the same person.
+#
+# Both accounts below name principal 'carl' with USERNAME 'ann'; one lives on
+# the host the requesting row runs on and one does not. The row names the one
+# that does not.
+cat > "$UFX/accounts.d/carl-farhost.conf" <<'CONF'
+PRINCIPAL="carl"
+USERNAME="svc-carl"
+HOST="farhost"
+CONF
+cat > "$UFX/accounts.d/carl-otherhost.conf" <<'CONF'
+PRINCIPAL="carl"
+USERNAME="ann"
+HOST="otherhost"
+CONF
+cat > "$UFX/sessions.d/crosshost.conf" <<'CONF'
+HOST="farhost"
+OWNER="ann"
+ACCOUNT="carl-otherhost"
+DOMAIN="acme"
+RC_LABEL="Cross"
+REPO_PATH="/tmp/x"
+ID="crosshost"
+CONF
+ureq w8 carl HHHHHHHHHHHHHHHHHHHHHHHHHH
+urun crosshost "$UREQ"
+is  "U8: an account on another host no longer admits a row on this one" "$URC" "65"
+has "U8: and the refusal names the host the row runs on"  "$UOUT" "runs on host 'farhost'"
+has "U8: and the host the account lives on"               "$UOUT" "lives on 'otherhost'"
+
+# U9. THE SAME ACCOUNT ON THE RIGHT HOST STILL ENROLS. Without this the gate
+# above is indistinguishable from one that refuses every row carrying an
+# ACCOUNT, and a refusal that never lets anything through is not a gate.
+cat > "$UFX/accounts.d/carl-otherhost.conf" <<'CONF'
+PRINCIPAL="carl"
+USERNAME="ann"
+HOST="farhost"
+CONF
+rm -f "$UFX/accounts.d/carl-farhost.conf"
+ureq w9 carl IIIIIIIIIIIIIIIIIIIIIIIIII
+urun crosshost "$UREQ"
+is "U9: the same account on the row's own host enrols" "$URC" "0"
 rm -rf "$UFX"
 
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────

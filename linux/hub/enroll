@@ -388,9 +388,24 @@ F_ACCOUNT="${_frest%%$'\n'*}"
 # an ACCOUNT:
 #
 #   * A ROW WITH ACCOUNT is an identity claim, and it is measured through the
-#     account: the account must read, it must name the row by its USERNAME, and
-#     its PRINCIPAL must be the person the request names. The raw OWNER string
-#     settles nothing here.
+#     account: the account must read, it must name the row by its USERNAME AND
+#     live on the host the row runs on, and its PRINCIPAL must be the person
+#     the request names. The raw OWNER string settles nothing here.
+#
+# THE HOST IS HALF THE ACCOUNT. An accounts.d row is a (principal, host) pair -
+# that is what the resolution loop further down matches on, and what
+# registry_account_load refuses a row without. Linking a session row to it on
+# USERNAME alone therefore asks half the question: measured on a fixture, an
+# account on ANOTHER host whose USERNAME happened to equal the row's OWNER
+# resolved that row to its own principal, and a request naming that principal
+# enrolled a session on a host the account does not live on. A login name is
+# only unique within a machine; treating it as a fleet-wide key is the same
+# namespace mistake the paragraphs above are about, one axis over.
+#
+# COST IF THIS IS WRONG, STATED: a row whose host has no matching account row
+# stops enrolling until one exists. That is the intent - the account register
+# is where a session on a host is declared to belong to somebody - and it is
+# visible and reversible, unlike a row stamped under the wrong machine.
 #   * A ROW WITHOUT ACCOUNT is a legacy row that predates the model. There is
 #     nothing to resolve through, OWNER is the only human it can name, and the
 #     raw comparison is the whole gate - unchanged, so those rows keep enrolling.
@@ -402,28 +417,34 @@ F_ACCOUNT="${_frest%%$'\n'*}"
 # until somebody realigns them - which is the direction a stamping verb should
 # fail in.
 F_PRINCIPAL=""
-_fa_p=""; _fa_u=""
+_fa_p=""; _fa_u=""; _fa_h=""
+# A conf without HOST lives on the hub - the same default registry_load applies,
+# and the host check below reads it the same way.
+F_ROWHOST="${F_HOST:-$NAV_VARD}"
 if [ -n "$F_ACCOUNT" ]; then
   _fa_p="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )" || _fa_p=""
   _fa_u="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )" || _fa_u=""
-  if [ -n "$_fa_p" ] && [ "$_fa_u" = "$F_OWNER" ]; then
+  _fa_h="$( registry_account_load "$F_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_HOST" )" || _fa_h=""
+  if [ -n "$_fa_p" ] && [ "$_fa_u" = "$F_OWNER" ] && [ "$_fa_h" = "$F_ROWHOST" ]; then
     F_PRINCIPAL="$_fa_p"
   fi
 fi
 if [ -n "$F_ACCOUNT" ]; then
   [ -n "$_fa_p" ] || \
     fel "owner check: '$FROM' names account '$F_ACCOUNT', and this hub cannot read it - a row that claims an account is measured through it, and an unreadable account measures nothing"
-  [ -n "$F_PRINCIPAL" ] || \
+  [ "$_fa_u" = "$F_OWNER" ] || \
     fel "owner check: '$FROM' has OWNER='${F_OWNER:-<empty>}', which account '$F_ACCOUNT' names as its PRINCIPAL and not as its USERNAME='${_fa_u:-<empty>}' - enrolment stamps a row under the account it resolves, and a principal id is not a login. Run 'steward registry session realign $FROMKEY' to end the ambiguity, then request again"
+  [ "$_fa_h" = "$F_ROWHOST" ] || \
+    fel "owner check: '$FROM' runs on host '$F_ROWHOST', and account '$F_ACCOUNT' lives on '${_fa_h:-<empty>}' - an account is a (principal, host) pair, so an account on another host settles nothing about a row on this one. Register the account for '$F_ROWHOST', or point the row at the account that already exists there, then request again"
   [ "$F_PRINCIPAL" = "$PERSON" ] || \
     fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}' (principal '$F_PRINCIPAL'), the request names '$PERSON'"
 else
   [ "$F_OWNER" = "$PERSON" ] || \
     fel "owner check: '$FROM' is owned by '${F_OWNER:-<empty>}', the request names '$PERSON'"
 fi
-# A conf without HOST lives on the hub — the same default registry_load applies.
-[ "${F_HOST:-$NAV_VARD}" = "$VARD" ] || \
-  fel "host check: '$FROM' lives on '${F_HOST:-$NAV_VARD}', the request names '$VARD'"
+# THE ROW'S HOST WAS RESOLVED ABOVE, once, and both gates read the same value.
+[ "$F_ROWHOST" = "$VARD" ] || \
+  fel "host check: '$FROM' lives on '$F_ROWHOST', the request names '$VARD'"
 
 [ ! -f "$rdir/$NAMN.conf" ] || fel "name collision: '$NAMN' already exists in the registry"
 # A KNOWN KEY USUALLY MEANS A LOST CONFIRM, NOT AN IMPOSTOR — and the refusal
