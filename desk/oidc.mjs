@@ -16,7 +16,6 @@ import { join, basename } from 'node:path';
 import { randomBytes, createHash, createPublicKey, createVerify } from 'node:crypto';
 
 const SLUG_RE = /^[a-z0-9-]+$/;
-const REQUIRED = ['DISCOVERY', 'CLIENT_ID', 'CLIENT_SECRET_FILE'];
 
 // A PROVIDER IS REACHED OVER TLS OR NOT AT ALL. Loopback is the exception,
 // and only as a literal: a name that resolves to loopback today resolves
@@ -28,11 +27,33 @@ function isSecureUrl(u) {
   return u.protocol === 'https:' || LOOPBACK_HOSTS.has(u.hostname);
 }
 
-function parseRow(text) {
+// THE KEYS THIS FILE READS, AND WHY THE LIST EXISTS. A line that assigns one
+// of these but is not in the one form the parser reads - unquoted, single
+// quoted, export-prefixed, indented, or with anything after the closing quote
+// - used to be dropped without a word. For a required key that surfaces as
+// "is missing"; for an optional one it surfaces as nothing at all, the desk
+// starts, and the operator is left with a login failure that names something
+// else entirely. So a mis-spelled line for a key this file knows is refused,
+// by name, with the form it should have had.
+//
+// A key this file does NOT know is still ignored. An estate conf may carry
+// rows meant for something else, and a front that exits 78 on the next
+// restart because of one of those is a worse outage than the silent drop this
+// refusal closes.
+const REQUIRED = ['DISCOVERY', 'CLIENT_ID', 'CLIENT_SECRET_FILE'];
+const KNOWN_KEYS = new Set([...REQUIRED, 'ISSUER', 'ISSUER_TEMPLATE', 'ENDPOINT_ORIGINS']);
+const ASSIGNMENT_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+
+function parseRow(text, file) {
   const out = {};
   for (const line of text.split('\n')) {
     const m = line.match(/^([A-Z_]+)="(.*)"\s*$/);
-    if (m) out[m[1]] = m[2];
+    if (m) { out[m[1]] = m[2]; continue; }
+    const a = line.match(ASSIGNMENT_RE);
+    if (a && KNOWN_KEYS.has(a[1])) {
+      throw new Error('provider ' + file + ': ' + a[1] + ' must be written as ' + a[1] +
+        '="<value>" - one line, double quotes, and nothing but spacing after the closing quote');
+    }
   }
   return out;
 }
@@ -44,7 +65,7 @@ export function loadProviders(dir) {
     const slug = basename(name, '.conf');
     const file = join(dir, name);
     if (!SLUG_RE.test(slug)) throw new Error('provider ' + file + ': the file name must be a slug');
-    const row = parseRow(readFileSync(file, 'utf8'));
+    const row = parseRow(readFileSync(file, 'utf8'), file);
     for (const k of REQUIRED) if (!row[k]) throw new Error('provider ' + file + ': ' + k + ' is missing');
     const hasIss = Boolean(row.ISSUER); const hasTpl = Boolean(row.ISSUER_TEMPLATE);
     if (hasIss === hasTpl) throw new Error('provider ' + file + ': exactly one of ISSUER and ISSUER_TEMPLATE');

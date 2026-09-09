@@ -37,6 +37,38 @@ test('loadProviders refuses a row missing a key, both issuer forms, a template w
   bad('Bad Name.conf', 'ISSUER="https://a"\nDISCOVERY="https://a/d"\nCLIENT_ID="c"\nCLIENT_SECRET_FILE="/f"\n', /slug/);
 });
 
+// A KEY THIS FILE KNOWS, SPELLED IN A FORM THE PARSER CANNOT READ, IS A
+// REFUSAL AND NOT A SILENT DROP. Every required key is caught by the "is
+// missing" loop, so for those a dropped line is at least reported by another
+// name; for an optional key - ENDPOINT_ORIGINS is the first - the line simply
+// vanishes, the desk starts, and the first real login fails with the very
+// "off its own origin" line that key exists to end. A key this file does NOT
+// know stays ignored, exactly as before: an estate conf may carry rows this
+// parser has no business policing, and taking the whole front down over one
+// of those would be a worse outage than the one this refusal closes.
+test('loadProviders refuses a key it knows written in a form it cannot read', () => {
+  const base = 'ISSUER="https://a.example.test"\nDISCOVERY="https://a.example.test/d"\nCLIENT_ID="c"\nCLIENT_SECRET_FILE="/f"\n';
+  const bad = (line, re) => assert.throws(() => loadProviders(providersDir({ 'x.conf': base + line + '\n' })), re);
+  const form = /x\.conf: ENDPOINT_ORIGINS must be written as ENDPOINT_ORIGINS="<value>"/;
+  bad('ENDPOINT_ORIGINS=https://t.example.test', form);          // unquoted
+  bad("ENDPOINT_ORIGINS='https://t.example.test'", form);        // single quotes
+  bad('ENDPOINT_ORIGINS="https://t.example.test" # note', form); // a comment after the closing quote
+  bad('export ENDPOINT_ORIGINS="https://t.example.test"', form); // export-prefixed
+  bad('  ENDPOINT_ORIGINS="https://t.example.test"', form);      // indented
+  // A required key spelled the same way is named the same way, rather than
+  // reported as missing when it is right there in the file.
+  assert.throws(() => loadProviders(providersDir({
+    'x.conf': 'ISSUER="https://a.example.test"\nDISCOVERY=https://a.example.test/d\nCLIENT_ID="c"\nCLIENT_SECRET_FILE="/f"\n'
+  })), /x\.conf: DISCOVERY must be written as DISCOVERY="<value>"/);
+  // A key this file does not know is not this file's business - including the
+  // near misses, which differ from a known key by a letter or by case.
+  const p = loadProviders(providersDir({
+    'x.conf': base + 'ENDPOINT_ORIGIN="https://t.example.test"\nendpoint_origins="https://t.example.test"\nSOMETHING_ELSE=whatever\n'
+  }));
+  assert.equal(p.size, 1);
+  assert.deepStrictEqual(p.get('x').endpointOrigins, []);
+});
+
 test('discover fetches the four endpoints once and caches them', async (t) => {
   const stub = await startStub();
   t.after(() => stub.close());
