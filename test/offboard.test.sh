@@ -603,6 +603,48 @@ has "and names that field" "$out" "HOST"
 is  "and still nothing was called" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
 rm -f "$ROOT/accounts.d/kev-host-a.conf" "$ROOT/principals.d/kev.conf"
 
+echo "== the reader and the writer share ONE grammar per field =="
+# THE REFUSAL ABOVE IS "a value this register's own writer would have refused",
+# and until now it said that from a COPY of the writer's regex. Change the
+# writer's grammar and the reader keeps refusing what the writer now accepts -
+# and the failure mode is a refusal to offboard a person whose row the product
+# itself wrote. Both sides now ask the same predicate; these cases feed one
+# accepted and one rejected value to each and assert the two agree.
+#
+# The reader probe always leaves a SECOND account row, on the other host, so the
+# accepted values stop at the cross-host gate: nothing is ever locked or moved
+# here, whichever way the grammar answers.
+newperson mox "Mox"
+writer_verdict() {   # <flag> <value> -> refused | accepted
+  local wo
+  case "$1" in
+    host)     wo="$(run registry account add mox-probe --principal mox --host "$2" --username mox 2>&1)" ;;
+    username) wo="$(run registry account add mox-probe --principal mox --host host-a --username "$2" 2>&1)" ;;
+  esac
+  rm -f "$ROOT/accounts.d/mox-probe.conf"
+  case "$wo" in *"invalid --$1"*) printf 'refused' ;; *) printf 'accepted' ;; esac
+}
+reader_verdict() {   # <HOST> <USERNAME> -> refused | accepted
+  local ro
+  printf 'PRINCIPAL="mox"\nHOST="%s"\nUSERNAME="%s"\n' "$1" "$2" > "$ROOT/accounts.d/mox-host-b.conf"
+  ro="$(run offboard mox 2>&1)"
+  rm -f "$ROOT/accounts.d/mox-host-b.conf"
+  case "$ro" in *"would have refused"*) printf 'refused' ;; *) printf 'accepted' ;; esac
+}
+w="$(writer_verdict host '-host-a')"
+is  "the writer refuses a HOST that starts with a hyphen" "$w" "refused"
+is  "and the reader gives the same answer" "$(reader_verdict '-host-a' mox)" "$w"
+w="$(writer_verdict host 'host-b')"
+is  "the writer accepts a well-formed HOST" "$w" "accepted"
+is  "and the reader gives the same answer" "$(reader_verdict 'host-b' mox)" "$w"
+w="$(writer_verdict username '1mox')"
+is  "the writer refuses a USERNAME that starts with a digit" "$w" "refused"
+is  "and the reader gives the same answer" "$(reader_verdict 'host-b' '1mox')" "$w"
+w="$(writer_verdict username 'mox')"
+is  "the writer accepts a well-formed USERNAME" "$w" "accepted"
+is  "and the reader gives the same answer" "$(reader_verdict 'host-b' 'mox')" "$w"
+rm -f "$ROOT/principals.d/mox.conf" "$ROOT/accounts.d/mox-host-a.conf"
+
 echo "== a register that cannot be READ is not a register with nothing in it =="
 # MEASURED, AND ALL OF IT SILENT: mode 000 on hosts.d walked straight past the
 # operator gate above and offboarded the machine's own operator at rc 0; mode
@@ -616,22 +658,31 @@ KIPR="$HUBHOME/.local/state/fixture-state/offboards/kip.receipt.json"
 if [ "$(id -u)" = "0" ]; then
   echo "  SKIP the unreadable-register cases - this run is root, where mode 000 is still readable"
 else
-  for reg in accounts.d principals.d sessions.d logins.d hosts.d entities.d invites.d; do
+  # MODE 000 REMOVES BOTH BITS AND THEREFORE PINS NEITHER. Both halves of the
+  # check are load-bearing and both fail OPEN on their own: at mode 444 the
+  # glob lists every name and `[ -e ]` then fails on all of them, at mode 111
+  # the glob itself returns nothing - measured, each one left the session row
+  # behind at rc 0. Two more turns of this loop, one per half.
+  for regmode in accounts.d:000 principals.d:000 sessions.d:000 logins.d:000 \
+                 hosts.d:000 entities.d:000 invites.d:000 \
+                 sessions.d:444 sessions.d:111; do
+    reg="${regmode%:*}"; regm="${regmode#*:}"
     GUARD_DIR="$ROOT/$reg"
-    chmod 000 "$ROOT/$reg"
+    chmod "$regm" "$ROOT/$reg"
     : > "$FX/calls"
     out="$(run offboard kip 2>&1)"; rc=$?
     chmod 755 "$ROOT/$reg"; GUARD_DIR=""
-    is  "an unreadable $reg refuses, rc 78" "$rc" "78"
-    has "and names the directory it could not read ($reg)" "$out" "$reg"
-    is  "and nothing was called at all ($reg)" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
-    have "the account row is untouched ($reg)" "$ROOT/accounts.d/kip-host-a.conf"
-    havenot "and no receipt was written ($reg)" "$KIPR"
+    is  "an unreadable $reg (mode $regm) refuses, rc 78" "$rc" "78"
+    has "and names the directory it could not read ($reg $regm)" "$out" "$reg"
+    is  "and nothing was called at all ($reg $regm)" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+    have "the account row is untouched ($reg $regm)" "$ROOT/accounts.d/kip-host-a.conf"
+    havenot "and no receipt was written ($reg $regm)" "$KIPR"
   done
   # AND ONE ROW INSIDE ONE OF THEM. The operator gate reads every host conf by
   # hand; a conf it cannot source reads as a row that names nobody, which is the
   # gate failing open on precisely the file that would have closed it.
   printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="kip"\n' > "$ROOT/hosts.d/host-g.conf"
+  printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="kip"\n' > "$ROOT/hosts.d/host-i.conf"
   chmod 000 "$ROOT/hosts.d/host-g.conf"
   : > "$FX/calls"
   out="$(run offboard kip 2>&1)"; rc=$?
@@ -640,9 +691,164 @@ else
   has "and names the file" "$out" "host-g.conf"
   is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
   havenot "and no receipt was written" "$KIPR"
-  rm -f "$ROOT/hosts.d/host-g.conf"
+  # ONE REFUSAL AT A TIME, IN THE ORDER THAT MAKES THE NEXT ONE TRUE. The
+  # unreadable file is answered first and alone, because it is the one that
+  # makes every other answer uncertain; once the mode is fixed the SAME run
+  # reports the rows that really do name the person, and both of them.
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  is  "and once the mode is fixed the row refusal is rc 65" "$rc" "65"
+  has "naming the row that was readable all along" "$out" "host-i.conf"
+  has "and the one whose mode was just fixed" "$out" "host-g.conf"
+  is  "and still nothing was called" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  rm -f "$ROOT/hosts.d/host-g.conf" "$ROOT/hosts.d/host-i.conf"
+
+  # A REGISTER THAT IS A LINK TO NOTHING IS NOT AN ABSENT REGISTER. `[ -d ]` is
+  # false for a dangling symlink, so it landed in the "absent is legitimate"
+  # arm and the run finished at rc 0 - but an estate that points a register
+  # somewhere has SAID something is there, and what it named is gone. That is
+  # the same answer as a directory this run cannot list, not the same answer as
+  # a directory nobody ever made.
+  mv "$ROOT/logins.d" "$ROOT/logins.d-real"
+  ln -s "$ROOT/no-such-register" "$ROOT/logins.d"
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rm -f "$ROOT/logins.d"
+  is  "a register that is a link to nothing refuses, rc 78" "$rc" "78"
+  has "and says what is wrong with it" "$out" "points at nothing"
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  have "the account row is untouched" "$ROOT/accounts.d/kip-host-a.conf"
+  havenot "and no receipt was written" "$KIPR"
+  # AND A LINK TO A READABLE DIRECTORY IS A REGISTER LIKE ANY OTHER: `-r` and
+  # `-x` follow symlinks, so the refusal above must turn on the target being
+  # gone and on nothing else.
+  ln -s "$ROOT/logins.d-real" "$ROOT/logins.d"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rm -f "$ROOT/logins.d"; mv "$ROOT/logins.d-real" "$ROOT/logins.d"
+  is  "a register that is a link to a readable directory is rc 0" "$rc" "0"
+  rm -f "$KIPR"
 fi
 rm -f "$ROOT/principals.d/kip.conf" "$ROOT/accounts.d/kip-host-a.conf"
+
+echo "== a ROW nobody can read is not a row that names nobody =="
+# THE DIRECTORY GATE ABOVE CLOSED THE REGISTER; THIS CLOSES THE ROW INSIDE IT.
+# Every scanner here reaches a row through a loader or a subshelled `source`,
+# and both fail QUIETLY on a file they cannot open - so a single mode-000 conf
+# is not skipped-and-said, it is never attributed to anybody at all. MEASURED
+# before this gate, every one of them rc 0 with state "done", kept [] and
+# warnings []: a mode-000 accounts.d row left a second unix account of the
+# person's unlocked and its home unarchived; a mode-000 sessions.d row left the
+# session row AND its bus relay row standing in the hub's authorized_keys; a
+# mode-000 entities.d row left the person a member of that entity. A row nobody
+# can read may be anybody's, so it is refused before the first side effect, and
+# named.
+LUXR="$HUBHOME/.local/state/fixture-state/offboards/lux.receipt.json"
+luxseed() {
+  newperson lux "Lux"
+  printf 'PRINCIPAL="lux"\nHOST="host-a"\nUSERNAME="luxtwo"\n' > "$ROOT/accounts.d/lux-host-a2.conf"
+  cat > "$ROOT/logins.d/lux-claude-max.conf" <<'LEOF'
+PRINCIPAL="lux"
+ACCOUNT="lux@example.test"
+PROVIDER="claude-max"
+CONFIG_DIR="~/.claude-logins/claude-max"
+LEGAL_OWNER="lux"
+LEOF
+  chmod 600 "$ROOT/logins.d/lux-claude-max.conf"
+  cat > "$ROOT/sessions.d/s-00000000000000lx.conf" <<LEOF
+ID="s-00000000000000lx"
+ACCOUNT="lux-host-a"
+SLUG="acme-lux"
+DOMAIN="acme"
+HOST="host-a"
+REPO_PATH="$FX/home/lux"
+OWNER="lux"
+PERMISSION_MODE="bypassPermissions"
+LEOF
+  printf 'NAME="Beta"\nMEMBERS="operator lux"\n' > "$ROOT/entities.d/beta.conf"
+  printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="operator"\n' > "$ROOT/hosts.d/host-h.conf"
+  LNOW="$(date -u +%s)"
+  cat > "$ROOT/invites.d/inv-0000000l.conf" <<LEOF
+NAME="Lux"
+PRINCIPAL="lux"
+ENTITY="acme"
+HOST="host-a"
+RUNTIME="claude-code"
+PROVIDER="claude-max"
+TOKEN_SHA256="$(printf 'y' | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -d' ' -f1)"
+ISSUED_BY="operator"
+ISSUED_AT="$LNOW"
+EXPIRES_AT="$((LNOW + 86400))"
+STATE="redeemed"
+REDEEMED_LOGIN="oidc:issuer-l:SUB-9"
+REDEEMED_AT="$LNOW"
+LEOF
+  chmod 600 "$ROOT/invites.d/inv-0000000l.conf"
+}
+luxclean() {
+  rm -f "$ROOT/accounts.d/lux-host-a.conf" "$ROOT/accounts.d/lux-host-a2.conf" \
+        "$ROOT/principals.d/lux.conf" "$ROOT/logins.d/lux-claude-max.conf" \
+        "$ROOT/sessions.d/s-00000000000000lx.conf" "$ROOT/entities.d/beta.conf" \
+        "$ROOT/hosts.d/host-h.conf" "$ROOT/invites.d/inv-0000000l.conf" "$LUXR"
+}
+if [ "$(id -u)" = "0" ]; then
+  echo "  SKIP the unreadable-row cases - this run is root, where mode 000 is still readable"
+else
+  for row in accounts.d/lux-host-a2.conf principals.d/lux.conf \
+             sessions.d/s-00000000000000lx.conf logins.d/lux-claude-max.conf \
+             hosts.d/host-h.conf entities.d/beta.conf invites.d/inv-0000000l.conf; do
+    luxclean; luxseed
+    chmod 000 "$ROOT/$row"
+    : > "$FX/calls"
+    out="$(run offboard lux 2>&1)"; rc=$?
+    chmod 644 "$ROOT/$row" 2>/dev/null
+    is  "an unreadable $row refuses, rc 78" "$rc" "78"
+    has "and names the row it could not read ($row)" "$out" "$row"
+    # WITHOUT THIS LINE the principals.d iteration passes by accident: the run
+    # that walks past it prints "principals.d/lux.conf removed", which carries
+    # the name too.
+    has "and says it could not READ it ($row)" "$out" "cannot be read"
+    is  "and nothing was called at all ($row)" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+    have "the good account row is untouched ($row)" "$ROOT/accounts.d/lux-host-a.conf"
+    have "the principal row is untouched ($row)" "$ROOT/principals.d/lux.conf"
+    havenot "and no receipt was written ($row)" "$LUXR"
+  done
+fi
+luxclean
+
+echo "== an ABSENT register is a different answer from an unreadable one =="
+# THE GATE'S CENTRAL CLAIM, ASSERTED RATHER THAN COMMENTED. Nothing that is not
+# there can name anybody, so six of the seven registers may be missing and the
+# cleanup still finishes and still writes a receipt that says so.
+NR="$HUBHOME/.local/state/fixture-state/offboards/nia.receipt.json"
+niaclean() { rm -f "$NR" "$ROOT/principals.d/nia.conf" "$ROOT/accounts.d/nia-host-a.conf"; }
+for reg in accounts.d principals.d sessions.d logins.d hosts.d invites.d; do
+  niaclean; newperson nia "Nia"
+  mv "$ROOT/$reg" "$ROOT/$reg-aside"
+  out="$(run offboard nia 2>&1)"; rc=$?
+  mv "$ROOT/$reg-aside" "$ROOT/$reg"
+  is  "an absent $reg is legitimate, rc 0" "$rc" "0"
+  is  "and the offboarding finished ($reg)" "$(jq -r '.state // ""' "$NR" 2>/dev/null)" "done"
+done
+niaclean
+# ENTITIES.D IS THE ONE EXCEPTION, and it is not a matter of taste:
+# registry_entity_list REFUSES a directory that is not there, and it does so
+# long after this gate - measured, it killed the run at rc 78 with a receipt in
+# state "failed" AFTER the unix account was locked and its account row removed,
+# and the second-run guard then answered rc 70 for that principal until
+# somebody finished the cleanup by hand. A register this verb cannot do without
+# is required AT THE GATE, where refusing still costs nothing.
+newperson nia "Nia"
+: > "$FX/calls"
+mv "$ROOT/entities.d" "$ROOT/entities.d-aside"
+out="$(run offboard nia 2>&1)"; rc=$?
+mv "$ROOT/entities.d-aside" "$ROOT/entities.d"
+is  "an absent entities.d refuses, rc 78" "$rc" "78"
+has "and names the register it cannot do without" "$out" "entities.d"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+have "the account row is untouched" "$ROOT/accounts.d/nia-host-a.conf"
+have "the principal row is untouched" "$ROOT/principals.d/nia.conf"
+havenot "and no receipt was written" "$NR"
+niaclean
 
 echo "== a run that stopped AFTER the rows is not a finished run =="
 # THE SECOND RUN USED TO READ THE RECEIPT'S EXISTENCE AND NOTHING ELSE. A

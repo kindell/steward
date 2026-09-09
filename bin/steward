@@ -1675,6 +1675,20 @@ cmd_registry_client_add() {
   return 0
 }
 
+# _registry_host_form <value> / _registry_username_form <value> - the account
+# register's OWN grammar for the two fields registry_account_load does not
+# check the form of, in one place per field.
+#
+# BOTH SIDES ASK THE SAME PREDICATE. The writer below is where these values
+# enter the register; `steward offboard` is where they are read back out, and
+# its refusal is literally "a value this register's own writer would have
+# refused". Said from a COPY of the regex, that sentence stops being true the
+# first time the writer's grammar moves - and the failure mode is a refusal to
+# offboard a person whose row the product itself wrote. Nothing else catches
+# that drift, so the grammar lives here and is called, never transcribed.
+_registry_host_form()     { [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; }
+_registry_username_form() { [[ "${1:-}" =~ ^[a-z][a-z0-9-]*$ ]]; }
+
 # cmd_registry_account_add <slug> --principal <p> --host <h> [--username <u>] [--json]
 #
 # Writes accounts.d/<slug>.conf through the same shared serializer and
@@ -1723,13 +1737,13 @@ cmd_registry_account_add() {
     return 64
   fi
   [ -n "$host" ] || { _reg_fail "$want_json" "steward registry account add: --host is required" 64; return 64; }
-  if ! [[ "$host" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  if ! _registry_host_form "$host"; then
     _reg_fail "$want_json" "steward registry account add: invalid --host '$host' (allowed: a-z0-9-, must start a-z0-9)" 64
     return 64
   fi
   if [ -z "$username" ]; then
     username="$principal"
-  elif ! [[ "$username" =~ ^[a-z][a-z0-9-]*$ ]]; then
+  elif ! _registry_username_form "$username"; then
     _reg_fail "$want_json" "steward registry account add: invalid --username '$username' (allowed: a-z, then a-z0-9-)" 64
     return 64
   fi
@@ -4342,7 +4356,6 @@ _offboard_logins() {
 
 # _offboard_host_rows <principal>
 #   row <host> <field>   - a host row naming the person in OWNER or OPERATOR
-#   unreadable <host> -   - a conf that is there and cannot be read
 #
 # A host row's OWNER and OPERATOR are the machine's own record of who answers
 # for it, and this verb removes the principal row those two fields name:
@@ -4353,10 +4366,11 @@ _offboard_logins() {
 #
 # Read by a subshelled source, not registry_host_load, for the reason
 # _registry_host_hub_value gives - a reader must not silently acquire an OWNER
-# from a file it only asked one key of. AND A CONF THAT CANNOT BE READ IS SAID,
-# never sourced-and-shrugged-at: `source` on a mode-000 file fails quietly and
-# leaves OWNER empty, so the one file that would have closed this gate is the
-# one that reads as a row naming nobody.
+# from a file it only asked one key of. A CONF THAT CANNOT BE READ NEVER
+# REACHES THIS SCAN: `source` on a mode-000 file fails quietly and leaves OWNER
+# empty, so the one file that would have closed this gate is the one that reads
+# as a row naming nobody - which is why _offboard_register_readable refuses
+# every unreadable row in every register before this function is ever called.
 _offboard_host_rows() {
   local want="$1" d f h owner operator
   d="$(registry_host_dir)"
@@ -4365,10 +4379,6 @@ _offboard_host_rows() {
     [ -e "$f" ] || continue
     h="$(basename "$f" .conf)"
     registry_valid_name "$h" || continue
-    if [ ! -r "$f" ]; then
-      printf 'unreadable %s -\n' "$h"
-      continue
-    fi
     owner="$(   OWNER="";    source "$f" 2>/dev/null; printf '%s' "$OWNER" )"
     operator="$( OPERATOR=""; source "$f" 2>/dev/null; printf '%s' "$OPERATOR" )"
     [ "$owner" = "$want" ] && printf 'row %s OWNER\n' "$h"
@@ -4389,30 +4399,85 @@ _offboard_host_rows() {
 # the session row and the bus relay row in the hub's authorized_keys standing
 # behind a receipt that said "done" with no warnings at all.
 #
-# AN ABSENT DIRECTORY IS A DIFFERENT ANSWER and stays legitimate: nothing that
-# is not there can name anybody. That is the distinction registry_entity_list
-# already draws in its own words - empty is a claim, unreadable supports none.
+# AN ABSENT DIRECTORY IS A DIFFERENT ANSWER and stays legitimate for six of the
+# seven: nothing that is not there can name anybody. That is the distinction
+# registry_entity_list already draws in its own words - empty is a claim,
+# unreadable supports none. The seventh is entities.d, and the third column of
+# the list below says so: that one register this verb cannot finish without.
+#
+# THE ROWS INSIDE EACH REGISTER ARE CHECKED HERE TOO, in the same loop and for
+# the same reason one level down - see the comment on the walk itself.
 _offboard_register_readable() {
-  local principal="$1" want_json="$2" reg_label reg_fn reg_dir
-  while read -r reg_label reg_fn; do
+  local principal="$1" want_json="$2" reg_label reg_fn reg_need reg_dir reg_f bad_row_list
+  while read -r reg_label reg_fn reg_need; do
     [ -n "$reg_label" ] || continue
-    reg_dir="$("$reg_fn" 2>/dev/null)" || reg_dir=""
-    if [ -z "$reg_dir" ]; then
-      _reg_fail "$want_json" "steward offboard: the $reg_label register could not be resolved, so whether anything there still names '$principal' is unknown"
+    reg_dir="$("$reg_fn" 2>/dev/null)"
+    # A LINK THAT POINTS AT NOTHING IS NOT AN ABSENT REGISTER. `[ -d ]` is
+    # false for a dangling symlink, so without this it lands in the "absent is
+    # legitimate" arm below and the run finishes at rc 0 - but an estate that
+    # points a register somewhere has SAID something is there, and what it
+    # named is gone. That is "something is there that I cannot use", the same
+    # answer as a directory this run cannot list. A link to a readable
+    # directory is a register like any other: `-d`, `-r` and `-x` all follow.
+    if [ -L "$reg_dir" ] && [ ! -d "$reg_dir" ]; then
+      _reg_fail "$want_json" "steward offboard: $reg_dir points at nothing, so whether anything there still names '$principal' is unknown - a register the estate points somewhere is not a register with nothing in it. Repair the link (or remove it, if that register really is gone) and run offboard again."
       return 78
     fi
-    [ -d "$reg_dir" ] || continue
-    [ -r "$reg_dir" ] && [ -x "$reg_dir" ] && continue
-    _reg_fail "$want_json" "steward offboard: $reg_dir cannot be listed, so whether anything there still names '$principal' is unknown - a register this run cannot read is not a register with nothing in it. Fix the mode or the owner of that directory and run offboard again."
-    return 78
+    if [ ! -d "$reg_dir" ]; then
+      # ABSENT, AND WHETHER THAT IS AN ANSWER OR A PROBLEM IS DATA, not a
+      # special case: the third column above. Six of these registers may be
+      # missing and the cleanup still finishes. The entity register may not -
+      # registry_entity_list refuses a directory that is not there, and the
+      # step that calls it runs AFTER the unix account is locked and its row
+      # removed, so an absent entities.d used to leave a half-offboarded person
+      # and a receipt in state "failed" behind a gate whose whole purpose is to
+      # refuse before the first side effect.
+      #
+      # A MISRESOLVED ESTATE ROOT IS NOT DIAGNOSED HERE. Every registry_*_dir
+      # is an unconditional printf and returns a non-empty path even when the
+      # root does not resolve, so there is no "could not be resolved" answer to
+      # give; a root that points nowhere is caught by registry_load's own
+      # `no such principal` refusal, rc 78, before anything happens.
+      [ "$reg_need" = "required" ] || continue
+      _reg_fail "$want_json" "steward offboard: the $reg_label register is not there ($reg_dir), and this verb cannot finish without it - the step that reads it runs after the unix account is locked and its row is removed, so carrying on would leave '$principal' half offboarded. Restore the register directory (an estate with no rows in it still has the directory) and run offboard again."
+      return 78
+    fi
+    if ! { [ -r "$reg_dir" ] && [ -x "$reg_dir" ]; }; then
+      _reg_fail "$want_json" "steward offboard: $reg_dir cannot be listed, so whether anything there still names '$principal' is unknown - a register this run cannot read is not a register with nothing in it. Fix the mode or the owner of that directory and run offboard again."
+      return 78
+    fi
+    # AND EVERY ROW INSIDE IT. A ROW NOBODY CAN READ MAY BE ANYBODY'S. Every
+    # scanner in this verb reaches a row through a loader or a subshelled
+    # `source`, and both fail QUIETLY on a file they cannot open - so a
+    # mode-000 conf is not skipped-and-said, it is never attributed to anybody
+    # at all. MEASURED 2026-09-09, all of it rc 0 with state "done" and empty
+    # kept[] and warnings[]: a mode-000 accounts.d row left a second unix
+    # account of the person's unlocked and its home unarchived; a mode-000
+    # sessions.d row left the session row AND its bus relay row standing in the
+    # hub's authorized_keys; a mode-000 entities.d row left the person a member
+    # of that entity.
+    #
+    # WALKED INLINE, NEVER THROUGH A HELPER THAT PRINTS PATHS: a file name may
+    # carry a newline, and a line-parsed helper would split it into two names
+    # that are each a lie.
+    bad_row_list=""
+    for reg_f in "$reg_dir"/*.conf; do
+      [ -e "$reg_f" ] || continue
+      [ -r "$reg_f" ] && continue
+      bad_row_list="${bad_row_list:+$bad_row_list, }$reg_f"
+    done
+    if [ -n "$bad_row_list" ]; then
+      _reg_fail "$want_json" "steward offboard: $bad_row_list cannot be read, so whether it names '$principal' is unknown - a row nobody can read is not a row that names nobody. Fix the mode or the owner of that file and run offboard again."
+      return 78
+    fi
   done <<'EOF'
-account registry_account_dir
-principal registry_principal_dir
-session registry_dir
-login registry_login_dir
-host registry_host_dir
-entity registry_entity_dir
-invitation registry_invite_dir
+account registry_account_dir optional
+principal registry_principal_dir optional
+session registry_dir optional
+login registry_login_dir optional
+host registry_host_dir optional
+entity registry_entity_dir required
+invitation registry_invite_dir optional
 EOF
   return 0
 }
@@ -4511,23 +4576,20 @@ EOF
   # EVERY MATCHING ROW IS NAMED, NOT THE FIRST. A refusal that named one row at
   # a time sent the operator to repair it, re-run, and be refused again by the
   # next - and the second refusal reads as a verb that changed its mind.
-  local host_rows hr_tag hr_host hr_field hr_list="" hr_unread=""
+  #
+  # A HOST CONF THIS RUN CANNOT OPEN IS NOT ANSWERED HERE ANY MORE. It used to
+  # be, one register at a time; the register gate above now refuses every
+  # unreadable row in all seven registers before this scan runs, so a second
+  # refusal here would only send the operator round the same loop twice.
+  local host_rows hr_tag hr_host hr_field hr_list=""
   host_rows="$(_offboard_host_rows "$principal")"
   while read -r hr_tag hr_host hr_field; do
     case "$hr_tag" in
-      row)        hr_list="${hr_list:+$hr_list, }hosts.d/$hr_host.conf as its $hr_field" ;;
-      unreadable) hr_unread="${hr_unread:+$hr_unread, }hosts.d/$hr_host.conf" ;;
+      row) hr_list="${hr_list:+$hr_list, }hosts.d/$hr_host.conf as its $hr_field" ;;
     esac
   done <<EOF
 $host_rows
 EOF
-  # THE ROW NOBODY COULD READ IS ANSWERED FIRST, because it is the one that
-  # makes the answer below uncertain: a conf this run could not open may be the
-  # very row that names the person.
-  if [ -n "$hr_unread" ]; then
-    _reg_fail "$want_json" "steward offboard: $hr_unread cannot be read, so whether the host register names '$principal' as an OWNER or an OPERATOR is unknown - and a host row nobody can read is not a host row that names nobody. Fix the mode or the owner of that file and run offboard again."
-    return 78
-  fi
   if [ -n "$hr_list" ]; then
     _reg_fail "$want_json" "steward offboard: the host register names '$principal' - $hr_list - and offboarding would leave those rows naming a principal that no longer exists. Name whoever takes each machine over in the host row first; this verb never edits hosts.d."
     return 65
@@ -4556,17 +4618,19 @@ EOF
     if registry_account_load "$acct" >/dev/null 2>&1; then
       # THE TWO FIELDS THE LOADER DOES NOT CHECK THE FORM OF, CHECKED HERE.
       # registry_account_load validates PRINCIPAL and asks only that HOST be
-      # non-empty; USERNAME it lets default. These are the very regexes the
-      # register's own writer puts them through on the way in
-      # (cmd_registry_account_add above: HOST ^[a-z0-9][a-z0-9-]*$, USERNAME
-      # ^[a-z][a-z0-9-]*$), and a value the writer would have refused is not a
-      # value a reader may act on. MEASURED: a hand-edited USERNAME carrying a
-      # newline and two tabs forged a second row inside this very list, and the
-      # run locked a unix account NO register row names and archived its home -
-      # rc 0, filed under this person's offboarding.
-      if ! [[ "$ACCOUNT_HOST" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      # non-empty; USERNAME it lets default. THE WRITER'S OWN PREDICATES, CALLED
+      # AND NOT TRANSCRIBED - _registry_host_form and _registry_username_form
+      # are defined beside cmd_registry_account_add, which is where these values
+      # enter the register - because a value the writer would have refused is
+      # not a value a reader may act on, and a copy of the regex would go on
+      # saying that after the writer's grammar had moved. MEASURED: a
+      # hand-edited USERNAME carrying a newline and two tabs forged a second row
+      # inside this very list, and the run locked a unix account NO register row
+      # names and archived its home - rc 0, filed under this person's
+      # offboarding.
+      if ! _registry_host_form "$ACCOUNT_HOST"; then
         acct_bad="${acct_bad:+$acct_bad }$acct:HOST"
-      elif ! [[ "$ACCOUNT_USERNAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
+      elif ! _registry_username_form "$ACCOUNT_USERNAME"; then
         acct_bad="${acct_bad:+$acct_bad }$acct:USERNAME"
       else
         rows="$rows$acct	$ACCOUNT_HOST	$ACCOUNT_USERNAME
