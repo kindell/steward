@@ -312,23 +312,27 @@ The estate provides, in this order:
    `ISSUER` (or `ISSUER_TEMPLATE` with a literal `<tid>` for a multi-tenant
    provider that discovers through a common endpoint), `DISCOVERY`,
    `CLIENT_ID`, `CLIENT_SECRET_FILE` (0600, the desk account's), and
-   optionally `ENDPOINT_ORIGINS`: a space-separated list of further origins
-   (scheme, host and port, nothing else) the provider's endpoints may live
-   on, needed by a provider that serves its token endpoint or its JWKS from a
-   host other than the issuer's. An entry follows the same rule `DISCOVERY`
-   does - https, or http on a loopback host - and is written double-quoted,
-   on one line, with nothing but spacing after the closing quote:
+   optionally `ENDPOINT_ORIGINS`. Every one of those keys is written
+   `KEY="<value>"`: one line, no leading whitespace, no `export` prefix, no
+   space around the `=`, double quotes, and nothing but spacing after the
+   closing quote. A line the desk cannot read that way is a line it would
+   otherwise drop in silence, so any other form makes it exit 78 at start
+   naming the file and the key. `ENDPOINT_ORIGINS` itself is a space-separated
+   list of further origins (scheme, host and port, nothing else) the
+   provider's endpoints may live on, needed by a provider that serves its
+   token endpoint or its JWKS from a host other than the issuer's. An entry
+   follows the same rule `DISCOVERY` does - https, or http on a loopback host:
 
        ENDPOINT_ORIGINS="https://<host> https://<other host>"
 
    Naming an origin here is this estate saying it trusts that host with the
    client secret and the signing keys, so name only the ones the provider's
    own document uses; without the key the endpoints must all sit on the
-   issuer's origin. A malformed entry, or the key written in any other form,
-   makes the desk exit 78 at start naming the file and the key - the same as
-   `DESK_ORIGIN` above, and for the same reason: the alternative is a front
-   that starts and then fails the first real login. The provider's redirect
-   URI is `<DESK_ORIGIN>/desk/auth/callback`.
+   issuer's origin. A malformed entry makes the desk exit 78 at start naming
+   the file and the key - the same as `DESK_ORIGIN` above, and for the same
+   reason: the alternative is a front that starts and then fails the first
+   real login. The provider's redirect URI is
+   `<DESK_ORIGIN>/desk/auth/callback`.
 3. A drop-in `~/.config/systemd/user/steward-desk.service.d/50-estate.conf`:
 
        [Service]
