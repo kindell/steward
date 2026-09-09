@@ -1,6 +1,6 @@
 # Usage - what a subscription window has left, who sees it, and what a turn does when it is empty
 
-**Status:** draft 2, 2026-09-08 (draft 1 + the second advisor review of 21:3xZ: sticky exhaustion, unknown never clears confirmed state, money stays in the estate). Written by the hub session of the first estate on
+**Status:** draft 3, 2026-09-09 (r2: a third word in `used_percent`, `not-applicable`, for rows that are not a quota). Draft 2, 2026-09-08 (draft 1 + the second advisor review of 21:3xZ: sticky exhaustion, unknown never clears confirmed state, money stays in the estate). Written by the hub session of the first estate on
 the operator's relayed decisions of 2026-09-08 (09:15Z, 11:2xZ) and the advisor
 review of 10:2xZ. Estate specs (desk, ping, ledger, api resources) stay in their
 estates and link here; this is the product's spec.
@@ -64,7 +64,7 @@ login<TAB>provider<TAB>window<TAB>used_percent<TAB>resets_at<TAB>measured_at<TAB
 | `login` | the `logins.d` slug the window belongs to. Rows for a login the registry does not know are dropped and counted, never shown. |
 | `provider` | the login register's closed vocabulary (`claude-max`, `claude-team`, `opencode-chatgpt`, `codex-openai`), plus `openai-api` for the pay-as-you-go source the api-resources work adds later. |
 | `window` | `5h`, `week`, `week-<model>`, `month`. Free-form after the known prefixes; the desk shows every window it gets. |
-| `used_percent` | integer 0-100, or `unknown`. **A parse failure is `unknown`, never 0 and never 100** - the Claude source is text parsing and the shim must verify its own parse separately. |
+| `used_percent` | integer 0-100, `unknown`, or `not-applicable`. **A parse failure is `unknown`, never 0 and never 100** - the Claude source is text parsing and the shim must verify its own parse separately. `not-applicable` is for a row whose window has no percentage by construction (see "Three words" below); any other spelling is a parse failure. |
 | `resets_at` | ISO 8601 UTC, or empty when unknown. |
 | `measured_at` | ISO 8601 UTC. The desk shows measurement AGE beside every number; a stale number is worse than none. |
 | `budget_id` | the VERIFIED budget identity: the account id from the Codex rate-limit answer, the organisation from Claude. Empty when the shim cannot verify one. Two logins with the same `budget_id` share one plan; identical numbers prove nothing and are never used to infer sharing. |
@@ -72,6 +72,50 @@ login<TAB>provider<TAB>window<TAB>used_percent<TAB>resets_at<TAB>measured_at<TAB
 
 `usage_for <login> <window>` answers from the rows loaded by the one call; a
 window not mentioned is `unknown`.
+
+### Three words in `used_percent`
+
+| word | meaning |
+|------|---------|
+| `0`-`100` | a measured share of this window. |
+| `unknown` | we asked and got no readable answer back. Absence is `unknown` too: a window the answer never mentioned told us nothing. |
+| `not-applicable` | this row's window **has no percentage, by construction**. It is not a failed measurement and must never be read as one. |
+
+The third word exists because an estate wants rows beside its quota rows that
+are not quotas - `tokens-written` (what a login has itself written, summed from
+transcripts) and `exhausted` (the last time a ceiling actually fell) - and
+wanted them grouped and sorted with the others. Before r2 those rows had no
+honest word: `unknown` would have claimed a quota measurement that was never
+attempted, and a note is for what did not *fit*, not for what had no *word*.
+
+**The spelling is the fleet's, not the product's.** `not-applicable` is the word
+the bo's fleet code already uses (kindell/butler `fleet/src/core.js`, per the
+mini hub's reading on 2026-09-09; the product cannot read that file from the
+first estate and cites it as his measurement). It is deliberately not `n/a`:
+two spellings of one idea are two vocabularies. The product's liveness seam is
+**not** the precedent - it has no such word - and this spec borrows no
+authority from it.
+
+**Rules a `not-applicable` row obeys everywhere:**
+
+- It passes the seam **whole**: the value is carried as itself, never rewritten
+  to `unknown`, never noted as a parse failure. The number grammar is not
+  widened for it - `_usage_percent_ok` still admits nothing but 0-100, and the
+  word is matched literally, exact case.
+- It is **first-class**: grouped and sorted with the other rows of its login.
+- It is **never rendered as a number** and never sorted between numbers. A
+  surface that colours or thresholds by `used_percent` treats it as text, and a
+  surface that shows only numbers leaves it out - it does not show it as 0.
+- It **does not participate** in part 3 (the alarm) or part 4 (the turn). Both
+  read quota windows; a row that is not a quota is not an input to either.
+- The **window key names the unit** for such a row - `tokens-written`, never
+  `usage` - so a reader grouping by window can see from the key alone that the
+  column is not a share of anything.
+
+Today the product has one surface that reads `used_percent`: the seam itself
+(`usage_rows` and `usage_for`). The desk does not consume usage rows yet (parts
+2-4 are unbuilt), so the rendering rules above bind the desk work when it comes
+rather than describe a surface that exists.
 
 ### The login on a session (owner field)
 

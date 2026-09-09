@@ -213,6 +213,59 @@ is "a note the shim wrote keeps its place, with the parse note appended" \
    "alpha${TAB}claude-max${TAB}w-note${TAB}unknown${TAB}${TAB}${TAB}${TAB}plan pro; parse:63%"
 is "a rewritten percent is not a dropped row" "$USAGE_DROPPED" "0"
 
+echo "== the third word: not-applicable passes WHOLE, and only as itself =="
+# usage-design r2. A row that is not a quota - `tokens-written`, `exhausted` -
+# has no percentage BY CONSTRUCTION, and until r2 the only word it could carry
+# was `unknown`, which claims a failed measurement that was never attempted.
+# The estate tool that needed this shipped first, and its own suite pins that
+# today's seam rewrites the word; this block is what makes that pin fail on
+# the day the two are deployed together, loudly and in the right place.
+N1="alpha${TAB}claude-max${TAB}tokens-written${TAB}not-applicable${TAB}${TAB}2026-09-09T16:00:00Z${TAB}bud-1${TAB}in:10,out:2"
+N2="alpha${TAB}claude-max${TAB}exhausted${TAB}not-applicable${TAB}${TAB}2026-09-09T16:00:00Z${TAB}bud-1${TAB}no exhaustion observed"
+# THE GRAMMAR IS NOT WIDENED: every other spelling of the idea is still a word
+# the contract does not know, and is rewritten with the evidence kept.
+N3="alpha${TAB}claude-max${TAB}w-slash${TAB}n/a${TAB}${TAB}${TAB}${TAB}"
+N4="alpha${TAB}claude-max${TAB}w-caps${TAB}NOT-APPLICABLE${TAB}${TAB}${TAB}${TAB}"
+N5="alpha${TAB}claude-max${TAB}w-spaced${TAB}not applicable${TAB}${TAB}${TAB}${TAB}"
+third="$(stub third "cat <<'ROWS'
+$N1
+$N2
+$N3
+$N4
+$N5
+ROWS")"
+run_rows "$third"
+is "a not-applicable tokens-written row survives the seam byte for byte" \
+   "$(usage_for alpha tokens-written "$ROWS")" "$N1"
+is "and so does an exhausted row" \
+   "$(usage_for alpha exhausted "$ROWS")" "$N2"
+is "it is not noted as a parse failure" \
+   "$(usage_for alpha tokens-written "$ROWS" | awk -F'\t' '{print $8}' | grep -c 'parse:')" "0"
+is "n/a is NOT the word - rewritten, with the raw text kept" \
+   "$(usage_for alpha w-slash "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}w-slash${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:n/a"
+is "the word is exact case - NOT-APPLICABLE is rewritten too" \
+   "$(usage_for alpha w-caps "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}w-caps${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:NOT-APPLICABLE"
+is "and a space is not a hyphen" \
+   "$(usage_for alpha w-spaced "$ROWS")" \
+   "alpha${TAB}claude-max${TAB}w-spaced${TAB}unknown${TAB}${TAB}${TAB}${TAB}parse:not applicable"
+is "none of the five was dropped" "$USAGE_DROPPED" "0"
+# ABSENCE IS STILL unknown. A window the answer never mentioned did not tell us
+# it has no percentage - it told us nothing - so it must never come back as
+# not-applicable, which would read as a fact about the row.
+is "a window nobody mentioned is unknown, never not-applicable" \
+   "$(usage_for alpha month "$ROWS")" \
+   "alpha${TAB}-${TAB}month${TAB}unknown${TAB}${TAB}${TAB}${TAB}not-in-answer"
+# THE NUMBER GRAMMAR IS UNCHANGED: the same boundary cases as before still fall
+# where they fell, so the third word did not loosen the first.
+is "100 is still the ceiling of the number grammar" \
+   "$(_usage_percent_ok 100 && echo yes || echo no)" "yes"
+is "101 is still outside it" \
+   "$(_usage_percent_ok 101 && echo yes || echo no)" "no"
+is "and the word itself is not a number to that grammar" \
+   "$(_usage_percent_ok not-applicable && echo yes || echo no)" "no"
+
 echo "== a padded percent is a number; a percent longer than a percent is not =="
 # A SHIM THAT ZERO-PADS IS NOT LYING ABOUT THE NUMBER, so `007` and `0100` are
 # accepted - and rewritten to `7` and `100`, because a view that compared `0100`

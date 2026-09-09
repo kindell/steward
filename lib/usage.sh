@@ -28,6 +28,21 @@
 # not parse is kept in the note, so the estate can fix its shim from the
 # evidence rather than from a guess.
 #
+# used_percent HAS THREE WORDS, AND THE TWO NON-NUMBERS MEAN DIFFERENT THINGS:
+#   0-100           a measured share of this window
+#   unknown         we asked and got no readable answer back
+#   not-applicable  this row's window HAS no percentage, by construction
+# The third arrived with usage-design r2 (2026-09-09) for rows that are not a
+# quota at all - `tokens-written`, `exhausted` - which an estate wants beside
+# the quota rows, grouped and sorted with them, and which used to have no honest
+# word: `unknown` there would have claimed a failed measurement that was never
+# attempted. The spelling is the fleet's (kindell/butler fleet/src/core.js, per
+# butler's reading of it), not a new coinage, so two spellings of one idea do
+# not become two vocabularies. ABSENCE IS STILL `unknown`: usage_for below says
+# `unknown` for a window nobody mentioned, never `not-applicable`, because a row
+# that is missing did not tell us its window has no percentage - it told us
+# nothing.
+#
 # rc IS ALWAYS 0. This layer REPORTS. What went wrong is a word in a row and a
 # sentence on stderr, never a return code a caller has to translate back into a
 # reason it can show.
@@ -54,8 +69,9 @@ _USAGE_EXTRA_PROVIDERS="openai-api"
 
 # usage_rows - one TSV row per window the command ANSWERED ABOUT, on stdout:
 #   login<TAB>provider<TAB>window<TAB>used_percent<TAB>resets_at<TAB>measured_at<TAB>budget_id<TAB>note
-# Windows the command did not mention are simply absent here; usage_for is what
-# turns that absence into `unknown`. rc 0 always.
+# used_percent is 0-100, `unknown` or `not-applicable` - see the three-word note
+# above. Windows the command did not mention are simply absent here; usage_for
+# is what turns that absence into `unknown`. rc 0 always.
 usage_rows() {
   USAGE_SEAM_REASON=""
   USAGE_DROPPED=0
@@ -246,7 +262,15 @@ usage_rows() {
     # but emitted verbatim it would be compared against 100 by every later
     # reader and miss an EXHAUSTED window, and written into a document as a
     # number it would be a document nothing can read back.
-    if _usage_percent_ok "$pct"; then
+    # THE THIRD WORD IS ACCEPTED LITERALLY, AND THE NUMBER GRAMMAR IS NOT
+    # WIDENED FOR IT. `not-applicable` passes only as itself - exact spelling,
+    # exact case - and _usage_percent_ok still admits nothing but 0-100. A
+    # shim that writes `n/a` or `N/A` is rewritten to `unknown` with the raw
+    # text in the note, exactly like any other word: the vocabulary is closed
+    # because a view colours by it.
+    if [ "$pct" = "not-applicable" ]; then
+      :
+    elif _usage_percent_ok "$pct"; then
       pct="$((10#$pct))"
     else
       note="$(_usage_note "$note" "$pct")"
