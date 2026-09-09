@@ -60,6 +60,10 @@ printf 'HOST="h1"\nOWNER="a"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nI
 # The login register itself: one resolvable row, "acme-team", owned by the
 # same fixture principal "a" that runs this suite.
 mkdir -p "$FX/logins.d"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
 printf 'PRINCIPAL="a"\nACCOUNT="acct-acme-team"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude-logins/acme"\nLEGAL_OWNER="alice"\n' \
   > "$FX/logins.d/acme-team.conf"
 chmod 600 "$FX/logins.d/acme-team.conf"

@@ -467,6 +467,10 @@ chmod +x "$T/rt-env"
 
 LG_EST="$T/lg-estate"
 mkdir -p "$LG_EST/logins.d" "$LG_EST/estate"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$LG_EST/logins.d"
 cat > "$LG_EST/logins.d/acme-team.conf" <<'EOF'
 PRINCIPAL="alice"
 ACCOUNT="acct-acme-team"

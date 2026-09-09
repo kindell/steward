@@ -12,6 +12,10 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 ROOT="$T/estate"; mkdir -p "$ROOT/invites.d" "$ROOT/estate"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$ROOT/invites.d"
 printf 'ESTATE_NAME="fixture"\n' > "$ROOT/estate/steward.conf"
 export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"
 . "$here/lib/registry.sh"

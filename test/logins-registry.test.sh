@@ -22,6 +22,13 @@ FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 # fixture in the sound directory would make "a clean register passes rc 0"
 # impossible to measure -- and that test is the only control group that gate has.
 mkdir -p "$FX/logins.d" "$FX/bad.d"
+# 0700, PINNED, AND NOT LEFT TO THE RUNNER'S umask. The login reader refuses a
+# group- or other-writable register, so under the Debian default of 002 a
+# fixture that lets `mkdir` pick the mode measures the HOST rather than the
+# product: every row below then fails the directory check before its own
+# content is ever read. Every fixture in this suite that creates a register
+# pins it, for the same reason. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d" "$FX/bad.d"
 export STEWARD_LOGINS_DIR="$FX/logins.d"
 
 row()    { cat > "$FX/logins.d/$1.conf"; chmod 600 "$FX/logins.d/$1.conf"; }

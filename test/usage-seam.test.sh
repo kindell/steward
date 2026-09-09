@@ -28,6 +28,10 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/home" "$FX/estate" "$FX/logins.d"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
 HOME="$FX/home"; export HOME
 STEWARD_ESTATE_ROOT="$FX"; export STEWARD_ESTATE_ROOT
 

@@ -39,6 +39,10 @@ absent(){ if [ ! -e "$2" ]; then ok "$1"; else bad "$1" "unexpectedly exists: $2
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/logins.d"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
 LOGINS="$FX/logins.d"
 
 # THE ESTATE FILE — the same required-key set the neighbouring registry-verb
@@ -258,6 +262,7 @@ echo "== 10. login ls: text and --json, an empty register, one row, two rows, an
 # account database.
 FX2="$(mktemp -d)"
 mkdir -p "$FX2/estate" "$FX2/logins.d" "$FX2/accounts.d"
+chmod 700 "$FX2/logins.d"
 cp "$FX/estate/steward.conf" "$FX2/estate/steward.conf"
 LOGINS2="$FX2/logins.d"
 # THE ACCOUNT ROW IS SPELLED OUT. MINOR-1's fix resolves the listing against
@@ -354,6 +359,7 @@ echo "-- 10e. MINOR-1: the resolved directory follows the ACCOUNT's username, no
 # the red this section is built to see.
 FX3="$(mktemp -d)"
 mkdir -p "$FX3/estate" "$FX3/logins.d" "$FX3/accounts.d"
+chmod 700 "$FX3/logins.d"
 cp "$FX/estate/steward.conf" "$FX3/estate/steward.conf"
 LOGINS3="$FX3/logins.d"
 cat > "$FX3/accounts.d/acct-acme-team.conf" <<'EOF'

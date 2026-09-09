@@ -356,6 +356,10 @@ echo "== 8. LOGIN: the Linux twin's exec-prefix splice, in the fixture that actu
 # fixture and tmux shim -- not a new file -- because this is the only product
 # suite that actually executes linux/session-supervisor-linux.sh end to end.
 mkdir -p "$ROOT/logins.d"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$ROOT/logins.d"
 printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-team"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude-logins/acme"\nLEGAL_OWNER="alice"\n' \
   > "$ROOT/logins.d/acme-team.conf"
 chmod 600 "$ROOT/logins.d/acme-team.conf"

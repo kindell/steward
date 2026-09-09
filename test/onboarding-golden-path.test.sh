@@ -57,7 +57,12 @@ check "all estate readers resolve" [ "$allok" -eq 1 ]
 # THE REGISTRY DIRECTORIES EXIST — a register that is missing refuses; one that
 # is empty is valid. The identity model needs entities.d and projects.d, which
 # today's install.sh does not create.
-for d in sessions.d entities.d projects.d jobs.d services.d browsers.d hosts.d; do
+# invites.d IS ON THIS LIST BECAUSE THIS IS THE ONBOARDING PATH. An invitation
+# is the only door into an estate, and the row writer refuses a register that
+# does not exist - so without it the very first step of onboarding answered
+# "the invite register is not readable", rc 78, on an estate the product had
+# just built itself.
+for d in sessions.d entities.d projects.d jobs.d services.d browsers.d hosts.d invites.d; do
   check "dir $d created" [ -d "$FX/e/$d" ]
 done
 

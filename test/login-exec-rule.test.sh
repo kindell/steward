@@ -19,6 +19,10 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/logins.d" "$FX/estate/estate" "$FX/home"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
 export STEWARD_LOGINS_DIR="$FX/logins.d"
 export STEWARD_ESTATE_ROOT="$FX/estate"
 printf 'LABEL_PREFIX="com.example.claude"\nLEGACY_LOGIN="acme-old"\n' \

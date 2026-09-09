@@ -14,6 +14,10 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 ROOT="$T/estate"
 mkdir -p "$ROOT/invites.d" "$ROOT/entities.d" "$ROOT/hosts.d" "$ROOT/principals.d" \
          "$ROOT/accounts.d" "$ROOT/estate"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$ROOT/invites.d"
 printf 'ESTATE_NAME="fixture"\nDESK_ORIGIN="https://desk.example.test"\n' > "$ROOT/estate/steward.conf"
 printf 'NAME="Acme"\nMEMBERS="operator"\n' > "$ROOT/entities.d/acme.conf"
 printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="operator"\n' > "$ROOT/hosts.d/host-a.conf"
@@ -96,6 +100,9 @@ mkroot() { # <dir> - a complete fixture estate, two hosts, one account
   local r="$1"
   mkdir -p "$r/invites.d" "$r/entities.d" "$r/hosts.d" "$r/principals.d" \
            "$r/accounts.d" "$r/estate"
+  # 0700, PINNED - see the note at the top of this file: an invite register left
+  # at the ambient umask is refused by its own reader under a umask of 002.
+  chmod 700 "$r/invites.d"
   printf 'ESTATE_NAME="fixture"\nDESK_ORIGIN="https://desk.example.test"\n' > "$r/estate/steward.conf"
   printf 'NAME="Acme"\nMEMBERS="operator"\n' > "$r/entities.d/acme.conf"
   printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="operator"\n' > "$r/hosts.d/host-a.conf"

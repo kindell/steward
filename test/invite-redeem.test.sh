@@ -65,6 +65,10 @@ S="$FX/product/bin/steward"
 ROOT="$FX/estate"
 mkdir -p "$ROOT/invites.d" "$ROOT/entities.d" "$ROOT/hosts.d" "$ROOT/principals.d" \
          "$ROOT/accounts.d" "$ROOT/logins.d" "$ROOT/sessions.d" "$ROOT/estate"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$ROOT/invites.d" "$ROOT/logins.d"
 # THE WHOLE ESTATE FILE, not only the keys this verb reads: step 7 writes a
 # session row and the writer READS IT BACK through registry_load, which resolves
 # the estate's label prefixes, socket and token name. A fixture that named only

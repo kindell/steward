@@ -45,6 +45,10 @@ S="$FX/product/bin/steward"
 ROOT="$FX/estate"
 mkdir -p "$ROOT/invites.d" "$ROOT/entities.d" "$ROOT/hosts.d" "$ROOT/principals.d" \
          "$ROOT/accounts.d" "$ROOT/logins.d" "$ROOT/sessions.d" "$ROOT/estate"
+# 0700, PINNED. The login and invite readers refuse a group- or other-writable
+# register, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$ROOT/invites.d" "$ROOT/logins.d"
 cat > "$ROOT/estate/steward.conf" <<'EOF'
 ESTATE_NAME="acme"
 STATE_DIR_NAME="fixture-state"
