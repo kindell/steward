@@ -609,7 +609,12 @@ mkdir -p "$FX/home/wyn/.ssh"
 printf 'NAME="Wyn Example"\nOIDC_LOGIN="issuer-n:SUB-N"\n' > "$ROOT/principals.d/wyn.conf"
 printf 'PRINCIPAL="wyn"\nHOST="host-a"\nUSERNAME="wyn"\n' > "$ROOT/accounts.d/wyn-host-a.conf"
 wyn_members="$(sed -n 's/^MEMBERS="\(.*\)"$/\1/p' "$ROOT/entities.d/acme.conf")"
-printf 'NAME="Acme"\nMEMBERS="%s"\np_slug="operator"\n' "$wyn_members" > "$ROOT/entities.d/acme.conf"
+# ALL FOUR FIELDS ON THE ROW, so all four can be asserted after the rewrite.
+# MANAGED_BY needs a real manager entity to name, because the loader resolves the
+# relation rather than taking the name on trust.
+printf 'NAME="Holding"\n' > "$ROOT/entities.d/holding.conf"
+printf 'NAME="Acme"\nMEMBERS="%s"\nMANAGED_BY="holding"\nMCP_ASSETS="asset-one"\np_slug="operator"\n' \
+  "$wyn_members" > "$ROOT/entities.d/acme.conf"
 out="$(run invite redeem "$TOK" --identity oidc:issuer-n:SUB-N 2>&1)"; rc=$?
 is  "the redemption still succeeds" "$rc" "0"
 has "step 5 adds the principal the invitation names" "$out" "5/12 membership: wyn added"
@@ -620,8 +625,18 @@ no  "and not against the name the row put in its way" \
     "$(cat "$ROOT/logins.d/wyn-claude-max.conf")" 'PRINCIPAL="operator"'
 # AND THE REST OF THE ROW SURVIVED THE READING. Only MEMBERS changes, and the
 # other three fields are composed out of the same load - a crossing that lost
-# NAME would rewrite the entity without its display name.
-has "the entity keeps its name" "$(cat "$ROOT/entities.d/acme.conf")" 'NAME="Acme"'
+# NAME would rewrite the entity without its display name, and one that lost
+# MANAGED_BY or MCP_ASSETS would publish it at rc 0 with the manager relation
+# or the grants simply gone, because the composer skips both when they are
+# empty.
+wyn_row="$(cat "$ROOT/entities.d/acme.conf")"
+has "the entity keeps its name" "$wyn_row" 'NAME="Acme"'
+has "and the team that manages it" "$wyn_row" 'MANAGED_BY="holding"'
+has "and the assets it grants" "$wyn_row" 'MCP_ASSETS="asset-one"'
+# The row goes back to the shape the rest of this suite expects.
+wyn_after="$(sed -n 's/^MEMBERS="\(.*\)"$/\1/p' "$ROOT/entities.d/acme.conf")"
+printf 'NAME="Acme"\nMEMBERS="%s"\n' "$wyn_after" > "$ROOT/entities.d/acme.conf"
+rm -f "$ROOT/entities.d/holding.conf"
 
 echo "== a run whose every earlier mark is on disk does only step 12 =="
 # The resumption design is "ask the machine, step by step" - so every step

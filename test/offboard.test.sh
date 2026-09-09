@@ -366,10 +366,15 @@ echo "== nor can an entity row, one step further along =="
 #
 # ALL FOUR ENTITY FIELDS ARE ASSERTED, not just the membership: the rewrite
 # composes the row out of what the load left behind, so a crossing that carried
-# MEMBERS alone would publish the entity back with its NAME and MCP_ASSETS
-# emptied - silently, at rc 0.
+# MEMBERS alone would publish the entity back with its NAME, MANAGED_BY and
+# MCP_ASSETS emptied - silently, at rc 0. MANAGED_BY is the quietest of the
+# four: the composer skips it when it is empty, so a dropped one publishes the
+# row at rc 0 with the manager relation simply not there. It needs a manager
+# entity to name, because the loader resolves the relation rather than
+# taking the name on trust.
 newperson qui "Qui"
-printf 'NAME="Acme"\nMEMBERS="operator qui"\nMCP_ASSETS="asset-one"\n' > "$ROOT/entities.d/acme.conf"
+printf 'NAME="Holding"\n' > "$ROOT/entities.d/holding.conf"
+printf 'NAME="Acme"\nMEMBERS="operator qui"\nMANAGED_BY="holding"\nMCP_ASSETS="asset-one"\n' > "$ROOT/entities.d/acme.conf"
 printf 'keep_home=""\nwant_json="1"\n' >> "$ROOT/entities.d/acme.conf"
 : > "$FX/calls"
 out="$(run offboard qui --keep-home 2>&1)"; rc=$?
@@ -386,9 +391,11 @@ has "the membership was removed all the same" "$out" "membership of entity acme 
 ENTROW="$(cat "$ROOT/entities.d/acme.conf")"
 has "and the entity kept its display name" "$ENTROW" 'NAME="Acme"'
 has "and the other member" "$ENTROW" 'MEMBERS="operator"'
+has "and the team that manages it" "$ENTROW" 'MANAGED_BY="holding"'
 has "and the assets it grants" "$ENTROW" 'MCP_ASSETS="asset-one"'
 # The row goes back to the shape the rest of this suite expects.
 printf 'NAME="Acme"\nMEMBERS="operator"\n' > "$ROOT/entities.d/acme.conf"
+rm -f "$ROOT/entities.d/holding.conf"
 
 echo "== a USERNAME that is nothing but a newline is refused, not read as the HOST =="
 # THE CROSSING IS TEXT, AND COMMAND SUBSTITUTION STRIPS EVERY TRAILING NEWLINE.
