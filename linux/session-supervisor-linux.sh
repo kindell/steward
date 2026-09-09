@@ -1908,7 +1908,22 @@ if [ -n "$_clients" ]; then
     # ahead of this host's clock; that is not staleness, and -lt keeps it a
     # human. A `date` that answered nothing lands in the same place - an empty
     # $_now is 0 in arithmetic, every client looks aeons ahead, and the veto
-    # holds. Every unmeasurable turn on this path falls toward the human.
+    # holds. So does a clock stepped BACKWARDS: it can only make a client look
+    # fresher.
+    #
+    # THE ONE TURN THAT FALLS AGAINST THE HUMAN IS A FORWARD CLOCK CORRECTION
+    # LARGER THAN THE WINDOW. This measurement trusts the host clock in the
+    # forward direction, and it cannot do otherwise: a VM resumed after eight
+    # hours really was idle eight hours, and telling that apart from a step
+    # needs state carried across rounds. Measured 2026-09-09 with a `date` shim
+    # answering now+3600: a human whose last keypress was 60s earlier reads as
+    # silent for 3660s and loses the pane. Reachable on RTC-less hosts
+    # correcting at boot and on VMs restored from a stale snapshot. It is
+    # strictly narrower than the marker-mtime hazard it replaced - that one
+    # killed EVERY client on ANY backward step, persistently, off a stale mtime
+    # sitting on disk - and it SELF-HEALS: one keypress after the step
+    # re-stamps activity from the corrected clock and the next round defers.
+    # That is the whole of the exposure, and it is not worth cross-round state.
     # 10# ON EVERY EPOCH, BECAUSE THE ALTERNATIVE IS A FAIL-OPEN. _is_epoch
     # accepts any run of digits, and bash reads a leading-zero run as OCTAL:
     # 0888, 08 and 09 are invalid octal and an arithmetic EXPANSION error is
