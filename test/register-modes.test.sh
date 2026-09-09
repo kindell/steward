@@ -298,7 +298,10 @@ _registers_in() { printf '%s\n' "$1" \
 # nothing: it is not a named gap, it is an absence, and the derived set simply
 # comes back one register shorter than the code. Two spellings were invisible -
 # `registry_x_dir ()` with a space before the parens, which is valid bash and a
-# common style, and a private `_registry_x_dir`. Both are fed to the table here
+# common style, and a private `_registry_x_dir`. A DIGIT IN THE NAME was a
+# third: `[a-z_]*` cannot spell `oauth2_`, and this repo already writes
+# `_registry_sha256()`, so digits in function names are established style here
+# rather than a hypothesis. Every one of them is fed to the table here
 # from a fixture, so that widening the pattern later cannot narrow it again by
 # accident. The fixture is a file of resolvers, not lib/registry.sh: a guard
 # that can only be tested by editing the code it guards is not tested.
@@ -314,6 +317,7 @@ _registry_private_dir() {
   printf '%s\n' "$(_registry_estate_root)/private.d"
 }
 registry_oneline_dir() { printf '%s\n' "$(_registry_estate_root)/oneline.d"; }
+registry_oauth2_dir() { printf '%s\n' "$(_registry_estate_root)/oauth2.d"; }
 EOF
 while read -r sp_fn sp_reg; do
   [ -n "$sp_fn" ] || continue
@@ -326,6 +330,7 @@ registry_plain_dir plain.d
 registry_spaced_dir spaced.d
 _registry_private_dir private.d
 registry_oneline_dir oneline.d
+registry_oauth2_dir oauth2.d
 EOF
 
 derived=""
