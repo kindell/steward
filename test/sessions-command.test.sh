@@ -346,7 +346,16 @@ noest="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEWA
 noest_rc=$?
 is "a missing estate key refuses" "$( [ "$noest_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$noest" | jq -r '.ok')" "false"
-has "and the reason names the key" "$(printf '%s' "$noest" | jq -r '.reason')" "HUB_HOST"
+# THE CLAIM IS PINNED ON THE REGISTRY'S OWN CAUSE, not on the static sentence.
+# `.reason` carries two things: the line the registry printed when it refused
+# this row, and the sweep's own sentence, which lists the WHOLE gate set. A
+# claim that only looked for the key name therefore passed whichever key was
+# actually missing - measured: the OP_TOKEN_FILE_NAME case was made to miss
+# LABEL_PREFIX instead and the suite stayed green. The substrings below come
+# from the registry's refusal, one per key, and each one is absent from the
+# static list.
+has "and the reason names HUB_HOST as the cause" \
+    "$(printf '%s' "$noest" | jq -r '.reason')" "HUB_HOST is missing or invalid in"
 # THE SENTENCE LISTS THE GATE SET, AND A SHORT LIST SENDS THE READER TO THE
 # WRONG KEY FIRST. It named three while registry_estate_gates asked about four,
 # and five once LOGIN_REQUIRED_FOR joined. The whole list is asserted, in gate
@@ -369,7 +378,8 @@ nooptok="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STE
 nooptok_rc=$?
 is "a missing OP_TOKEN_FILE_NAME refuses" "$( [ "$nooptok_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$nooptok" | jq -r '.ok')" "false"
-has "and the reason names the key" "$(printf '%s' "$nooptok" | jq -r '.reason')" "OP_TOKEN_FILE_NAME"
+has "and the reason names OP_TOKEN_FILE_NAME as the cause" \
+    "$(printf '%s' "$nooptok" | jq -r '.reason')" "OP_TOKEN_FILE_NAME is missing or invalid in"
 
 printf 'HUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
   > "$FX5/estate/steward.conf"
@@ -378,7 +388,8 @@ noprefix="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" ST
 noprefix_rc=$?
 is "a missing LABEL_PREFIX refuses" "$( [ "$noprefix_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$noprefix" | jq -r '.ok')" "false"
-has "and the reason names the key" "$(printf '%s' "$noprefix" | jq -r '.reason')" "LABEL_PREFIX"
+has "and the reason names LABEL_PREFIX as the cause" \
+    "$(printf '%s' "$noprefix" | jq -r '.reason')" "LABEL_PREFIX missing or invalid in"
 
 # AND THE FIFTH GATE, WHICH THE PROBE USED TO SKIP ON A WRONG PREMISE.
 # registry_login_required_for was called row-conditional and left out of the
@@ -400,7 +411,8 @@ badlrf="$(STEWARD_REGISTRY_DIR="$FX5/sessions.d" STEWARD_ESTATE_ROOT="$FX5" STEW
 badlrf_rc=$?
 is "a malformed LOGIN_REQUIRED_FOR refuses" "$( [ "$badlrf_rc" -ne 0 ] && echo yes || echo no )" "yes"
 is "and ok is false" "$(printf '%s' "$badlrf" | jq -r '.ok')" "false"
-has "and the reason names the key" "$(printf '%s' "$badlrf" | jq -r '.reason')" "LOGIN_REQUIRED_FOR"
+has "and the reason names LOGIN_REQUIRED_FOR as the cause" \
+    "$(printf '%s' "$badlrf" | jq -r '.reason')" "LOGIN_REQUIRED_FOR in"
 has "and blames the estate rather than the row" \
     "$(printf '%s' "$badlrf" | jq -r '.reason')" "the estate itself does not read"
 rm -rf "$FX5"
