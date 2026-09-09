@@ -234,7 +234,14 @@ cat > "$FX/gnu-bin/stat" <<'STATSTUB'
 # Mimics GNU stat: -f prints a filesystem report (rc 0), -c '%a' prints octal.
 case "$1" in
   -f) printf '  File: "%s"\n    ID: cd9557 Namelen: 255 Type: ext2/ext3\nBlocks: Total: 12422878\n' "$3"; exit 0 ;;
-  -c) /usr/bin/stat -f '%Lp' "$3" 2>/dev/null || /usr/bin/stat -c '%a' "$3"; exit 0 ;;
+  # THE STUB'S OWN TRANSLATION HAD THE VERY BUG THE TEST EXISTS TO CATCH. It
+  # answered `-c` by trying the BSD form FIRST - and on a GNU host `stat -f` is
+  # filesystem status, exits 0 and prints a report, so the "real mode" this
+  # branch was meant to return was garbage too. The product's reader then saw
+  # nonsense from both forms and refused with rc 78: red on every Linux host,
+  # green on the mac the stub was written on. GNU form first, BSD as fallback -
+  # the order that is correct on the host each form belongs to.
+  -c) /usr/bin/stat -c '%a' "$3" 2>/dev/null || /usr/bin/stat -f '%Lp' "$3"; exit 0 ;;
 esac
 exit 1
 STATSTUB
