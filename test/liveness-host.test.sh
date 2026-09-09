@@ -566,6 +566,40 @@ for trc in 1 124; do
      "$(grep -c 'list-sessions' "$T/tmuxlog-$trc" | tr -d ' ')" "1"
 done
 
+echo "== but a home with NO SERVER is measured, not excused =="
+# THE CASE THE BRANCH ABOVE MUST NOT SWALLOW. `tmux list-sessions` exits 1 when
+# there is no server at all - the ordinary state of a quiet home - and that is a
+# MEASUREMENT: no server, no pane, nothing that can descend from one. Reading
+# every non-zero rc as "could not ask" would turn every quiet home into a column
+# of question marks, which is the same silence from the other side.
+#
+# The message is tmux's own, measured against tmux 3.4 on a socket whose file
+# exists with no server behind it.
+cat > "$T/bin4/tmux" <<'EOF'
+#!/bin/bash
+echo "$@" >> "${TMUX_LOG:?}"
+echo "no server running on $HOME/.tmux/acme.sock" >&2
+exit 1
+EOF
+chmod +x "$T/bin4/tmux"
+out5="$( env -i HOME="$T/home" PATH="$T/bin4:/usr/bin:/bin" \
+          STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+          STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+          STEWARD_CODEX_STATE_DIR="$CX" \
+          STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
+          TMUX_LOG="$T/tmuxlog-noserver" bash "$CMD" 2>"$T/err-noserver" )"
+eq "all nine rows are measured, none excused" \
+   "$(printf '%s' "$out5" | jq -r '.sessions | length')" "9"
+eq "no pane row is omitted" \
+   "$(printf '%s' "$out5" | jq -r '.omitted | length')" "0"
+eq "a pane row reads down - we looked, and there was no server" \
+   "$(printf '%s' "$out5" | jq -r '.sessions["s-a1"].tmux')" "down"
+eq "and its agent reads not-running, which is measured" \
+   "$(printf '%s' "$out5" | jq -r '.sessions["s-a1"].agent')" "not-running"
+# A MEASUREMENT IS NOT AN INCIDENT: nothing is written to stderr for the
+# ordinary quiet home, or the log fills with a warning nobody reads.
+eq "and nothing is reported as a failure" "$(cat "$T/err-noserver")" ""
+
 echo "== and the other direction still holds: a session that is really down is down =="
 # The pairing is what makes the claim mean anything. `s-c3` has an armed timer
 # and no tmux session on a HEALTHY server: that is a measurement, and it must

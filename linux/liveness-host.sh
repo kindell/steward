@@ -130,10 +130,61 @@ _tmux() {
 # active; one pgrep call gives every candidate runtime process. Doing either per
 # session would put the fleet's size into the cost of asking about it.
 LIVE_NAMES=""; LIVE_ACT=""
+# WHY THE RETURN CODE IS KEPT, AND WHY IT IS NOT ENOUGH ON ITS OWN. This probe
+# used to end in `|| true`, which made a tmux call that FAILED indistinguishable
+# from a tmux server with nothing on it: every pane row in the home was then
+# written into `sessions` as `down` / `not-running`. Measured 2026-09-09 - three
+# live sessions, one of them the process doing the measuring, reported dead with
+# an empty stderr and an empty `omitted`. A guess wearing a measurement's
+# clothes, which is the thing this file exists not to produce.
+#
+# BUT A NON-ZERO rc IS NOT BY ITSELF A FAILURE TO MEASURE, and reading it as one
+# would break the opposite case just as badly. `tmux list-sessions` exits 1 when
+# there is simply NO SERVER - the ordinary state of a home with nothing running
+# - and that is a real measurement: no server, therefore no pane, therefore
+# nothing can descend from one. Treating it as unmeasurable would turn every
+# quiet home into a column of question marks.
+#
+# So the two are told apart by what tmux SAYS, measured against tmux 3.4:
+#   no server running on <path>                     -> nothing is up  (a measurement)
+#   error connecting to <path> (Permission denied)  -> could not ask  (unmeasurable)
+#   error connecting to <path> (No such file ...)   -> could not ask  (unmeasurable)
+#   killed by the caller's deadline, rc 124         -> could not ask  (unmeasurable)
+#
+# THE UNRECOGNISED CASE FALLS TO `unmeasurable`, DELIBERATELY. If a future tmux
+# rewords its own message, this branch degrades into naming a probe it could not
+# make - a question mark with a sentence attached - and never into inventing a
+# dead fleet. The safe direction is the one that cannot fabricate a negative.
+TMUX_REASON=""
 if [ -z "$MISSING" ]; then
-  _ls="$(_tmux list-sessions -F '#{session_name} #{session_activity}' 2>/dev/null || true)"
-  LIVE_NAMES=" $(printf '%s' "$_ls" | awk '{print $1}' | tr '\n' ' ')"
-  LIVE_ACT="$_ls"
+  # The command's own stderr is the evidence that decides the branch, so it is
+  # captured rather than discarded. A home that cannot even hold a temporary
+  # file cannot be probed either, and says so rather than guessing.
+  _lserr="$(mktemp 2>/dev/null)" || _lserr=""
+  if [ -z "$_lserr" ]; then
+    TMUX_REASON="could not create a temporary file to capture tmux's own error"
+  else
+    _ls="$(_tmux list-sessions -F '#{session_name} #{session_activity}' 2>"$_lserr")"; _lsrc=$?
+    _lsmsg="$(tr '\n' ' ' < "$_lserr")"; rm -f "$_lserr"
+    if [ "$_lsrc" -ne 0 ]; then
+      case "$_lsmsg" in
+        *"no server running"*)
+          # A MEASUREMENT: there is no server, so there are no live sessions.
+          # The empty list below is the honest answer, not a missing one.
+          _ls="" ;;
+        *)
+          TMUX_REASON="tmux could not be asked (rc $_lsrc)${_lsmsg:+: $_lsmsg}" ;;
+      esac
+    fi
+    if [ -z "$TMUX_REASON" ]; then
+      LIVE_NAMES=" $(printf '%s' "$_ls" | awk '{print $1}' | tr '\n' ' ')"
+      LIVE_ACT="$_ls"
+    fi
+  fi
+  # SAID ONCE, FOR THE HOME, not once per row. The omission below carries the
+  # sentence to the reader of the answer; this carries it to whoever is reading
+  # the log of the run that produced it.
+  [ -z "$TMUX_REASON" ] || echo "liveness-host: $TMUX_REASON - no pane row on $SELF_HOST could be measured" >&2
 fi
 
 # THE PATTERN IS DELIBERATELY THE BROAD ONE. The supervisor anchors its pattern
@@ -145,8 +196,20 @@ fi
 # matching every pattern, convinced supervision that a dead session was alive.
 RUNTIME_PAT='(^|[ /])(claude|opencode)'
 RUNTIME_PIDS=""
-if [ -z "$MISSING" ]; then
-  RUNTIME_PIDS="$(pgrep -u "$(id -u)" -f "$RUNTIME_PAT" 2>/dev/null || true)"
+# THE SAME DISTINCTION, THE SECOND DOOR. `pgrep` exits 1 when nothing matched -
+# a measurement, and the common one on a quiet home - and something greater than
+# 1 when it could not look at all. `|| true` collapsed both into an empty list,
+# and an empty list makes every live pane row read `not-running`: the identical
+# fabrication the tmux branch above was just fixed for, reached by a different
+# command. Only rc > 1 is a failure to measure.
+PGREP_REASON=""
+if [ -z "$MISSING" ] && [ -z "$TMUX_REASON" ]; then
+  RUNTIME_PIDS="$(pgrep -u "$(id -u)" -f "$RUNTIME_PAT" 2>/dev/null)"; _pgrc=$?
+  if [ "$_pgrc" -gt 1 ]; then
+    RUNTIME_PIDS=""
+    PGREP_REASON="pgrep could not be asked (rc $_pgrc)"
+    echo "liveness-host: $PGREP_REASON - no pane row on $SELF_HOST could be measured" >&2
+  fi
 fi
 
 # -- the codex runtime's two paths, derived ONCE for the whole home ----------
@@ -311,6 +374,25 @@ for conf in "$RDIR"/*.conf; do
       [ -n "$_iso" ] && last="\"$(_json_str "$_iso")\""
     fi
   else
+    # A PANE ROW WHOSE TMUX COULD NOT BE ASKED IS UNMEASURABLE, and is named
+    # rather than answered. Every probe below this line reads the tmux answer,
+    # directly or through the pane walk; without it the three of them would
+    # agree on a confident `down` / `not-running` that nobody measured.
+    #
+    # THE CODEX BRANCH ABOVE IS DELIBERATELY UNTOUCHED BY THIS. A codex row is a
+    # thread, not a pane: it is measured at a socket and a state directory and
+    # never needed tmux at all. An outage in one runtime's probe may not erase
+    # the other runtime's answer - the whole home going dark on a tmux failure
+    # is the blast radius this branch exists to bound.
+    if [ -n "$TMUX_REASON" ]; then
+      add_omit "$id" "cannot probe on $SELF_HOST: $TMUX_REASON"
+      continue
+    fi
+    if [ -n "$PGREP_REASON" ]; then
+      add_omit "$id" "cannot probe on $SELF_HOST: $PGREP_REASON"
+      continue
+    fi
+
     # DAEMON. `is-active` on the session's user timer, the same unit name the
     # supervisor and the status table use. An armed timer is `loaded`; no timer,
     # or a stopped one, is `missing` - and that is a MEASUREMENT, not a failure to
