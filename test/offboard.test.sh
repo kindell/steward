@@ -356,6 +356,40 @@ has "and the receipt says it was kept" "$(jq -r '.kept|join(" ")' "$PIPR")" "kep
 no  "and the row did not change the shape of the answer" "$out" '"kind":"offboard"'
 has "the answer is still the human form" "$out" "principals.d/pip.conf removed"
 
+echo "== nor can an entity row, one step further along =="
+# THE SAME CLASS, THROUGH THE OTHER REGISTER. Step 4 sources EVERY entities.d
+# row to find the memberships to strip, and --keep-home is not read until step
+# 6 - so a lowercase assignment in an entity row reaches exactly the locals an
+# account row reached, one step later in the same function. And this register
+# is read for every person this verb offboards, whether or not they have an
+# account row anybody has touched.
+#
+# ALL FOUR ENTITY FIELDS ARE ASSERTED, not just the membership: the rewrite
+# composes the row out of what the load left behind, so a crossing that carried
+# MEMBERS alone would publish the entity back with its NAME and MCP_ASSETS
+# emptied - silently, at rc 0.
+newperson qui "Qui"
+printf 'NAME="Acme"\nMEMBERS="operator qui"\nMCP_ASSETS="asset-one"\n' > "$ROOT/entities.d/acme.conf"
+printf 'keep_home=""\nwant_json="1"\n' >> "$ROOT/entities.d/acme.conf"
+: > "$FX/calls"
+out="$(run offboard qui --keep-home 2>&1)"; rc=$?
+is  "the run still succeeds" "$rc" "0"
+calls="$(cat "$FX/calls")"
+has "the account is still locked" "$calls" "steward-account-helper lock qui"
+no  "and the entity row did not cancel --keep-home" "$calls" "--archive-home"
+if [ -d "$FX/home/qui" ]; then ok "the home the operator kept is still there"; else bad "the home the operator kept is still there" "gone"; fi
+QUIR="$HUBHOME/.local/state/fixture-state/offboards/qui.receipt.json"
+has "and the receipt says it was kept" "$(jq -r '.kept|join(" ")' "$QUIR")" "kept in place"
+no  "and the entity row did not change the shape of the answer" "$out" '"kind":"offboard"'
+has "the answer is still the human form" "$out" "principals.d/qui.conf removed"
+has "the membership was removed all the same" "$out" "membership of entity acme removed"
+ENTROW="$(cat "$ROOT/entities.d/acme.conf")"
+has "and the entity kept its display name" "$ENTROW" 'NAME="Acme"'
+has "and the other member" "$ENTROW" 'MEMBERS="operator"'
+has "and the assets it grants" "$ENTROW" 'MCP_ASSETS="asset-one"'
+# The row goes back to the shape the rest of this suite expects.
+printf 'NAME="Acme"\nMEMBERS="operator"\n' > "$ROOT/entities.d/acme.conf"
+
 echo "== --json is exactly one JSON value on stdout =="
 newperson cyd "Cyd"
 CSID="s-00000000000000cc"

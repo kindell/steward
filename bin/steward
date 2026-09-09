@@ -5098,12 +5098,51 @@ EOF
   # lock is refused rc 70, never merged and never published over. This run
   # measured its decision against a state that no longer exists, and the right
   # answer is to run the verb again.
-  local ent_ids eid newm w
+  #
+  # AND THE ROW IS SOURCED IN A CHILD PROCESS, the same shape and the same
+  # reason as the account rows above. This load runs INSIDE cmd_offboard's own
+  # frame, and the decisions this verb is still holding when it gets here -
+  # keep_home is not read until step 6, want_json not until the last line - are
+  # locals of that frame. MEASURED: an entities.d row carrying the line
+  # keep_home="" moved a home the operator asked to keep, and want_json="1" in
+  # the same row turned the answer into JSON nobody asked for; both of them
+  # through the register this verb reads for EVERY person it offboards, whether
+  # or not anybody has touched their account row. The fork closes principal,
+  # locked, rows, accounts and the rest at once.
+  #
+  # ALL FOUR FIELDS COME BACK, AND A SENTINEL AFTER THEM - see the same
+  # crossing at step 5 of `invite redeem`: _entity_members_replace composes the
+  # row out of what the load left behind, so a crossing carrying MEMBERS alone
+  # would publish the entity back with its NAME, MANAGED_BY and MCP_ASSETS
+  # emptied, and command substitution strips trailing newlines, so an empty
+  # MCP_ASSETS would otherwise collapse into the field before it. A field
+  # carrying a newline of its own pushes the sentinel off line five, and is
+  # refused here rather than read as a different field: a row whose fields
+  # cannot be told apart is a row this run cannot say whether it names the
+  # person, and by this step the account is already locked and its rows already
+  # gone. Refusing is loud; the silent alternative leaves them a member of an
+  # entity under a receipt that says done.
+  local ent_ids eid newm w ent_row ent_end ent_over
   ent_ids="$(registry_entity_list 2>/dev/null)" || {
     _offboard_fail "the entity register could not be listed, so the memberships of '$principal' are unknown" 78
     return 78; }
   for eid in $ent_ids; do
-    registry_entity_load "$eid" >/dev/null 2>&1 || continue
+    ent_row="$( registry_entity_load "$eid" >/dev/null 2>&1 \
+                && printf '%s\n%s\n%s\n%s\nok\n' \
+                     "$ENTITY_NAME" "$ENTITY_MEMBERS" "$ENTITY_MANAGED_BY" "$ENTITY_MCP_ASSETS" )" || continue
+    { IFS= read -r ENTITY_NAME
+      IFS= read -r ENTITY_MEMBERS
+      IFS= read -r ENTITY_MANAGED_BY
+      IFS= read -r ENTITY_MCP_ASSETS
+      IFS= read -r ent_end
+      IFS= read -r ent_over
+    } <<EOF
+$ent_row
+EOF
+    if [ "$ent_end" != "ok" ] || [ -n "$ent_over" ]; then
+      _offboard_fail "entity '$eid' carries a control character or newline in one of its fields, so whether it still names '$principal' cannot be read" 64
+      return 64
+    fi
     case " $ENTITY_MEMBERS " in *" $principal "*) ;; *) continue ;; esac
     # SPLIT THROUGH _registry_words, NEVER BY A BARE EXPANSION. MEMBERS is
     # exposed by the loader without being validated word by word, so an
