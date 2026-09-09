@@ -1904,8 +1904,11 @@ if [ -n "$_clients" ]; then
       [ -z "$_keep" ] && { _keep="$_who"; _keep_why="$_why - the veto stands on what it cannot measure"; }
       continue
     fi
-    # IDLENESS AGAINST NOW. A negative answer means the client's clock ran
-    # ahead of this host's; that is not staleness, and -lt keeps it a human.
+    # IDLENESS AGAINST NOW. A negative answer means the client's activity is
+    # ahead of this host's clock; that is not staleness, and -lt keeps it a
+    # human. A `date` that answered nothing lands in the same place - an empty
+    # $_now is 0 in arithmetic, every client looks aeons ahead, and the veto
+    # holds. Every unmeasurable turn on this path falls toward the human.
     _idle=$(( _now - _cact ))
     if [ "$_idle" -lt "$HUMAN_GRACE_SEC" ]; then
       _why="was active ${_idle}s ago (idle ${_idle}s of ${HUMAN_GRACE_SEC}s)"
