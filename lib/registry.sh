@@ -4708,6 +4708,212 @@ registry_login_load() {
   return 0
 }
 
+# ── THE MANDATE REGISTER ────────────────────────────────────────────────────
+# mandates.d/<id>.conf - a person's REVOCABLE, VERSIONED, BOUNDED permission to
+# let their own registered session take ordered work while a capacity gate
+# holds. docs/superpowers/specs/2026-09-09-giving-back.md, Part 2. Its own
+# register, NOT a field on the login row (right capacity key, wrong contracting
+# party) and NEVER on the session row (a movable execution surface).
+#
+# NEVER SOURCED, for the same reason logins.d is not: a row names who may spend
+# whose quota on what, and a row that can execute is a row that can rewrite that.
+# Same strict parser, same refusals, same order of questions (register state,
+# then file state, then content).
+#
+# THE ONE FIELD THIS REGISTER EXISTS TO GET RIGHT IS ACCEPT_SOURCE. The
+# authority norm (docs/auktoritet.md): the bus authenticates the CHANNEL, never
+# the author, and is coordination, not an audit trail; a signature without a key
+# is refused categorically. So a yes is valid only from a channel this estate
+# actually authenticates as the person: their UNIX ACCOUNT (accounts.d binds
+# USERNAME to PRINCIPAL) or a DESK OIDC LOGIN. `bus:`, `slack:`, `mail:` are not
+# in the set, and the refusal names the norm rather than just the word.
+_REGISTRY_MANDATE_REQUIRED="PRINCIPAL LOGINS LEGAL_OWNER_APPROVED SCOPE RESERVE VALID_FROM TERMS_VERSION ACCEPTED_AT ACCEPT_SOURCE"
+_REGISTRY_MANDATE_OPTIONAL="VALID_UNTIL REVOKED_AT PAUSED"
+_REGISTRY_MANDATE_ACCEPT_CHANNELS="unix-account desk-oidc"
+_REGISTRY_MANDATE_SCOPE_KEYS="beneficiary domain project repo job"
+_REGISTRY_MANDATE_RESERVE_KEYS="open-below hard-cap min-days-left idle-hours"
+
+registry_mandate_dir() {
+  if [ -n "${STEWARD_MANDATES_DIR:-}" ]; then printf '%s\n' "$STEWARD_MANDATES_DIR"
+  else printf '%s\n' "$(_registry_estate_root)/mandates.d"; fi
+}
+
+# An ABSENT register is not an empty one. Absent means "this estate has never
+# set the programme up", and a caller that read that as "no mandates, so
+# nothing to honour" would be right by accident and wrong the day it matters.
+registry_mandate_list() {
+  local dir; dir="$(registry_mandate_dir)"
+  if [ ! -d "$dir" ]; then
+    echo "registry: REFUSING to list mandates - the mandate register does not exist: $dir" >&2
+    return 78
+  fi
+  local f
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || [ -L "$f" ] || continue   # -e OR -L: a dangling link must be LISTED so the check can see it
+    basename "$f" .conf
+  done | sort
+}
+
+_registry_mandate_dir_state() {
+  local dir="$1"
+  if [ -L "$dir" ]; then echo "registry: the mandate register is a symlink, refusing: $dir" >&2; return 78; fi
+  if [ -d "$dir" ]; then
+    local dmode; dmode="$(_registry_mode_of "$dir")" || { echo "registry: cannot read the mode of the mandate register: $dir" >&2; return 78; }
+    if _registry_group_or_other_writable "$dmode"; then
+      echo "registry: the mandate register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w \"$dir\"" >&2
+      return 78
+    fi
+  fi
+  return 0
+}
+
+_registry_mandate_stamp_ok() { [[ "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; }
+
+# registry_mandate_load <id> - parse ONE mandate row. rc 0 · 1 (no such row, or
+# content refused) · 78 (register or file state refuses). RESET FIRST: a caller
+# that gets a refusal must never still see the last row that parsed.
+registry_mandate_load() {
+  MANDATE_ID=""; MANDATE_PRINCIPAL=""; MANDATE_LOGINS=""; MANDATE_LEGAL_OWNER_APPROVED=""
+  MANDATE_SCOPE=""; MANDATE_RESERVE=""; MANDATE_VALID_FROM=""; MANDATE_VALID_UNTIL=""
+  MANDATE_TERMS_VERSION=""; MANDATE_ACCEPTED_AT=""; MANDATE_ACCEPT_SOURCE=""
+  MANDATE_REVOKED_AT=""; MANDATE_PAUSED=""
+  local id="${1:-}" dir f
+  if ! [[ "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "registry: invalid mandate id '$id' (allowed: a-z 0-9 and hyphen)" >&2; return 1
+  fi
+  dir="$(registry_mandate_dir)" || return 78
+  _registry_mandate_dir_state "$dir" || return $?
+  f="$dir/$id.conf"
+  if [ -L "$f" ]; then echo "registry: mandate '$id' is a symlink, refusing: $f" >&2; return 78; fi
+  if [ ! -f "$f" ]; then echo "registry: no such mandate: $id" >&2; return 1; fi
+  if [ ! -O "$f" ]; then echo "registry: mandate '$id' is not owned by the current user, refusing: $f" >&2; return 78; fi
+  local mode; mode="$(_registry_mode_of "$f")" || { echo "registry: cannot read the mode of mandate '$id': $f" >&2; return 78; }
+  if _registry_group_or_other_writable "$mode"; then
+    echo "registry: mandate '$id' is group- or other-writable (mode $mode), refusing: $f" >&2; return 78
+  fi
+
+  local lineno=0 line key value seen="" k allowed="$_REGISTRY_MANDATE_REQUIRED $_REGISTRY_MANDATE_OPTIONAL"
+  local v_PRINCIPAL="" v_LOGINS="" v_LEGAL_OWNER_APPROVED="" v_SCOPE="" v_RESERVE="" v_VALID_FROM="" v_VALID_UNTIL=""
+  local v_TERMS_VERSION="" v_ACCEPTED_AT="" v_ACCEPT_SOURCE="" v_REVOKED_AT="" v_PAUSED=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno+1))
+    case "$line" in *[[:cntrl:]]*) echo "registry: $f:$lineno: control character in the line, refusing" >&2; return 1 ;; esac
+    case "$line" in ''|'#'*) continue ;; esac
+    if ! [[ "$line" =~ ^([A-Z_]+)=\"([^\"]*)\"$ ]]; then
+      echo "registry: $f:$lineno: each setting must be written exactly KEY=\"VALUE\" on its own line" >&2; return 1
+    fi
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    case " $allowed " in *" $key "*) ;; *) echo "registry: $f:$lineno: unknown key '$key' (allowed: $allowed)" >&2; return 1 ;; esac
+    case " $seen " in *" $key "*) echo "registry: $f:$lineno: duplicate key '$key'" >&2; return 1 ;; esac
+    seen="$seen $key"
+    case "$value" in *'$'*|*'`'*|*'\'*)
+      echo "registry: $f:$lineno: '$key' contains a substitution or escape character, refusing" >&2; return 1 ;; esac
+    eval "v_$key=\$value"
+  done < "$f"
+  for k in $_REGISTRY_MANDATE_REQUIRED; do
+    case " $seen " in *" $k "*) ;; *) echo "registry: $f: missing required key '$k'" >&2; return 1 ;; esac
+  done
+
+  # PRINCIPAL is the human, the same form the identity gate compares.
+  [[ "$v_PRINCIPAL" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "registry: $f: invalid PRINCIPAL '$v_PRINCIPAL' (a-z, then a-z 0-9 and hyphen)" >&2; return 1; }
+  # LOGINS: one or more login slugs. Two logins of one person are two decisions -
+  # a row may name both only when payer and scope are the same for both; the
+  # register-wide check compares each against logins.d. Existence is NOT checked
+  # here, for the same reason the login loader does not resolve CONFIG_DIR: a
+  # half-validating reader reports the wrong cause.
+  [ -n "$v_LOGINS" ] || { echo "registry: $f: LOGINS must name at least one login" >&2; return 1; }
+  for k in $v_LOGINS; do
+    [[ "$k" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "registry: $f: invalid login slug '$k' in LOGINS" >&2; return 1; }
+  done
+  # LEGAL_OWNER_APPROVED: the PAYER's approval, by name. The person's yes is
+  # necessary and not sufficient - a Point seat is never chosen for Varvet work
+  # because it stands at 2 %. Must equal each login's LEGAL_OWNER (register check).
+  v_LEGAL_OWNER_APPROVED="$(printf '%s' "$v_LEGAL_OWNER_APPROVED" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  [ -n "$v_LEGAL_OWNER_APPROVED" ] || { echo "registry: $f: missing LEGAL_OWNER_APPROVED (whose seat is this, and did they say yes?)" >&2; return 1; }
+  # SCOPE: key:value tokens with a CLOSED key set, at least one beneficiary.
+  # What the mandate may be used FOR, spelled so a caller can test a job against it.
+  local tok sk sv has_ben=""
+  [ -n "$v_SCOPE" ] || { echo "registry: $f: SCOPE must name at least beneficiary:<entity>" >&2; return 1; }
+  for tok in $v_SCOPE; do
+    sk="${tok%%:*}"; sv="${tok#*:}"
+    [ "$sk" != "$tok" ] && [ -n "$sv" ] || { echo "registry: $f: SCOPE token '$tok' is not key:value" >&2; return 1; }
+    case " $_REGISTRY_MANDATE_SCOPE_KEYS " in *" $sk "*) ;; *) echo "registry: $f: unknown SCOPE key '$sk' (one of: $_REGISTRY_MANDATE_SCOPE_KEYS)" >&2; return 1 ;; esac
+    [[ "$sv" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "registry: $f: SCOPE value '$sv' has characters outside A-Za-z0-9 . _ / -" >&2; return 1; }
+    [ "$sk" = beneficiary ] && has_ben=1
+  done
+  [ -n "$has_ben" ] || { echo "registry: $f: SCOPE must name a beneficiary (beneficiary:<entity>)" >&2; return 1; }
+  # RESERVE: the gate's four numbers, all present, integers, with hard-cap above
+  # open-below - the ceiling a mandate never crosses must sit above the level it
+  # may open at, or the gate can never open.
+  local r_open="" r_cap="" r_days="" r_idle=""
+  for tok in $v_RESERVE; do
+    sk="${tok%%:*}"; sv="${tok#*:}"
+    case " $_REGISTRY_MANDATE_RESERVE_KEYS " in *" $sk "*) ;; *) echo "registry: $f: unknown RESERVE key '$sk' (one of: $_REGISTRY_MANDATE_RESERVE_KEYS)" >&2; return 1 ;; esac
+    [[ "$sv" =~ ^[0-9]{1,5}$ ]] || { echo "registry: $f: RESERVE $sk must be a whole number, got '$sv'" >&2; return 1; }
+    case "$sk" in open-below) r_open="$sv" ;; hard-cap) r_cap="$sv" ;; min-days-left) r_days="$sv" ;; idle-hours) r_idle="$sv" ;; esac
+  done
+  [ -n "$r_open" ] && [ -n "$r_cap" ] && [ -n "$r_days" ] && [ -n "$r_idle" ] || { echo "registry: $f: RESERVE must carry all of: $_REGISTRY_MANDATE_RESERVE_KEYS" >&2; return 1; }
+  [ "$r_open" -le 100 ] && [ "$r_cap" -le 100 ] || { echo "registry: $f: RESERVE percentages must be 0-100" >&2; return 1; }
+  [ "$r_cap" -gt "$r_open" ] || { echo "registry: $f: RESERVE hard-cap ($r_cap) must be above open-below ($r_open), or the gate can never open" >&2; return 1; }
+  # TIMES: ISO-8601 UTC to the second, the seam's own form. VALID_UNTIL may be
+  # empty (open-ended); when set it must not precede VALID_FROM.
+  _registry_mandate_stamp_ok "$v_VALID_FROM"  || { echo "registry: $f: VALID_FROM must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SSZ), got '$v_VALID_FROM'" >&2; return 1; }
+  _registry_mandate_stamp_ok "$v_ACCEPTED_AT" || { echo "registry: $f: ACCEPTED_AT must be ISO-8601 UTC, got '$v_ACCEPTED_AT'" >&2; return 1; }
+  if [ -n "$v_VALID_UNTIL" ]; then
+    _registry_mandate_stamp_ok "$v_VALID_UNTIL" || { echo "registry: $f: VALID_UNTIL must be ISO-8601 UTC or empty, got '$v_VALID_UNTIL'" >&2; return 1; }
+    [[ "$v_VALID_UNTIL" > "$v_VALID_FROM" ]] || { echo "registry: $f: VALID_UNTIL ($v_VALID_UNTIL) must be after VALID_FROM ($v_VALID_FROM)" >&2; return 1; }
+  fi
+  if [ -n "$v_REVOKED_AT" ]; then
+    _registry_mandate_stamp_ok "$v_REVOKED_AT" || { echo "registry: $f: REVOKED_AT must be ISO-8601 UTC or empty, got '$v_REVOKED_AT'" >&2; return 1; }
+  fi
+  case "$v_PAUSED" in ''|yes|no) ;; *) echo "registry: $f: PAUSED must be yes, no or absent, got '$v_PAUSED'" >&2; return 1 ;; esac
+  [[ "$v_TERMS_VERSION" =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { echo "registry: $f: invalid TERMS_VERSION '$v_TERMS_VERSION' (a-z 0-9 . and hyphen)" >&2; return 1; }
+  # ACCEPT_SOURCE: <channel>:<identifier>, channel from the closed set of channels
+  # this estate AUTHENTICATES as the person. The refusal names the norm.
+  sk="${v_ACCEPT_SOURCE%%:*}"; sv="${v_ACCEPT_SOURCE#*:}"
+  if [ "$sk" = "$v_ACCEPT_SOURCE" ] || [ -z "$sv" ]; then
+    echo "registry: $f: ACCEPT_SOURCE must be <channel>:<identifier>, got '$v_ACCEPT_SOURCE'" >&2; return 1
+  fi
+  case " $_REGISTRY_MANDATE_ACCEPT_CHANNELS " in
+    *" $sk "*) ;;
+    *) echo "registry: $f: ACCEPT_SOURCE channel '$sk' is not one this estate authenticates as the person (one of: $_REGISTRY_MANDATE_ACCEPT_CHANNELS). The bus authenticates a channel, not an author, and is coordination, not an audit trail (docs/auktoritet.md) - a yes must come from the person's own authenticated channel" >&2
+       return 1 ;;
+  esac
+  [[ "$sv" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "registry: $f: ACCEPT_SOURCE identifier '$sv' must be a slug" >&2; return 1; }
+
+  MANDATE_ID="$id"; MANDATE_PRINCIPAL="$v_PRINCIPAL"; MANDATE_LOGINS="$v_LOGINS"
+  MANDATE_LEGAL_OWNER_APPROVED="$v_LEGAL_OWNER_APPROVED"; MANDATE_SCOPE="$v_SCOPE"; MANDATE_RESERVE="$v_RESERVE"
+  MANDATE_VALID_FROM="$v_VALID_FROM"; MANDATE_VALID_UNTIL="$v_VALID_UNTIL"; MANDATE_TERMS_VERSION="$v_TERMS_VERSION"
+  MANDATE_ACCEPTED_AT="$v_ACCEPTED_AT"; MANDATE_ACCEPT_SOURCE="$v_ACCEPT_SOURCE"
+  MANDATE_REVOKED_AT="$v_REVOKED_AT"; MANDATE_PAUSED="$v_PAUSED"
+  return 0
+}
+
+# registry_mandate_active <id> <now-iso> - the ONE question the adapter asks
+# before every turn (spec Part 6). rc 0 active · 1 not active (reason on stderr)
+# · 78 register refusal. Fails closed: a row that will not load is not active.
+# Revocation and pause outrank validity; validity is inclusive of FROM and
+# exclusive of UNTIL, compared as ISO strings, which sort correctly in UTC.
+registry_mandate_active() {
+  local id="${1:-}" now="${2:-}"
+  _registry_mandate_stamp_ok "$now" || { echo "registry: mandate check needs an ISO-8601 UTC now, got '$now'" >&2; return 1; }
+  registry_mandate_load "$id" || return $?
+  if [ -n "$MANDATE_REVOKED_AT" ]; then echo "registry: mandate '$id' is revoked (since $MANDATE_REVOKED_AT)" >&2; return 1; fi
+  if [ "$MANDATE_PAUSED" = yes ];   then echo "registry: mandate '$id' is paused" >&2; return 1; fi
+  if [[ "$now" < "$MANDATE_VALID_FROM" ]]; then echo "registry: mandate '$id' is not valid yet (from $MANDATE_VALID_FROM)" >&2; return 1; fi
+  if [ -n "$MANDATE_VALID_UNTIL" ] && ! [[ "$now" < "$MANDATE_VALID_UNTIL" ]]; then echo "registry: mandate '$id' has expired (until $MANDATE_VALID_UNTIL)" >&2; return 1; fi
+  return 0
+}
+
+# registry_mandate_write <id> <content> <validate_fn> - the same thin wrapper the
+# other registers have; the strict loader is the readback, so "written" means
+# what every reader will see, refusals included.
+registry_mandate_write() {
+  local id="$1" content="$2" validate_fn="$3"
+  local dir; dir="$(registry_mandate_dir)" || return 78
+  registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_mandate_load "mandate"
+}
+
 # registry_login_principal_gate <login-slug> <account-slug> [label] — GATE 1:
 # a login's PRINCIPAL must be the SAME HUMAN as the account it would ride on.
 # Shared by `steward registry session add` and the hub's enroll, so the pair
