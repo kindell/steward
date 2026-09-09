@@ -151,12 +151,48 @@ err="$( STEWARD_ESTATE_ROOT="$FX/loose" bash -c \
         '. "$1/lib/registry.sh"; registry_invite_load inv-00000000' _ "$here" 2>&1 >/dev/null )"
 has "the invite refusal names the mode"   "$err" "group- or other-writable (mode 775)"
 has "and names the directory"             "$err" "$FX/loose/invites.d"
-has "and names the remedy"                "$err" "chmod g-w,o-w $FX/loose/invites.d"
+has "and names the remedy"                "$err" "chmod g-w,o-w \"$FX/loose/invites.d\""
 err="$( STEWARD_ESTATE_ROOT="$FX/loose" bash -c \
         '. "$1/lib/registry.sh"; registry_login_load nobody' _ "$here" 2>&1 >/dev/null )"
 has "the login refusal names the mode"    "$err" "group- or other-writable (mode 775)"
 has "and names the directory"             "$err" "$FX/loose/logins.d"
-has "and names the remedy"                "$err" "chmod g-w,o-w $FX/loose/logins.d"
+has "and names the remedy"                "$err" "chmod g-w,o-w \"$FX/loose/logins.d\""
+
+# -- 3b. THE REMEDY IS A COMMAND, SO IT IS MEASURED BY RUNNING IT -------------
+#
+# A remedy that reports success and repairs nothing is worse than no remedy:
+# the operator pastes it, sees no error, and believes the register is fixed.
+# Measured on an estate whose path contains a space, before this was quoted:
+# the message printed `chmod g-w,o-w /var/.../my estate/invites.d`, pasting it
+# gave `chmod: /var/.../my: No such file or directory` plus a second complaint
+# about `estate/invites.d`, and the register was STILL 775 afterwards.
+#
+# So the assertion is not that the text looks right. The command is lifted out
+# of the message the loader printed and RUN, in a shell, exactly as an operator
+# would paste it, and the register is measured again afterwards.
+echo "== the remedy the refusal prints actually repairs the register =="
+SP="$FX/my estate"
+( umask 022; build_estate "$SP" ) || bad "an estate builds at a path with a space" "rc $?"
+chmod 775 "$SP/invites.d" "$SP/logins.d"
+loader_err() { # <estate> <shell snippet>
+  ( STEWARD_ESTATE_ROOT="$1" bash -c \
+      ". \"\$1/lib/registry.sh\"; $2" _ "$here" 2>&1 >/dev/null )
+}
+for reg in invites logins; do
+  case "$reg" in
+    invites) call='registry_invite_load inv-00000000' ;;
+    logins)  call='registry_login_load nobody' ;;
+  esac
+  err="$(loader_err "$SP" "$call")"
+  remedy="$(printf '%s\n' "$err" | sed -n 's/.* - run: //p' | head -1)"
+  has "the $reg refusal on a path with a space offers a remedy" "$remedy" "chmod g-w,o-w"
+  crc=0; cout="$( eval "$remedy" 2>&1 )" || crc=$?
+  is "and pasting the $reg remedy exits 0" "$crc" "0"
+  is "and it complains about nothing"      "$cout" ""
+  is "and $reg.d is no longer group- or other-writable" "$(mode_of "$SP/$reg.d")" "755"
+  no "and the loader no longer refuses the register" \
+     "$(loader_err "$SP" "$call")" "group- or other-writable"
+done
 
 # -- 4. THE WRITER'S READBACK REFUSAL CARRIES THE LOADER'S OWN SENTENCE --------
 # The readback used to run with `>/dev/null 2>&1`, so the one message that said
@@ -170,7 +206,7 @@ out="$( STEWARD_ESTATE_ROOT="$FX/loose" bash "$here/bin/steward" \
 is "invite issue still refuses" "$rc" "70"
 has "and still says the readback failed" "$out" "does not load back through the registry"
 has "and now carries the loader's reason" "$out" "group- or other-writable"
-has "and the remedy travels with it"      "$out" "chmod g-w,o-w $FX/loose/invites.d"
+has "and the remedy travels with it"      "$out" "chmod g-w,o-w \"$FX/loose/invites.d\""
 n=0; for f in "$FX/loose"/invites.d/*.conf; do [ -e "$f" ] && n=$((n+1)); done
 is "and the refused row was removed" "$n" "0"
 
