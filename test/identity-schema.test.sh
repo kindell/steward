@@ -881,6 +881,20 @@ laddasvcrc() { # <conf> -> rc of registry_service_load
     . "$here/lib/registry.sh"
     registry_service_load "$1" >/dev/null 2>&1; echo $? )
 }
+laddajob() { # <conf> <field> -> load it and print a field
+  ( export STEWARD_ESTATE_ROOT="$FX"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_job_load "$1" >/dev/null 2>&1 || exit 1
+    printf '%s' "${!2}" )
+}
+laddasvc() { # <conf> <field> -> load it and print a field
+  ( export STEWARD_ESTATE_ROOT="$FX"
+    # shellcheck source=/dev/null
+    . "$here/lib/registry.sh"
+    registry_service_load "$1" >/dev/null 2>&1 || exit 1
+    printf '%s' "${!2}" )
+}
 
 full_estate 6
 job nologin-job 'KIND="command"' 'REPO_PATH="/x"' 'OWNER="alice"' 'DOMAIN="acme"' \
@@ -921,6 +935,51 @@ svc leverschema-svc 'OWNER="alice"' 'SERVICE_SCRIPT="run.sh"' '_REGISTRY_SCHEMA_
 rc="$(laddasvcrc "$FX/services.d/leverschema-svc.conf")"
 [ "$rc" = "78" ] && ok "a service row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" \
   || bad "a service row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" "rc=$rc"
+
+
+# AND NOT THROUGH THE LOADERS' PRIVATE NAMES EITHER. The two loaders got the
+# same wall as registry_load, and until now nothing measured it: reverting both
+# to a direct `source "$conf"` left every suite green. Two levers per loader are
+# reachable in that frame. The first is the gate answer copied into the local
+# _gate_schema, read at the schema-6 LOGIN check below it: a row assigning that
+# name demoted the estate under itself and skipped the check entirely (rc 78
+# becomes 0). The second is the loader's own name for the unit, JOB_NAME /
+# SERVICE_NAME, set from the conf's basename BEFORE the source and read AFTER
+# it, where it decides the launchd label and the log path: a row assigning it
+# was supervised under ANOTHER unit's label and wrote to that unit's log.
+job privschema-job 'KIND="command"' 'REPO_PATH="/x"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'TIMEOUT_MIN="5"' 'SCHEDULE_MINUTE="0"' 'COMMAND="true"' '_gate_schema="5"'
+rc="$(laddajobrc "$FX/jobs.d/privschema-job.conf")"
+[ "$rc" = "78" ] && ok "a job row setting the loader's private _gate_schema cannot demote the estate" \
+  || bad "a job row setting the loader's private _gate_schema cannot demote the estate" "rc=$rc"
+
+svc privschema-svc 'OWNER="alice"' 'SERVICE_SCRIPT="run.sh"' '_gate_schema="5"'
+rc="$(laddasvcrc "$FX/services.d/privschema-svc.conf")"
+[ "$rc" = "78" ] && ok "a service row setting the loader's private _gate_schema cannot demote the estate" \
+  || bad "a service row setting the loader's private _gate_schema cannot demote the estate" "rc=$rc"
+
+job privname-job 'KIND="command"' 'REPO_PATH="/x"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'TIMEOUT_MIN="5"' 'SCHEDULE_MINUTE="0"' 'COMMAND="true"' 'LOGIN="acme-team"' \
+  'JOB_NAME="withlogin-job"'
+got="$(laddajob "$FX/jobs.d/privname-job.conf" JOB_LABEL)"
+[ "$got" = "com.example.job.acme.privname-job" ] \
+  && ok "a job row setting JOB_NAME does not take another job's launchd label" \
+  || bad "a job row setting JOB_NAME does not take another job's launchd label" "got '$got'"
+got="$(laddajob "$FX/jobs.d/privname-job.conf" JOB_LOG)"
+[ "$got" = "/Users/alice/Library/Logs/jobs/acme-privname-job.log" ] \
+  && ok "a job row setting JOB_NAME does not write to another job's log" \
+  || bad "a job row setting JOB_NAME does not write to another job's log" "got '$got'"
+
+svc privname-svc 'OWNER="alice"' 'SERVICE_SCRIPT="run.sh"' 'LOGIN="acme-team"' \
+  'SERVICE_NAME="withlogin-svc"'
+got="$(laddasvc "$FX/services.d/privname-svc.conf" SERVICE_LABEL)"
+[ "$got" = "com.example.service.privname-svc" ] \
+  && ok "a service row setting SERVICE_NAME does not take another service's launchd label" \
+  || bad "a service row setting SERVICE_NAME does not take another service's launchd label" "got '$got'"
+got="$(laddasvc "$FX/services.d/privname-svc.conf" SERVICE_LOG)"
+[ "$got" = "/Users/alice/.claude/privname-svc.log" ] \
+  && ok "a service row setting SERVICE_NAME does not write to another service's log" \
+  || bad "a service row setting SERVICE_NAME does not write to another service's log" "got '$got'"
 
 full_estate 5
 rc="$(laddajobrc "$FX/jobs.d/nologin-job.conf")"
