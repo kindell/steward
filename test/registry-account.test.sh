@@ -329,5 +329,36 @@ fi
 is "7: and the row was still published" "$([ -f "$TRAPDIR/accounts.d/trapcase.conf" ] && echo yes || echo no)" "yes"
 rm -rf "$TRAPDIR"
 
+echo "== 8. a slug that is a path is refused before a path is built from it =="
+
+# THE CALLER WITHOUT A GRAMMAR. registry_account_load joins its argument into
+# "<accounts.d>/<slug>.conf" and SOURCES it, and `steward registry login ls`
+# reaches it with a logins.d row's ACCOUNT field - free text as far as
+# `login add --account` is concerned. Measured before the fix: ACCOUNT set to
+# a traversal loaded a conf one directory OUTSIDE accounts.d and ran what was
+# in it. The marker below is the side effect; the assertion is that it never
+# appears.
+mkdir -p "$FX/outside"
+{ printf 'PRINCIPAL="a"\n'
+  printf 'HOST="h1"\n'
+  printf 'USERNAME="u"\n'
+  printf 'touch "%s/SOURCED"\n' "$FX"
+} > "$FX/outside/evil.conf"
+rm -f "$FX/SOURCED"
+load_account '../outside/evil' >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ]; then ok "8: a slug that is a path refuses"
+else bad "8: a slug that is a path refuses" "rc=$rc"; fi
+absent "8: and the conf outside accounts.d was never sourced" "$FX/SOURCED"
+err="$( ( STEWARD_ESTATE_ROOT="$FX"
+          # shellcheck source=/dev/null
+          . "$here/lib/registry.sh"
+          registry_account_load '../outside/evil' 2>&1 >/dev/null ) )"
+has "8: the refusal names the value and the grammar" "$err" "invalid account id"
+
+# THE CONTROL GROUP: the same loader, a well-formed slug, still loads. A
+# refusal that also refused the ordinary case would read green here and take
+# the register down everywhere else.
+is "8: a well-formed account id still loads" "$(load_account a-h1)" "a|h1|a"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -2050,6 +2050,20 @@ registry_account_load() {
   ACCOUNT_PRINCIPAL=""; ACCOUNT_HOST=""; ACCOUNT_USERNAME=""; ACCOUNT_MCP_ASSETS=""
   local slug="${1:-}" d f
   [ -n "$slug" ] || return 1
+  # THE SHAPE BEFORE THE PATH. The two lines below build
+  # "<accounts.d>/<slug>.conf" and SOURCE it, and not every caller checks the
+  # grammar first. `steward registry login ls` hands this loader a logins.d
+  # row's ACCOUNT, and `steward registry login add --account` takes that field
+  # as free text - so a login row carrying ACCOUNT="../outside/evil" made this
+  # loader source a conf one directory OUTSIDE accounts.d, side effects and
+  # all, measured on a fixture. A caller that builds a path from a name must
+  # know it has a name.
+  #
+  # rc 1, THE SAME ANSWER AS "no such account", on purpose: a value that is not
+  # an account id names no account, and every caller already handles the absent
+  # case. A distinct code would be a new outcome for a dozen call sites to
+  # learn, for a refusal none of them can do anything different about.
+  registry_valid_name "$slug" || { echo "registry: invalid account id '$slug' (allowed: a-z 0-9 -)" >&2; return 1; }
   d="$(registry_account_dir)" || return 78
   f="$d/$slug.conf"
   [ -f "$f" ] || { echo "registry: no such account: $slug" >&2; return 1; }
