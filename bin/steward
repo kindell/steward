@@ -4911,18 +4911,35 @@ EOF
   #
   # HOST COMES BACK FIRST AND USERNAME LAST, because the crossing is text and
   # the fields are exactly the two the loader does not check the FORM of. HOST
-  # is loader-checked non-empty, so the first line cannot be collapsed; USERNAME
-  # is the remainder, so a hand-edited value carrying newlines arrives WHOLE and
-  # is refused below by the field it actually came from. Printed the other way
-  # round, a forged USERNAME would be reported as a bad HOST.
-  local acct rows="" usernames="" acct_bad="" ac_row ac_rc ac_host ac_user
+  # is loader-checked non-empty, so the first line cannot be collapsed. Printed
+  # the other way round, a forged USERNAME would be reported as a bad HOST.
+  #
+  # AND A SENTINEL AFTER THEM, the same one the two entity crossings carry.
+  # Command substitution strips EVERY trailing newline, so a USERNAME that is
+  # nothing but newlines loses its whole line and a reader splitting on the
+  # first newline finds none - leaving the HOST value standing in the USERNAME's
+  # place. MEASURED: HOST="host-a" with an all-newline USERNAME passed both form
+  # gates below as the username "host-a" and the run locked, and archived the
+  # home of, a unix account no register row names, at rc 0. The sentinel tells a
+  # line that was lost from a field that was short, and a miss is reported
+  # against USERNAME - the field the collapse consumed.
+  local acct rows="" usernames="" acct_bad="" ac_row ac_rc ac_host ac_user ac_end ac_over
   for acct in $accounts; do
     ac_row="$( registry_account_load "$acct" >/dev/null 2>&1 \
-               && printf '%s\n%s\n' "$ACCOUNT_HOST" "$ACCOUNT_USERNAME" )"
+               && printf '%s\n%s\nok\n' "$ACCOUNT_HOST" "$ACCOUNT_USERNAME" )"
     ac_rc=$?
     if [ "$ac_rc" -eq 0 ]; then
-      ac_host="${ac_row%%$'\n'*}"
-      ac_user="${ac_row#*$'\n'}"
+      { IFS= read -r ac_host
+        IFS= read -r ac_user
+        IFS= read -r ac_end
+        IFS= read -r ac_over
+      } <<EOF
+$ac_row
+EOF
+      if [ "$ac_end" != "ok" ] || [ -n "$ac_over" ]; then
+        acct_bad="${acct_bad:+$acct_bad }$acct:USERNAME"
+        continue
+      fi
       # THE TWO FIELDS THE LOADER DOES NOT CHECK THE FORM OF, CHECKED HERE.
       # registry_account_load validates PRINCIPAL and asks only that HOST be
       # non-empty; USERNAME it lets default. THE WRITER'S OWN PREDICATES, CALLED

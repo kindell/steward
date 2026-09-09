@@ -390,6 +390,36 @@ has "and the assets it grants" "$ENTROW" 'MCP_ASSETS="asset-one"'
 # The row goes back to the shape the rest of this suite expects.
 printf 'NAME="Acme"\nMEMBERS="operator"\n' > "$ROOT/entities.d/acme.conf"
 
+echo "== a USERNAME that is nothing but a newline is refused, not read as the HOST =="
+# THE CROSSING IS TEXT, AND COMMAND SUBSTITUTION STRIPS EVERY TRAILING NEWLINE.
+# A crossing that prints HOST on one line and USERNAME on the next loses the
+# second line entirely when USERNAME is nothing but newlines, and a reader that
+# splits on the first newline then finds none and leaves the HOST value
+# standing in the USERNAME's place. host-a is a valid username shape, so both
+# form gates pass and the run goes on to lock, and archive the home of, a unix
+# account NO register row names - rc 0, filed under this person's offboarding.
+# That is the very harm the two form gates were added for, so the refusal is
+# what this case measures, and the helper call log is where it is measured:
+# a run that got as far as the helper has already done the damage.
+newperson rex "Rex"
+printf 'PRINCIPAL="rex"\nHOST="host-a"\nUSERNAME="\n"\n' > "$ROOT/accounts.d/rex-host-a.conf"
+# THE BYSTANDER. A directory standing in for the home of the account the
+# collapse would name - the fixture's helper really removes it, so this case
+# fails by archiving a home and not merely by returning the wrong number.
+mkdir -p "$FX/home/host-a"
+: > "$FX/calls"
+out="$(run offboard rex 2>&1)"; rc=$?
+is  "the run refuses, rc 78" "$rc" "78"
+has "and names the row and the field it came from" "$out" "accounts.d/rex-host-a.conf (USERNAME)"
+calls="$(cat "$FX/calls")"
+is  "and the helper was never reached at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+no  "no account was locked under the host's own name" "$calls" "lock host-a"
+if [ -d "$FX/home/host-a" ]; then ok "and the bystander's home is still there"; else bad "and the bystander's home is still there" "archived"; fi
+have "the person's own rows are untouched" "$ROOT/principals.d/rex.conf"
+havenot "and no receipt was written" "$HUBHOME/.local/state/fixture-state/offboards/rex.receipt.json"
+rm -rf "$FX/home/host-a"
+rm -f "$ROOT/accounts.d/rex-host-a.conf" "$ROOT/principals.d/rex.conf"
+
 echo "== --json is exactly one JSON value on stdout =="
 newperson cyd "Cyd"
 CSID="s-00000000000000cc"
