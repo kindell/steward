@@ -445,6 +445,10 @@ GFX=""
 LFX="$(mktemp -d)"; trap 'rm -rf "$LFX" "$GFX" "$FX"' EXIT
 mkdir -p "$LFX/estate" "$LFX/sessions.d" "$LFX/bus/bin" "$LFX/bin" \
   "$LFX/accounts.d" "$LFX/entities.d" "$LFX/projects.d" "$LFX/logins.d"
+# 0700, PINNED. The login reader refuses a group- or other-writable register, so
+# under the Debian default umask of 002 a fixture that lets `mkdir` pick the mode
+# measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$LFX/logins.d"
 # THE FULL ESTATE KEY SET, for the reason the FX fixture at the top of this
 # file carries it and the GFX fixture below says out loud: enrolment READS the
 # register back, and registry_load refuses (rc 78) on a half-built estate.
@@ -615,6 +619,7 @@ is "R3: nothing was written" "$(ls "$LFX/sessions.d" | sort)" "$before"
 GFX="$(mktemp -d)"
 mkdir -p "$GFX/estate" "$GFX/sessions.d" "$GFX/bus/bin" "$GFX/bin" \
   "$GFX/accounts.d" "$GFX/entities.d" "$GFX/projects.d" "$GFX/logins.d"
+chmod 700 "$GFX/logins.d"
 # THE FULL ESTATE KEY SET (not the trimmed one the other fixtures in this
 # file use) — G1 below loads its produced row back through registry_load,
 # which refuses on any of these being missing, unlike enroll itself.

@@ -40,6 +40,11 @@ HOMEDIR="$T/home"; ROOT="$T/estate"; LIBS="$T/libs"; BIN="$T/bin"
 mkdir -p "$HOMEDIR/.local/bin" "$HOMEDIR/Projects/repo" "$LIBS" "$BIN" \
          "$ROOT/estate" "$ROOT/sessions.d" "$ROOT/entities.d" "$ROOT/accounts.d" \
          "$ROOT/projects.d" "$ROOT/mcp.d"
+# 0700 ON THE FIXTURE HOME. registry_login_config_dir asks about the PARENT of
+# the directory it resolves, and for the legacy login (CONFIG_DIR="~/.claude")
+# that parent is the home itself - so under the Debian default umask of 002 it
+# came out 0775 and the resolver refused. See test/register-modes.test.sh.
+chmod 700 "$HOMEDIR"
 
 cat > "$ROOT/estate/steward.conf" <<'EOF'
 ESTATE_NAME="fixture"
@@ -526,7 +531,16 @@ echo "== 10. LOGIN: the resume path and the trust file follow the login, not \$H
 # thread or a trust file on BOTH sides of the CFG_ROOT split. These cases do.
 CFG="$HOMEDIR/.claude-logins/acme"
 MUNGE="$(printf '%s' "$HOMEDIR/Projects/repo" | sed 's|[^a-zA-Z0-9]|-|g')"
-reset_projects() { rm -rf "$HOMEDIR/.claude-logins" "$HOMEDIR/.claude"; }
+# 0700, PINNED, WHOLE CHAIN, ON EVERY RESET. registry_login_config_dir asks about
+# the resolved directory AND its parent, and every case below re-creates that
+# parent as an intermediate of a `mkdir -p` - so under a umask of 002 it came back
+# 0775 each time and section 10 refused on the fixture. Re-made and pinned here,
+# empty: an existing empty store is what "no thread filed here" means.
+reset_projects() {
+  rm -rf "$HOMEDIR/.claude-logins" "$HOMEDIR/.claude"
+  mkdir -p "$CFG"
+  chmod 700 "$HOMEDIR/.claude-logins" "$CFG"
+}
 
 echo "== 10a. a thread filed under the login's OWN directory is the one resumed =="
 reset_projects
@@ -611,6 +625,7 @@ printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-max"\nPROVIDER="claude-max"\nCONFI
 chmod 600 "$ROOT/logins.d/acme-old.conf"
 write_login_conf acme-old
 mkdir -p "$HOMEDIR/.claude"
+chmod 700 "$HOMEDIR/.claude"
 printf '{"projects":{}}\n' > "$HOMEDIR/.claude.json"
 rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
 run_login; rc10e=$?

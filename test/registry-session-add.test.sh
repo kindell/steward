@@ -48,6 +48,10 @@ absent(){ if [ ! -e "$2" ]; then ok "$1"; else bad "$1" "unexpectedly exists: $2
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/accounts.d" "$FX/hosts.d" "$FX/sessions.d" \
          "$FX/entities.d" "$FX/projects.d" "$FX/logins.d"
+# 0700, PINNED. The login reader refuses a group- or other-writable register, so
+# under the Debian default umask of 002 a fixture that lets `mkdir` pick the mode
+# measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
 SESS="$FX/sessions.d"
 
 # The full required-key set — the verb's readback goes through registry_load,

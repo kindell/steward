@@ -487,6 +487,12 @@ printf '%s\n' "$LG_HOME"
 EOF
 chmod +x "$T/lg-home-cmd"
 LG_RESOLVED="$LG_HOME/.claude-logins/acme"
+# 0700, PINNED, WHOLE CHAIN. registry_login_config_dir asks about the resolved
+# directory AND its parent, and the parent here is only ever created as an
+# intermediate by a `mkdir -p` further down - so under a umask of 002 it came out
+# 0775 and every LOGIN case refused on the fixture. See test/register-modes.test.sh.
+mkdir -p "$LG_RESOLVED"
+chmod 700 "$LG_HOME/.claude-logins" "$LG_RESOLVED"
 
 # write_lg_estate [schema-version] -- no argument writes an estate file with
 # no SCHEMA_VERSION line at all (the ordinary, un-versioned estate every case

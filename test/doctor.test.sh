@@ -185,6 +185,11 @@ assert_all_lines_shaped "missing-sessions.d: every output line matches the probe
 echo "== 2. the SKIP chain from a broken operator config =="
 mkfx "$FX/skipchain"
 mkdir -p "$FX/skipchain/cfgdir"
+# 0700, PINNED. The operator config reader refuses a group- or other-writable
+# directory, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. The two cases below that WANT
+# a loose directory set 0775 themselves, after this. See test/register-modes.test.sh.
+chmod 700 "$FX/skipchain/cfgdir"
 printf 'FORMAT=1\nCOCKPIT_ENGINE_CMD=/bin/rm\n' > "$FX/skipchain/cfgdir/broken"
 out="$(run "$FX/skipchain" "$FX/skipchain/hostcmd" env STEWARD_CONFIG_FILE="$FX/skipchain/cfgdir/broken")"; rc=$?
 is "broken operator config: rc 78" "$rc" "78"
@@ -242,6 +247,7 @@ has "and the remedy carries it, so following the advice keeps it" "$line" \
 
 mkfx "$FX/durable"
 mkdir -p "$FX/durable/cfgdir"
+chmod 700 "$FX/durable/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/durable" > "$FX/durable/cfgdir/config"
 chmod 0600 "$FX/durable/cfgdir/config"
 out="$(env -i PATH="$PATH" HOME="$FX/durable/home" STEWARD_CONFIG_FILE="$FX/durable/cfgdir/config" \
@@ -257,6 +263,7 @@ echo "== 4. every FAIL carries the exact remedy command =="
 # remedy must be 'config set', never 'config init' — init refuses outright
 # on a file that already exists.
 mkdir -p "$FX/cfgfail/cfgdir"
+chmod 700 "$FX/cfgfail/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=relative/not/absolute\n' > "$FX/cfgfail/cfgdir/broken"
 out="$(env -i PATH="$PATH" HOME="$FX/cfgfail/home" STEWARD_CONFIG_FILE="$FX/cfgfail/cfgdir/broken" \
   STEWARD_COCKPIT_DIR="$FX/cockpit-ok" bash "$STEWARD" doctor 2>&1)"
@@ -275,6 +282,7 @@ has "estate-root FAIL (no config file) carries the exact config-init command" "$
 
 # estate-root FAIL when a config file DOES exist: remedy is 'config set'.
 mkdir -p "$FX/rootfail2/cfgdir"
+chmod 700 "$FX/rootfail2/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s/nowhere\n' "$FX/rootfail2" > "$FX/rootfail2/cfgdir/config"
 chmod 0600 "$FX/rootfail2/cfgdir/config"
 out="$(env -i PATH="$PATH" HOME="$FX/rootfail2/home" \
@@ -624,6 +632,7 @@ case "$sockstatus" in PASS|WARN|FAIL|SKIP) ok "19: the one socket row carries a 
 
 echo "== 20. I3: writable config DIRECTORY FAIL prescribes chmod 0700 on the directory =="
 mkdir -p "$FX/dirfail/cfgdir"
+chmod 700 "$FX/dirfail/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/dirfail" > "$FX/dirfail/cfgdir/config"
 chmod 0600 "$FX/dirfail/cfgdir/config"
 chmod 0775 "$FX/dirfail/cfgdir"
@@ -637,6 +646,7 @@ chmod 0700 "$FX/dirfail/cfgdir"
 echo "== 21. I4: a dangling symlink at the config path FAILs naming the symlink, never WARN ambient-only =="
 mkfx "$FX/dangling"
 mkdir -p "$FX/dangling/cfgdir"
+chmod 700 "$FX/dangling/cfgdir"
 ln -sf "$FX/dangling/nope-does-not-exist" "$FX/dangling/cfgdir/config"
 out="$(env -i PATH="$PATH" HOME="$FX/dangling/home" STEWARD_CONFIG_FILE="$FX/dangling/cfgdir/config" \
   STEWARD_ESTATE_ROOT="$FX/dangling" STEWARD_HOSTNAME_CMD="$FX/dangling/hostcmd" \

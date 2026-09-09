@@ -114,6 +114,10 @@ FX="$(mktemp -d)"
 mkdir -p "$FX/estate" "$FX/sessions.d" "$FX/entities.d" "$FX/projects.d" \
          "$FX/accounts.d" "$FX/logins.d" "$FX/hosts.d" "$FX/checkout/sessions.d" \
          "$FX/bus/bin" "$FX/bin"
+# 0700, PINNED. The login reader refuses a group- or other-writable register, so
+# under the Debian default umask of 002 a fixture that lets `mkdir` pick the mode
+# measures the HOST, not the product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
 
 cat > "$FX/estate/steward.conf" <<'EOF'
 ESTATE_NAME="census"

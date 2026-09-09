@@ -252,6 +252,10 @@ fixture
 advance "$W" product "second"
 advance "$W" estate "second"
 mkdir -p "$W/home/.config/steward"
+# 0700, PINNED. The operator config reader refuses a group- or other-writable
+# directory; under a umask of 002 this one came out 0775 and the run refused on
+# the fixture. See test/register-modes.test.sh.
+chmod 700 "$W/home/.config/steward"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$W/estate" > "$W/home/.config/steward/config"
 chmod 600 "$W/home/.config/steward/config"
 from_e="$(sha "$W/estate")"

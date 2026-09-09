@@ -320,6 +320,10 @@ badgrammar tildeonly "~"                                    "the bare home refus
 
 echo "== 10. the directory's own state refuses when it EXISTS =="
 mkdir -p "$FX/realhome/.claude-logins/acme-team"
+# 0700, PINNED, WHOLE CHAIN. registry_login_config_dir asks about the target AND
+# its parent, so under a umask of 002 both come out 0775 and the resolver refuses
+# a directory the fixture meant to be sound.
+chmod 700 "$FX/realhome" "$FX/realhome/.claude-logins" "$FX/realhome/.claude-logins/acme-team"
 cat > "$FX/homelookup2" <<STUB
 #!/bin/bash
 [ "\$1" = "alice" ] && printf '%s\n' "$FX/realhome"
@@ -384,6 +388,7 @@ echo "== 11. the register-wide check catches what a row cannot see =="
 # TWO ROWS ON ONE DIRECTORY, in a one-shot register of their own — never in the
 # sound directory, so the control group below stays meaningful.
 mkdir -p "$FX/collide.d"
+chmod 700 "$FX/collide.d"
 for n in dup-a dup-b; do
   printf 'PRINCIPAL="alice"\nACCOUNT="acct-acme-team"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/same"\nLEGAL_OWNER="Acme"\n' \
     > "$FX/collide.d/$n.conf"
@@ -400,6 +405,7 @@ has "the refusal names the second row" "$err" "dup-b"
 # A check that compared paths alone would refuse this — and that refusal is
 # exactly what would have blocked a second human's own login row.
 mkdir -p "$FX/twoprincipals.d"
+chmod 700 "$FX/twoprincipals.d"
 printf 'PRINCIPAL="alice"\nACCOUNT="acct-a"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/shared"\nLEGAL_OWNER="Acme"\n' \
   > "$FX/twoprincipals.d/a.conf"
 printf 'PRINCIPAL="bob"\nACCOUNT="acct-b"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/shared"\nLEGAL_OWNER="Acme"\n' \
@@ -420,6 +426,7 @@ is "the check passes even when NO home can be resolved" "$?" "0"
 
 # TWO ROWS ON THE UNNAMED DEFAULT, same shape, its own register.
 mkdir -p "$FX/twolegacy.d"
+chmod 700 "$FX/twolegacy.d"
 cp "$FX/logins.d/acme-old.conf" "$FX/twolegacy.d/acme-old.conf"
 cp "$FX/bad.d/other-old.conf"   "$FX/twolegacy.d/other-old.conf"
 chmod 600 "$FX/twolegacy.d"/*.conf
@@ -428,6 +435,7 @@ is "two rows claiming the unnamed default refuse" "$?" "78"
 
 # AN UNPARSABLE ROW IS A REGISTER FAULT, never a skipped row.
 mkdir -p "$FX/onebad.d"
+chmod 700 "$FX/onebad.d"
 cp "$FX/logins.d/named.conf" "$FX/onebad.d/named.conf"
 cp "$FX/bad.d/dupkey.conf"   "$FX/onebad.d/dupkey.conf"
 chmod 600 "$FX/onebad.d"/*.conf

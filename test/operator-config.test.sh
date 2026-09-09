@@ -61,6 +61,12 @@ cat > "$FX/valid" <<'EOF'
 FORMAT=1
 STEWARD_ESTATE_ROOT=/abs/estate/root
 EOF
+# 0600 ON EVERY FIXTURE CONFIG FILE. The reader refuses a group- or
+# other-writable config file, so under the Debian default umask of 002 a file
+# left at the ambient mode (0664) refuses on its MODE and the case below never
+# measures what it was written to measure. The one case that WANTS a loose file
+# sets 0664 itself. See test/register-modes.test.sh.
+chmod 0600 "$FX/valid"
 out="$(debug "$FX/valid")"; rc=$?
 is "valid file: rc 0" "$rc" "0"
 has "valid file: estate root taken from file" "$out" "STEWARD_ESTATE_ROOT=/abs/estate/root source=config-file"
@@ -82,6 +88,7 @@ FORMAT=1
 STEWARD_ESTATE_ROOT=/abs/estate/root
 STEWARD_USAGE_CMD=/abs/usage-shim
 EOF
+chmod 0600 "$FX/valid-usage"
 out="$(debug "$FX/valid-usage")"; rc=$?
 is "usage cmd: rc 0" "$rc" "0"
 has "usage cmd: taken from the file" "$out" "STEWARD_USAGE_CMD=/abs/usage-shim source=config-file"
@@ -93,6 +100,7 @@ echo "== 4. refusal branches: each one rc 78 =="
 check_refuse() { # <description> <config-content> [grep-for]
   local desc="$1" content="$2" want="${3:-}"
   printf '%s' "$content" > "$FX/broken"
+  chmod 0600 "$FX/broken"
   out="$(debug "$FX/broken")"; rc=$?
   is "$desc: rc 78" "$rc" "78"
   if [ -n "$want" ]; then has "$desc: stderr mentions $want" "$out" "$want"; fi
@@ -177,11 +185,13 @@ STEWARD_ESTATE_ROOT=/abs/path$(printf '\r')
 # Line-number evidence, once, for the class of refusal the brief asks for by
 # name — proves radnummer really lands on stderr, not just a bare 'no'.
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=relative/path\n' > "$FX/broken"
+chmod 0600 "$FX/broken"
 out="$(debug "$FX/broken")"
 has "relative path refusal names the line number" "$out" ":2:"
 
 # Symlinked file — cheap to fixture without root, unlike foreign ownership.
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=/abs/path\n' > "$FX/real-target"
+chmod 0600 "$FX/real-target"
 ln -sf "$FX/real-target" "$FX/symlinked"
 out="$(debug "$FX/symlinked")"; rc=$?
 is "symlinked config file: rc 78" "$rc" "78"
@@ -240,6 +250,7 @@ has "gnu stat shape: the value came through" "$out" "STEWARD_ESTATE_ROOT=/abs/es
 
 echo "== 5. a broken file refuses the WHOLE invocation, not just the line =="
 printf 'FORMAT=1\nCOCKPIT_ENGINE_CMD=/bin/rm\n' > "$FX/broken-for-sessions"
+chmod 0600 "$FX/broken-for-sessions"
 
 human="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_CONFIG_FILE="$FX/broken-for-sessions" \
   STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" STEWARD_VIEWER="a" \

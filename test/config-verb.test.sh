@@ -75,6 +75,17 @@ is "init on existing file: content untouched" "$after" "$before"
 
 echo "== 3. set: rewrites only the target key, keeps the rest, FORMAT=1 first, mode 0600 =="
 mkdir -p "$FX/setverb/home" "$FX/setverb/cfgdir"
+# 0700, PINNED. The operator config reader refuses a group- or other-writable
+# directory, so under the Debian default umask of 002 a fixture that lets `mkdir`
+# pick the mode measures the HOST, not the product. The two cases below that WANT
+# a loose directory set 0775 themselves, after this. See test/register-modes.test.sh.
+#
+# $FX/setverb ITSELF IS PINNED TOO, not only the cfgdir below it. The
+# allowlist case further down writes its config straight into $FX/setverb, and
+# an intermediate directory `mkdir -p` created on the way to cfgdir carries the
+# ambient umask like any other - so the reader refused THAT directory instead,
+# and the parser half of the comparison came back empty.
+chmod 700 "$FX/setverb" "$FX/setverb/cfgdir"
 cat > "$FX/setverb/cfgdir/config" <<EOF
 FORMAT=1
 # a hand-written comment, kept as-is
@@ -100,8 +111,14 @@ has "set unknown key: names the offending key" "$out" "NOT_A_REAL_KEY"
 # THE SHARED ALLOWLIST, PROVED, NOT ASSUMED: the parser's own unknown-key
 # refusal and this writer's unknown-key refusal must name the IDENTICAL list
 # of allowed keys, character for character.
+#
+# 0600 ON THE FILE, like every other config file this suite writes. The reader
+# refuses a group- or other-writable config FILE as well as a loose directory,
+# and this was the one fixture file whose mode was left to the ambient umask -
+# so under 002 the parser refused on the MODE (664) and never reached the
+# unknown key, leaving nothing to compare the writer's list against.
 parser_out="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_CONFIG_FILE="$FX/setverb/parser-broken" \
-  bash -c 'printf "FORMAT=1\nNOT_A_REAL_KEY=/x\n" > "$1"; exec bash "$2" ls' _ \
+  bash -c 'printf "FORMAT=1\nNOT_A_REAL_KEY=/x\n" > "$1"; chmod 0600 "$1"; exec bash "$2" ls' _ \
   "$FX/setverb/parser-broken" "$STEWARD" 2>&1)"
 allowed_from_parser="$(printf '%s' "$parser_out" | grep -o 'allowed: [^)]*' | head -n1)"
 allowed_from_writer="$(printf '%s' "$out" | grep -o 'allowed: [^)]*' | head -n1)"
@@ -138,6 +155,7 @@ rm -f "$FX/symlinked/config" "$FX/symlinked/real-target"
 
 echo "== 6. atomicity: no temp litter, final content is old or new, never blended =="
 mkdir -p "$FX/atomic/home" "$FX/atomic/cfgdir"
+chmod 700 "$FX/atomic/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/atomic/old" > "$FX/atomic/cfgdir/config"
 chmod 0600 "$FX/atomic/cfgdir/config"
 run "$FX/atomic/cfgdir/config" set STEWARD_ESTATE_ROOT "$FX/atomic/new" >/dev/null
@@ -255,6 +273,7 @@ echo "== 11. set REPAIRS a parser-refused file for real, and drops loudly =="
 
 echo "-- 11a. an unknown-key line --"
 mkdir -p "$FX/repairunknown/home" "$FX/repairunknown/cfgdir"
+chmod 700 "$FX/repairunknown/cfgdir"
 cat > "$FX/repairunknown/cfgdir/config" <<EOF
 FORMAT=1
 # a hand-written comment that must survive
@@ -277,6 +296,7 @@ is "11a: the real dispatcher gate now accepts the file" "$?" "0"
 
 echo "-- 11b. a duplicate line of a DIFFERENT allowed key --"
 mkdir -p "$FX/repairdup/home" "$FX/repairdup/cfgdir"
+chmod 700 "$FX/repairdup/cfgdir"
 cat > "$FX/repairdup/cfgdir/config" <<EOF
 FORMAT=1
 # another comment that must survive
@@ -298,6 +318,7 @@ is "11b: the real dispatcher gate now accepts the file" "$?" "0"
 
 echo "-- 11c. a quoted value on a different key --"
 mkdir -p "$FX/repairquoted/home" "$FX/repairquoted/cfgdir"
+chmod 700 "$FX/repairquoted/cfgdir"
 cat > "$FX/repairquoted/cfgdir/config" <<EOF
 FORMAT=1
 # a third comment that must survive
@@ -317,6 +338,7 @@ is "11c: the real dispatcher gate now accepts the file" "$?" "0"
 
 echo "== 12. the lock: mkdir-based, bounded, never stolen, never left behind =="
 mkdir -p "$FX/lockset/home" "$FX/lockset/cfgdir"
+chmod 700 "$FX/lockset/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/lockset/old" > "$FX/lockset/cfgdir/config"
 chmod 0600 "$FX/lockset/cfgdir/config"
 mkdir "$FX/lockset/cfgdir/.steward-config.lock"
@@ -336,6 +358,7 @@ has "12: the new value landed" "$(cat "$FX/lockset/cfgdir/config")" "STEWARD_EST
 
 mkdir -p "$FX/lockinit/home"
 mkdir -p "$FX/lockinit/cfgdir"
+chmod 700 "$FX/lockinit/cfgdir"
 mkdir "$FX/lockinit/cfgdir/.steward-config.lock"
 out="$(run "$FX/lockinit/cfgdir/config" init --estate-root "$FX/lockinit/estate")"; rc=$?
 nonzero "12: init refuses while the lock directory is held" "$rc"
@@ -384,6 +407,7 @@ is "14: init with an embedded-newline value: rc 64" "$rc" "64"
   || bad "14: init wrote nothing" "file exists: $(cat "$FX/inject/cfgdir/config" 2>/dev/null)"
 
 mkdir -p "$FX/injectset/home" "$FX/injectset/cfgdir"
+chmod 700 "$FX/injectset/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/injectset/root" > "$FX/injectset/cfgdir/config"
 chmod 0600 "$FX/injectset/cfgdir/config"
 before="$(cat "$FX/injectset/cfgdir/config")"
@@ -402,6 +426,7 @@ hasnt "14: parser read-back shows no smuggled STEWARD_TMUX_SOCKET" "$debug_out" 
 
 echo "== 15. group/other-writable config DIRECTORY: writer refuses before writing or locking (I3) =="
 mkdir -p "$FX/writedir/home" "$FX/writedir/cfgdir"
+chmod 700 "$FX/writedir/cfgdir"
 printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/writedir/old" > "$FX/writedir/cfgdir/config"
 chmod 0600 "$FX/writedir/cfgdir/config"
 chmod 0775 "$FX/writedir/cfgdir"
@@ -415,6 +440,7 @@ is "15: file unchanged (the remedy did not silently 'succeed')" "$(cat "$FX/writ
 chmod 0700 "$FX/writedir/cfgdir"
 
 mkdir -p "$FX/writedirinit/home" "$FX/writedirinit/cfgdir"
+chmod 700 "$FX/writedirinit/cfgdir"
 chmod 0775 "$FX/writedirinit/cfgdir"
 out="$(run "$FX/writedirinit/cfgdir/config" init --estate-root "$FX/writedirinit/estate")"; rc=$?
 is "15: init into a 0775 dir: rc 78" "$rc" "78"
@@ -427,6 +453,7 @@ chmod 0700 "$FX/writedirinit/cfgdir"
 
 echo "== 16. set on a valid file with a leading comment before FORMAT=1 (M1) =="
 mkdir -p "$FX/leadcomment/home" "$FX/leadcomment/cfgdir"
+chmod 700 "$FX/leadcomment/cfgdir"
 cat > "$FX/leadcomment/cfgdir/config" <<EOF
 # a leading comment before FORMAT=1
 FORMAT=1
