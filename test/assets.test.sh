@@ -16,9 +16,9 @@ check(){ local d="$1"; shift; if "$@"; then ok; else bad "$d"; fi; }
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate" "$FX/sessions.d"
 printf 'ESTATE_NAME="fixture"\nLABEL_PREFIX="com.fixture"\nHUB_HOST="h"\nOP_TOKEN_FILE_NAME="token"\n' > "$FX/estate/steward.conf"
-printf 'HOST="h"\nOWNER="alice"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="with-assets"\nASSETS="mail:kindell chromium-rig slack:acme"\n' \
+printf 'HOST="h"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="with-assets"\nASSETS="mail:acme chromium-rig slack:acme"\n' \
   > "$FX/sessions.d/with-assets.conf"
-printf 'HOST="h"\nOWNER="alice"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="no-assets"\n' \
+printf 'HOST="h"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="no-assets"\n' \
   > "$FX/sessions.d/no-assets.conf"
 
 export STEWARD_REGISTRY_DIR="$FX/sessions.d" STEWARD_ESTATE_ROOT="$FX" \
@@ -30,7 +30,7 @@ echo "== declared assets come out of the registry =="
 out="$(session_assets with-assets)"; rc=$?
 check "session_assets rc 0" [ "$rc" -eq 0 ]
 check "three assets, one per line" [ "$(printf '%s\n' "$out" | grep -c .)" -eq 3 ]
-check "mail asset present"     bash -c 'printf "%s\n" "$1" | grep -qx "mail:kindell"' _ "$out"
+check "mail asset present"     bash -c 'printf "%s\n" "$1" | grep -qx "mail:acme"' _ "$out"
 check "rig asset present"      bash -c 'printf "%s\n" "$1" | grep -qx "chromium-rig"' _ "$out"
 check "slack asset present"    bash -c 'printf "%s\n" "$1" | grep -qx "slack:acme"' _ "$out"
 
@@ -49,7 +49,7 @@ echo "== an unknown session refuses, never prints empty =="
 out3="$(session_assets does-not-exist 2>/dev/null)"; rc3=$?
 check "unknown session rc non-zero" [ "$rc3" -ne 0 ]
 
-printf 'HOST="h"\nOWNER="alice"\nACCOUNT="missing-account"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
+printf 'HOST="h"\nOWNER="alice"\nACCOUNT="missing-account"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\n' \
   > "$FX/sessions.d/bad-account.conf"
 bad_assets="$(session_assets bad-account 2>/dev/null)"; bad_assets_rc=$?
 check "invalid account identity preserves rc 78" [ "$bad_assets_rc" -eq 78 ]
@@ -72,7 +72,7 @@ check "ASSETS is empty after loading a session without it" [ -z "$leak" ]
 # whatever files happen to sit in the caller's cwd. Run from a directory that
 # actually contains files, so a regression would manifest as extra lines.
 echo "== a literal '*' in ASSETS survives, even with files in cwd =="
-printf 'HOST="h"\nOWNER="alice"\nDOMAIN="kindell"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="glob-assets"\nASSETS="mail:acme * chromium-rig"\n' \
+printf 'HOST="h"\nOWNER="alice"\nDOMAIN="acme"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="glob-assets"\nASSETS="mail:acme * chromium-rig"\n' \
   > "$FX/sessions.d/glob-assets.conf"
 GLOBDIR="$(mktemp -d)"; trap 'rm -rf "$FX" "$GLOBDIR"' EXIT
 : > "$GLOBDIR/aaa"; : > "$GLOBDIR/bbb"
@@ -121,8 +121,8 @@ esac
 STUB
 chmod +x "$FX/probe-stub"
 
-line="$(asset_probe mail:kindell)"
-check "mail probes up"        bash -c '[[ "$1" == "mail:kindell up "* ]]' _ "$line"
+line="$(asset_probe mail:acme)"
+check "mail probes up"        bash -c '[[ "$1" == "mail:acme up "* ]]' _ "$line"
 line="$(asset_probe slack:acme)"
 check "slack probes down"     bash -c '[[ "$1" == "slack:acme down "* ]]' _ "$line"
 line="$(asset_probe chromium-rig)"
@@ -137,13 +137,13 @@ check "unmeasurable is never up"     bash -c '[[ "$1" != *" up "* ]]' _ "$line"
 # A MISSING PROBE COMMAND IS ALSO 'unknown' — not a crash, not silence. The
 # cockpit must be able to render a fleet where probing is unavailable.
 unset STEWARD_ASSET_PROBE_CMD
-line="$(STEWARD_ASSET_PROBE_CMD=/nonexistent-probe asset_probe mail:kindell)"
-check "missing probe command is unknown" bash -c '[[ "$1" == "mail:kindell unknown "* ]]' _ "$line"
+line="$(STEWARD_ASSET_PROBE_CMD=/nonexistent-probe asset_probe mail:acme)"
+check "missing probe command is unknown" bash -c '[[ "$1" == "mail:acme unknown "* ]]' _ "$line"
 export STEWARD_ASSET_PROBE_CMD="$FX/probe-stub"
 
 # THE STATUS VOCABULARY IS CLOSED. Four words, no others — the cockpit renders
 # on them and an unexpected word would render as nothing.
-for a in mail:kindell slack:acme chromium-rig teams:acme; do
+for a in mail:acme slack:acme chromium-rig teams:acme; do
   w="$(asset_probe "$a" | awk '{print $2}')"
   case "$w" in up|local-only|down|unknown) ok ;; *) bad "unexpected status word '$w' for $a" ;; esac
 done
@@ -194,9 +194,9 @@ STUB
 chmod +x "$FX/probe-stub-slow"
 
 before=$SECONDS
-line="$(STEWARD_ASSET_PROBE_CMD="$FX/probe-stub-slow" STEWARD_ASSET_PROBE_TIMEOUT=1 asset_probe mail:kindell)"
+line="$(STEWARD_ASSET_PROBE_CMD="$FX/probe-stub-slow" STEWARD_ASSET_PROBE_TIMEOUT=1 asset_probe mail:acme)"
 elapsed=$((SECONDS - before))
-check "timed-out probe reports unknown" bash -c '[[ "$1" == "mail:kindell unknown "* ]]' _ "$line"
+check "timed-out probe reports unknown" bash -c '[[ "$1" == "mail:acme unknown "* ]]' _ "$line"
 check "timed-out probe names the timeout" bash -c '[[ "$1" == *"probe-timeout"* ]]' _ "$line"
 check "timed-out probe returns well inside the stub's sleep" [ "$elapsed" -lt "$STUB_SLEEP" ]
 
