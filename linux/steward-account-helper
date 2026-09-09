@@ -156,6 +156,14 @@ read_account() {
 #   guess. Reading silence as "no privileges" is how a floor built to protect the
 #   administrator locks the administrator out, on a host that is already unwell.
 #
+#   WHICH MEANS THE HOST'S OWN SUDOERS MUST LET root RUN `sudo -l -U`: on a host
+#   whose sudoers omits `root ALL=(ALL:ALL) ALL`, or has a parse error anywhere
+#   in it, that command prints nothing and this floor refuses EVERY add and lock
+#   on the machine. That is the right direction to be wrong in, and it is also
+#   one line of somebody else's configuration turning into a total outage of
+#   both verbs - so an operator meeting a blanket "sudo would not answer" should
+#   look at the host's sudoers before looking at anything here.
+#
 # So the helper manages only what it could have created itself: an ordinary
 # uid, never root, never the caller, never sudo-capable, with its home exactly
 # at /home/<name>, which is the account layout this product's own 'add'
@@ -187,6 +195,12 @@ account_group_privilege() {
   # privileged group" locks out the administrator this floor exists to protect,
   # at the moment the host is already unwell.
   groups="$(id -nG -- "$1" 2>/dev/null)" || return 2
+  # AND AN EMPTY LIST IS NOT AN EMPTY ANSWER. A real `id -nG` always prints at
+  # least the account's primary group, so nothing on a working host answers with
+  # nothing - but a broken NSS answer did, at status 0, and the loop below then
+  # never ran and this returned "in no privileged group". The last silence in
+  # this file that was still read as an answer.
+  [ -n "$groups" ] || return 2
   for g in $groups; do
     case "$g" in
       sudo|wheel|admin|adm|docker|lxd|disk) return 0 ;;
@@ -222,7 +236,14 @@ account_sudo_rules() {
       # The shape a real sudo gives an account with no rules at all, alongside
       # status 1. That is a NO, and it is the ONLY non-zero status this reads as
       # one - every other one is an unanswered question.
-      *'is not allowed to run sudo'*) return 1 ;;
+      #
+      # AND IT IS A NO ONLY WHILE IT IS THE WHOLE ANSWER. Below the header this
+      # sentence is not sudo's own: it is text inside a spec, and a sudoers rule
+      # whose command or arguments carry the phrase - a file root or a directory
+      # administrator writes - turned a real listing into "no rules at all" and
+      # walked a sudo-capable account through the floor. Past the header, every
+      # line is a privilege whatever it says.
+      *'is not allowed to run sudo'*) [ -z "$listing" ] || return 0; return 1 ;;
       # Everything after this header is a privilege, whatever it looks like.
       *'may run the following commands'*) listing=1; continue ;;
     esac

@@ -68,8 +68,14 @@ db_empty
 # id answers two questions: the caller's uid, and the group list of an account.
 # FAKE_GROUPS is how an account that can become root - the one thing the floor
 # has to refuse and cannot see in a passwd row - is put in front of the helper.
+#
+# THE DEFAULT IS A REAL LIST, and `-` not `:-` so that a case can still ask for
+# an EMPTY one: a real `id -nG` always prints at least the account's primary
+# group, so a shim answering with nothing modelled a host that does not exist -
+# and an empty list is now a refusal, which is the case that needs to say so on
+# purpose rather than by omission.
 mkshim id 'case "${1:-}" in
-  -nG) printf "%s\n" "${FAKE_GROUPS:-}"; exit 0 ;;
+  -nG) printf "%s\n" "${FAKE_GROUPS-alice users}"; exit 0 ;;
 esac
 echo "${FAKE_UID:-0}"'
 # sudo answers the question a group list cannot. An account whose rights come
@@ -479,6 +485,16 @@ is  "and add refuses on the same ground" "$rc" "64"
 out="$( ( export FAKE_GROUPS='alice 27 users'; run lock alice ) 2>&1 )"; rc=$?
 is  "a group the host cannot name is rc 64" "$rc" "64"
 has "and it takes the same refusal" "$out" "could not read the group list"
+# AND AN EMPTY LIST IS NOT AN ANSWER EITHER. A real `id -nG` always prints at
+# least the primary group, so nothing on a working host answers with nothing -
+# but a broken NSS answer did, at status 0, and the loop body then never ran and
+# the function returned "in no privileged group". That was the one silence left
+# in this file still read as an answer.
+out="$( ( export FAKE_GROUPS=''; run lock alice --archive-home ) 2>&1 )"; rc=$?
+is  "an empty group list at status 0 is rc 64" "$rc" "64"
+has "and it takes the same refusal" "$out" "could not read the group list"
+out="$( ( export FAKE_GROUPS=''; run add alice ) 2>&1 )"; rc=$?
+is  "and add refuses on that ground too" "$rc" "64"
 
 # A GROUP NAME LIST IS THE WRONG SHAPE FOR THE QUESTION, and no addition to it
 # makes it the right one. The rights that matter are in /etc/sudoers.d - which is
@@ -497,6 +513,16 @@ has "and the question was put to sudo itself, non-interactively" "$calls" \
 no  "and nothing was locked or expired" "$calls" "usermod"
 no  "nor its password touched" "$calls" "passwd -"
 no  "nor its home moved" "$calls" "mv "
+# AND THE "not allowed" SENTENCE IS A NO ONLY WHILE IT IS THE WHOLE ANSWER. It
+# was matched line by line BEFORE the header state was consulted, so a sudoers
+# spec whose command or arguments carry the phrase - a file writable by root or
+# by a directory administrator on that host - turned a real listing into "no
+# rules at all" and walked a sudo-capable account straight through the floor.
+out="$( ( export FAKE_SUDO_LIST='User alice may run the following commands on this host:
+    (ALL) NOPASSWD: /usr/local/bin/report --title "who is not allowed to run sudo here"'
+          run lock alice --archive-home ) 2>&1 )"; rc=$?
+is  "a spec line carrying the 'not allowed' phrase is still a privilege, rc 64" "$rc" "64"
+has "and the refusal says who answered" "$out" "sudo lists privileges for 'alice'"
 # AND AN UNANSWERED SUDO IS NOT A NO. Same rule as the group list above and as
 # the session list and the device numbers further down: what this helper cannot
 # measure, it does not manage.
@@ -538,6 +564,15 @@ is  "with no SUDO_USER in the environment that test is vacuous" "$rc" "0"
 out="$( ( export FAKE_SUDO_LIST='User alice is not allowed to run sudo on this host.' FAKE_SUDO_RC=1
           run lock alice ) 2>&1 )"; rc=$?
 is  "an account sudo lists no privileges for passes the floor" "$rc" "0"
+# AND THE STATUS IS DELIBERATELY NOT READ. Modern `sudo -n -l -U <non-sudoer>`
+# exits 0 in list mode while printing the same sentence; the helper discards the
+# status (`|| true`) and decides on the text alone, so both are the same answer
+# to it. Nothing pinned that immunity, and an edit that started believing the
+# status would refuse every ordinary member on every modern host with this suite
+# still green.
+out="$( ( export FAKE_SUDO_LIST='User alice is not allowed to run sudo on this host.' FAKE_SUDO_RC=0
+          run lock alice ) 2>&1 )"; rc=$?
+is  "and the same sentence at status 0 is the same answer" "$rc" "0"
 # And a host with no sudo installed at all. The account cannot be sudo-capable
 # THAT way, and refusing every member of such a host would be a refusal on a
 # missing package.
