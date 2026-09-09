@@ -3095,6 +3095,41 @@ registry_estate_gates() {
   _REGISTRY_LOGIN_REQUIRED_FOR_SEEN="$_gate_value"
 }
 
+# SOURCE ONE ROW BEHIND A SCOPE WALL. Every loader in this file resets the
+# globals a row is allowed to set, sources the conf, and then reads a handful
+# of variables that are the LOADER'S OWN: the copies of the estate gate's
+# answers, the row's name, the path the conf was read from. Sourcing in the
+# loader's own body puts those names in the SAME dynamic scope as the row, so
+# a conf line naming one of them was an assignment to the loader's working
+# state, made after every check that could have refused it.
+#
+# LOCALS IN THE LOADER WERE NOT A WALL, and that is why this function exists.
+# Writing `local _gate_schema=...` before `source "$conf"` in the same function
+# only renames the target: bash scope is dynamic, so an assignment inside the
+# sourced file finds the innermost declaration of that name, which is the
+# local. Measured on the shape that shipped before this: a row carrying
+# _gate_schema="5" demoted the estate exactly as the published
+# _REGISTRY_SCHEMA_SEEN did, and a row carrying project="intruder" was given
+# another row's launchd label, another row's session name and a log path
+# outside its owner's home.
+#
+# A SEPARATE FUNCTION IS THE WALL. The names are declared local HERE, one
+# frame deeper than the loader, so an assignment inside the conf finds THIS
+# frame and dies with it when the function returns; the loader's own values
+# are untouched. Everything a conf is SUPPOSED to set - REPO_PATH, OWNER,
+# SCHEDULE_MINUTE, all of them - is a global and is unaffected.
+#
+# THE LIST IS THE UNION of all three row loaders' private names rather than
+# one loader's, because one wall is easier to keep true than three. Adding a
+# variable that is read after the source in any of them means adding it here.
+_registry_source_row() { # <conf path>
+  local _gate_schema="" _gate_hub_host="" _gate_op_token_name="" \
+        _gate_label_prefix="" _gate_login_required_for=""
+  local project="" conf="" JOB_NAME="" SERVICE_NAME=""
+  # shellcheck source=/dev/null
+  source "$1"
+}
+
 registry_load() {
   # THE ESTATE GATES, WIRED. Until 2026-08-25 registry_schema_check existed and
   # nothing called it: the estate declared a version, the library knew how to
@@ -3126,10 +3161,17 @@ registry_load() {
   #
   # The copies below are LOCAL, so a row cannot reach the value the gate
   # measured through the published name, and every consumer in this function
-  # reads the copy rather than the global. A conf that assigned these local
-  # names would still land in the local - dynamic scope has no wall - but
-  # these names are private to this loader and are not what a conf carries,
-  # while the published names are documented and read from three other files.
+  # reads the copy rather than the global.
+  #
+  # THE LOCALS ARE NOT THEMSELVES THE WALL - _registry_source_row is. This
+  # comment used to end by saying that a conf assigning these local names would
+  # still land in the local, because dynamic scope has no wall, and that the
+  # names were private enough not to matter. They were not: a row line
+  # _gate_schema="5" demoted the estate, and a row line project="intruder"
+  # rewrote this loader's own name for the row, measured. The row is sourced
+  # one frame deeper now, where these names are declared again and die with
+  # the call, so both halves hold: the published names decide nothing, and the
+  # private copies are out of the row's reach as well.
   local _gate_schema="${_REGISTRY_SCHEMA_SEEN:-}"
   local _gate_hub_host="${_REGISTRY_HUB_HOST_SEEN:-}"
   local _gate_op_token_name="${_REGISTRY_OP_TOKEN_NAME_SEEN:-}"
@@ -3159,8 +3201,7 @@ registry_load() {
   BROWSER_RIG=""; BROWSER_DISPLAY=""; BROWSER_CDP=""; BROWSER_VNC=""; BROWSER_PROFILE=""
   BROWSER_RIG_OWNER=""
   RUNTIME=""; MODEL=""; OPENCODE_VERSION=""; OPENCODE_PORT=""; AUTO_APPROVE=""; CLAUDE_MEMORY_ROOT=""
-  # shellcheck source=/dev/null
-  source "$conf"
+  _registry_source_row "$conf"
   : "${PERMISSION_MODE:=bypassPermissions}"
   : "${RUNTIME:=claude-code}"
   case "$RUNTIME" in claude-code|opencode|codex) ;; *) return 1 ;; esac
@@ -3814,8 +3855,7 @@ registry_job_load() {
   SCHEDULE_MINUTE=""; SCHEDULE_HOUR=""; SCHEDULE_WEEKDAY=""
   PROMPT=""; MAX_TURNS=""; PERMISSION_MODE=""; SETTINGS_FILE=""; ALLOWED_TOOLS=""; TOOLS=""; JOB_ENV_KEYS=""; JOB_ENV_FILE=""; DELIVERY_GLOB=""; MCP_CONFIG=""
   PRE_CMD=""; POST_CMD=""; COMMAND=""
-  # shellcheck source=/dev/null
-  source "$conf"
+  _registry_source_row "$conf"
   # NAMESPACE WARNING: see the note at the session loader's KIND validation. The
   # same global name carries a different closed set there (work|infra|advisor).
   case "$KIND" in claude|command) ;; *)
@@ -3996,8 +4036,7 @@ registry_service_load() {
     echo "registry: invalid service name '$SERVICE_NAME'" >&2; return 1
   fi
   OWNER=""; SERVICE_SCRIPT=""; SERVICE_APP=""; SERVICE_LOG=""; SERVICE_DOMAIN=""; LOGIN=""
-  # shellcheck source=/dev/null
-  source "$conf"
+  _registry_source_row "$conf"
   # SERVICE_DOMAIN: where the service belongs in launchd (2026-08-11).
   #   system (default) — the system daemon directory, running as OWNER via
   #                      UserName. Right for network services with no GUI needs.

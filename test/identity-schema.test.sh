@@ -821,6 +821,45 @@ got="$(ladda leverhost HOST)"
 [ "$got" = "hub" ] && ok "a row cannot choose its own host through _REGISTRY_HUB_HOST_SEEN" \
   || bad "a row cannot choose its own host through _REGISTRY_HUB_HOST_SEEN" "got '$got'"
 
+# AND NOT THROUGH THE LOADER'S PRIVATE NAMES EITHER. Copying the published
+# answers into locals of registry_load renamed the target and nothing more:
+# bash scope is dynamic, so a conf line naming the LOCAL landed in the local
+# just as well. Both halves of the loader's working state were reachable -
+# the five _gate_* copies, and `project`, the loader's own name for the row,
+# which decides SESSION_NAME, LAUNCHD_LABEL and LOG_PATH. Measured: a row
+# carrying project="intruder" was loaded under another row's launchd label
+# with a log path outside its owner's home. The row is sourced inside
+# _registry_source_row now, one frame deeper, where every one of those names
+# is declared again and dies with the call.
+konf privschema 'REPO_PATH="/x"' 'RC_LABEL="PS"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  '_gate_schema="5"'
+rc="$(laddarc privschema)"
+[ "$rc" = "78" ] && ok "a row setting the loader's private _gate_schema cannot demote the estate" \
+  || bad "a row setting the loader's private _gate_schema cannot demote the estate" "rc=$rc"
+
+konf privprefix 'REPO_PATH="/x"' 'RC_LABEL="PP"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'LOGIN="acme-team"' '_gate_label_prefix="com.intruder.claude"'
+got="$(ladda privprefix LAUNCHD_LABEL)"
+[ "$got" = "com.example.claude.privprefix" ] \
+  && ok "a row setting the loader's private _gate_label_prefix keeps the estate's prefix" \
+  || bad "a row setting the loader's private _gate_label_prefix keeps the estate's prefix" "got '$got'"
+
+# THE SIXTH LEVER, AND THE ONE THAT WAS NEVER A GATE COPY AT ALL: `project` is
+# the loader's own name for the row, read a dozen lines after the source.
+konf privname 'REPO_PATH="/x"' 'RC_LABEL="PN"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'LOGIN="acme-team"' 'project="intruder"'
+got="$(ladda privname SESSION_NAME)"
+[ "$got" = "privname" ] && ok "a row setting project does not rename the session" \
+  || bad "a row setting project does not rename the session" "got '$got'"
+got="$(ladda privname LAUNCHD_LABEL)"
+[ "$got" = "com.example.claude.privname" ] \
+  && ok "a row setting project does not take another row's launchd label" \
+  || bad "a row setting project does not take another row's launchd label" "got '$got'"
+got="$(ladda privname LOG_PATH)"
+[ "$got" = "/Users/alice/.claude/claude-privname.log" ] \
+  && ok "a row setting project does not choose its own log path" \
+  || bad "a row setting project does not choose its own log path" "got '$got'"
+
 echo
 echo "the schema gate widens to the job and service loaders"
 
