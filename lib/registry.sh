@@ -251,13 +251,22 @@ registry_schema_check() {
   # same reason _registry_estate_value below clears its thirteen: this is the
   # FIRST line of registry_load, so a leak here reaches every caller's shell —
   # every session on the machine — not just this function's own callers.
+  #
+  # THE LIST IS HAND-KEPT AND HAS BEEN SHORT TWICE. Five watch keys were missing
+  # until the previous round, and USAGE_CMD was still missing after it, because
+  # the test that was written to catch that read a hand-copied six-key list of
+  # its own: two static lists agreeing with each other prove nothing about the
+  # estate file. The test now derives the key set from this file - every
+  # KEY="" cleared inside a function that sources the estate - so a key added
+  # with its own reader is measured here whether or not anyone remembers this
+  # line.
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
         RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
         BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" \
         PAUSED_DIR_NAME="" LEGACY_LOGIN="" LOGIN_REQUIRED_FOR="" \
-        LIVENESS_CMD="" ESTATE_CHECKOUT="" MAIL_ACCOUNT_FILE="" ALERT_TO="" \
-        JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE=""
+        LIVENESS_CMD="" USAGE_CMD="" ESTATE_CHECKOUT="" MAIL_ACCOUNT_FILE="" \
+        ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0

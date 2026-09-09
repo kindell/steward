@@ -133,21 +133,71 @@ estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION=
 # does not prove the list is complete, and the list was short by five - the
 # watch's own estate keys, MAIL_ACCOUNT_FILE ALERT_TO JOB_STATUS_CMD
 # HOST_STATUS_CMD JOB_TIMEZONE, every one of them measured landing in the
-# caller's shell. Each key the estate file may carry gets its own claim here,
-# so a key added to the schema without a matching `local` fails a test rather
-# than quietly becoming a global on every machine.
-estate 'LABEL_PREFIX="com.example.claude"' 'ESTATE_NAME="acme"' 'SCHEMA_VERSION="2"' \
-  'RC_LABEL_PREFIX="Steward: "' 'HUB_SESSION="hub"' 'HUB_HOST="hub"' 'JOB_LOG_DIR="jobs"' \
-  'HUB_SSH="owner@hub"' 'TMUX_SOCKET="steward.sock"' 'PING_MSG="ping"' \
-  'JOB_LABEL_PREFIX="com.example.job"' 'SERVICE_LABEL_PREFIX="com.example.service"' \
-  'BROWSER_LABEL_PREFIX="com.example.browser"' 'OP_TOKEN_FILE_NAME="token"' \
-  'STATE_DIR_NAME="adapter-state"' 'PAUSED_DIR_NAME="paused"' \
-  'AGENT_INSTRUCTIONS="leaked-instructions"' 'MAIL_ACCOUNT_FILE="leaked-mail"' \
-  'ALERT_TO="leaked@example.com"' 'JOB_STATUS_CMD="/leaked/job-status"' \
-  'HOST_STATUS_CMD="/leaked/host-status"' 'JOB_TIMEZONE="Etc/UTC"'
+# caller's shell.
+#
+# THE KEY LIST IS DERIVED, NOT TYPED. The first version of this claim carried a
+# hand-copied list of six keys, and USAGE_CMD leaked straight past it: two
+# static lists agreeing with each other say nothing about the estate file, and
+# the one that is short is the one nobody re-reads. The list below is read out
+# of lib/registry.sh instead - every KEY="" cleared inside a function that
+# sources the estate file, which is the discipline every reader in that file
+# follows - so a key that arrives with its own reader arrives in this loop on
+# the same commit.
+estate_keys() { # the estate keys the library itself knows it may have to clear
+  awk '
+    /^[A-Za-z_][A-Za-z0-9_]*\(\) \{/ { inf = 1; est = 0; n = 0; next }
+    inf && /registry_estate_file/ { est = 1 }
+    inf {
+      line = $0; sub(/#.*/, "", line)          # a comment naming a key is prose
+      nf = split(line, f, /[ \t]+/)
+      for (i = 1; i <= nf; i++)
+        if (f[i] ~ /^[A-Z][A-Z0-9_]*=""$/) { sub(/=""$/, "", f[i]); k[n++] = f[i] }
+    }
+    inf && /^\}/ { if (est) { for (i = 0; i < n; i++) print k[i] } inf = 0 }
+  ' "$here/lib/registry.sh" | sort -u
+}
+# A VALUE PER KEY, with a default, so an unknown future key still gets written
+# into the fixture and still gets measured. The named ones are given values of
+# the form their own reader demands, which is what lets the load run past the
+# gates and exercise the readers further down instead of stopping at the first.
+estate_value_for() {
+  case "$1" in
+    SCHEMA_VERSION)       printf '2' ;;
+    LABEL_PREFIX)         printf 'com.example.claude' ;;
+    ESTATE_NAME)          printf 'acme' ;;
+    RC_LABEL_PREFIX)      printf 'Steward: ' ;;
+    HUB_SESSION|HUB_HOST) printf 'hub' ;;
+    HUB_SSH)              printf 'owner@hub' ;;
+    JOB_LOG_DIR)          printf 'jobs' ;;
+    TMUX_SOCKET)          printf 'steward.sock' ;;
+    PING_MSG)             printf 'ping' ;;
+    JOB_LABEL_PREFIX)     printf 'com.example.job' ;;
+    SERVICE_LABEL_PREFIX) printf 'com.example.service' ;;
+    BROWSER_LABEL_PREFIX) printf 'com.example.browser' ;;
+    OP_TOKEN_FILE_NAME)   printf 'token' ;;
+    STATE_DIR_NAME)       printf 'adapter-state' ;;
+    PAUSED_DIR_NAME)      printf 'paused' ;;
+    LEGACY_LOGIN|LOGIN_REQUIRED_FOR) printf 'ada' ;;
+    JOB_TIMEZONE)         printf 'Etc/UTC' ;;
+    ALERT_TO)             printf 'leaked@example.com' ;;
+    *_CMD|*_FILE|ESTATE_CHECKOUT) printf '/leaked/%s' "$1" ;;
+    *)                    printf 'leaked-%s' "$1" ;;
+  esac
+}
+leakkeys="$(estate_keys)"
+leakcount="$(printf '%s\n' "$leakkeys" | grep -c '[A-Z]')"
+# THE DERIVATION ITSELF IS ASSERTED. A walk that stops finding keys would make
+# every claim below vacuous and the suite would go greener, not redder.
+[ "$leakcount" -ge 20 ] && ok "the estate key set is derived from the library ($leakcount keys)" \
+  || bad "the estate key set is derived from the library" "found $leakcount keys"
+case "$leakkeys" in *USAGE_CMD*) ok "the derived set reaches the single-key readers too" ;;
+  *) bad "the derived set reaches the single-key readers too" "$leakkeys" ;; esac
+: > "$FX/estate/steward.conf"
+for leakkey in $leakkeys; do
+  printf '%s="%s"\n' "$leakkey" "$(estate_value_for "$leakkey")" >> "$FX/estate/steward.conf"
+done
 konf leaky 'REPO_PATH="/x"' 'RC_LABEL="Leaky"' 'OWNER="ada"' 'DOMAIN="d"'
-for leakkey in AGENT_INSTRUCTIONS MAIL_ACCOUNT_FILE ALERT_TO JOB_STATUS_CMD \
-               HOST_STATUS_CMD JOB_TIMEZONE; do
+for leakkey in $leakkeys; do
   out="$(
     export STEWARD_ESTATE_ROOT="$FX" STEWARD_REGISTRY_DIR="$FX/sessions.d"
     unset "$leakkey"
