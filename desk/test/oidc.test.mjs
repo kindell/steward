@@ -116,14 +116,14 @@ const providerFrom = (slug, extra) => loadProviders(providersDir({ [slug + '.con
 
 test('a provider whose estate named no extra origin still refuses an off-origin token_endpoint', async () => {
   const prov = providerFrom('no-extras');
-  assert.deepEqual(prov.endpointOrigins, []);
+  assert.deepStrictEqual(prov.endpointOrigins, []);
   await assert.rejects(discover(prov, serving(SPLIT_ORIGIN_DOC)),
     /discovery for no-extras points token_endpoint off its own origin/);
 });
 
 test('a provider whose estate named the extra origins accepts a document that uses them', async () => {
   const prov = providerFrom('named-extras', 'https://oauth2.googleapis.com https://www.googleapis.com');
-  assert.deepEqual(prov.endpointOrigins, ['https://oauth2.googleapis.com', 'https://www.googleapis.com']);
+  assert.deepStrictEqual(prov.endpointOrigins, ['https://oauth2.googleapis.com', 'https://www.googleapis.com']);
   const doc = await discover(prov, serving(SPLIT_ORIGIN_DOC));
   assert.equal(doc.token_endpoint, SPLIT_ORIGIN_DOC.token_endpoint);
   assert.equal(doc.jwks_uri, SPLIT_ORIGIN_DOC.jwks_uri);
@@ -139,7 +139,7 @@ test('an origin the estate did not name is refused even for a provider that name
 
 test('a named extra origin adds to the base origin, it never replaces it', async () => {
   const prov = providerFrom('adds-only', 'https://tokens.example.test');
-  assert.deepEqual(prov.endpointOrigins, ['https://tokens.example.test']);
+  assert.deepStrictEqual(prov.endpointOrigins, ['https://tokens.example.test']);
   const doc = {
     issuer: 'https://accounts.google.com',
     authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -151,21 +151,46 @@ test('a named extra origin adds to the base origin, it never replaces it', async
   assert.equal(got.jwks_uri, doc.jwks_uri);
 });
 
-test('loadProviders refuses an ENDPOINT_ORIGINS entry that is not an origin the estate can mean', () => {
-  const bad = (v, re) => assert.throws(() => loadProviders(providersDir({ 'x.conf': providerRow(v) })), re);
-  bad('http://tokens.example.test', /x\.conf: ENDPOINT_ORIGINS must be https, or loopback/);
-  bad('https://x.example/token', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
-  bad('not a url', /x\.conf: ENDPOINT_ORIGINS is not a URL/);
-  bad('https://x.example?tenant=1', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
-  bad('https://x.example#frag', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
-  bad('https://someone:pw@x.example', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
-  bad('https://x.example https://x.example', /x\.conf: ENDPOINT_ORIGINS names https:\/\/x\.example twice/);
+// THE LOADER'S FOUR GUARDS, ONE TEST EACH. Held together in one test they
+// were indistinguishable: any of the four falling named the same test, and
+// assert.throws stops at the first case, so the rest were never even reached
+// in a red run. Split, a regression report names the property that broke.
+const badEntry = (v, re) => assert.throws(() => loadProviders(providersDir({ 'x.conf': providerRow(v) })), re);
+
+test('loadProviders refuses an ENDPOINT_ORIGINS entry that is not a URL, or is neither https nor loopback', () => {
+  badEntry('not a url', /x\.conf: ENDPOINT_ORIGINS is not a URL/);
+  badEntry('http://tokens.example.test', /x\.conf: ENDPOINT_ORIGINS must be https, or loopback/);
+  // Loopback over plaintext is the one exception, the same one DISCOVERY makes.
+  assert.deepStrictEqual(providerFrom('loop', 'http://127.0.0.1:9').endpointOrigins, ['http://127.0.0.1:9']);
+});
+
+test('loadProviders refuses an ENDPOINT_ORIGINS entry carrying more than scheme, host and port', () => {
+  badEntry('https://x.example/token', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  badEntry('https://x.example?tenant=1', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  badEntry('https://x.example#frag', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  badEntry('https://someone:pw@x.example', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+});
+
+test('loadProviders refuses an ENDPOINT_ORIGINS entry named twice', () => {
+  badEntry('https://x.example https://x.example', /x\.conf: ENDPOINT_ORIGINS names https:\/\/x\.example twice/);
+  // Twice by two spellings of one origin is still twice: the check is on the
+  // normalised origin, not on the text the estate typed.
+  badEntry('https://x.example https://X.EXAMPLE', /x\.conf: ENDPOINT_ORIGINS names https:\/\/x\.example twice/);
+  badEntry('https://x.example https://x.example:443', /x\.conf: ENDPOINT_ORIGINS names https:\/\/x\.example twice/);
+});
+
+test('loadProviders keeps an accepted ENDPOINT_ORIGINS entry as its origin, and nothing as no entries', () => {
+  // An entry is kept as an origin, so a bare root slash, an upper-case host
+  // and the scheme's own default port are all the same origin.
+  assert.deepStrictEqual(providerFrom('slash', 'https://x.example/').endpointOrigins, ['https://x.example']);
+  assert.deepStrictEqual(providerFrom('upper', 'https://X.EXAMPLE').endpointOrigins, ['https://x.example']);
+  assert.deepStrictEqual(providerFrom('port', 'https://x.example:443').endpointOrigins, ['https://x.example']);
+  // A port that is not the default is part of the origin and stays.
+  assert.deepStrictEqual(providerFrom('otherport', 'https://x.example:8443').endpointOrigins, ['https://x.example:8443']);
   // Absent, empty, or nothing but spacing is today's behaviour: no extras.
-  assert.deepEqual(providerFrom('absent').endpointOrigins, []);
-  assert.deepEqual(providerFrom('empty', '').endpointOrigins, []);
-  assert.deepEqual(providerFrom('spaces', '   ').endpointOrigins, []);
-  // An entry is kept as an origin, so a bare root slash is the same origin.
-  assert.deepEqual(providerFrom('slash', 'https://x.example/').endpointOrigins, ['https://x.example']);
+  assert.deepStrictEqual(providerFrom('absent').endpointOrigins, []);
+  assert.deepStrictEqual(providerFrom('empty', '').endpointOrigins, []);
+  assert.deepStrictEqual(providerFrom('spaces', '   ').endpointOrigins, []);
 });
 
 // AN ENTRY WHOSE ORIGIN IS THE STRING "null" IS A WILDCARD, NOT AN ORIGIN.
