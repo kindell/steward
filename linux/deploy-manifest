@@ -71,6 +71,27 @@ lib/usage.sh                       scripts/lib/usage.sh                 755  lib
 # registry.sh and no visibility.sh fails the same way liveness.sh did above -
 # measured 2026-09-08 on a deployed home.
 lib/visibility.sh                  scripts/lib/visibility.sh            755  lib
+# EVERY LIBRARY bin/steward SOURCES TRAVELS WITH IT, not only the ones another
+# shipped file happened to need first. bin/steward sources thirteen files
+# under lib/ and six of them had no row here — a deployed host's
+# `steward sessions --json` died on `lib/sessions.sh: No such file or
+# directory`, measured 2026-09-09. The rows below close that: assets (asset
+# probing), the five job libraries (jobgit, joboutbox, jobreconcile,
+# jobschema, jobstate — the job subcommands), scaffold (session scaffolding),
+# sessions (the session view sight-one-rule added), and sort (its ordering).
+# lib/deploy-core.sh is NOT here: it is sourced only by linux/deploy-self.sh,
+# which the manifest itself never ships (deploy-self runs the deploy, it is
+# not a file the deploy writes into a home) — see test/deploy-manifest.test.sh
+# section 9, "the tools are never part of what they write".
+lib/assets.sh                      scripts/lib/assets.sh                755  lib
+lib/jobgit.sh                      scripts/lib/jobgit.sh                755  lib
+lib/joboutbox.sh                   scripts/lib/joboutbox.sh             755  lib
+lib/jobreconcile.sh                scripts/lib/jobreconcile.sh          755  lib
+lib/jobschema.sh                   scripts/lib/jobschema.sh             755  lib
+lib/jobstate.sh                    scripts/lib/jobstate.sh              755  lib
+lib/scaffold.sh                    scripts/lib/scaffold.sh              755  lib
+lib/sessions.sh                    scripts/lib/sessions.sh              755  lib
+lib/sort.sh                        scripts/lib/sort.sh                  755  lib
 # bus clients + browser (executable locations — the loneliness sweep's core targets)
 linux/bus-send                     bin/bus-send                         755  bin
 linux/bus-read                     bin/bus-read                         755  bin

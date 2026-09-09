@@ -345,6 +345,40 @@ else
   bad "PROOF FAILED: PATH_SED extracted '$proof_path' instead of \$x/a.sh from a line with a trailing quoted comment"
 fi
 
+# 11. EVERY SHIPPED FILE'S lib/<name>.sh STRINGS HAVE A ROW - swept over EVERY
+# manifest source, not only the desk/runtime/hub trees check 10 restricts
+# itself to. Check 10 parses a source STATEMENT (". \"\$dir/x.sh\"") in three
+# named trees; this check is a plain `grep -o 'lib/[a-z_-]*\.sh'` over every
+# file the manifest ships, wherever it lives. bin/steward is outside all three
+# of check 10's trees and shipped with SIX missing lib rows - a deployed
+# host's `steward sessions --json` died on `lib/sessions.sh: No such file or
+# directory`, measured 2026-09-09. Check 10 could not have caught it; this
+# check would have.
+#
+# A file that does not exist locally (an estate row with no estate checkout)
+# is skipped, the same as check 2's own "unverified" branch - this check
+# widens the sweep, it does not tighten what counting a source as present
+# requires.
+ALL_SOURCES="$(grep -v '^#' "$M" | awk 'NF>=4{print $1}')"
+for srcfile in $ALL_SOURCES; do
+  libfile=""
+  if [ -f "$here/$srcfile" ]; then
+    libfile="$here/$srcfile"
+  elif [ -n "${ESTATE_ROOT:-}" ] && [ -f "$ESTATE_ROOT/$srcfile" ]; then
+    libfile="$ESTATE_ROOT/$srcfile"
+  fi
+  [ -n "$libfile" ] || continue
+  wanted="$(grep -o 'lib/[a-z_-]*\.sh' "$libfile" 2>/dev/null | sort -u)"
+  [ -z "$wanted" ] && continue
+  for want in $wanted; do
+    if grep -v '^#' "$M" | awk '{print $1}' | grep -qx "$want"; then
+      ok
+    else
+      bad "$srcfile references $want but the manifest has no row for it"
+    fi
+  done
+done
+
 [ "$unverified" -gt 0 ] && echo "NOTE: $unverified estate rows could not be verified (no estate checkout found)"
 [ -z "$ESTATE_MANIFEST" ] && echo "NOTE: estate manifest not found; product rows only checked"
 echo "pass=$pass fail=$fail"
