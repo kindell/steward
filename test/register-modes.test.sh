@@ -274,9 +274,18 @@ REG_SRC="$here/lib/registry.sh"
 # leading underscore is KEPT in the name rather than stripped - the name in the
 # failure message should be the name in the file, and the guarded-noun lookup
 # below asks for `registry_<noun>_dir` exactly, which a private helper is not.
+# THE DIGIT is the third such spelling, and the same kind of real: this file
+# already defines `_registry_sha256()`.
+#
+# `function registry_x_dir { ... }` IS DELIBERATELY NOT COVERED. Measured:
+# `grep -rE '^[[:space:]]*function ' lib bin` finds zero uses, so it is a
+# spelling this repo does not write, and covering it means dropping the `\(\)`
+# anchor for a second branch that has no parentheses to anchor on - which is
+# what keeps a call site or a `local` line out of the table. Worth revisiting
+# only if that grep ever stops answering zero.
 _resolver_table() {
   awk '
-    /^_?registry_[a-z_]*dir[[:space:]]*\(\)/ {
+    /^_?registry_[a-z0-9_]*dir[[:space:]]*\(\)/ {
       fn=$0; sub(/[[:space:]]*\(\).*/,"",fn)
       line=$0; sub(/#.*/,"",line)
       if ($0 ~ /}[[:space:]]*$/) { print fn "\t" line; next }   # a one-line body
