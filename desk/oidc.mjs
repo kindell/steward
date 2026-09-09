@@ -52,9 +52,31 @@ export function loadProviders(dir) {
     let discoveryUrl;
     try { discoveryUrl = new URL(row.DISCOVERY); } catch { throw new Error('provider ' + file + ': DISCOVERY is not a URL'); }
     if (!isSecureUrl(discoveryUrl)) throw new Error('provider ' + file + ': DISCOVERY must be https, or loopback');
+    // ENDPOINT_ORIGINS: THE ESTATE, NOT THE DOCUMENT, MAY WIDEN THE ORIGIN
+    // CHECK. Some providers serve the token endpoint or the JWKS from a host
+    // that is not the issuer's, permanently and by design, so the same-origin
+    // rule in discover() would make them impossible rather than merely
+    // misconfigured. Naming an origin here is this estate saying it trusts
+    // that host with the client secret and the signing keys - so an entry is
+    // an origin and nothing more: https (or loopback, as DISCOVERY is), no
+    // path, query, fragment or userinfo, and named once. Absent or empty is
+    // the plain same-origin rule.
+    const endpointOrigins = [];
+    for (const entry of (row.ENDPOINT_ORIGINS || '').split(/\s+/)) {
+      if (!entry) continue;
+      let u;
+      try { u = new URL(entry); } catch { throw new Error('provider ' + file + ': ENDPOINT_ORIGINS is not a URL'); }
+      if (!isSecureUrl(u)) throw new Error('provider ' + file + ': ENDPOINT_ORIGINS must be https, or loopback');
+      if ((u.pathname && u.pathname !== '/') || u.search || u.hash || u.username || u.password) {
+        throw new Error('provider ' + file + ': ENDPOINT_ORIGINS must name an origin only, with no path, query, fragment or userinfo');
+      }
+      if (endpointOrigins.includes(u.origin)) throw new Error('provider ' + file + ': ENDPOINT_ORIGINS names ' + u.origin + ' twice');
+      endpointOrigins.push(u.origin);
+    }
     out.set(slug, {
       slug, issuer: hasIss ? row.ISSUER : null, issuerTemplate: hasTpl ? row.ISSUER_TEMPLATE : null,
-      clientId: row.CLIENT_ID, clientSecretFile: row.CLIENT_SECRET_FILE, discovery: row.DISCOVERY
+      clientId: row.CLIENT_ID, clientSecretFile: row.CLIENT_SECRET_FILE, discovery: row.DISCOVERY,
+      endpointOrigins
     });
   }
   return out;
@@ -156,10 +178,14 @@ export async function discover(provider, fetchImpl = fetch) {
   }
   let baseOrigin;
   try { baseOrigin = new URL(base).origin; } catch { throw new Error('discovery for ' + provider.slug + ' has no usable origin'); }
+  // The endpoints: that origin, plus whatever origins the estate named for
+  // this provider in ENDPOINT_ORIGINS. The set is the estate's either way -
+  // the document can only choose from it, never add to it.
+  const allowedOrigins = new Set([baseOrigin, ...(provider.endpointOrigins || [])]);
   for (const k of ['authorization_endpoint', 'token_endpoint', 'jwks_uri']) {
     let u;
     try { u = new URL(doc[k]); } catch { throw new Error('discovery for ' + provider.slug + ' points ' + k + ' off its own origin'); }
-    if (u.origin !== baseOrigin) throw new Error('discovery for ' + provider.slug + ' points ' + k + ' off its own origin');
+    if (!allowedOrigins.has(u.origin)) throw new Error('discovery for ' + provider.slug + ' points ' + k + ' off its own origin');
     if (!isSecureUrl(u)) throw new Error('discovery for ' + provider.slug + ' names a plaintext ' + k);
   }
   const kept = { issuer: doc.issuer, authorization_endpoint: doc.authorization_endpoint, token_endpoint: doc.token_endpoint, jwks_uri: doc.jwks_uri };

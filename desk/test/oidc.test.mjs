@@ -65,6 +65,77 @@ test('discover refuses an endpoint on another origin', async (t) => {
   await assert.rejects(discover(prov), /discovery for off-origin points jwks_uri off its own origin/);
 });
 
+// A DOCUMENT SHAPED LIKE THE PROVIDERS THAT SPLIT THEIR ENDPOINTS. Google's
+// real document names the token endpoint and the JWKS on two hosts that are
+// not the issuer's, permanently and by design - so the same-origin rule alone
+// makes such a provider impossible rather than merely misconfigured. Nothing
+// here reaches the network: the document is served by the fake fetch below.
+const SPLIT_ORIGIN_DOC = {
+  issuer: 'https://accounts.google.com',
+  authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+  token_endpoint: 'https://oauth2.googleapis.com/token',
+  jwks_uri: 'https://www.googleapis.com/oauth2/v3/certs'
+};
+const serving = (doc) => async () => new Response(JSON.stringify(doc), { status: 200 });
+const providerRow = (extra) => 'ISSUER="https://accounts.google.com"\n' +
+  'DISCOVERY="https://accounts.google.com/.well-known/openid-configuration"\n' +
+  'CLIENT_ID="cid"\nCLIENT_SECRET_FILE="/f"\n' + (extra === undefined ? '' : 'ENDPOINT_ORIGINS="' + extra + '"\n');
+const providerFrom = (slug, extra) => loadProviders(providersDir({ [slug + '.conf']: providerRow(extra) })).get(slug);
+
+test('a provider whose estate named no extra origin still refuses an off-origin token_endpoint', async () => {
+  const prov = providerFrom('no-extras');
+  assert.deepEqual(prov.endpointOrigins, []);
+  await assert.rejects(discover(prov, serving(SPLIT_ORIGIN_DOC)),
+    /discovery for no-extras points token_endpoint off its own origin/);
+});
+
+test('a provider whose estate named the extra origins accepts a document that uses them', async () => {
+  const prov = providerFrom('named-extras', 'https://oauth2.googleapis.com https://www.googleapis.com');
+  assert.deepEqual(prov.endpointOrigins, ['https://oauth2.googleapis.com', 'https://www.googleapis.com']);
+  const doc = await discover(prov, serving(SPLIT_ORIGIN_DOC));
+  assert.equal(doc.token_endpoint, SPLIT_ORIGIN_DOC.token_endpoint);
+  assert.equal(doc.jwks_uri, SPLIT_ORIGIN_DOC.jwks_uri);
+  assert.equal(doc.authorization_endpoint, SPLIT_ORIGIN_DOC.authorization_endpoint);
+});
+
+test('an origin the estate did not name is refused even for a provider that named others', async () => {
+  const prov = providerFrom('unnamed-fourth', 'https://oauth2.googleapis.com https://www.googleapis.com');
+  const doc = Object.assign({}, SPLIT_ORIGIN_DOC, { jwks_uri: 'https://keys.example.test/certs' });
+  await assert.rejects(discover(prov, serving(doc)),
+    /discovery for unnamed-fourth points jwks_uri off its own origin/);
+});
+
+test('a named extra origin adds to the base origin, it never replaces it', async () => {
+  const prov = providerFrom('adds-only', 'https://tokens.example.test');
+  assert.deepEqual(prov.endpointOrigins, ['https://tokens.example.test']);
+  const doc = {
+    issuer: 'https://accounts.google.com',
+    authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+    token_endpoint: 'https://accounts.google.com/token',
+    jwks_uri: 'https://accounts.google.com/certs'
+  };
+  const got = await discover(prov, serving(doc));
+  assert.equal(got.token_endpoint, doc.token_endpoint);
+  assert.equal(got.jwks_uri, doc.jwks_uri);
+});
+
+test('loadProviders refuses an ENDPOINT_ORIGINS entry that is not an origin the estate can mean', () => {
+  const bad = (v, re) => assert.throws(() => loadProviders(providersDir({ 'x.conf': providerRow(v) })), re);
+  bad('http://tokens.example.test', /x\.conf: ENDPOINT_ORIGINS must be https, or loopback/);
+  bad('https://x.example/token', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  bad('not a url', /x\.conf: ENDPOINT_ORIGINS is not a URL/);
+  bad('https://x.example?tenant=1', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  bad('https://x.example#frag', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  bad('https://someone:pw@x.example', /x\.conf: ENDPOINT_ORIGINS must name an origin only/);
+  bad('https://x.example https://x.example', /x\.conf: ENDPOINT_ORIGINS names https:\/\/x\.example twice/);
+  // Absent, empty, or nothing but spacing is today's behaviour: no extras.
+  assert.deepEqual(providerFrom('absent').endpointOrigins, []);
+  assert.deepEqual(providerFrom('empty', '').endpointOrigins, []);
+  assert.deepEqual(providerFrom('spaces', '   ').endpointOrigins, []);
+  // An entry is kept as an origin, so a bare root slash is the same origin.
+  assert.deepEqual(providerFrom('slash', 'https://x.example/').endpointOrigins, ['https://x.example']);
+});
+
 test('discover refuses a plaintext endpoint on a host that is not loopback', async (t) => {
   // The endpoints sit on the issuer's own origin, so the origin check has
   // nothing to say and the scheme check is the one that must refuse. Only
