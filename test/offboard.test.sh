@@ -719,6 +719,48 @@ else
   is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
   have "the account row is untouched" "$ROOT/accounts.d/kip-host-a.conf"
   havenot "and no receipt was written" "$KIPR"
+
+  # A REGISTER THAT IS A FILE IS NOT AN ABSENT REGISTER EITHER. Measured before
+  # this arm: hosts.d replaced by a one-line regular file offboarded the
+  # machine's own OWNER and OPERATOR at rc 0, receipt state "done", warnings []
+  # - the exact harm this gate was built for, through the one shape it did not
+  # classify. The same register at mode 000, and as a dangling symlink, are both
+  # rc 78; only "it is a file" walked through.
+  mv "$ROOT/hosts.d" "$ROOT/hosts.d-real"
+  printf 'this is a file, not a register\n' > "$ROOT/hosts.d"
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rm -f "$ROOT/hosts.d"; mv "$ROOT/hosts.d-real" "$ROOT/hosts.d"
+  is  "a register that is a regular file refuses, rc 78" "$rc" "78"
+  has "and names it" "$out" "hosts.d"
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  have "the account row is untouched" "$ROOT/accounts.d/kip-host-a.conf"
+  havenot "and no receipt was written" "$KIPR"
+  # AND THE REQUIRED REGISTER SAYS THE RIGHT THING ABOUT IT: "not there" is
+  # false when it is there and is a file.
+  mv "$ROOT/entities.d" "$ROOT/entities.d-real"
+  printf 'this is a file, not a register\n' > "$ROOT/entities.d"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rm -f "$ROOT/entities.d"; mv "$ROOT/entities.d-real" "$ROOT/entities.d"
+  is  "a required register that is a file refuses, rc 78" "$rc" "78"
+  no  "and does not claim it is not there" "$out" "is not there"
+
+  # A ROW THAT IS A LINK TO NOTHING IS A ROW NOBODY CAN READ. `[ -e ]` is false
+  # for a dangling symlink, so the row walk's own existence guard used to skip
+  # it before the -r check ever ran. Measured: a dangling sessions.d row plus
+  # its bus-relay-in row in the hub's authorized_keys came back rc 0, state
+  # "done", warnings [] and kept [], with the relay row still standing
+  # (before=1, after=1) and the row still in sessions.d. The same row as a
+  # mode-000 regular file is rc 78.
+  ln -s "$ROOT/no-such-target" "$ROOT/sessions.d/zz-dangle.conf"
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rm -f "$ROOT/sessions.d/zz-dangle.conf"
+  is  "a row that is a link to nothing refuses, rc 78" "$rc" "78"
+  has "and names it" "$out" "zz-dangle.conf"
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  havenot "and no receipt was written" "$KIPR"
+
   # AND A LINK TO A READABLE DIRECTORY IS A REGISTER LIKE ANY OTHER: `-r` and
   # `-x` follow symlinks, so the refusal above must turn on the target being
   # gone and on nothing else.

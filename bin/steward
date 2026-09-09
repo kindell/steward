@@ -4423,6 +4423,18 @@ _offboard_register_readable() {
       _reg_fail "$want_json" "steward offboard: $reg_dir points at nothing, so whether anything there still names '$principal' is unknown - a register the estate points somewhere is not a register with nothing in it. Repair the link (or remove it, if that register really is gone) and run offboard again."
       return 78
     fi
+    # AND SOMETHING THAT IS THERE AND IS NOT A DIRECTORY IS NOT AN ABSENT
+    # REGISTER EITHER. A plain file at a register's path is neither -L nor -d,
+    # so it used to land in the "absent is legitimate" arm below: measured, a
+    # regular file at the host register offboarded the machine's own OWNER and
+    # OPERATOR at rc 0 with state "done" and warnings [] - the same harm as a
+    # register this run cannot list, through the one shape the gate did not
+    # classify. It is worse than the unreadable case, because a file at a
+    # register's path survives a mode sweep and reads as "never set up".
+    if [ -e "$reg_dir" ] && [ ! -d "$reg_dir" ]; then
+      _reg_fail "$want_json" "steward offboard: $reg_dir is not a directory, so whether anything there still names '$principal' is unknown - a register that is something else is not a register with nothing in it. Restore the register directory and run offboard again."
+      return 78
+    fi
     if [ ! -d "$reg_dir" ]; then
       # ABSENT, AND WHETHER THAT IS AN ANSWER OR A PROBLEM IS DATA, not a
       # special case: the third column above. Six of these registers may be
@@ -4438,7 +4450,17 @@ _offboard_register_readable() {
       # root does not resolve, so there is no "could not be resolved" answer to
       # give; a root that points nowhere is caught by registry_load's own
       # `no such principal` refusal, rc 78, before anything happens.
-      [ "$reg_need" = "required" ] || continue
+      # AND THE DEFAULT OF THAT COLUMN IS REFUSAL, NOT PERMISSION. Written as
+      # `[ "$reg_need" = "required" ] || continue` a typo in the third column
+      # meant "optional" in silence, which is the permissive answer for a gate
+      # that exists to be strict. An unrecognised class is a bug in this file,
+      # so it is answered here rather than walked past.
+      case "$reg_need" in
+        required) : ;;
+        optional) continue ;;
+        *) _reg_fail "$want_json" "steward offboard: internal: unknown register class '$reg_need' for the $reg_label register - the third column of this verb's register list must be 'required' or 'optional'."
+           return 78 ;;
+      esac
       _reg_fail "$want_json" "steward offboard: the $reg_label register is not there ($reg_dir), and this verb cannot finish without it - the step that reads it runs after the unix account is locked and its row is removed, so carrying on would leave '$principal' half offboarded. Restore the register directory (an estate with no rows in it still has the directory) and run offboard again."
       return 78
     fi
@@ -4462,12 +4484,18 @@ _offboard_register_readable() {
     # that are each a lie.
     bad_row_list=""
     for reg_f in "$reg_dir"/*.conf; do
-      [ -e "$reg_f" ] || continue
+      # -e IS FALSE FOR A DANGLING SYMLINK, and a row the estate points at
+      # something that is gone is exactly the row this loop exists for:
+      # measured, a dangling session row left its bus relay row standing in the
+      # hub's authorized_keys behind a receipt that said "done" with no
+      # warnings. (An unexpanded glob is neither -e nor -L, so the no-rows case
+      # is unchanged.)
+      [ -e "$reg_f" ] || [ -L "$reg_f" ] || continue
       [ -r "$reg_f" ] && continue
       bad_row_list="${bad_row_list:+$bad_row_list, }$reg_f"
     done
     if [ -n "$bad_row_list" ]; then
-      _reg_fail "$want_json" "steward offboard: $bad_row_list cannot be read, so whether it names '$principal' is unknown - a row nobody can read is not a row that names nobody. Fix the mode or the owner of that file and run offboard again."
+      _reg_fail "$want_json" "steward offboard: $bad_row_list cannot be read, so whether it names '$principal' is unknown - a row nobody can read is not a row that names nobody. Fix the mode or the owner of that file (or repair the link, if it is one) and run offboard again."
       return 78
     fi
   done <<'EOF'
