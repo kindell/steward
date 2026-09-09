@@ -109,7 +109,7 @@ is  "b sees the team session and a's session in the same domain" "$(jq -r '.sess
 # they are a fact about b's own team. The ACCOUNT axis is a's own credential
 # and never travels, whoever else can see the row.
 is  "b never sees a's account axis" "$(jq -r '.sessions[]|select(.slug=="work-a")|.mcp|map(.axis)|join(" ")' "$D/b.json")" "project entity"
-is  "member gets liveness including activity age" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "ageSeconds measuredAt state"
+is  "member gets liveness including activity age" "$(jq -r '.sessions[]|select(.slug=="work-a")|.liveness|keys|join(" ")' "$D/b.json")" "ageSeconds measuredAt reason state"
 is  "member sight is explicit" "$(jq -r '.sessions[]|select(.slug=="work-a")|.sight' "$D/b.json")" "member"
 is  "owner sight is explicit" "$(jq -r '.sessions[]|select(.slug=="team-b")|.sight' "$D/b.json")" "owner"
 # THE AXES ARRIVE IN COLLECTION ORDER, which is closest level first: the
@@ -138,6 +138,10 @@ is  "repo is a name, not a path" "$(jq -r '.sessions[0].repo' "$D/_operator.json
 is  "liveness carries an age" "$(jq -r '.sessions[0].liveness|has("ageSeconds")' "$D/_operator.json")" "true"
 is  "the age of a just-measured session is a number" "$(jq -r '.sessions[0].liveness.ageSeconds|type' "$D/_operator.json")" "number"
 is  "liveness state is the agent word" "$(jq -r '.sessions[0].liveness.state' "$D/_operator.json")" "running"
+# A ROW THAT WAS MEASURED CARRIES NO REASON. `-` is the seam's word for "nothing
+# to explain"; it becomes null rather than travelling as a dash a reader would
+# have to decode, and a permanent non-null here would make the field noise.
+is  "a measured row has nothing to explain" "$(jq -r '.sessions[0].liveness.reason' "$D/_operator.json")" "null"
 # THE AGE IS SECONDS SINCE THE SEAM'S TIMESTAMP, not a constant the producer
 # invented: the shim stamps the moment it runs, so anything outside a couple of
 # minutes means the derivation read the wrong field or the wrong clock.
@@ -239,6 +243,13 @@ is  "every state is unknown" \
     "$(jq -r '[.sessions[].liveness.state]|unique|join(" ")' "$T/desk3/current/_operator.json")" "unknown"
 is  "and every age is null" \
     "$(jq -r '[.sessions[].liveness.ageSeconds]|unique|map(tostring)|join(" ")' "$T/desk3/current/_operator.json")" "null"
+# AND IT SAYS WHY, WHICH IS THE WHOLE POINT OF THE UNCONFIGURED CASE. A desk
+# full of question marks with nothing behind them is the silence the seam's
+# eighth field was added to end; the producer read that field and dropped it, so
+# every `unknown` reached the page unattributable. `seam-not-configured` is the
+# seam's own word for this estate.
+is  "and every unknown says why" \
+    "$(jq -r '[.sessions[].liveness.reason]|unique|join(" ")' "$T/desk3/current/_operator.json")" "seam-not-configured"
 
 echo "== a viewer write that fails never publishes the generation =="
 # THE FAULT IS A REAL, BROKEN FILTER INPUT for exactly one viewer - jq itself

@@ -115,7 +115,7 @@ the fields of the sessions it already returned yes for.
 | `runtime` | string | `claude-code`, `opencode`, `codex`. |
 | `host` | string | the machine the session lives on. |
 | `repo` | string | the repository's **name** - never its path. |
-| `liveness` | object | `state`, `measuredAt`, `ageSeconds` (below). |
+| `liveness` | object | `state`, `reason`, `measuredAt`, `ageSeconds` (below). |
 | `sight` | string | `owner` or `member` - which of the two field sets this row was projected through, said out loud so a view never has to infer it from which keys arrived. A `readAll` viewer reads `owner` on every row. |
 | `mcp` | array | the granted assets that reached this viewer - always present, possibly empty (below). |
 
@@ -124,6 +124,7 @@ the fields of the sessions it already returned yes for.
 | key | type | meaning |
 |-----|------|---------|
 | `state` | string | `running`, `not-running` or `unknown` - the agent word from the estate's liveness seam (`liveness_rows`, one call per run, keyed by session name). A session the seam did not measure is `unknown`, and so is every session when no seam is configured. |
+| `reason` | string or null | why the seam produced no measurement for this row, in the seam's own words - `seam-not-configured`, `seam-timeout`, `not-in-answer`, or a sentence the estate's shim supplied for a row it could not probe. null when there is nothing to explain, which is every row that was genuinely measured. A `state` of `unknown` with a null reason means the seam answered and simply did not mention this session. |
 | `measuredAt` | string | the run's `generatedAt`. |
 | `ageSeconds` | number or null | seconds since the session's last activity, or null when there was no timestamp or it did not parse. |
 

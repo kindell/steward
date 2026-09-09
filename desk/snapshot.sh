@@ -283,7 +283,7 @@ while IFS= read -r n; do
     # by - the same word registry_list yields - and liveness_for is what turns
     # an absent name into a full row of `unknown` rather than into silence.
     live_row="$(liveness_for "$n" "$live_rows")"
-    IFS=$'\t' read -r _lname _ldaemon _ltmux lagent _lruntime _lmodel lactivity _lreason \
+    IFS=$'\t' read -r _lname _ldaemon _ltmux lagent _lruntime _lmodel lactivity lreason \
       <<< "$live_row"
     # One shared decision per principal/session. Only the filtered projection
     # leaves this temporary directory; the sight map itself never travels.
@@ -301,6 +301,7 @@ while IFS= read -r n; do
            --arg runtime "$session_runtime" --arg host "$session_host" --arg repo "$repo" \
            --arg measuredAt "$generated_at" \
            --arg agent "${lagent:-unknown}" --arg lastActivity "${lactivity:-unknown}" \
+           --arg livenessReason "${lreason:--}" \
            --argjson mcp "$mcp" --arg mcpReason "$mcp_reason" --argjson sight "$sights" '
       def blank($v): if $v == "" then null else $v end;
         {id:$id, slug:$slug, label:$label, owner:$owner, sight:$sight,
@@ -319,7 +320,20 @@ while IFS= read -r n; do
        # stripped before parsing - the fraction is finer than the
        # second-level precision ageSeconds reports anyway, so dropping it
        # loses nothing this field promises.
+       # WHY, WHEN THERE IS A WHY. The seam prints an eighth field for
+       # exactly this: an `unknown` with no reason is the same silence the
+       # whole liveness model was built to make impossible - six causes
+       # rendering as one word, in a document a view reads and cannot add to.
+       # The producer used to read that field and throw it away, so every
+       # question mark on the desk was unattributable. A `-` is how the seam
+       # says "nothing to explain, this row was measured", and it becomes null
+       # rather than travelling as a dash a reader would have to decode.
+       # NO APOSTROPHE SURVIVES IN HERE. This whole jq program is one
+       # single-quoted shell string, so a prose apostrophe ends it and the
+       # error surfaces as a bash syntax error pointing at the next line.
        liveness: {state: $agent,
+                  reason: (if ($livenessReason == "" or $livenessReason == "-")
+                           then null else $livenessReason end),
                   measuredAt: $measuredAt,
                   ageSeconds: (if ($lastActivity == "" or $lastActivity == "-"
                                    or $lastActivity == "unknown") then null

@@ -147,13 +147,13 @@ is "Unix owner is not the principal when the account resolves" "$(visibility_fie
 is "empty principal still refuses an account-backed row" "$(visibility_fields '' service)" none
 member_fields="$(visibility_field_list member)"
 owner_fields="$(visibility_field_list owner)"
-for field in id slug label owner domain project runtime host repo liveness.state liveness.measuredAt liveness.ageSeconds; do
+for field in id slug label owner domain project runtime host repo liveness.state liveness.measuredAt liveness.ageSeconds liveness.reason; do
   is "member allows $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 1
 done
 for field in mail repoPath; do
   is "member excludes $field" "$(printf '%s\n' "$member_fields" | grep -Fxc "$field")" 0
 done
-for field in mcp.id mcp.name mcp.axis mcp.source liveness.ageSeconds; do
+for field in mcp.id mcp.name mcp.axis mcp.source liveness.ageSeconds liveness.reason; do
   is "owner retains $field" "$(printf '%s\n' "$owner_fields" | grep -Fxc "$field")" 1
 done
 # THE MCP KEYS ARE IN BOTH SETS, AND THE AXIS TABLE IS WHAT SEPARATES THEM.

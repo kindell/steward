@@ -133,10 +133,10 @@ function readAsset(a) {
 function readSession(s) {
   const { id, slug, label, owner, mine, domain, project, runtime, host, repo, liveness, mcp } = s;
   const lv = liveness && typeof liveness === 'object' ? liveness : {};
-  const { state, measuredAt, ageSeconds } = lv;
+  const { state, measuredAt, ageSeconds, reason } = lv;
   return {
     id, slug, label, owner, mine: !!mine, domain, project, runtime, host, repo,
-    liveness: { state, measuredAt, ageSeconds },
+    liveness: { state, measuredAt, ageSeconds, reason },
     mcp: arr(mcp).map(readAsset)
   };
 }
@@ -167,7 +167,22 @@ export function formatAge(ageSeconds) {
   return Math.floor(ageSeconds / 3600) + ' h';
 }
 
-const livenessWord = (lv) => orNone(lv.state) + ', last activity ' + formatAge(lv.ageSeconds);
+// AN `unknown` THAT CANNOT SAY WHY IS THE SILENCE THE MODEL EXISTS TO PREVENT.
+// `running`, `not-running` and `unknown` are three different words and a reader
+// can already tell them apart - but the third one has six causes behind it (no
+// seam configured, a shim that could not be found, one that timed out, one
+// whose answer did not parse, a probe that failed, a session the answer never
+// mentioned) and a bare question mark sends the reader to a log they do not
+// have. The seam has carried the sentence in its eighth field all along; this
+// is where it becomes something a person reads.
+//
+// A REASON IS SHOWN WHENEVER ONE ARRIVES, not only on `unknown`. The seam
+// prints `-` - rendered as null upstream - for a row it genuinely measured, so
+// a reason that is present is a reason worth reading whatever word it sits
+// beside; suppressing it on any state would be this renderer deciding it knows
+// better than the measurement.
+const why = (lv) => (lv.reason ? ' (' + lv.reason + ')' : '');
+const livenessWord = (lv) => orNone(lv.state) + ', last activity ' + formatAge(lv.ageSeconds) + why(lv);
 
 // sessionLine - one session as a table row: its handle links to its page, the
 // label and the liveness answer sit beside it, and `mine` is marked so a viewer
@@ -263,9 +278,11 @@ function sessionHead(s) {
   // "unknown - unknown" repeats the same absence twice where "unknown" says
   // it once.
   const live = (st === 'unknown' && ag === 'unknown') ? 'unknown' : st + ' - ' + ag;
+  // The collapse above turns two absences into one word; the reason is the one
+  // thing that is NOT a repetition of it, so it survives the collapse.
   return link('session', s.id, orNone(s.slug)) + (s.mine ? tag('mine') : '') +
     ' - ' + h(orNone(s.label)) + ' - ' + h(orNone(s.owner)) +
-    ' - ' + h(live);
+    ' - ' + h(live + why(s.liveness));
 }
 
 const sessionNode = (s) => li(sessionHead(s), []);
@@ -417,6 +434,11 @@ export function pageSession(snap, id) {
     row('host', orNone(s.host)),
     row('repository', orNone(s.repo)),
     row('liveness', orNone(s.liveness.state)),
+    // THE ROW IS ABSENT WHEN THERE IS NOTHING TO EXPLAIN, rather than present
+    // and empty. A permanent `why - none` on every healthy session trains a
+    // reader to skip the line, and the one time it says something is the one
+    // time they need to read it.
+    ...(s.liveness.reason ? [row('why', s.liveness.reason)] : []),
     row('measured at', orNone(s.liveness.measuredAt)),
     row('last activity', formatAge(s.liveness.ageSeconds))
   ]);

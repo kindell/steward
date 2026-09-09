@@ -196,7 +196,7 @@ visibility_fields() {
 visibility_field_list() {
   case "${1:-}" in owner|member) ;; *) return 1 ;; esac
   printf '%s\n' id slug label owner domain project runtime host repo mine sight \
-    liveness.state liveness.measuredAt liveness.ageSeconds \
+    liveness.state liveness.measuredAt liveness.ageSeconds liveness.reason \
     mcp.id mcp.name mcp.axis mcp.source
 }
 

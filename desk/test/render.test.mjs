@@ -425,6 +425,51 @@ test('an age that is not a finite non-negative number reads unknown', () => {
 // A SESSION NODE COLLAPSES "unknown - unknown" INTO ONE WORD. Two separate
 // fields both saying the same absence read as one message read twice; a
 // single "unknown" says it once.
+// AN `unknown` MUST BE ABLE TO SAY WHY, AND A MEASURED ROW MUST NOT INVENT ONE.
+// The three liveness words are already distinct on the page; what a reader
+// could not do was act on the third one. `unknown` has six causes behind it and
+// a bare question mark sends them to a log they do not have - so the seam's
+// eighth field, which the producer used to read and discard, is rendered here.
+//
+// BOTH DIRECTIONS, because a field that always appears is a field nobody reads:
+// a row the seam genuinely measured carries null and must render exactly as it
+// did before this existed.
+test('an unknown row says why, on every surface that shows liveness', () => {
+  const snap = {
+    host: 'h', generatedAt: G, viewer: 'a', readAll: true,
+    entities: [], projects: [],
+    sessions: [{
+      id: 's-dark', slug: 'dark', label: 'Dark', owner: 'a', mine: false,
+      domain: null, project: null, runtime: 'claude-code', host: 'h', repo: 'r',
+      liveness: { state: 'unknown', measuredAt: G, ageSeconds: null,
+                  reason: 'cannot probe on basement: tmux could not be asked (rc 124)' },
+      mcp: []
+    }]
+  };
+  const idx = pageIndex(snap);
+  assert.ok(idx.includes('tmux could not be asked (rc 124)'), idx);
+  const page = pageSession(snap, 's-dark');
+  assert.ok(page.includes('tmux could not be asked (rc 124)'), page);
+  assert.ok(page.includes('<th>why</th>'), page);
+});
+
+test('a measured row carries no reason and grows no row for one', () => {
+  const snap = {
+    host: 'h', generatedAt: G, viewer: 'a', readAll: true,
+    entities: [], projects: [],
+    sessions: [{
+      id: 's-live', slug: 'live', label: 'Live', owner: 'a', mine: false,
+      domain: null, project: null, runtime: 'claude-code', host: 'h', repo: 'r',
+      liveness: { state: 'not-running', measuredAt: G, ageSeconds: 300, reason: null },
+      mcp: []
+    }]
+  };
+  const page = pageSession(snap, 's-live');
+  assert.ok(page.includes('not-running'), page);
+  assert.ok(!page.includes('<th>why</th>'), page);
+  assert.ok(!pageIndex(snap).includes('('), 'a measured row renders no parenthetical');
+});
+
 test('a session node with an unknown state and an unknown age says it once', () => {
   const h = pageIndex(snap);
   assert.ok(h.includes(' - Mine - b - unknown</li>'), h);
