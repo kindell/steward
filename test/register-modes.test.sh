@@ -519,9 +519,9 @@ is "and every register is still right afterwards" "$(registers_wrong "$E2E")" ""
 # prose is documentation nobody has run.
 echo "== the README says the modes are pinned, and its repair works =="
 DOC="$(cat "$here/README.md")"
-has "the README names the pinned modes" "$DOC" "invites.d\` and \`logins.d\` at \`0700\`"
+has "the README names the pinned modes" "$DOC" "at \`0700\`, the rest at \`0755\`"
 has "and says they are applied only at creation" "$DOC" "only when the scaffold creates"
-has "and says an older estate is not repaired" "$DOC" "is not repaired"
+has "and says an older estate is not repaired" "$DOC" "nothing repairs it"
 has "and names the repair" "$DOC" "chmod g-w,o-w"
 
 # THE ESTATE A PRE-FIX HOST HAS. Not a hypothetical: 0775 on every register is

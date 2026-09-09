@@ -35,6 +35,29 @@ already use — it starts it, watches it, addresses it, and updates it.
   login, the box is only a proxy) - desk/SCHEMA.md, "Reaching it from the
   public front".
 
+## Register modes on an estate that already exists
+
+The scaffold pins the mode of every register directory it creates - `invites.d`
+and `logins.d` at `0700`, the rest at `0755` - instead of leaving it to the
+host's umask. On a Debian or Ubuntu host, whose default umask is 002, the
+registers used to come out group-writable, and the invite and login loaders
+refuse a group- or other-writable register on purpose: a row at mode 600 inside
+a directory anybody can write to is not protected by its mode.
+
+**The modes are applied only when the scaffold creates the directory.** An
+estate scaffolded before this change keeps exactly the modes it had, and
+nothing repairs it - not a re-scaffold, not an upgrade. The two guarded
+registers will refuse and name the remedy the first time something reads them;
+the others stay group-writable silently. Check and repair such an estate by
+hand, once:
+
+```sh
+ESTATE=/path/to/estate
+ls -ld "$ESTATE"/*.d                                # what the modes are now
+chmod g-w,o-w "$ESTATE"/*.d                         # no register stays writable by others
+chmod 0700 "$ESTATE"/invites.d "$ESTATE"/logins.d   # the two the loaders guard
+```
+
 ## Design rules
 
 These are load-bearing, not preferences. Each exists because its absence caused
