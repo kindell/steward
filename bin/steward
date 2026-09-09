@@ -4340,13 +4340,23 @@ _offboard_logins() {
   return 0
 }
 
-# _offboard_host_rows <principal> - the host rows that NAME the person, one
-# `<host> <field>` line each. A host row's OWNER and OPERATOR are the machine's
-# own record of who answers for it, and every loader in the fleet refuses a row
-# whose OWNER is not a principal it recognises: offboarding the person a host
-# row names leaves that row naming nobody. Read by a subshelled source,
-# not registry_host_load, for the reason _registry_host_hub_value gives - a
-# reader must not silently acquire an OWNER from a file it only asked one key of.
+# _offboard_host_rows <principal>
+#   row <host> <field>   - a host row naming the person in OWNER or OPERATOR
+#   unreadable <host> -   - a conf that is there and cannot be read
+#
+# A host row's OWNER and OPERATOR are the machine's own record of who answers
+# for it, and this verb removes the principal row those two fields name:
+# offboarding the person a host row names leaves that row naming a principal with no row
+# anywhere. NOTHING IN THE FLEET WOULD REPORT THAT - the loaders check the FORM
+# of the slug (registry_host_load, lib/registry.sh), not that a principal by
+# that name exists - which is the reason to refuse here rather than to warn.
+#
+# Read by a subshelled source, not registry_host_load, for the reason
+# _registry_host_hub_value gives - a reader must not silently acquire an OWNER
+# from a file it only asked one key of. AND A CONF THAT CANNOT BE READ IS SAID,
+# never sourced-and-shrugged-at: `source` on a mode-000 file fails quietly and
+# leaves OWNER empty, so the one file that would have closed this gate is the
+# one that reads as a row naming nobody.
 _offboard_host_rows() {
   local want="$1" d f h owner operator
   d="$(registry_host_dir)"
@@ -4355,11 +4365,55 @@ _offboard_host_rows() {
     [ -e "$f" ] || continue
     h="$(basename "$f" .conf)"
     registry_valid_name "$h" || continue
+    if [ ! -r "$f" ]; then
+      printf 'unreadable %s -\n' "$h"
+      continue
+    fi
     owner="$(   OWNER="";    source "$f" 2>/dev/null; printf '%s' "$OWNER" )"
     operator="$( OPERATOR=""; source "$f" 2>/dev/null; printf '%s' "$OPERATOR" )"
-    [ "$owner" = "$want" ] && printf '%s OWNER\n' "$h"
-    [ "$operator" = "$want" ] && printf '%s OPERATOR\n' "$h"
+    [ "$owner" = "$want" ] && printf 'row %s OWNER\n' "$h"
+    [ "$operator" = "$want" ] && printf 'row %s OPERATOR\n' "$h"
   done
+  return 0
+}
+
+# _offboard_register_readable <principal> <json-flag> - every register this verb
+# reads, checked before it acts.
+#
+# A DIRECTORY THAT CANNOT BE LISTED ANSWERS EVERY QUESTION WITH "NOTHING", and
+# every question this verb asks is "does anything here still name this person" -
+# so an unreadable register reads as a person with no rows in it, and the run
+# reports a finished cleanup over rows it never saw. Measured before this gate
+# existed: a mode-000 hosts.d walked straight past the operator refusal below
+# and offboarded the machine's own operator at rc 0; a mode-000 sessions.d left
+# the session row and the bus relay row in the hub's authorized_keys standing
+# behind a receipt that said "done" with no warnings at all.
+#
+# AN ABSENT DIRECTORY IS A DIFFERENT ANSWER and stays legitimate: nothing that
+# is not there can name anybody. That is the distinction registry_entity_list
+# already draws in its own words - empty is a claim, unreadable supports none.
+_offboard_register_readable() {
+  local principal="$1" want_json="$2" reg_label reg_fn reg_dir
+  while read -r reg_label reg_fn; do
+    [ -n "$reg_label" ] || continue
+    reg_dir="$("$reg_fn" 2>/dev/null)" || reg_dir=""
+    if [ -z "$reg_dir" ]; then
+      _reg_fail "$want_json" "steward offboard: the $reg_label register could not be resolved, so whether anything there still names '$principal' is unknown"
+      return 78
+    fi
+    [ -d "$reg_dir" ] || continue
+    [ -r "$reg_dir" ] && [ -x "$reg_dir" ] && continue
+    _reg_fail "$want_json" "steward offboard: $reg_dir cannot be listed, so whether anything there still names '$principal' is unknown - a register this run cannot read is not a register with nothing in it. Fix the mode or the owner of that directory and run offboard again."
+    return 78
+  done <<'EOF'
+account registry_account_dir
+principal registry_principal_dir
+session registry_dir
+login registry_login_dir
+host registry_host_dir
+entity registry_entity_dir
+invitation registry_invite_dir
+EOF
   return 0
 }
 
@@ -4387,6 +4441,12 @@ cmd_offboard() {
   _OFFBOARD_JSON="$want_json"; _OFFBOARD_REMOVED=""; _OFFBOARD_KEPT=""
   _OFFBOARD_WARNINGS=""; _OFFBOARD_RECEIPT=""
   _OFFBOARD_PRINCIPAL="$principal"
+
+  # BEFORE ANY QUESTION IS ASKED OF A REGISTER, THAT REGISTER IS READ-CHECKED.
+  # This runs first because every gate below it - the host rows, the account
+  # rows, the second-run receipt - reads a directory to reach its answer, and a
+  # gate that cannot see is a gate that says yes.
+  _offboard_register_readable "$principal" "$want_json" || return 78
 
   local pconf acct_scan accounts="" acct_dead="" tag val
   pconf="$(registry_principal_dir)/$principal.conf"
@@ -4440,17 +4500,36 @@ EOF
   fi
 
   # THE MACHINES' OWN RECORD OF WHO ANSWERS FOR THEM COMES FIRST. A host row
-  # names an OWNER and an OPERATOR, and every loader in the fleet refuses a host
-  # whose OWNER is not a principal it recognises - so offboarding the person a
-  # host row names breaks that machine's row for every later reader, and
-  # does it while reporting rc 0. This verb never edits hosts.d: who takes over
-  # a machine is not a thing a cleanup gets to decide.
-  local host_rows hr_first hr_host hr_field
+  # names an OWNER and an OPERATOR, and this verb removes the principal row those
+  # two fields name - so offboarding the person a host row names leaves it naming
+  # a principal that no longer has a row anywhere, and does it while reporting
+  # rc 0. What the loaders check is the FORM of that slug, not that a principal
+  # by that name exists, so nothing downstream would report the dangling name
+  # either. This verb never edits hosts.d: who takes over a machine is not a
+  # thing a cleanup gets to decide.
+  #
+  # EVERY MATCHING ROW IS NAMED, NOT THE FIRST. A refusal that named one row at
+  # a time sent the operator to repair it, re-run, and be refused again by the
+  # next - and the second refusal reads as a verb that changed its mind.
+  local host_rows hr_tag hr_host hr_field hr_list="" hr_unread=""
   host_rows="$(_offboard_host_rows "$principal")"
-  if [ -n "$host_rows" ]; then
-    hr_first="$(printf '%s\n' "$host_rows" | head -1)"
-    hr_host="${hr_first%% *}"; hr_field="${hr_first##* }"
-    _reg_fail "$want_json" "steward offboard: hosts.d/$hr_host.conf names '$principal' as its $hr_field - offboarding would leave that machine's row naming a principal that no longer exists. Name whoever takes the machine over in the host row first; this verb never edits hosts.d."
+  while read -r hr_tag hr_host hr_field; do
+    case "$hr_tag" in
+      row)        hr_list="${hr_list:+$hr_list, }hosts.d/$hr_host.conf as its $hr_field" ;;
+      unreadable) hr_unread="${hr_unread:+$hr_unread, }hosts.d/$hr_host.conf" ;;
+    esac
+  done <<EOF
+$host_rows
+EOF
+  # THE ROW NOBODY COULD READ IS ANSWERED FIRST, because it is the one that
+  # makes the answer below uncertain: a conf this run could not open may be the
+  # very row that names the person.
+  if [ -n "$hr_unread" ]; then
+    _reg_fail "$want_json" "steward offboard: $hr_unread cannot be read, so whether the host register names '$principal' as an OWNER or an OPERATOR is unknown - and a host row nobody can read is not a host row that names nobody. Fix the mode or the owner of that file and run offboard again."
+    return 78
+  fi
+  if [ -n "$hr_list" ]; then
+    _reg_fail "$want_json" "steward offboard: the host register names '$principal' - $hr_list - and offboarding would leave those rows naming a principal that no longer exists. Name whoever takes each machine over in the host row first; this verb never edits hosts.d."
     return 65
   fi
 
@@ -4468,14 +4547,32 @@ EOF
   # THE ACCOUNT ROWS ARE READ ONCE, into one <slug> TAB <host> TAB <username>
   # list. The gate needs the host, the helper needs the username, and reading
   # the row again for each is another chance for it to have changed between the
-  # decision and the act. TAB-SEPARATED because the loader checks that HOST is
-  # non-empty and lets USERNAME default, but validates the FORM of neither.
-  local acct rows="" usernames=""
+  # decision and the act. TAB-SEPARATED, and every field that goes in is checked
+  # against the writer's own grammar first - see below: the loader checks that
+  # HOST is non-empty and lets USERNAME default, so the separators this list is
+  # built on are exactly the characters neither field was ever checked for.
+  local acct rows="" usernames="" acct_bad=""
   for acct in $accounts; do
     if registry_account_load "$acct" >/dev/null 2>&1; then
-      rows="$rows$acct	$ACCOUNT_HOST	$ACCOUNT_USERNAME
+      # THE TWO FIELDS THE LOADER DOES NOT CHECK THE FORM OF, CHECKED HERE.
+      # registry_account_load validates PRINCIPAL and asks only that HOST be
+      # non-empty; USERNAME it lets default. These are the very regexes the
+      # register's own writer puts them through on the way in
+      # (cmd_registry_account_add above: HOST ^[a-z0-9][a-z0-9-]*$, USERNAME
+      # ^[a-z][a-z0-9-]*$), and a value the writer would have refused is not a
+      # value a reader may act on. MEASURED: a hand-edited USERNAME carrying a
+      # newline and two tabs forged a second row inside this very list, and the
+      # run locked a unix account NO register row names and archived its home -
+      # rc 0, filed under this person's offboarding.
+      if ! [[ "$ACCOUNT_HOST" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        acct_bad="${acct_bad:+$acct_bad }$acct:HOST"
+      elif ! [[ "$ACCOUNT_USERNAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
+        acct_bad="${acct_bad:+$acct_bad }$acct:USERNAME"
+      else
+        rows="$rows$acct	$ACCOUNT_HOST	$ACCOUNT_USERNAME
 "
-      usernames="${usernames:+$usernames }$ACCOUNT_USERNAME"
+        usernames="${usernames:+$usernames }$ACCOUNT_USERNAME"
+      fi
     else
       # It loaded during the scan a moment ago and does not now. Treat it as
       # what it has become - a row nothing can vouch for - rather than reading
@@ -4483,6 +4580,21 @@ EOF
       acct_dead="${acct_dead:+$acct_dead }$acct"
     fi
   done
+
+  # REFUSED BEFORE THE LIST IS READ BACK, not after. The forged row would be a
+  # line INSIDE the list, and every loop below - the host gate, the lock, the
+  # archive - reads it as a row of its own; there is no later place where it is
+  # still one row. Nothing has happened yet, so this is _reg_fail and not
+  # _offboard_fail: no receipt exists to stamp "failed" over.
+  local bad bad_list=""
+  for bad in $acct_bad; do
+    bad_list="${bad_list:+$bad_list, }accounts.d/${bad%:*}.conf (${bad##*:})"
+  done
+  if [ -n "$bad_list" ]; then
+    _reg_fail "$want_json" "steward offboard: $bad_list carries a value this register's own writer would have refused (HOST a-z0-9 then a-z0-9 and hyphen, USERNAME a-z then a-z0-9 and hyphen). A field that was hand-edited past the writer is not a field this verb locks an account or moves a home on. Repair the row and run offboard again."
+    return 78
+  fi
+
   accounts=""
   local self_host racct rhost ruser
   self_host="$(_registry_self_host)"
@@ -4497,20 +4609,27 @@ EOF
 $rows
 EOF
 
+  # AN UNREADABLE ACCOUNT ROW IS AN UNLOCKED UNIX ACCOUNT. Its HOST and USERNAME
+  # are exactly what the loader refused to vouch for, so nothing here can name
+  # the account it stands for - the lock never happens, the home never moves,
+  # and a run that carried on would put "state: done" over both. It was one loud
+  # warning at rc 0 until 2026-09-09, which is the receipt telling an operator
+  # who re-reads it that the cleanup finished. Refused where the host gate
+  # refuses: before the first side effect, before a receipt exists - hence
+  # _reg_fail, never _offboard_fail, which would stamp "failed" over the record
+  # of a previous run that did happen.
+  local dead dead_list=""
+  for dead in $acct_dead; do dead_list="${dead_list:+$dead_list, }accounts.d/$dead.conf"; done
+  if [ -n "$dead_list" ]; then
+    _reg_fail "$want_json" "steward offboard: $dead_list names '$principal' and does not load, so nothing here can name the unix account it stands for - locking nothing and archiving nothing while reporting the person gone is the one answer this verb must not give. Repair the row (or remove it, if the account is already gone) and run offboard again."
+    return 78
+  fi
+
   local state_dir
   state_dir="$(registry_state_dir_name)" || {
     _reg_fail "$want_json" "steward offboard: the estate does not name a state directory, so no receipt could be written"
     return 78; }
   _OFFBOARD_RECEIPT="$HOME/.local/state/$state_dir/offboards/$principal.receipt.json"
-
-  # THE ROWS THIS RUN CANNOT ACT ON ARE SAID BEFORE IT STARTS, and they are
-  # said out loud. An account row the loader will not vouch for is still the
-  # person's: its unix account stays open, and passing over it in silence is
-  # how an account outlives the register row that named it.
-  local dead
-  for dead in $acct_dead; do
-    _offboard_kept "accounts.d/$dead.conf does not load, so nothing here can name the unix account it stands for - left in place and NOT locked, repair the row and run offboard again" loud
-  done
 
   local out rc home locked=""
   local hub_ak="${STEWARD_AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"

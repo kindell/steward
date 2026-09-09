@@ -14,7 +14,13 @@ no()  { case "$2" in *"$3"*) bad "$1" "found '$3' in: $2" ;; *) ok "$1" ;; esac;
 have()    { if [ -e "$2" ]; then ok "$1"; else bad "$1" "missing $2"; fi; }
 havenot() { if [ -e "$2" ]; then bad "$1" "still there: $2"; else ok "$1"; fi; }
 modeof()  { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
-FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
+FX="$(mktemp -d)"
+# A CASE THAT MAKES A DIRECTORY UNREADABLE PUTS IT BACK EVEN WHEN IT DIES. The
+# fixture is removed from this trap, and `rm -rf` cannot descend into a mode-000
+# directory - so an assertion that exits mid-case would leave the whole
+# temporary tree on the machine for good.
+GUARD_DIR=""
+trap 'if [ -n "$GUARD_DIR" ]; then chmod 700 "$GUARD_DIR" 2>/dev/null; fi; rm -rf "$FX"' EXIT
 echo "offboard"
 
 # -- the product tree -------------------------------------------------------
@@ -441,12 +447,14 @@ has "and carries the snapshot note as a warning" "$(jq -r '.warnings|join(" ")' 
 no  "which is not a thing that was removed" "$(jq -r '.removed|join(" ")' "$GR")" "desk snapshot failed"
 
 echo "== the person a host row names is refused, not offboarded =="
-# A HOST ROW NAMES ITS OWNER AND ITS OPERATOR, and every loader in the fleet
-# refuses a host whose OWNER is not a form it recognises. Offboarding the
-# person a host row names leaves that row naming a principal that no
-# longer exists - the machine's own record of who answers for it, broken by a
-# verb that was only asked to clean up after a rehearsal. The register has to
-# be changed first, and by a hand that knows who takes over.
+# A HOST ROW NAMES ITS OWNER AND ITS OPERATOR, and this verb removes the
+# principal row those two fields name. Offboarding the person a host row names leaves
+# that row naming a principal that has no row anywhere - the machine's own
+# record of who answers for it, broken by a verb that was only asked to clean up
+# after a rehearsal. Nothing in the fleet would report the dangling name either:
+# the loaders check the FORM of the slug, not that a principal by that name
+# exists. The register has to be changed first, by a hand that knows who takes
+# over.
 newperson ivo "Ivo"
 printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="ivo"\n' > "$ROOT/hosts.d/host-c.conf"
 : > "$FX/calls"
@@ -467,7 +475,18 @@ have "the principal row is untouched" "$ROOT/principals.d/ivo.conf"
 have "the account row is untouched" "$ROOT/accounts.d/ivo-host-a.conf"
 have "and the host row still names them" "$ROOT/hosts.d/host-c.conf"
 havenot "no receipt was written" "$HUBHOME/.local/state/fixture-state/offboards/ivo.receipt.json"
-rm -f "$ROOT/hosts.d/host-c.conf" "$ROOT/principals.d/ivo.conf" "$ROOT/accounts.d/ivo-host-a.conf"
+# EVERY ROW THAT NAMES THEM, NOT THE FIRST ONE. A refusal that names one row at
+# a time sends the operator to repair it, re-run, and be refused again by the
+# next - and the second refusal reads as a verb that changed its mind.
+rm -f "$ROOT/hosts.d/host-c.conf"
+printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="ivo"\n' > "$ROOT/hosts.d/host-d.conf"
+printf 'OWNER="ivo"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="operator"\n' > "$ROOT/hosts.d/host-e.conf"
+out="$(run offboard ivo 2>&1)"; rc=$?
+is  "two host rows that name them still refuse, rc 65" "$rc" "65"
+has "and the first row is named" "$out" "hosts.d/host-d.conf"
+has "and so is the second" "$out" "hosts.d/host-e.conf"
+rm -f "$ROOT/hosts.d/host-d.conf" "$ROOT/hosts.d/host-e.conf" \
+      "$ROOT/principals.d/ivo.conf" "$ROOT/accounts.d/ivo-host-a.conf"
 
 echo "== a row that cannot be matched or read is left in place, and SAID =="
 # THE RECEIPT IS PRESENTED AS THE RECORD OF A FINISHED CLEANUP. A live session
@@ -491,15 +510,14 @@ EOF
 printf 'PRINCIPAL="ivy"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude-logins/claude-max"\nLEGAL_OWNER="ivy"\n' \
   > "$ROOT/logins.d/ivy-broken.conf"
 chmod 600 "$ROOT/logins.d/ivy-broken.conf"
-# And an account row of hers the loader refuses: no HOST.
-printf 'PRINCIPAL="ivy"\nUSERNAME="ivytwo"\n' > "$ROOT/accounts.d/ivy-broken.conf"
-# A session row filed under THAT account: its slug is the person's, but no run
-# can act on a row the loader will not vouch for, so this one is stranded the
-# same way the old-shape row above is.
+# A session row filed under an account slug with no row at all: no scan by
+# account slug can find it either, and it is stranded the same way the
+# old-shape row above is. (An account row the loader REFUSES is a different
+# answer now - it refuses the whole run, in its own case below.)
 STRANDED="s-00000000000000ij"
 cat > "$ROOT/sessions.d/$STRANDED.conf" <<EOF
 ID="$STRANDED"
-ACCOUNT="ivy-broken"
+ACCOUNT="ivy-gone"
 SLUG="acme-ivy-two"
 DOMAIN="acme"
 HOST="host-a"
@@ -514,20 +532,117 @@ has "the old-shape session row is named on stderr" "$out" "$IVYSID"
 has "and the reader is told what to do with it" "$out" "left in place"
 has "the row filed under the broken account is named too" "$out" "$STRANDED"
 has "the login row that will not load is named too" "$out" "logins.d/ivy-broken.conf"
-has "and the account row that will not load" "$out" "accounts.d/ivy-broken.conf"
 kept="$(jq -r '.kept|join(" ")' "$IR")"
 has "the session row is in the receipt's kept list" "$kept" "$IVYSID"
 has "so is the stranded one" "$kept" "$STRANDED"
 has "so is the login row" "$kept" "logins.d/ivy-broken.conf"
-has "so is the account row" "$kept" "accounts.d/ivy-broken.conf"
 no  "and none of them is counted as removed" "$(jq -r '.removed|join(" ")' "$IR")" "ivy-broken"
 have "the session row really is still there" "$ROOT/sessions.d/$IVYSID.conf"
 have "and the stranded one" "$ROOT/sessions.d/$STRANDED.conf"
 have "and the login row" "$ROOT/logins.d/ivy-broken.conf"
-have "and the account row" "$ROOT/accounts.d/ivy-broken.conf"
 havenot "while the principal row went" "$ROOT/principals.d/ivy.conf"
 rm -f "$ROOT/sessions.d/$IVYSID.conf" "$ROOT/sessions.d/$STRANDED.conf" \
-      "$ROOT/logins.d/ivy-broken.conf" "$ROOT/accounts.d/ivy-broken.conf"
+      "$ROOT/logins.d/ivy-broken.conf"
+
+echo "== an account row that does not load refuses the whole run =="
+# AN ACCOUNT ROW IS THE ONLY THING THAT NAMES A UNIX ACCOUNT. A row the loader
+# will not vouch for is an account nothing here can lock and a home nothing here
+# can move; warning and carrying on left the person's account open on the host
+# behind a receipt that said done - the one answer an operator re-reads to be
+# sure it is clean.
+newperson jai "Jai"
+printf 'PRINCIPAL="jai"\nUSERNAME="jaitwo"\n' > "$ROOT/accounts.d/jai-broken.conf"   # no HOST: refused
+: > "$FX/calls"
+out="$(run offboard jai 2>&1)"; rc=$?
+is  "an account row that will not load refuses, rc 78" "$rc" "78"
+has "and names the row" "$out" "accounts.d/jai-broken.conf"
+has "and says nothing here can name the account" "$out" "does not load"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+have "the principal row is untouched" "$ROOT/principals.d/jai.conf"
+have "the good account row is untouched" "$ROOT/accounts.d/jai-host-a.conf"
+have "and the broken row is left where it stood" "$ROOT/accounts.d/jai-broken.conf"
+havenot "and no receipt was written" "$HUBHOME/.local/state/fixture-state/offboards/jai.receipt.json"
+# AND IT CANNOT BE WALKED PAST BY LOSING THE PRINCIPAL ROW EITHER. A broken
+# account row that outlives its principal is the shape a half-finished cleanup
+# leaves behind.
+rm -f "$ROOT/principals.d/jai.conf" "$ROOT/accounts.d/jai-host-a.conf"
+out="$(run offboard jai 2>&1)"; rc=$?
+is  "a broken row outliving the principal row still refuses, rc 78" "$rc" "78"
+has "and still names the row" "$out" "accounts.d/jai-broken.conf"
+no  "and never reports the person as cleanly gone" "$out" "nothing left to remove"
+rm -f "$ROOT/accounts.d/jai-broken.conf"
+
+echo "== a field the register's own writer would refuse is not acted on =="
+# THE ACCOUNT ROWS ARE CARRIED IN A TAB- AND NEWLINE-DELIMITED LIST, and a
+# hand-edited USERNAME carrying both forges a whole extra row inside it.
+# Measured before this gate: one such row made the run lock a unix account NO
+# register row names, archive its home, and file both under this person's
+# offboarding at rc 0. `steward registry account add` refuses the same value on
+# the way in; the reader has to refuse it on the way out.
+newperson kev "Kev"
+printf 'PRINCIPAL="kev"\nHOST="host-a"\nUSERNAME="kev\nkev-forged\thost-a\tzed"\n' \
+  > "$ROOT/accounts.d/kev-host-a.conf"
+: > "$FX/calls"
+out="$(run offboard kev 2>&1)"; rc=$?
+is  "a forged USERNAME refuses, rc 78" "$rc" "78"
+has "and names the row it came out of" "$out" "accounts.d/kev-host-a.conf"
+has "and the field that is wrong" "$out" "USERNAME"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+no  "so no account nobody named was locked" "$(cat "$FX/calls")" "zed"
+have "the account row is left where it stood" "$ROOT/accounts.d/kev-host-a.conf"
+have "the principal row is untouched" "$ROOT/principals.d/kev.conf"
+havenot "and no receipt was written" "$HUBHOME/.local/state/fixture-state/offboards/kev.receipt.json"
+# HOST IS THE OTHER FIELD THE LOADER ONLY CHECKS FOR EMPTINESS. A value with a
+# space in it reached the host gate and came back out as a message about a
+# machine that does not exist; it is a row the writer would never have written.
+printf 'PRINCIPAL="kev"\nHOST="host a"\nUSERNAME="kev"\n' > "$ROOT/accounts.d/kev-host-a.conf"
+: > "$FX/calls"
+out="$(run offboard kev 2>&1)"; rc=$?
+is  "a HOST the writer would refuse refuses too, rc 78" "$rc" "78"
+has "and names that field" "$out" "HOST"
+is  "and still nothing was called" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+rm -f "$ROOT/accounts.d/kev-host-a.conf" "$ROOT/principals.d/kev.conf"
+
+echo "== a register that cannot be READ is not a register with nothing in it =="
+# MEASURED, AND ALL OF IT SILENT: mode 000 on hosts.d walked straight past the
+# operator gate above and offboarded the machine's own operator at rc 0; mode
+# 000 on sessions.d left the session row AND the bus relay row in the hub's
+# authorized_keys standing behind a receipt that said "done" with zero
+# warnings. A directory that cannot be listed answers every question with
+# "nothing", and every question this verb asks is "does anything here still
+# name this person". An ABSENT directory is a different answer and stays fine.
+newperson kip "Kip"
+KIPR="$HUBHOME/.local/state/fixture-state/offboards/kip.receipt.json"
+if [ "$(id -u)" = "0" ]; then
+  echo "  SKIP the unreadable-register cases - this run is root, where mode 000 is still readable"
+else
+  for reg in accounts.d principals.d sessions.d logins.d hosts.d entities.d invites.d; do
+    GUARD_DIR="$ROOT/$reg"
+    chmod 000 "$ROOT/$reg"
+    : > "$FX/calls"
+    out="$(run offboard kip 2>&1)"; rc=$?
+    chmod 755 "$ROOT/$reg"; GUARD_DIR=""
+    is  "an unreadable $reg refuses, rc 78" "$rc" "78"
+    has "and names the directory it could not read ($reg)" "$out" "$reg"
+    is  "and nothing was called at all ($reg)" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+    have "the account row is untouched ($reg)" "$ROOT/accounts.d/kip-host-a.conf"
+    havenot "and no receipt was written ($reg)" "$KIPR"
+  done
+  # AND ONE ROW INSIDE ONE OF THEM. The operator gate reads every host conf by
+  # hand; a conf it cannot source reads as a row that names nobody, which is the
+  # gate failing open on precisely the file that would have closed it.
+  printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="kip"\n' > "$ROOT/hosts.d/host-g.conf"
+  chmod 000 "$ROOT/hosts.d/host-g.conf"
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  chmod 644 "$ROOT/hosts.d/host-g.conf"
+  is  "a host row that cannot be read refuses, rc 78" "$rc" "78"
+  has "and names the file" "$out" "host-g.conf"
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  havenot "and no receipt was written" "$KIPR"
+  rm -f "$ROOT/hosts.d/host-g.conf"
+fi
+rm -f "$ROOT/principals.d/kip.conf" "$ROOT/accounts.d/kip-host-a.conf"
 
 echo "== a run that stopped AFTER the rows is not a finished run =="
 # THE SECOND RUN USED TO READ THE RECEIPT'S EXISTENCE AND NOTHING ELSE. A
