@@ -306,6 +306,18 @@ OWNER="alice"
 DOMAIN="acme"
 LOGIN="acme-team"
 EOF
+# THE ACCOUNT REGISTER IS A PRECONDITION OF THE REQUEST PATH (2026-09-09). The
+# person a request names is the PRINCIPAL behind the login it runs as, resolved
+# here rather than guessed from `id -un` — so the fixture must declare the
+# login it actually runs under. USERNAME is the runner's own, because that is
+# what the script reads; PRINCIPAL is the fixture's human, and the two being
+# spelled differently is the whole point of the field.
+mkdir -p "$SNX/accounts.d"
+cat > "$SNX/accounts.d/alice-h1.conf" <<EOF
+PRINCIPAL="alice"
+HOST="h1"
+USERNAME="$(id -un)"
+EOF
 ( cd "$SNX/repo" && git init -q )
 ( cd "$SNX/repo2" && git init -q )
 

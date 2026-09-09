@@ -430,7 +430,14 @@ esac
 [ -n "${TMUX_PANE:-}" ] || fel "run from inside a registered tmux session — the identity is derived from the pane"
 SJALV="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)"
 [ -n "$SJALV" ] || fel "could not derive own session name from the pane"
-PERSON="$(id -un)"
+# ── THE TWO NAMES, AND THEY ARE NOT THE SAME NAMESPACE ──────────────────────
+# UNIX_USER is the LOGIN this script runs as: it owns the working copy, it is
+# the OWNER of the row, and it is unique only within this machine. PERSON is
+# the PRINCIPAL — the human the session belongs to, and the name the hub
+# matches an account on. PERSON is resolved below, once the host is known.
+UNIX_USER="$(id -un)"
+[ -n "$UNIX_USER" ] || fel "could not read the unix login this script runs as" 78
+PERSON=""
 
 EGEN="$SESS_D/$SJALV.conf"
 [ -f "$EGEN" ] || fel "no conf for '$SJALV' in $SESS_D — a request must come from a registered session"
@@ -449,6 +456,66 @@ LOGIN_ANV="${LOGIN_FLAG:-$LOGIN_EGEN}"
 # everything else looks healthy.
 [ -n "$DOMAN" ] || fel "DOMAIN missing in $EGEN — set it"
 [ -n "$VARD" ]  || fel "HOST missing in $EGEN"
+
+# ── WHO THE REQUEST NAMES: THE PRINCIPAL, RESOLVED THROUGH THE REGISTER ─────
+#
+# THE BUG THIS REPLACES, measured on a live Linux host 2026-09-09. This script
+# sent `id -un` as person=. The hub's enroll reads that field as a PRINCIPAL —
+# it matches accounts.d on (PRINCIPAL, HOST), because an account IS that pair —
+# so on an account whose login is a ROLE rather than a person's name, which is
+# the ordinary shape of a steward account, the enrolment was refused two
+# machines away with
+#
+#   owner check: 's-...' is owned by 'steward' (principal 'jon'), the request
+#   names 'steward'
+#
+# a refusal naming a value the operator never typed, at the far end of a wire,
+# about a fact this side already had. The ownership rule is right and recent —
+# a principal owns, a login runs — and only the requester was left behind. On
+# every estate that spells the two the same this changes nothing.
+#
+# MATCHED ON USERNAME, the one field that joins the operating-system namespace
+# to the principal namespace. A row that STATES no USERNAME is not skipped:
+# registry_account_load defaults the field to PRINCIPAL, which is what most of
+# the register looks like, and the defaulted value matches exactly like a
+# stated one.
+#
+# THE HOST IS HALF THE QUESTION. A login name is unique within a machine and
+# never across a fleet, so an account on another host settles nothing about
+# this one — the same namespace mistake, one axis over, that the hub's own
+# owner check records having measured on a fixture.
+#
+# SUBSHELLED PER ROW: registry_account_load SOURCES an operator-owned conf, and
+# a lowercase assignment in that file must not reach this scanner's own
+# variables through bash's dynamic scope. The positional $1/$2 survive the
+# nested call and are read there rather than named locals, the same shape
+# lib/registry.sh uses for its own scanner.
+#
+# AND IT NEVER FALLS BACK. Sending the login when nothing resolves is exactly
+# what produces the far-away refusal above, so an unresolvable login refuses
+# HERE — rc 78, before a key is generated, a conf is written, or anything is
+# sent. A guess that is wrong costs a session filed under the wrong human.
+_resolve_person() { # <login> <host> — sets PERSON, or refuses
+  local _dir _f _slug _p _n=0 _seen=""
+  _dir="$(registry_account_dir)" || fel "the account register could not be located" 78
+  for _f in "$_dir"/*.conf; do
+    [ -f "$_f" ] || continue
+    _slug="$(basename "$_f" .conf)"
+    _p="$( registry_account_load "$_slug" >/dev/null 2>&1 \
+           && [ "$ACCOUNT_USERNAME" = "$1" ] \
+           && [ "$ACCOUNT_HOST" = "$2" ] \
+           && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+    [ -n "$_p" ] || continue
+    _n=$((_n+1)); _seen="${_seen:+$_seen, }$_slug"; PERSON="$_p"
+  done
+  # NAME WHAT WAS SEARCHED, NOT JUST WHAT WAS MISSING. The operator who meets
+  # this refusal is on a host whose register they may never have opened; the
+  # login, the host and the directory are the three facts that turn "no" into
+  # a command they can run.
+  [ "$_n" -ne 0 ] || { PERSON=""; fel "no account in $_dir runs as '$1' on host '$2' — every row there was read for USERNAME='$1' (a row that states none is read as its PRINCIPAL) together with HOST='$2', and none matched. A session is filed under a PRINCIPAL, and this script will not guess one from a login: register the account ('steward registry account add') and request again" 78; }
+  [ "$_n" -eq 1 ] || { PERSON=""; fel "more than one account in $_dir runs as '$1' on host '$2': $_seen — a login names at most one account on a machine, so this is a register to repair rather than a choice to make here. Remove or repoint the duplicate, then request again" 78; }
+}
+_resolve_person "$UNIX_USER" "$VARD"
 
 # THE GATE THAT KEEPS --domain NARROW. It is accepted ONLY while the host has no
 # session in that domain. Once one exists, the derivation above is already the
@@ -478,7 +545,9 @@ fi
 
 NAMN="${DOMAN}-${PROJEKT}-${PERSON}"
 [ -d "$REPO/.git" ] || fel "'$REPO' is not a git working copy — clone the project first"
-[ -O "$REPO" ]      || fel "'$REPO' is not owned by $PERSON — a session works in its human's clones"
+# THE LOGIN, NOT THE PRINCIPAL, IS WHAT -O MEASURES: it asks whether this
+# process's uid owns the path, and a principal id is not a uid.
+[ -O "$REPO" ]      || fel "'$REPO' is not owned by the unix login $UNIX_USER — a session works in its human's clones"
 # AND THE ADVICE HERE HAS A SECOND HALF NOW. "Delete it and re-run" is right
 # when the hub never registered anything. When the hub DID register and only
 # the CONFIRM was lost, re-running meets the hub's own refusal — which now
@@ -505,7 +574,7 @@ NYCKEL="$SSH_DIR/id_busrelay_$NAMN"
 if [ -f "$NYCKEL" ]; then
   echo "session-new: key already exists — reusing it (idempotent after a failed send)" >&2
 else
-  ssh-keygen -q -t ed25519 -N "" -f "$NYCKEL" -C "${VARD}-${PERSON}-${NAMN}" \
+  ssh-keygen -q -t ed25519 -N "" -f "$NYCKEL" -C "${VARD}-${UNIX_USER}-${NAMN}" \
     || fel "key generation failed" 70
 fi
 PUB="$(cat "$NYCKEL.pub")" || fel "could not read the public key" 70
@@ -590,7 +659,11 @@ HOST="$VARD"
 REPO_PATH="$REPO"
 RC_LABEL="$RC_PREFIX$NAMN"
 PERMISSION_MODE="bypassPermissions"
-OWNER="$PERSON"
+# OWNER IS A LOGIN. The name above carries the principal; this line says which
+# unix account runs the thing, which is the same distinction the hub makes when
+# it stamps the real row (it writes the account's USERNAME here). The value is
+# what this field has always held — `id -un` — and it must not follow PERSON.
+OWNER="$UNIX_USER"
 DOMAIN="$DOMAN"
 CONFEOF
 mv "$tmpc" "$SESS_D/$NAMN.conf" || fel "could not write the conf" 70

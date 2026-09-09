@@ -61,11 +61,30 @@ printf 'codex %s\n' "\$*" >> "$FX/trace.log"
 if [ "\$*" = "app-server daemon version" ]; then [ -n "\${FAKE_DAEMON_UP:-}" ]; exit \$?; fi
 exit "\${FAKE_CODEX_RC:-0}"
 EOF
+# tmux answers ONE question — `display-message -p '#S'`, the pane's own session
+# name, which is where the request path derives the caller's identity from. It
+# still logs every call, because the activation cases below assert it is never
+# reached at all.
 cat > "$FX/bin/tmux" <<EOF
 #!/bin/bash
 printf '%s\n' "\$*" >> "$FX/tmux.log"
+if [ "\$1" = "display-message" ]; then printf '%s\n' "\${FAKE_TMUX_SESSION:-}"; fi
+exit 0
 EOF
-chmod +x "$FX/bin/systemctl" "$FX/bin/codex" "$FX/bin/tmux"
+# ssh-keygen: the request path generates a relay key, and no real key material
+# is needed to measure who a request names. The stub writes both halves where
+# -f points and nothing else.
+cat > "$FX/bin/ssh-keygen" <<'EOF'
+#!/bin/bash
+f=""
+while [ $# -gt 0 ]; do
+  case "$1" in -f) f="${2:-}"; shift 2 ;; *) shift ;; esac
+done
+[ -n "$f" ] || exit 1
+: > "$f"
+printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFIXTUREKEYSESSIONNEWREQUESTPATHxxxxxx fixture\n' > "$f.pub"
+EOF
+chmod +x "$FX/bin/systemctl" "$FX/bin/codex" "$FX/bin/tmux" "$FX/bin/ssh-keygen"
 
 # TWO ROWS, ONE SLUG SHAPE: a default row and a codex row, each with the
 # private key filed under its slug as the request path leaves it.
@@ -212,6 +231,153 @@ out="$(activate "$ID_ODD" "$SLUG_ODD")"; rc=$?
 is  "A6: a runtime this activation does not serve refuses, rc 65" "$rc" "65"
 has "A6: the refusal names the runtime" "$out" "opencode"
 hasnt "A6: nothing is enabled" "$(cat "$FX/systemctl.log" 2>/dev/null)" "enable"
+
+# ── B. THE REQUEST PATH: WHO THE REQUEST NAMES ──────────────────────────────
+#
+# THE GAP, measured on a live host 2026-09-09. The request named `id -un` — the
+# unix login — in its person= field, while the hub's enroll compares that field
+# to the requesting row's PRINCIPAL (an account is a (principal, host) pair, and
+# OWNER is the login that runs it). On an account whose login is a ROLE rather
+# than a person's name — "steward", the normal shape for a steward account —
+# the enrolment was refused two machines away with
+#
+#   owner check: 's-...' is owned by 'steward' (principal 'jon'), the request
+#   names 'steward'
+#
+# a refusal naming a value the requester never typed. The hub side was right;
+# the requester was never updated to match. So the person a request names is
+# RESOLVED through the account register, and when it cannot be resolved the
+# request is not built at all — a fallback to the login is exactly what
+# produces the confusing refusal at the far end.
+echo "session-new — the person a request names"
+
+BFX="$FX/request"
+mkdir -p "$BFX/sessions.d" "$BFX/ssh" "$BFX/state" "$BFX/repo/.git"
+
+# The bus client records the request it was handed. It is the ONLY thing that
+# leaves this fixture, so its absence is how "nothing was sent" is measured.
+cat > "$BFX/bus-send" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$BFX/sent.to"
+cat > "$BFX/sent.txt"
+EOF
+chmod +x "$BFX/bus-send"
+
+# THE REQUESTING SESSION. A request must come from a registered session, and
+# DOMAIN and HOST are read off this row — the identity is derived from the pane
+# and never typed.
+UU="$(id -un)"
+PRIN="chief"; [ "$PRIN" = "$UU" ] && PRIN="chieftain"
+cat > "$BFX/sessions.d/asker.conf" <<CONF
+ID="asker"
+HOST="farhost"
+OWNER="$UU"
+DOMAIN="acme"
+RC_LABEL="Hub: asker"
+REPO_PATH="/srv/homes/asker/Projects/asker"
+CONF
+
+# Every case runs the same request against a DIFFERENT account register, so the
+# register is the only variable. The leftovers of a previous case are cleared
+# first: a name collision or a reused key would refuse for the wrong reason.
+request() { # <accounts.d>
+  rm -f "$BFX/sent.txt" "$BFX/sent.to"
+  rm -f "$BFX/sessions.d"/acme-widget-*.conf
+  rm -f "$BFX/ssh"/id_busrelay_*
+  rm -f "$BFX/state"/enroll-*.pending
+  PATH="$FX/bin:$PATH" HOME="$FX/home" XDG_CONFIG_HOME="$FX/config" \
+  TMUX_PANE="%0" FAKE_TMUX_SESSION="asker" \
+  STEWARD_ESTATE_ROOT="$FX" STEWARD_SESSIONS_D="$BFX/sessions.d" \
+  STEWARD_ACCOUNT_DIR="$1" \
+  STEWARD_REGISTRY_LIB="$here/lib/registry.sh" \
+  STEWARD_SSH_DIR="$BFX/ssh" STEWARD_ENROLL_STATE_DIR="$BFX/state" \
+  STEWARD_BUS_SEND="$BFX/bus-send" \
+  bash "$SN" widget "$BFX/repo" 2>&1
+}
+nothing_left() { # <case>  — no key, no reservation, no conf, nothing sent
+  local c="$1" left=""
+  [ -f "$BFX/sent.txt" ] && left="$left sent-request"
+  ls "$BFX/ssh"/id_busrelay_* >/dev/null 2>&1 && left="$left relay-key"
+  ls "$BFX/sessions.d"/acme-widget-*.conf >/dev/null 2>&1 && left="$left local-conf"
+  ls "$BFX/state"/enroll-*.pending >/dev/null 2>&1 && left="$left reservation"
+  if [ -z "$left" ]; then ok "$c: nothing was built and nothing was sent"
+  else bad "$c: nothing was built and nothing was sent" "left behind:$left"; fi
+}
+
+# ── B1. USERNAME DIFFERS FROM PRINCIPAL — the case that fails today ─────────
+acc="$BFX/acc-role"; mkdir -p "$acc"
+cat > "$acc/chief-farhost.conf" <<CONF
+PRINCIPAL="$PRIN"
+HOST="farhost"
+USERNAME="$UU"
+CONF
+out="$(request "$acc")"; rc=$?
+is "B1: rc 0" "$rc" "0"
+sent="$(cat "$BFX/sent.txt" 2>/dev/null)"
+has   "B1: the request names the account's principal" "$sent" "person=$PRIN"
+hasnt "B1: the request never names the unix login as the person" "$sent" "person=$UU"
+has   "B1: the constructed name ends in the principal" "$sent" "namn=acme-widget-$PRIN"
+conf="$BFX/sessions.d/acme-widget-$PRIN.conf"
+[ -f "$conf" ] && ok "B1: the local reservation is filed under the principal's name" \
+  || bad "B1: the local reservation is filed under the principal's name" "$(ls "$BFX/sessions.d")"
+# OWNER IS STILL THE LOGIN. The principal answers "whose session is this"; OWNER
+# answers "which unix account runs it", and the hub refuses a row that confuses
+# the two. Resolving the principal must not quietly rewrite the other field.
+has "B1: the reservation's OWNER stays the unix login" "$(cat "$conf" 2>/dev/null)" "OWNER=\"$UU\""
+
+# ── B2. NO USERNAME ON THE ROW — the field defaults to PRINCIPAL ────────────
+# registry_account_load defaults USERNAME to PRINCIPAL, so a row that omits it
+# still joins the operating-system namespace to the principal namespace. A
+# resolver that demanded the field literally would refuse most of the register.
+acc="$BFX/acc-default"; mkdir -p "$acc"
+cat > "$acc/plain-farhost.conf" <<CONF
+PRINCIPAL="$UU"
+HOST="farhost"
+CONF
+out="$(request "$acc")"; rc=$?
+is  "B2: rc 0 when USERNAME is defaulted from PRINCIPAL" "$rc" "0"
+has "B2: the request names the defaulted principal" "$(cat "$BFX/sent.txt" 2>/dev/null)" "person=$UU"
+
+# ── B3. NO ROW AT ALL — refuse, never fall back to the login ────────────────
+acc="$BFX/acc-empty"; mkdir -p "$acc"
+out="$(request "$acc")"; rc=$?
+is  "B3: an unresolvable login refuses, rc 78" "$rc" "78"
+has "B3: the refusal names the unix login it searched for" "$out" "'$UU'"
+has "B3: the refusal names the host" "$out" "farhost"
+has "B3: the refusal names the register it searched" "$out" "$acc"
+nothing_left "B3"
+
+# ── B4. TWO ROWS MATCH — refuse rather than guess ───────────────────────────
+acc="$BFX/acc-two"; mkdir -p "$acc"
+cat > "$acc/first-farhost.conf" <<CONF
+PRINCIPAL="$PRIN"
+HOST="farhost"
+USERNAME="$UU"
+CONF
+cat > "$acc/second-farhost.conf" <<CONF
+PRINCIPAL="deputy"
+HOST="farhost"
+USERNAME="$UU"
+CONF
+out="$(request "$acc")"; rc=$?
+is  "B4: an ambiguous login refuses, rc 78" "$rc" "78"
+has "B4: the refusal names the first candidate" "$out" "first-farhost"
+has "B4: the refusal names the second candidate" "$out" "second-farhost"
+nothing_left "B4"
+
+# ── B5. THE SAME LOGIN ON ANOTHER HOST IS NOT A MATCH ───────────────────────
+# A login name is unique within a machine, never across a fleet. An account is
+# a (principal, host) pair, and half of it is the host.
+acc="$BFX/acc-elsewhere"; mkdir -p "$acc"
+cat > "$acc/chief-otherhost.conf" <<CONF
+PRINCIPAL="$PRIN"
+HOST="otherhost"
+USERNAME="$UU"
+CONF
+out="$(request "$acc")"; rc=$?
+is  "B5: an account on another host does not resolve this one, rc 78" "$rc" "78"
+has "B5: the refusal names the host that was searched" "$out" "farhost"
+nothing_left "B5"
 
 echo
 printf 'pass=%s fail=%s\n' "$pass" "$fail"
