@@ -359,10 +359,19 @@ calls="$(cat "$FX/calls")"
 has "it terminates the account's sessions" "$calls" "loginctl terminate-user -- alice"
 has "and asks logind what is left" "$calls" "loginctl --no-legend list-sessions"
 : > "$FX/calls"
-# --archive-home IS WHAT MAKES THE LAST ASSERTION IN THIS BLOCK REAL. Without
-# it there is no `mv` on this path whatever the helper does, so "the home was
-# not touched" held on a run that could never have touched it.
-out="$( ( export FAKE_SESSIONS='c3 1001 alice seat0 pts/1'; run lock alice --archive-home ) 2>&1 )"; rc=$?
+# --archive-home IS WHAT MAKES THE LAST ASSERTION IN THIS BLOCK REAL, AND THE
+# RELOCATED COPY IS WHAT PUTS THE MOVE WITHIN REACH OF IT. Against the fixed
+# /home the archive block dies at "/home/.offboarded is not a directory" long
+# before the move, so "the home was not touched" held on a run that could not
+# have touched it whatever the session gate did - the one shape of assertion
+# that can never go red. Under the copy that relocates the archive root into
+# the fixture, with a real home and a real archive root beside it (the same
+# arrangement the archive cases further down use), the move is the very next
+# step and the open session is the only thing standing in front of it.
+db "alice:1001:$FXHOME/alice"
+rm -rf "$FXHOME/alice" "$FXHOME/.offboarded"
+mkdir -p "$FXHOME/alice" "$FXHOME/.offboarded"
+out="$( ( export FAKE_SESSIONS='c3 1001 alice seat0 pts/1'; runfs lock alice --archive-home ) 2>&1 )"; rc=$?
 is  "a member who still has a session open is rc 70" "$rc" "70"
 has "and the refusal says why" "$out" "still has an open session"
 calls="$(cat "$FX/calls")"
@@ -375,6 +384,11 @@ has "but the account was expired before any of that was measured" "$calls" \
     "usermod --expiredate 1 alice"
 no  "and the home was not touched" "$calls" "mv "
 no  "and no receipt claims the sessions are gone" "$out" "no session left"
+# THE CALL LOG IS THE ONLY WITNESS THERE CAN BE HERE, and it is enough: the mv
+# shim records without moving, so asking the filesystem afterwards would answer
+# "still there" about every run - the vacuity this case was just moved out of.
+rm -rf "$FXHOME/alice" "$FXHOME/.offboarded"
+db 'alice:1001:/home/alice'
 : > "$FX/calls"
 out="$( ( export FAKE_SESSIONS='c3 1002 bob seat0 pts/1'; run lock alice ) 2>&1 )"; rc=$?
 is  "another account's session is not this account's" "$rc" "0"
