@@ -482,6 +482,48 @@ issue tok
 out="$(run invite redeem --identity oidc:issuer-k:SUB-K -- "$TOK" 2>&1)"; rc=$?
 is  "and a token handed over after -- is redeemed" "$rc" "0"
 
+echo "== the token does not have to go through argv =="
+# ON LINUX /proc/<pid>/cmdline IS WORLD-READABLE, and this verb runs on the very
+# host where every invited member has an account: a positional token is a live
+# one-time invitation link sitting in the process table for as long as the
+# redemption takes, and anybody who runs `ps` during it can open that link and
+# bind THEIR identity to the invited principal. The row has only ever held the
+# digest and the receipt only the identity; this closes the last channel. The
+# positional form is unchanged - it is the one for a human at a terminal.
+issue fil
+printf '%s\n' "$TOK" > "$FX/token-file"
+: > "$FX/argv"; : > "$FX/calls"
+out="$(run invite redeem --token-file "$FX/token-file" --identity oidc:issuer-z:SUB-F 2>&1)"; rc=$?
+is  "a token read from a file redeems, rc 0" "$rc" "0"
+no  "and the token reached no child's argv" "$(cat "$FX/argv" "$FX/calls")" "$TOK"
+no  "and nothing the run printed carries it" "$out" "$TOK"
+no  "and the receipt does not" "$(cat "$HUBHOME/.local/state/fixture-state/invites/$INVID.receipt.json")" "$TOK"
+issue sam
+: > "$FX/argv"; : > "$FX/calls"
+out="$(printf '%s\n' "$TOK" | run invite redeem - --identity oidc:issuer-z:SUB-S 2>&1)"; rc=$?
+is  "a token read from stdin redeems, rc 0" "$rc" "0"
+no  "and the token reached no child's argv" "$(cat "$FX/argv" "$FX/calls")" "$TOK"
+no  "and nothing the run printed carries it" "$out" "$TOK"
+# AND EVERY WAY OF ASKING FOR A TOKEN THAT ISN'T THERE IS rc 64, before the
+# register is opened at all.
+out="$(run invite redeem --token-file "$FX/no-such-file" --identity oidc:issuer-z:SUB-Q 2>&1)"; rc=$?
+is  "a token file that cannot be read refuses, rc 64" "$rc" "64"
+has "and names the file" "$out" "no-such-file"
+: > "$FX/empty-token"
+out="$(run invite redeem --token-file "$FX/empty-token" --identity oidc:issuer-z:SUB-Q 2>&1)"; rc=$?
+is  "an empty token file refuses, rc 64" "$rc" "64"
+has "and says the first line is where the token goes" "$out" "first line"
+out="$(run invite redeem --token-file "$FX" --identity oidc:issuer-z:SUB-Q 2>&1)"; rc=$?
+is  "a token file that is a directory refuses, rc 64" "$rc" "64"
+out="$(run invite redeem - --identity oidc:issuer-z:SUB-Q < /dev/null 2>&1)"; rc=$?
+is  "'-' with nothing on stdin refuses, rc 64" "$rc" "64"
+has "and says where it looked" "$out" "stdin"
+out="$(run invite redeem --token-file 2>&1)"; rc=$?
+is  "--token-file with no value refuses, rc 64" "$rc" "64"
+out="$(run invite redeem --token-file "$FX/token-file" ALSO --identity oidc:issuer-z:SUB-Q 2>&1)"; rc=$?
+is  "a file AND a positional token refuses, rc 64" "$rc" "64"
+has "and says one at a time" "$out" "one token at a time"
+
 echo "== an invitation for another machine is refused before anything is made =="
 # Steps 3, 8, 9 and 10 all act on the LOCAL machine - the helper through local
 # sudo, the account database, files under the local home - so an invitation

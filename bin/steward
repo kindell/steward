@@ -41,7 +41,7 @@
 #   steward invite issue --name N --principal P --entity E --host H [--runtime R] [--provider V] [--days D] [--issued-by P] [--json]
 #   steward invite ls [--json]
 #   steward invite revoke <inv-id> [--json]
-#   steward invite redeem <token> --identity <tailscale|oidc>:<value> [--email E] [--json]
+#   steward invite redeem ( <token> | - | --token-file <path> ) --identity <tailscale|oidc>:<value> [--email E] [--json]
 #   steward offboard <principal> [--keep-home] [--json]
 set -uo pipefail
 
@@ -3596,6 +3596,37 @@ cmd_invite_redeem() {
             token="$1"; shift
           done ;;
       --json) shift ;;
+      # THE TOKEN DOES NOT HAVE TO GO THROUGH argv, AND FOR A PROGRAM IT MUST
+      # NOT. On Linux /proc/<pid>/cmdline is world-readable by default, and this
+      # verb runs on the very host where every invited member has an account: a
+      # positional token is a live one-time invitation link in the process table
+      # for as long as the redemption takes, and anybody with a shell there who
+      # runs `ps` during it can open that link and bind THEIR identity to the
+      # invited principal. Everything else in this flow is already careful - the
+      # row holds only TOKEN_SHA256, _json_secret keeps the link out of jq's
+      # argv, the receipt carries the identity and never the token - so this was
+      # the one live credential handed over in the clear.
+      #
+      # ADDITIVE, NOT A REPLACEMENT. The positional form is what a human at a
+      # terminal types and it is unchanged; `--token-file` and `-` are what a
+      # program uses. Either way the value stays in this shell: it is digested
+      # here, and only the digest is ever passed on.
+      --token-file) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --token-file needs a value"; return 64; }
+                    if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+                    # A DIRECTORY IS -r TOO, and reading one is a redirection
+                    # error rather than an answer, so it is named here instead.
+                    { [ -r "$2" ] && [ ! -d "$2" ]; } || { _reg_fail "$want_json" "steward invite redeem: cannot read the token file '$2'"; return 64; }
+                    # A FILE WITH NO TRAILING NEWLINE IS STILL A FILE WITH A
+                    # TOKEN IN IT: `read` returns non-zero at EOF and has
+                    # already assigned the partial line, so the emptiness test
+                    # below is the one that decides.
+                    IFS= read -r token < "$2" || :
+                    [ -n "$token" ] || { _reg_fail "$want_json" "steward invite redeem: the token file '$2' is empty - the token goes on its first line"; return 64; }
+                    shift 2 ;;
+      -)  if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+          IFS= read -r token || :
+          [ -n "$token" ] || { _reg_fail "$want_json" "steward invite redeem: no token on stdin - '-' means the token is one line on standard input"; return 64; }
+          shift ;;
       --identity) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --identity needs a value"; return 64; }
                   identity="$2"; shift 2 ;;
       --email)    [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --email needs a value"; return 64; }
