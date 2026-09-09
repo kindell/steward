@@ -3761,6 +3761,32 @@ cmd_invite_redeem() {
   # -- STEP 3: the unix account, through the privileged helper --------------
   local home helper_out=""
   home="$(_registry_owner_home "$unix_user" 2>/dev/null)" || home=""
+  # THE FLOOR APPLIES TO AN ACCOUNT THIS VERB DID NOT CREATE, TOO. The helper
+  # refuses root, the calling account, a system uid and a home outside
+  # /home/<name> - and an account that already exists skips the helper entirely
+  # (the mark below is "a home exists"), so the same four questions are asked
+  # here or they are asked nowhere. Measured before this gate: an invitation
+  # naming an account that was already on the host wrote a principal row and an
+  # account row for it, installed the hub's delivery key in its
+  # ~/.ssh/authorized_keys, seeded its home and deployed the skeleton into it.
+  # It is operator error being amplified rather than a stranger's escalation,
+  # and amplifying exactly this operator error is the floor's whole job.
+  #
+  # ASKED LOCALLY AND WITHOUT sudo: the helper is a privileged account-CREATING
+  # command and does not belong on a step with nothing to create, so the
+  # questions are asked with `id` and the home path this verb already has.
+  local existing_uid=""
+  existing_uid="$(id -u "$unix_user" 2>/dev/null)" || existing_uid=""
+  if [ -n "$existing_uid" ]; then
+    # A UID THAT IS NOT A NUMBER IS NOT AN ANSWER EITHER: `[` fails on it, and
+    # the negation makes that a refusal rather than a pass.
+    if [ "$unix_user" = "root" ] || [ "$unix_user" = "$(id -un)" ] \
+       || ! [ "$existing_uid" -ge 1000 ] 2>/dev/null \
+       || [ "$home" != "/home/$unix_user" ]; then
+      _redeem_fail "step 3 (unix account): '$unix_user' already exists on this host (uid $existing_uid, home $home) and is not an account this product may take over - the account helper would refuse it, and an invitation may not bind a person to an account it did not create" 65
+      return 65
+    fi
+  fi
   if [ -n "$home" ] && [ -d "$home" ]; then
     _redeem_note 3 account-unix "already done ($home)"
   else
@@ -3781,7 +3807,26 @@ cmd_invite_redeem() {
     fi
     home="$(_registry_owner_home "$unix_user" 2>/dev/null)" || home=""
     [ -n "$home" ] || { _redeem_fail "step 3 (unix account): the helper reported success but the account database still has no home for '$unix_user'" 70; return 70; }
-    _redeem_note 3 account-unix "$unix_user created, home $home"
+    # A PATH IS NOT A HOME. `offboard` never deletes the passwd row - it
+    # expires, locks and archives the home - so a redemption for an offboarded
+    # principal finds a home path with nothing at it, calls the helper, and the
+    # helper's already-exists branch by design does not unlock the password,
+    # re-enable lingering or recreate the home. The step used to report the
+    # account created, and the run then died at step 8's ssh-keygen inside a
+    # home that is not there. The refusal this step already knows how to make is
+    # the honest answer.
+    if [ ! -d "$home" ]; then
+      _redeem_fail "step 3 (unix account): '$unix_user' exists in the account database but $home is not there - the helper configures only an account it created, so this account is left expired, locked and homeless (an offboarded account is the usual cause). Remove the account by hand, or restore its home, before redeeming again" 70
+      return 70
+    fi
+    # AND THE RECEIPT SAYS WHICH OF THE TWO ANSWERS THE HELPER GAVE. Only
+    # "account <u> created" is a creation; every other rc 0 it can answer with
+    # is an account that was already there, and a receipt that says "created"
+    # about one is the one thing the helper's own comments refuse to print.
+    case "$helper_out" in
+      *"helper: account $unix_user created"*) _redeem_note 3 account-unix "$unix_user created, home $home" ;;
+      *) _redeem_note 3 account-unix "$unix_user already existed, home $home" ;;
+    esac
   fi
   _redeem_receipt running
 

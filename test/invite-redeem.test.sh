@@ -147,6 +147,19 @@ case "\${args[0]:-}" in
       password) echo "sudo: a password is required" >&2; exit 1 ;;
       refuse)   echo "helper: REFUSING - '\${args[2]}' is a reserved account name" >&2; exit 64 ;;
       usage)    printf 'usage: steward-account-helper add <username>\n       steward-account-helper lock <username> [--archive-home]\n' >&2; exit 64 ;;
+      # The helper's OTHER success, receipt for receipt: the account was already
+      # in the database, so it configured nothing - no home, no mode, no groups,
+      # no password lock, no lingering. Only the tmpfiles fragment is written in
+      # both branches, because it is the helper's own file. \`existing\` leaves
+      # the home as it found it (nothing there); \`existhome\` models the same
+      # answer about an account whose home IS there.
+      existing|existhome)
+        [ "\$mode" = "existhome" ] && mkdir -p "$FX/home/\${args[2]}/.ssh"
+        echo "helper: account \${args[2]} already exists" >&2
+        echo "helper: home $FX/home/\${args[2]} left as it is (the mode is set only on a home this helper creates)" >&2
+        echo "helper: groups, password and lingering left as is (this helper configures only an account it created)" >&2
+        echo "helper: tmpfiles /etc/tmpfiles.d/steward-rig-\${args[2]}.conf" >&2
+        exit 0 ;;
     esac
     mkdir -p "$FX/home/\${args[2]}/.ssh"
     echo "helper: account \${args[2]} created" >&2
@@ -201,6 +214,30 @@ fi
 exec "$MKTEMP_REAL" "\$@"
 EOF
 chmod 755 "$FX/bin/mktemp"
+# id: THE FIXTURE'S ACCOUNT DATABASE, and only for `id -u <name>`. Step 3 asks
+# the floor's own questions about an account it did not create, and the first of
+# them is "does this name already exist here" - a question that must be
+# answerable without creating an account on the machine running the suite.
+# `$FX/uids` holds `<name>:<uid>` lines; a name that is not in it is a name that
+# does not exist, which is the ordinary case. EVERY OTHER FORM IS THE REAL id:
+# the product also asks who is RUNNING (`id -un`), and the fixture's own
+# operator row was written from that answer, so a shim that guessed there would
+# break the estate rather than the case under test.
+ID_REAL="$(command -v id)"
+cat > "$FX/bin/id" <<EOF
+#!/bin/bash
+if [ "\${1:-}" = "-u" ] && [ \$# -eq 2 ]; then
+  while IFS=: read -r n v; do
+    [ "\$n" = "\$2" ] || continue
+    printf '%s\n' "\$v"; exit 0
+  done < "$FX/uids"
+  echo "id: '\$2': no such user" >&2
+  exit 1
+fi
+exec "$ID_REAL" "\$@"
+EOF
+chmod 755 "$FX/bin/id"
+: > "$FX/uids"
 : > "$FX/calls"
 : > "$FX/argv"
 
@@ -558,6 +595,89 @@ kbody="$(grep -v '^EXPIRES_AT=' "$kconf")"
 out="$(run invite redeem "$TOK" --identity oidc:issuer-p:SUB-P 2>&1)"; rc=$?
 is  "an expired invitation refuses, rc 65" "$rc" "65"
 has "and says which state it is in" "$out" "expired"
+
+echo "== an invitation may not take over an account this product did not create =="
+# STEP 3'S MARK IS "A HOME EXISTS", so an account already on the host skips the
+# helper - and with it the floor the helper applies to every account it makes:
+# root, the calling account, a system uid, a home outside /home/<name>. The
+# floor's own comment says why it exists ("an account holding nothing but the
+# sudoers line can expire root"), and redemption is this product's OTHER
+# privileged path into an account. Measured before this gate: an invitation
+# naming `root` wrote a principal row and an account row for it, and went on to
+# install the hub's delivery key in its home. The four questions are asked here
+# or they are asked nowhere.
+printf 'root:0\n' > "$FX/uids"
+issue root
+: > "$FX/calls"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-z:SUB-Z 2>&1)"; rc=$?
+is  "an invitation naming root refuses, rc 65" "$rc" "65"
+has "and names the floor" "$out" "not an account this product may take over"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+if [ -e "$ROOT/accounts.d/root-host-a.conf" ]; then bad "and no account row was written" "root-host-a.conf exists"
+else ok "and no account row was written"; fi
+rm -f "$ROOT/principals.d/root.conf"
+# A SYSTEM UID IS THE SAME ANSWER UNDER ANOTHER NAME - the helper refuses
+# uid < 1000, and an account that skipped the helper must meet the same bar.
+printf 'root:0\nsvc:71\n' > "$FX/uids"
+issue svc
+: > "$FX/calls"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-z:SUB-Y 2>&1)"; rc=$?
+is  "an invitation naming a system uid refuses, rc 65" "$rc" "65"
+has "and names the uid it read" "$out" "uid 71"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+rm -f "$ROOT/principals.d/svc.conf"
+# AND A HOME OUTSIDE /home/<name> IS THE FOURTH QUESTION. The helper will only
+# ever have made an account at /home/<name>, so a home anywhere else is an
+# account somebody else made.
+printf 'root:0\nsvc:71\nmel:4242\n' > "$FX/uids"
+issue mel
+: > "$FX/calls"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-z:SUB-X 2>&1)"; rc=$?
+is  "an account whose home is not /home/<name> refuses, rc 65" "$rc" "65"
+has "and names the home it read" "$out" "$FX/home/mel"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+rm -f "$ROOT/principals.d/mel.conf"
+# AND THE ORDINARY CASE IS UNTOUCHED: a name that is not an account yet is the
+# account this run is about to create, and the helper's own floor answers for
+# it.
+: > "$FX/uids"
+issue nel
+out="$(run invite redeem "$TOK" --identity oidc:issuer-z:SUB-N 2>&1)"; rc=$?
+is  "an account this run creates is untouched by the floor, rc 0" "$rc" "0"
+has "and step 3 says it created it" "$out" "3/12 account-unix: nel created"
+
+echo "== a helper that changed nothing did not create anything =="
+# OFFBOARD NEVER DELETES THE PASSWD ROW - it expires, locks and archives the
+# home - so a later redemption for the same principal finds a home PATH with
+# nothing at it, calls the helper, and the helper's already-exists branch by
+# design does not unlock the password, re-enable lingering or recreate the home.
+# The receipt used to say "<p> created, home /home/<p>" about an account nothing
+# created, that is still locked, and whose home is not there; the run then died
+# at step 8's ssh-keygen. (The fixture reaches this through a name the account
+# database does not know, so the floor above stays out of the way; on a real
+# host the offboarded account's passwd row still says /home/<p> and passes it.)
+FIX_SUDO_MODE="existing"
+issue rob
+: > "$FX/calls"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-z:SUB-R 2>&1)"; rc=$?
+FIX_SUDO_MODE=""
+is  "a helper that configured nothing and left no home is rc 70" "$rc" "70"
+no  "and nothing in it claims the account was created" "$out" "created, home"
+has "and it says the home is not there" "$out" "is not there"
+has "and names the likely cause" "$out" "offboarded account"
+if [ -e "$ROOT/accounts.d/rob-host-a.conf" ]; then bad "and no account row was written" "rob-host-a.conf exists"
+else ok "and no account row was written"; fi
+rm -f "$ROOT/principals.d/rob.conf"
+# AND WHEN THE HOME IS THERE, THE RECEIPT SAYS WHICH OF THE TWO ANSWERS THE
+# HELPER GAVE. Only "helper: account <u> created" is a creation; everything else
+# it can say on rc 0 is an account that was already there.
+FIX_SUDO_MODE="existhome"
+issue rio
+out="$(run invite redeem "$TOK" --identity oidc:issuer-z:SUB-I 2>&1)"; rc=$?
+FIX_SUDO_MODE=""
+is  "a helper that found the account and its home finishes, rc 0" "$rc" "0"
+has "and the receipt says it already existed" "$out" "3/12 account-unix: rio already existed, home"
+no  "and never that it was created" "$out" "rio created"
 
 echo "== a register that cannot be read is rc 78, never 'empty' =="
 issue vic
