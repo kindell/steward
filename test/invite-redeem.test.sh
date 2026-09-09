@@ -277,6 +277,10 @@ has "a principal row, bound to the identity" "$(cat "$ROOT/principals.d/alice.co
 has "and the display email" "$(cat "$ROOT/principals.d/alice.conf")" 'OIDC_EMAIL="alice@example.test"'
 has "an account row" "$(cat "$ROOT/accounts.d/alice-host-a.conf")" 'PRINCIPAL="alice"'
 has "the entity gained the member" "$(cat "$ROOT/entities.d/acme.conf")" 'MEMBERS="operator alice"'
+# AND THE ROW SAYS WHICH VERB REWROTE IT. The composition is shared with
+# `steward offboard` and the verb's name is an argument to it, so nothing else
+# would notice the two callers handing it the same label.
+has "and the row names the verb that rewrote it" "$(cat "$ROOT/entities.d/acme.conf")" "updated by steward invite redeem"
 has "a login row" "$(cat "$ROOT/logins.d/alice-claude-max.conf")" 'PROVIDER="claude-max"'
 has "the login names the directory by the tilde form" "$(cat "$ROOT/logins.d/alice-claude-max.conf")" 'CONFIG_DIR="~/.claude-logins/claude-max"'
 sess="$(grep -l 'SLUG="acme-alice"' "$ROOT"/sessions.d/*.conf | head -1)"

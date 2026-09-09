@@ -3559,11 +3559,15 @@ _redeem_session_id() {
   return 1
 }
 
-# _redeem_validate_entity <staged-file> - the validate_fn for the MEMBERS
+# _entity_validate_row <staged-file> - the validate_fn for the MEMBERS
 # update. Every field of the row is compared, not only the one that changed: a
 # serializer that silently dropped MANAGED_BY or MCP_ASSETS would take a
 # relation with it, and the row would still look plausible.
-_redeem_validate_entity() {
+#
+# NAMED FOR WHAT IT VALIDATES, NOT FOR WHO CALLS IT. `invite redeem` was its
+# first caller and `steward offboard` is its second; a shared function named
+# for one of two callers is how the next reader learns the wrong ownership.
+_entity_validate_row() {
   local file="$1" NAME="" MEMBERS="" MANAGED_BY="" MCP_ASSETS=""
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: staged entity file did not source: $file" >&2; return 70; }
@@ -3592,6 +3596,60 @@ _redeem_validate_entity() {
       return 70
     fi
   done
+  return 0
+}
+
+# _entity_members_replace <slug> <new-members> <label> - rewrite one entity row
+# with a new MEMBERS list, through the register's own replace.
+#
+# ONE BLOCK FOR BOTH CALLERS. `invite redeem` adds a member and `steward
+# offboard` removes one, and either side of that single difference the two were
+# identical to the character: the same four expectation globals, the same
+# serializer loop, the same recheck snapshot, the same call. Two copies of a
+# block that takes a register's write lock is two places for the lock
+# discipline to drift apart.
+#
+# THE CALLER HAS ALREADY LOADED THE ROW. ENTITY_NAME, ENTITY_MEMBERS,
+# ENTITY_MANAGED_BY and ENTITY_MCP_ASSETS are what registry_entity_load left
+# behind, and ENTITY_MEMBERS is the snapshot _entity_validate_row measures the
+# row on disk against under the lock. <label> names the verb in the row's own
+# header comment and nowhere else.
+#
+# rc 0 and silence on success. Otherwise the rc and ONE LINE OF MESSAGE on
+# stdout - rc 70 when no temporary file can be made, rc 64 when a field carries
+# a control character, and otherwise whatever registry_entity_replace answered
+# with, quoted. The caller wears its own refusal around that message, because
+# only the caller knows which step it is in.
+_entity_members_replace() {
+  local slug="$1" new_members="$2" label="$3"
+  local ec ent_key kv_err ent_content ent_line erc out
+  _REDEEM_ENT_RECHECK="$slug"
+  _REDEEM_ENT_MEMBERS_SEEN="$ENTITY_MEMBERS"
+  _REGW_EXPECT_ENT_NAME="$ENTITY_NAME"
+  _REGW_EXPECT_ENT_MEMBERS="$new_members"
+  _REGW_EXPECT_ENT_MANAGED_BY="$ENTITY_MANAGED_BY"
+  _REGW_EXPECT_ENT_MCP_ASSETS="$ENTITY_MCP_ASSETS"
+  kv_err="$(mktemp)" || { echo "cannot create a temporary file"; return 70; }
+  ent_content="# $slug - entity, updated by $label."
+  for ent_key in NAME MEMBERS MANAGED_BY MCP_ASSETS; do
+    eval "ec=\"\${_REGW_EXPECT_ENT_$ent_key:-}\""
+    case "$ent_key" in
+      MANAGED_BY|MCP_ASSETS) [ -n "$ec" ] || continue ;;
+    esac
+    ent_line="$(_registry_emit_kv "$ent_key" "$ec" 2>"$kv_err")"; erc=$?
+    if [ "$erc" -ne 0 ]; then
+      rm -f "$kv_err"
+      echo "entity '$slug' carries a control character in $ent_key"
+      return 64
+    fi
+    ent_content="$ent_content
+$ent_line"
+  done
+  rm -f "$kv_err"
+  ent_content="$ent_content
+"
+  out="$(registry_entity_replace "$slug" "$ent_content" _entity_validate_row 2>&1)"; erc=$?
+  [ "$erc" -eq 0 ] || { printf '%s\n' "$out"; return "$erc"; }
   return 0
 }
 
@@ -3892,35 +3950,12 @@ cmd_invite_redeem() {
     *" $p_slug "*) _redeem_note 5 membership "already done" ;;
     *)
       local new_members="${ENTITY_MEMBERS:+$ENTITY_MEMBERS }$p_slug"
-      # WHAT THIS COMPOSITION WAS BUILT FROM, for the under-lock recheck in
-      # _redeem_validate_entity.
-      _REDEEM_ENT_RECHECK="$ent_slug"
-      _REDEEM_ENT_MEMBERS_SEEN="$ENTITY_MEMBERS"
-      _REGW_EXPECT_ENT_NAME="$ENTITY_NAME"
-      _REGW_EXPECT_ENT_MEMBERS="$new_members"
-      _REGW_EXPECT_ENT_MANAGED_BY="$ENTITY_MANAGED_BY"
-      _REGW_EXPECT_ENT_MCP_ASSETS="$ENTITY_MCP_ASSETS"
-      local ec ent_key kv_err ent_content ent_line
-      kv_err="$(mktemp)" || { _redeem_fail "step 5 (membership): cannot create a temporary file" 70; return 70; }
-      ent_content="# $ent_slug - entity, updated by steward invite redeem."
-      for ent_key in NAME MEMBERS MANAGED_BY MCP_ASSETS; do
-        eval "ec=\"\${_REGW_EXPECT_ENT_$ent_key:-}\""
-        case "$ent_key" in
-          MANAGED_BY|MCP_ASSETS) [ -n "$ec" ] || continue ;;
-        esac
-        ent_line="$(_registry_emit_kv "$ent_key" "$ec" 2>"$kv_err")"; rc=$?
-        if [ "$rc" -ne 0 ]; then
-          rm -f "$kv_err"
-          _redeem_fail "step 5 (membership): entity field $ent_key carries a control character" 64
-          return 64
-        fi
-        ent_content="$ent_content
-$ent_line"
-      done
-      rm -f "$kv_err"
-      ent_content="$ent_content
-"
-      out="$(registry_entity_replace "$ent_slug" "$ent_content" _redeem_validate_entity 2>&1)"; rc=$?
+      # THE COMPOSITION, THE RECHECK SNAPSHOT AND THE WRITE ARE ONE FUNCTION,
+      # shared with `steward offboard` - see _entity_members_replace. The row
+      # this step read a moment ago is what the under-lock recheck compares
+      # against, so a second redemption into the same entity is refused rather
+      # than published over.
+      out="$(_entity_members_replace "$ent_slug" "$new_members" "steward invite redeem" 2>&1)"; rc=$?
       [ "$rc" -eq 0 ] || { _redeem_fail "step 5 (membership) failed: $out" "$rc"; return "$rc"; }
       _redeem_note 5 membership "$p_slug added to entity $ent_slug"
       ;;
@@ -4921,7 +4956,7 @@ EOF
   # lock is refused rc 70, never merged and never published over. This run
   # measured its decision against a state that no longer exists, and the right
   # answer is to run the verb again.
-  local ent_ids eid newm w ent_key ec ent_content kv_err ent_line
+  local ent_ids eid newm w
   ent_ids="$(registry_entity_list 2>/dev/null)" || {
     _offboard_fail "the entity register could not be listed, so the memberships of '$principal' are unknown" 78
     return 78; }
@@ -4940,32 +4975,11 @@ EOF
       [ "$w" = "$principal" ] && continue
       newm="${newm:+$newm }$w"
     done
-    _REDEEM_ENT_RECHECK="$eid"
-    _REDEEM_ENT_MEMBERS_SEEN="$ENTITY_MEMBERS"
-    _REGW_EXPECT_ENT_NAME="$ENTITY_NAME"
-    _REGW_EXPECT_ENT_MEMBERS="$newm"
-    _REGW_EXPECT_ENT_MANAGED_BY="$ENTITY_MANAGED_BY"
-    _REGW_EXPECT_ENT_MCP_ASSETS="$ENTITY_MCP_ASSETS"
-    kv_err="$(mktemp)" || { _offboard_fail "cannot create a temporary file" 70; return 70; }
-    ent_content="# $eid - entity, updated by steward offboard."
-    for ent_key in NAME MEMBERS MANAGED_BY MCP_ASSETS; do
-      eval "ec=\"\${_REGW_EXPECT_ENT_$ent_key:-}\""
-      case "$ent_key" in
-        MANAGED_BY|MCP_ASSETS) [ -n "$ec" ] || continue ;;
-      esac
-      ent_line="$(_registry_emit_kv "$ent_key" "$ec" 2>"$kv_err")"; rc=$?
-      if [ "$rc" -ne 0 ]; then
-        rm -f "$kv_err"
-        _offboard_fail "entity '$eid' carries a control character in $ent_key" 64
-        return 64
-      fi
-      ent_content="$ent_content
-$ent_line"
-    done
-    rm -f "$kv_err"
-    ent_content="$ent_content
-"
-    out="$(registry_entity_replace "$eid" "$ent_content" _redeem_validate_entity 2>&1)"; rc=$?
+    # THE SAME FUNCTION `invite redeem` COMPOSES ITS MEMBERSHIP WITH, and for
+    # the same reason: the row this loop read is the snapshot the under-lock
+    # recheck compares against, so a membership change that lands in between is
+    # refused rather than published over.
+    out="$(_entity_members_replace "$eid" "$newm" "steward offboard" 2>&1)"; rc=$?
     [ "$rc" -eq 0 ] || { _offboard_fail "could not update entity '$eid': $out" "$rc"; return "$rc"; }
     _offboard_note "membership of entity $eid removed"
   done

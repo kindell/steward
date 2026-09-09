@@ -246,6 +246,10 @@ havenot "the login row is removed" "$ROOT/logins.d/alice-claude-max.conf"
 havenot "the account row is removed" "$ROOT/accounts.d/alice-host-a.conf"
 havenot "the principal row is removed" "$ROOT/principals.d/alice.conf"
 is  "the membership is gone" "$(sed -n 's/^MEMBERS="\(.*\)"/\1/p' "$ROOT/entities.d/acme.conf")" "operator"
+# AND THE ROW SAYS WHICH VERB REWROTE IT. The composition is shared with
+# `invite redeem` and the verb's name is an argument to it, so nothing else
+# would notice the two callers handing it the same label.
+has "and the row names the verb that rewrote it" "$(cat "$ROOT/entities.d/acme.conf")" "updated by steward offboard"
 has "the invitation survives as history" "$(cat "$ROOT/invites.d/inv-0000000a.conf")" 'STATE="redeemed"'
 has "and the run says so out loud" "$out" "KEPT as history"
 

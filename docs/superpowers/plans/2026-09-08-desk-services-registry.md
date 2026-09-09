@@ -2597,11 +2597,14 @@ _redeem_session_id() {
   return 1
 }
 
-# _redeem_validate_entity <staged-file> - the validate_fn for the MEMBERS
+# _entity_validate_row <staged-file> - the validate_fn for the MEMBERS
 # update. Every field of the row is compared, not only the one that changed: a
 # serializer that silently dropped MANAGED_BY or MCP_ASSETS would take a
-# relation with it, and the row would still look plausible.
-_redeem_validate_entity() {
+# relation with it, and the row would still look plausible. NAMED FOR WHAT IT
+# VALIDATES, NOT FOR WHO CALLS IT: `steward offboard` (Task 9) is its second
+# caller, and the composition around it is the shared
+# `_entity_members_replace <slug> <new-members> <label>` both verbs call.
+_entity_validate_row() {
   local file="$1" NAME="" MEMBERS="" MANAGED_BY="" MCP_ASSETS=""
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: staged entity file did not source: $file" >&2; return 70; }
@@ -2762,7 +2765,7 @@ cmd_invite_redeem() {
 "
       done
       rm -f "$kv_err"
-      out="$(registry_entity_replace "$ENT" "$ent_content" _redeem_validate_entity 2>&1)"; rc=$?
+      out="$(registry_entity_replace "$ENT" "$ent_content" _entity_validate_row 2>&1)"; rc=$?
       [ "$rc" -eq 0 ] || { _redeem_fail "step 5 (membership) failed: $out" "$rc"; return "$rc"; }
       _redeem_note 5 membership "$P added to entity $ENT"
       ;;
@@ -2976,7 +2979,7 @@ and its refusal text to `(allowed: issue, ls, revoke, redeem)`. Add to the usage
 - Test: `test/offboard.test.sh` (create)
 
 **Interfaces:**
-- Consumes: `registry_principal_load`, `registry_principal_dir`, `registry_account_dir`, `registry_account_load`, `registry_login_dir`, `registry_login_load`, `registry_login_list`, `registry_dir`, `registry_entity_dir`, `registry_entity_load`, `registry_entity_replace`, `registry_invite_list`, `registry_invite_load`, `registry_state_dir_name`, `_registry_owner_home`, `_registry_emit_kv`, `_redeem_validate_entity` (Task 8), `_reg_fail`, `_json`.
+- Consumes: `registry_principal_load`, `registry_principal_dir`, `registry_account_dir`, `registry_account_load`, `registry_login_dir`, `registry_login_load`, `registry_login_list`, `registry_dir`, `registry_entity_dir`, `registry_entity_load`, `registry_entity_replace`, `registry_invite_list`, `registry_invite_load`, `registry_state_dir_name`, `_registry_owner_home`, `_registry_emit_kv`, `_entity_members_replace` and its `_entity_validate_row` (both Task 8), `_reg_fail`, `_json`.
 - Consumes as external commands: `sudo -n /usr/local/sbin/steward-account-helper lock <username> [--archive-home]`, `bash <product>/bin/steward desk snapshot`.
 - Produces: `steward offboard <principal> [--keep-home] [--json]`.
   - rc 0 when everything is removed (or already gone); rc 64 for a malformed argument; rc 70 when a step fails; rc 77 when `sudo -n` cannot run the helper; rc 65 when a row this verb must not break names the principal (an account on another host, a host row's `OWNER`/`OPERATOR` - every such host row is named, not just the first). rc 78 covers everything the register cannot answer before the first side effect: the principal has no row; an account row of theirs does not load (the row that names the unix account, so nothing here could lock it or move its home); an account row's `HOST` or `USERNAME` is a value the register's own writer would have refused; a register directory this verb reads exists and cannot be listed (an unreadable register is not an empty one); a register directory is a symlink that points at nothing (the estate said something is there and what it named is gone - not the same answer as a directory nobody ever made); a register directory this verb reads is something other than a directory (a plain file at a register's path is neither a register nor an absent one, and it survives a mode sweep while reading as "never set up"); the `entities.d` register is absent (see below); or any `*.conf` inside one of those registers exists, or is a link to something that does not, and is not a regular file this run can read (`[ -r ]` alone is true for a directory and for a fifo, and a fifo named `*.conf` blocked the run forever on the first bare `source`, after the unix account was locked and before any receipt was written).
@@ -3375,7 +3378,7 @@ cmd_offboard() {
 "
     done
     rm -f "$kv_err"
-    out="$(registry_entity_replace "$eid" "$ent_content" _redeem_validate_entity 2>&1)"; rc=$?
+    out="$(registry_entity_replace "$eid" "$ent_content" _entity_validate_row 2>&1)"; rc=$?
     [ "$rc" -eq 0 ] || { echo "steward offboard: could not update entity '$eid': $out" >&2; _offboard_receipt failed; return "$rc"; }
     _offboard_note "membership of entity $eid removed"
   done
