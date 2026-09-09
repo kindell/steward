@@ -385,6 +385,9 @@ test('an unknown route has the same 404 body', async () => {
   const r2 = await get('/desk/session/s-9', B);
   assert.equal(r1.status, 404);
   assert.equal(r1.body, r2.body);
+  // The 404 body carries the same empty-data icon link as a real page, so the
+  // browser never goes and asks for /favicon.ico with the session cookie on it.
+  assert.match(r1.body, /<link rel="icon" href="data:,">/);
 });
 
 test('outside the prefix is 404', async () => {
@@ -446,7 +449,11 @@ test('the socket is the owner s alone', () => {
 });
 
 test('a viewer with no snapshot file is 503', async () => {
-  assert.equal((await get('/desk/', { 'tailscale-user-login': 'c@example.com' })).status, 503);
+  const r = await get('/desk/', { 'tailscale-user-login': 'c@example.com' });
+  assert.equal(r.status, 503);
+  // Same icon link as the 404 and every real page - the fixed 503 body is not
+  // exempt from it.
+  assert.match(r.body, /<link rel="icon" href="data:,">/);
 });
 
 test('a stale snapshot is 503', async () => {

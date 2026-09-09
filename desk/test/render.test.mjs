@@ -130,11 +130,14 @@ test('every page declares an icon, so no page view costs a second request', () =
 });
 
 test('the footer names the measurement, not the reading', () => {
-  for (const h of allPages()) {
-    // pageLogin is the one page written before anybody is known - see the
-    // comment on LAYOUT in render.mjs - so it carries no footer at all, not
-    // an empty one, and is skipped here rather than asserted against.
-    if (!h.includes('<footer>')) continue;
+  // pageLogin is the one page written before anybody is known - see the
+  // comment on LAYOUT in render.mjs - so it carries no footer at all, not an
+  // empty one. Filtering to the pages that DO carry a footer, rather than
+  // just skipping the ones that don't, means a page silently losing its
+  // footer shrinks this count instead of quietly falling out of the loop.
+  const withFooter = allPages().filter((h) => h.includes('<footer>'));
+  assert.equal(withFooter.length, 5, 'every page but pageLogin must carry a footer');
+  for (const h of withFooter) {
     assert.ok(h.includes('measured at 2026-09-08T00:00:00Z on h1'), h.slice(-200));
   }
 });
