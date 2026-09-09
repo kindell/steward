@@ -8,7 +8,7 @@
 // stringifies a row instead of destructuring it prints the sentinel and fails.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { escapeHtml, formatAge, pageIndex, pageTeam, pageProject, pageSession } from '../render.mjs';
+import { escapeHtml, formatAge, pageIndex, pageTeam, pageProject, pageSession, pageLogin } from '../render.mjs';
 
 // between/count - the two ways a NESTED list is asserted from the outside. A
 // tree that had collapsed back into four sibling lists would still contain
@@ -55,12 +55,17 @@ const snap = {
   ]
 };
 
+// The chooser page's only input: the set of slugs a stranger may log in with.
+// pageLogin never reads a snapshot, so it needs no field from `snap` above.
+const LOGIN_PROVIDERS = new Map([['stub', {}]]);
+
 const allPages = () => [
   pageIndex(snap),
   pageTeam(snap, 'team'),
   pageProject(snap, 'work'),
   pageSession(snap, 's-1'),
-  pageSession(snap, 's-2')
+  pageSession(snap, 's-2'),
+  pageLogin(LOGIN_PROVIDERS)
 ];
 
 test('escapeHtml replaces all five', () => {
@@ -126,6 +131,10 @@ test('every page declares an icon, so no page view costs a second request', () =
 
 test('the footer names the measurement, not the reading', () => {
   for (const h of allPages()) {
+    // pageLogin is the one page written before anybody is known - see the
+    // comment on LAYOUT in render.mjs - so it carries no footer at all, not
+    // an empty one, and is skipped here rather than asserted against.
+    if (!h.includes('<footer>')) continue;
     assert.ok(h.includes('measured at 2026-09-08T00:00:00Z on h1'), h.slice(-200));
   }
 });

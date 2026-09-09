@@ -143,7 +143,7 @@ import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync, accessSync,
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pageIndex, pageTeam, pageProject, pageSession, pageLogin } from './render.mjs';
+import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, ICON } from './render.mjs';
 import { normalizeAddr, parseFrontListen, parseFrontPeer, visitorAddress, RateLimiter } from './front.mjs';
 import { parseCookies, serializeCookie, loadSessionKey, mintSession, verifySession, mintState, verifyState } from './cookie.mjs';
 import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from './oidc.mjs';
@@ -309,6 +309,11 @@ if (FRONT_LISTEN_RAW || FRONT_PEER_RAW) {
   FRONT = {
     listen: frontListen, peer: frontPeer, origin: p.origin, key: sessionKey,
     providers, limiter: new RateLimiter(10, 60000),
+    // Built once, here, rather than on every request for the chooser: the
+    // provider set comes from disk at startup and never changes while this
+    // process runs, so pageLogin's output is the same string every time it
+    // would otherwise be called.
+    chooserHtml: pageLogin(providers),
     // THE COOKIE PATH HAS ITS OWN, GENEROUS BUDGET. The limiter above guards
     // the three auth paths; every other path on the front resolves a cookie
     // to a principal, and that is the expensive question (a process per
@@ -436,9 +441,10 @@ const send = (res, status, body, extra) => {
 // which sentence came back, and learn whether it exists. So a session outside
 // the view, an unknown id and an unknown route all get this exact string, and
 // every reason for a 403 gets that one.
-const NOT_FOUND = '<!doctype html><meta charset="utf-8"><title>Steward Desk</title><p>Not found.</p>';
-const FORBIDDEN = '<!doctype html><meta charset="utf-8"><title>Steward Desk</title><p>No desk for this login.</p>';
-const NO_MEASUREMENT = '<!doctype html><meta charset="utf-8"><title>Steward Desk</title>' +
+const NOT_FOUND = '<!doctype html><meta charset="utf-8"><title>Steward Desk</title>' + ICON + '<p>Not found.</p>';
+const FORBIDDEN = '<!doctype html><meta charset="utf-8"><title>Steward Desk</title>' + ICON +
+  '<p>No desk for this login.</p>';
+const NO_MEASUREMENT = '<!doctype html><meta charset="utf-8"><title>Steward Desk</title>' + ICON +
   '<p>The desk has no fresh measurement. Try again in a minute.</p>';
 
 // The shape a tailnet login has. Checked BEFORE the bridge is spawned, so a
@@ -698,7 +704,7 @@ function refusalReason(e) {
 // know that this browser started this login.
 async function authLogin(url, res) {
   const slug = url.searchParams.get('provider');
-  if (slug === null) return send(res, 200, pageLogin(FRONT.providers), FRONT_HEADERS);
+  if (slug === null) return send(res, 200, FRONT.chooserHtml, FRONT_HEADERS);
   const provider = FRONT.providers.get(slug);
   // An unknown provider is the same 404 as an unknown route: asking which
   // slugs exist is answered by the chooser page, not by a difference here.

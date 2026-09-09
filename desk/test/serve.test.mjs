@@ -176,16 +176,17 @@ function firstSelfAddr() {
 // runToExit - start serve.mjs with an env that should make it refuse, and
 // collect how it refused. Used for the two startup refusals (64 and 78). A
 // mutation that lets the server start instead of refusing must not hang this
-// suite forever, so a caller who never exits on its own is killed after 5s
-// and reported as { code: null }, which fails the caller's own assertion on
-// a specific exit code rather than blocking every test after it.
+// suite forever, so a caller who never exits on its own is killed after
+// UP_CAP_MS - the same cap every other wait in this file uses - and reported
+// as { code: null }, which fails the caller's own assertion on a specific
+// exit code rather than blocking every test after it.
 function runToExit(env) {
   return new Promise((resolve) => {
     const p = spawn(process.execPath, [SERVE], { env, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     p.stderr.setEncoding('utf8');
     p.stderr.on('data', (c) => { err += c; });
-    const t = setTimeout(() => { p.kill('SIGKILL'); resolve({ code: null, err }); }, 5000);
+    const t = setTimeout(() => { p.kill('SIGKILL'); resolve({ code: null, err }); }, UP_CAP_MS);
     t.unref();
     p.on('close', (code) => { clearTimeout(t); resolve({ code, err }); });
   });
@@ -413,7 +414,11 @@ test('the headers are the gate', async () => {
     'referrer-policy': 'no-referrer'
   };
   for (const [k, v] of Object.entries(want)) assert.equal(r.headers[k], v);
-  assert.ok(r.headers['content-security-policy'].startsWith("default-src 'none'"));
+  // The whole string, not a prefix: startsWith("default-src 'none'") would
+  // still pass with `img-src *` spliced in after it, which is exactly the
+  // regression this header exists to catch.
+  assert.equal(r.headers['content-security-policy'],
+    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
   assert.ok(r.headers['content-type'].startsWith('text/html'));
 });
 
@@ -1040,7 +1045,10 @@ describe('the front listener', () => {
     // The snapshot names its viewer by slug, and the index page is titled from
     // it - the principal row's display name never reaches the file.
     assert.match(page.body, /Desk for e/);
-    assert.match(page.headers['content-security-policy'], /form-action 'self'/);
+    // The whole string, pinned the same way the tailnet listener's is above:
+    // the front's only differs from the tailnet's in this one directive.
+    assert.equal(page.headers['content-security-policy'],
+      "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'");
   });
 
   it('a callback without its state cookie, or with a foreign state, is refused', async () => {

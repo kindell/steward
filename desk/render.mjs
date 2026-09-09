@@ -42,7 +42,7 @@ const h = escapeHtml;
 const NONE = '-';
 const orNone = (v) => (v === null || v === undefined || v === '' ? NONE : String(v));
 
-const ICON = '<link rel="icon" href="data:,">';
+export const ICON = '<link rel="icon" href="data:,">';
 
 const CSS = [
   'body{font:15px/1.5 system-ui,sans-serif;margin:2rem auto;max-width:52rem;padding:0 1rem;color:#111}',
