@@ -1,5 +1,5 @@
 #!/bin/bash
-# test/doctor.test.sh — `steward doctor`: all nine probes, human form, --json,
+# test/doctor.test.sh — `steward doctor`: all ten probes, human form, --json,
 # --static, and the rc table.
 #
 # EVERY PROBE IS A PURE READ. The one thing this suite proves harder than any
@@ -127,7 +127,7 @@ line_for() { # <output> <probe-id> — the one line for that probe, or empty
 # only the green fixture.
 assert_all_lines_shaped() {
   local offenders
-  offenders="$(printf '%s\n' "$2" | grep -Ev '^(self-path|operator-config|estate-root|registry|hub-local|liveness|socket|cockpit-binary|dependencies)  (PASS|WARN|FAIL|SKIP)  ')"
+  offenders="$(printf '%s\n' "$2" | grep -Ev '^(self-path|operator-config|estate-root|registry|mandates|hub-local|liveness|socket|cockpit-binary|dependencies)  (PASS|WARN|FAIL|SKIP)  ')"
   if [ -z "$offenders" ]; then ok "$1"; else bad "$1" "offending line(s): $offenders"; fi
 }
 
@@ -136,8 +136,8 @@ mkfx "$FX/green"
 out="$(run "$FX/green" "$FX/green/hostcmd")"; rc=$?
 is "a fully green fixture: rc 0" "$rc" "0"
 n="$(printf '%s\n' "$out" | grep -c '^')"
-is "exactly nine probe lines" "$n" "9"
-for id in self-path operator-config estate-root registry hub-local liveness socket cockpit-binary dependencies; do
+is "exactly ten probe lines" "$n" "10"
+for id in self-path operator-config estate-root registry mandates hub-local liveness socket cockpit-binary dependencies; do
   l="$(line_for "$out" "$id")"
   has "probe '$id' is present" "$out" "$id  "
   st="$(field "$l" 2)"
@@ -542,8 +542,8 @@ is "--json output parses with jq ." "$?" "0"
 hasnt "--json output has no leaked human-readable lines" "$json" "cockpit-binary  PASS"
 is "--json .rc matches the process exit code" "$(printf '%s' "$json" | jq -r '.rc')" "$json_rc"
 is "--json .ok reflects rc==0" "$(printf '%s' "$json" | jq -r '.ok')" "$([ "$json_rc" -eq 0 ] && echo true || echo false)"
-is "--json carries all nine probes" "$(printf '%s' "$json" | jq '.probes | length')" "9"
-for id in self-path operator-config estate-root registry hub-local liveness socket cockpit-binary dependencies; do
+is "--json carries all ten probes" "$(printf '%s' "$json" | jq '.probes | length')" "10"
+for id in self-path operator-config estate-root registry mandates hub-local liveness socket cockpit-binary dependencies; do
   has "--json includes probe '$id'" "$(printf '%s' "$json" | jq -r '.probes[].id')" "$id"
 done
 is "--json probes carry id/status/text" \
@@ -621,10 +621,10 @@ json="$(env -i PATH="$PATH" HOME="$FX/injectjson/home" STEWARD_ESTATE_ROOT="$inj
   bash "$STEWARD" doctor --json 2>/dev/null)"
 printf '%s' "$json" | jq . >/dev/null 2>&1
 is "19: --json still parses with a newline+tab in the estate root" "$?" "0"
-is "19: --json still carries exactly nine probes" "$(printf '%s' "$json" | jq '.probes | length')" "9"
+is "19: --json still carries exactly ten probes" "$(printf '%s' "$json" | jq '.probes | length')" "10"
 ids_sorted="$(printf '%s' "$json" | jq -Sc '[.probes[].id] | sort')"
-want_sorted='["cockpit-binary","dependencies","estate-root","hub-local","liveness","operator-config","registry","self-path","socket"]'
-is "19: probe id set is exactly the real nine, nothing injected" "$ids_sorted" "$want_sorted"
+want_sorted='["cockpit-binary","dependencies","estate-root","hub-local","liveness","mandates","operator-config","registry","self-path","socket"]'
+is "19: probe id set is exactly the real ten, nothing injected" "$ids_sorted" "$want_sorted"
 is "19: exactly one 'socket' probe row" "$(printf '%s' "$json" | jq '[.probes[] | select(.id=="socket")] | length')" "1"
 sockstatus="$(printf '%s' "$json" | jq -r '.probes[] | select(.id=="socket") | .status')"
 case "$sockstatus" in PASS|WARN|FAIL|SKIP) ok "19: the one socket row carries a real status ($sockstatus)" ;;
@@ -657,5 +657,53 @@ has "21: the FAIL names the symlink" "$line" "symlink"
 hasnt "21: never certified WARN ambient-only" "$line" "ambient-only"
 
 rm -rf "$FX"
+
+echo "== 20. mandates: absent is 'not set up' (PASS), coherent is PASS, FALSE-CONSENT is FAIL =="
+# The probe renders registry_mandate_check; the check's own suite proves the
+# findings. What is proved HERE is the rendering and the wiring: the row exists
+# on an estate without the programme, a coherent register passes, and a row
+# signed by someone else fails the whole doctor - because the doctor is how this
+# check runs without anyone remembering it.
+mkfx "$FX/m0"
+out="$(run "$FX/m0" "$FX/m0/hostcmd")"; rc0=$?
+has "20: no mandates.d is PASS" "$(line_for "$out" mandates)" "mandates  PASS  "
+has "20: ...and says the programme is not set up" "$(line_for "$out" mandates)" "not set up"
+# THE WHOLE-RUN rc IS TAKEN AS A BASELINE, NOT ASSERTED TO BE 0. Standalone, this
+# exact fixture reads rc 0 with every probe PASS or WARN. Inside the suite, by
+# this section, the same fixture reads rc 69 - a state left behind by an
+# earlier section that is not this probe's and not this branch's to fix. What
+# IS this probe's to prove: a PASS from `mandates` adds nothing to the rc, and a
+# FAIL from it makes the whole doctor non-zero. So the coherent case is compared
+# to the baseline, and the non-PASS probes are PRINTED here, so whoever reads
+# the run sees the leak instead of a green suite hiding it.
+printf '     (20: baseline rc=%s; non-PASS probes in this fixture: %s)\n' "$rc0" "$(printf '%s\n' "$out" | grep -vE '  PASS  ' | cut -d' ' -f1 | tr '\n' ' ')"
+mkfx "$FX/m1"; d="$FX/m1"
+mkdir -p "$d/mandates.d" "$d/logins.d" "$d/accounts.d"; chmod 700 "$d/mandates.d" "$d/logins.d" "$d/accounts.d"
+wr() { cat > "$1"; chmod 600 "$1"; }
+printf 'PRINCIPAL="simon"\nACCOUNT="s@ex.test"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/sv"\nLEGAL_OWNER="Varvet"\n' | wr "$d/logins.d/simon-varvet.conf"
+printf 'PRINCIPAL="simon"\nHOST="h1"\nUSERNAME="simon"\n' | wr "$d/accounts.d/simon-h1.conf"
+printf 'PRINCIPAL="jon"\nHOST="h1"\nUSERNAME="jon"\n'     | wr "$d/accounts.d/jon-h1.conf"
+mrow() { printf 'PRINCIPAL="simon"\nLOGINS="simon-varvet"\nLEGAL_OWNER_APPROVED="Varvet"\nSCOPE="beneficiary:varvet"\nRESERVE="open-below:25 hard-cap:50 min-days-left:2 idle-hours:48"\nVALID_FROM="2026-09-10T00:00:00Z"\nTERMS_VERSION="v1"\nACCEPTED_AT="2026-09-09T21:00:00Z"\nACCEPT_SOURCE="%s"\n' "$2" | wr "$d/mandates.d/$1.conf"; }
+mrow ok unix-account:simon-h1
+out="$(run "$d" "$d/hostcmd")"; rc=$?
+has "20: a coherent register is PASS" "$(line_for "$out" mandates)" "mandates  PASS  "
+has "20: ...and counts its rows" "$(line_for "$out" mandates)" "1 mandate(s)"
+is  "20: ...and a PASS from mandates leaves the doctor's rc as it was" "$rc" "$rc0"
+mrow relay unix-account:jon-h1
+out="$(run "$d" "$d/hostcmd")"; rc=$?
+has "20: a row signed by someone else is FAIL" "$(line_for "$out" mandates)" "mandates  FAIL  "
+has "20: ...and the line names FALSE-CONSENT" "$(line_for "$out" mandates)" "FALSE-CONSENT"
+has "20: ...with both names" "$(line_for "$out" mandates)" "principal 'jon'"
+# 78 is the register-refusal code every registry probe uses for a FAIL, and the
+# doctor's rc is its worst probe - so a FALSE-CONSENT row is rc 78 whatever the
+# baseline was.
+is  "20: ...and the whole doctor is rc 78" "$rc" "78"
+# A LOOSE REGISTER DIRECTORY IS THE CHECK'S OWN REFUSAL, rendered as FAIL with
+# the remedy the check prints - not as a count of findings.
+chmod 770 "$d/mandates.d"
+out="$(run "$d" "$d/hostcmd")"
+has "20: a loose register is FAIL with the remedy" "$(line_for "$out" mandates)" "chmod g-w,o-w"
+chmod 700 "$d/mandates.d"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -6561,9 +6561,13 @@ _resolve_socket() {
 
 # ---------------------------------------------------------------------------
 # `steward doctor` — the operator's first read on a fresh checkout, before
-# anything is trusted. Nine probes, in dependency order, each PASS/WARN/FAIL/
-# SKIP: self-path, operator-config, estate-root, registry, hub-local (the
-# core, 1-5), then liveness, socket, cockpit-binary, dependencies (6-9). Both
+# anything is trusted. Ten probes, in dependency order, each PASS/WARN/FAIL/
+# SKIP: self-path, operator-config, estate-root, registry, mandates, hub-local
+# (the core, 1-6), then liveness, socket, cockpit-binary, dependencies (7-10).
+# `mandates` arrived 2026-09-09 with the giving-back register: it renders
+# registry_mandate_check, and it sits here so the check RUNS without anyone
+# remembering it - the spec requires that before the first real mandate row
+# is written. Both
 # `--json` (every probe result plus each value's provenance) and `--static`
 # (no shim/socket calls — skips the liveness contract probe) are implemented
 # below — see docs/superpowers/specs/2026-08-29-operatorens-vag-in-design.md
@@ -6590,7 +6594,7 @@ _resolve_socket() {
 # else could need it) and hub-local blocks nothing further (nothing runs
 # after it today). Every SKIP names the probe that blocked it, never a bare
 # "skipped".
-_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry hub-local liveness socket cockpit-binary dependencies"
+_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry mandates hub-local liveness socket cockpit-binary dependencies"
 
 # _doctor_oneline <text> — flattens a possibly multi-line diagnostic (reused
 # lib/registry.sh error text — e.g. registry_schema_check's schema-too-new
@@ -6855,6 +6859,50 @@ EOF
   fi
   printf 'PASS %d session(s) registered, all load\n' "$total"
   return 0
+}
+
+# mandates — does the mandate register hang together with the registers it
+# points into? registry_mandate_check IS the measurement (lib/registry.sh);
+# this probe only renders it: absent register, coherent register, findings,
+# or the register's own refusal.
+#
+# AN ABSENT REGISTER IS PASS, WITH THE SENTENCE. An estate that has not set the
+# giving-back programme up is the ordinary state, not a defect - so not WARN,
+# there is nothing to fix. And not silence: the doctor is how this check runs
+# without anyone remembering it, so the row must exist even when it says "not
+# set up". A dangling symlink is NOT absent; it reaches the check and refuses.
+#
+# A FINDING IS FAIL, NEVER WARN. The findings this check makes are a login the
+# register does not know, a payer that is not the seat's, and FALSE-CONSENT -
+# a row signed from a channel that authenticates someone else. None of them is
+# a degradation to note; each is a row that must not be honoured. The first
+# finding is quoted so the line can be acted on, and the count says how many
+# more there are. No remedy verb is named, because none exists yet; the check
+# itself is the remedy's first half.
+_doctor_probe_mandates() {
+  local dir; dir="$(registry_mandate_dir 2>/dev/null)" || {
+    printf 'FAIL could not resolve the mandate register directory\n'; return 78; }
+  if [ ! -d "$dir" ] && [ ! -L "$dir" ]; then
+    printf 'PASS no mandate register - the giving-back programme is not set up (%s absent)\n' "$(_doctor_oneline "$dir")"
+    return 0
+  fi
+  local outf errf
+  outf="$(mktemp 2>/dev/null)" && errf="$(mktemp 2>/dev/null)" || {
+    printf 'FAIL could not create a temporary file\n'; return 70; }
+  registry_mandate_check >"$outf" 2>"$errf"; local rc=$?
+  local n first err
+  n="$(grep -c . "$outf")"; first="$(head -1 "$outf")"; err="$(cat "$errf")"
+  rm -f "$outf" "$errf"
+  case "$rc" in
+    0)  printf 'PASS %d mandate(s), register coherent\n' "$(registry_mandate_list 2>/dev/null | grep -c .)"; return 0 ;;
+    78) printf 'FAIL %s\n' "$(_doctor_oneline "$err")"; return 78 ;;
+    *)  if [ "$n" -gt 1 ]; then
+          printf 'FAIL %d findings in the mandate register -- first: %s -- and %d more\n' "$n" "$(_doctor_oneline "$first")" "$((n-1))"
+        else
+          printf 'FAIL 1 finding in the mandate register -- %s\n' "$(_doctor_oneline "$first")"
+        fi
+        return 78 ;;
+  esac
 }
 
 # hub-local — this machine's hostname against the estate's HUB_HOST. THE
