@@ -1740,8 +1740,24 @@ registry_row_write() {
   rm -f "$stage"
 
   # 7. CANONICAL READBACK, same lock, the register's own loader.
+  #
+  # THE LOADER'S STDERR IS KEPT, NOT DISCARDED. This call used to be
+  # `>/dev/null 2>&1`, which threw away the ONE sentence that says why the row
+  # would not load and left the operator with "wrote it but it does not load
+  # back" and nothing under it. Measured: a group-writable register on a
+  # Debian host produced exactly that refusal, and finding the cause took a
+  # trace through two files. The refusal below stays — a row that does not read
+  # back is still deleted and still rc 70 — but it now carries the loader's own
+  # words beneath it.
+  #
+  # COMMAND SUBSTITUTION IS STILL A SUBSHELL, so the reason the call was
+  # wrapped in `( … )` in the first place is unchanged: a loader that refuses
+  # halfway through must not leak its half-set variables into this function's
+  # caller.
   local staged_id; staged_id="$(_registry_stat_id "$final")"
-  if ! ( "$readback_fn" "$slug" >/dev/null 2>&1 ); then
+  local rb_reason rb_rc
+  rb_reason="$( ( "$readback_fn" "$slug" >/dev/null ) 2>&1 )"; rb_rc=$?
+  if [ "$rb_rc" -ne 0 ]; then
     local now_id; now_id="$(_registry_stat_id "$final" 2>/dev/null)"
     # Remove UNCONDITIONALLY unless stat POSITIVELY proves $final is no
     # longer the file just staged (both ids present AND different). An
@@ -1753,6 +1769,7 @@ registry_row_write() {
       rm -f "$final"
     fi
     echo "registry: wrote $final but it does not load back through the registry — refusing" >&2
+    [ -n "$rb_reason" ] && printf '%s\n' "$rb_reason" >&2
     rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 70
   fi
@@ -1907,8 +1924,14 @@ registry_row_replace() {
   # 7. CANONICAL READBACK, same lock, the register's OWN loader - "replaced ok"
   # means exactly what a reader will see. On failure the backup goes back: the
   # caller asked for a change, not for a loss.
+  #
+  # THE LOADER'S STDERR IS KEPT, the writer's rule for the writer's reason: a
+  # refusal that names only the readback is a refusal nobody can act on. Still
+  # a subshell, so a half-set loader cannot leak into the caller.
   local published_id; published_id="$(_registry_stat_id "$final")"
-  if ! ( "$readback_fn" "$slug" >/dev/null 2>&1 ); then
+  local rb_reason rb_rc
+  rb_reason="$( ( "$readback_fn" "$slug" >/dev/null ) 2>&1 )"; rb_rc=$?
+  if [ "$rb_rc" -ne 0 ]; then
     local now_id; now_id="$(_registry_stat_id "$final" 2>/dev/null)"
     if [ -n "$published_id" ] && [ -n "$now_id" ] && [ "$published_id" != "$now_id" ]; then
       # stat POSITIVELY proves $final is no longer the file we published: some
@@ -1927,6 +1950,7 @@ registry_row_replace() {
     fi
     chmod 0600 "$final" 2>/dev/null
     echo "registry: replaced $final but it does not load back through the registry - the previous row was restored, refusing" >&2
+    [ -n "$rb_reason" ] && printf '%s\n' "$rb_reason" >&2
     rmdir "$lock" 2>/dev/null; _registry_restore_exit_trap "$_prev_trap"
     return 70
   fi
@@ -4468,7 +4492,12 @@ _registry_login_dir_state() {
     local dmode; dmode="$(_registry_mode_of "$dir")" || {
       echo "registry: cannot read the mode of the login register: $dir" >&2; return 78; }
     if _registry_group_or_other_writable "$dmode"; then
-      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir" >&2
+      # THE REMEDY TRAVELS WITH THE REFUSAL. This message is very often read
+      # two layers below where it is printed — the row writer's canonical
+      # readback goes through this loader — so the operator meets it already
+      # confused about which of several directories is meant. Naming the
+      # directory and the exact command turns a diagnosis into a repair.
+      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w $dir" >&2
       return 78
     fi
   fi
@@ -5178,7 +5207,11 @@ registry_invite_load() {
     local dmode; dmode="$(_registry_mode_of "$dir")" || {
       echo "registry: cannot read the mode of the invite register: $dir" >&2; return 78; }
     if _registry_group_or_other_writable "$dmode"; then
-      echo "registry: the invite register is group- or other-writable (mode $dmode), refusing: $dir" >&2
+      # THE REMEDY TRAVELS WITH THE REFUSAL, the login reader's rule for the
+      # login reader's reason: this sentence is most often read through the row
+      # writer's readback, where the operator has no way of knowing which
+      # directory the loader was looking at.
+      echo "registry: the invite register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w $dir" >&2
       return 78
     fi
   fi

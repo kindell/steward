@@ -59,8 +59,55 @@ estate_scaffold() {
   # (registry_account_load) or answer the empty-vs-unreadable question for its
   # own login register (registry_login_list, rc 78 on a missing directory) —
   # from birth, the same failure shape hosts.d had before it was added here.
-  mkdir -p "$dir"/{estate,sessions.d,entities.d,projects.d,mcp.d,jobs.d,services.d,browsers.d,hosts.d,accounts.d,logins.d} 2>/dev/null \
+  #
+  # invites.d IS THE THIRD, and it is the one that stopped onboarding dead. An
+  # invitation is the ONLY door into this estate, and registry_row_write refuses
+  # a register that does not exist — so `steward invite issue` on a freshly
+  # scaffolded estate answered "the invite register is not readable", rc 78, and
+  # the first step of onboarding could not be taken at all.
+  #
+  # EVERY MODE HERE IS PINNED, NEVER LEFT TO THE AMBIENT umask. Measured on a
+  # Debian/Ubuntu host, whose default umask is 002 (user-private groups): every
+  # register came out 0775, and the invite and login loaders REFUSE a group- or
+  # other-writable register on purpose — a row at mode 600 inside a directory
+  # anybody can write to is not protected by its mode, because anybody can
+  # rename it away and drop their own file under the same name. So `invite
+  # issue` wrote its row, its own canonical readback refused the register it had
+  # just written into, and the writer deleted the row and returned 70. The
+  # product's own onboarding path, broken by the host's umask, on the platform
+  # this product is for. A mode that depends on the host is not a decision.
+  #
+  # `mkdir -m`, NOT `mkdir` FOLLOWED BY `chmod`, and for two reasons. There is
+  # no window in which the directory exists at the looser mode (browser-stack.sh
+  # documents the same choice for the same reason), and `-m` is applied ONLY
+  # when this call is the one creating the directory — an estate directory
+  # somebody already tightened or loosened by hand is left exactly as it is,
+  # the rule bin/steward's config init already follows. A register that IS
+  # loose is not silently repaired here; it is refused by the loader, which now
+  # names the remedy.
+  #
+  # THE ESTATE ROOT IS CREATED FIRST, on its own. `mkdir -m MODE -p a/b` applies
+  # MODE to `b` only; every parent it has to create along the way gets the
+  # ambient umask, so a one-shot call would have pinned the registers and left
+  # the directory holding them group-writable — and renaming a register is as
+  # good as writing to it.
+  mkdir -m 0755 -p "$dir" 2>/dev/null \
     || { echo "scaffold: could not create $dir" >&2; return 70; }
+  local _sc_reg _sc_mode
+  for _sc_reg in estate sessions.d entities.d projects.d mcp.d jobs.d \
+                 services.d browsers.d hosts.d accounts.d logins.d invites.d; do
+    # 0700 FOR THE TWO REGISTERS WHOSE LOADERS CHECK. logins.d and invites.d
+    # carry security artifacts — which account pays, and the digest of a
+    # one-time link token — and their readers refuse a loose directory. Pinning
+    # them at 0700 means the check they make is a check the product itself can
+    # always pass.
+    case "$_sc_reg" in
+      logins.d|invites.d) _sc_mode=0700 ;;
+      *)                  _sc_mode=0755 ;;
+    esac
+    mkdir -m "$_sc_mode" -p "$dir/$_sc_reg" 2>/dev/null \
+      || { echo "scaffold: could not create $dir/$_sc_reg" >&2; return 70; }
+  done
 
   # FIFTEEN FIELDS. The 13 the installer already wrote, plus ESTATE_NAME and
   # SCHEMA_VERSION — without which registry_estate_name refuses (measured
