@@ -1775,36 +1775,84 @@ fi
 # 13:17:34 - THE EXACT SECOND the session's runtime died. Debris from an
 # earlier fault, holding the veto over the wreckage it came from.
 #
-# SO THE QUESTION IS ASKED OF THE CLIENT'S ACTIVITY, NOT OF ITS EXISTENCE.
-# A client whose last activity is not NEWER than the moment this session was
-# first suspected dead cannot be a human working in that pane now: whatever it
-# did, it did before or at the death. Any single keystroke after that moment
-# re-arms the veto and keeps it armed - the suspect marker is not touched
-# while we defer, so a human who reaches for the keyboard at any point during
-# the deferral outranks every measurement here, for as long as they keep
-# doing it.
+# SO THE QUESTION IS ASKED OF THE CLIENT'S IDLENESS, NOT OF ITS EXISTENCE -
+# AND IT IS ASKED AGAINST NOW. A client that touched a key less than
+# HUMAN_GRACE_SEC ago is evidence of a human in that pane; one that has been
+# silent for longer is not. Any single keystroke during the deferral re-arms
+# the veto and keeps it armed for another full window, so a human who reaches
+# for the keyboard outranks every other measurement here for as long as they
+# keep doing it.
 #
-# THE DEATH MOMENT IS THE SUSPECT MARKER'S mtime. It is a stand-in: the
-# runtime is gone, so nothing can report when it exited. The marker is written
-# by the FIRST runtime-free round, i.e. within one timer period after the
-# death, and it is never rewritten while this veto defers - so it is stable
-# across the whole deferral, which is the property the comparison needs.
-# #{session_activity} was considered and rejected: it moves with any pane
-# OUTPUT, including output a client's own redraw causes, so it can drift NEWER
-# than a live human's last keypress and turn that human into debris. The
-# marker can only err in the other direction.
+# NOT "NEWER THAN THE SUSPECT MARKER", WHICH IS WHAT THIS FILE ASKED FOR ONE
+# ROUND ON 2026-09-09 AND WHICH DOES NOT CLOSE THE DEADLOCK. MEASURED, tmux
+# 3.6b on an isolated socket: client_activity is set AT ATTACH, is NOT moved by
+# pane output, and moves only on real client input.
 #
-# ANCESTRY DECIDES WHAT ACTIVITY CANNOT, AND NEVER OVERRULES IT. An attach
-# whose parent chain reaches systemd --user is one the system itself has
-# already called a left-over. That is evidence about PROVENANCE, and it is
-# reported on every client so the journal names the ghost - but a client with
-# FRESH activity defers the kill even when it is orphaned. On any host with a
-# console or desktop session a person's own terminal descends from the user
-# manager too, so letting ancestry beat a keystroke made two seconds ago would
-# reintroduce exactly the failure this veto exists to prevent. Orphanhood
-# therefore decides only the case activity cannot: a client whose activity is
-# unreadable (an older server, a format that did not expand) is debris if it
-# is orphaned, and keeps the veto if it is not.
+#   attach   act=1788970347 now=1788970350   <- set at attach, no keystroke
+#   pane output (send-keys echo)             <- act unchanged
+#   keypress act=1788970356 now=1788970359   <- input, and only input, moves it
+#
+# The marker is never re-touched while the veto defers, and client_activity
+# only grows. So a client that attaches AFTER the marker sorts newer than it
+# FOREVER and holds the veto with no human anywhere and not one keystroke.
+# That is the incident's own debris three minutes later: the `script ... tmux
+# attach` wrapper happened to attach at the death second, and had it attached
+# after, the ordering rule would have reproduced the two-hour hang WITHOUT END
+# while printing "repair resumes the round after that client goes quiet".
+# Idleness against now has no such fixed point - two hours of silence is two
+# hours of silence, whatever the marker says.
+#
+# THE WINDOW IS 900 SECONDS, and both of its costs are bounded and logged:
+#  - a genuinely dead session with a client attached waits at most one window
+#    longer for its repair. Every deferral prints "idle Ns of 900s", so the
+#    wait is readable rather than mysterious;
+#  - a human idle LONGER than the window loses the pane. That is not a new
+#    cost: the ordering rule killed that human sooner, since after 900s of
+#    silence their last keypress is older than a marker written within one
+#    timer period of the death.
+# The width must comfortably exceed an ordinary reading pause - a diff, a phone
+# call - and stay far under the two hours the deadlock cost. One supervision
+# round (3 min) is too tight to read a diff in; an hour makes the deadlock
+# cheap again. DELIBERATELY NOT AN ENVIRONMENT KNOB: the veto that protects
+# humans is not a thing a caller may widen or a test may shrink.
+#
+# THE SUSPECT MARKER IS LOG TEXT NOW, NOT EVIDENCE. It still stands in for the
+# death moment - the runtime is gone, so nothing can report when it exited -
+# and the debris lines still say how far a client's last activity fell before
+# or after it, because "its activity postdates the death by 180s" is what tells
+# the next reader they are looking at an attach and not a keystroke. But no
+# decision rests on it, so a marker mtime in the FUTURE (NTP correction, VM
+# resume, an RTC-less host correcting at boot) is now cosmetic instead of
+# fatal. #{session_activity} was considered and rejected as the input signal:
+# it moves with any pane OUTPUT, including output a client's own redraw causes,
+# so it can drift newer than a live human's last keypress. The marker errs the
+# other way, but it is not harmless either: it lands up to one timer period
+# (agent-session@.timer, OnUnitActiveSec=3min) PLUS the length of the round
+# that wrote it after the true death, and a slow round widens that. Bounded, in
+# the safe direction - not "cannot mislead".
+#
+# ANCESTRY IS REPORTED, AND NEVER DECIDES AGAINST A HUMAN. An attach whose
+# parent chain reaches systemd --user is one the system itself has already
+# called a left-over. That is evidence about PROVENANCE, and it is printed on
+# every debris line so the journal names the ghost - but it never turns a
+# client into debris on its own. A client with FRESH activity defers the kill
+# even when it is orphaned, AND SO DOES A CLIENT WHOSE ACTIVITY CANNOT BE READ
+# AT ALL: on any host with a console or desktop session a person's own terminal
+# descends from the user manager too, so "orphaned and unmeasurable" describes
+# a live human at a graphical login exactly as well as it describes a ghost.
+#
+# ON tmux < 2.9 THIS MEASUREMENT DOES NOTHING. There client_activity is a
+# formatted date ("Tue Sep  9 13:17:34 2026"), not an epoch; _is_epoch rejects
+# it, and every client falls into the unreadable case above. The veto is then
+# exactly the pre-2026-09-09 existence check - the deadlock is not fixed on
+# those hosts, and no human is at risk on them either. That is the honest
+# degradation, and upgrading tmux is the only thing that changes it.
+#
+# AND ON A HOST WITH NO systemd --user - a container, a non-systemd distro -
+# user_manager_pids answers nothing and ancestry is not measured at all. The
+# fallback is activity alone, which is safe in direction; what must not happen
+# is the journal asserting a negative it never measured, so the debris line
+# says ancestry was not measured rather than "no orphan".
 #
 # DELIBERATELY NOT A ROUND CAP. The tempting fix is "after N deferrals, kill
 # anyway". A ceiling that overrides a live human is precisely the failure this
@@ -1812,13 +1860,20 @@ fi
 # also eventually type over somebody's editor. The fix is to measure the human
 # correctly, not to time them out.
 #
-# A MEASUREMENT THAT FAILS IS NOT A MEASUREMENT OF NOTHING. If the formatted
-# listing comes back empty while a PLAIN one does not, this server cannot tell
-# us what we are asking (a -F it will not take, a format it will not expand) -
-# and "empty" would then mean "no clients attached" and authorize the kill.
-# That is the one way this change could kill something the old existence check
-# protected, so it is checked explicitly and the old behavior is kept: defer,
-# loudly, naming the reason.
+# A MEASUREMENT THAT FAILS IS NOT A MEASUREMENT OF NOTHING, AND THERE ARE TWO
+# WAYS IT CAN FAIL. If the formatted listing comes back empty while a PLAIN one
+# does not, this server will not take the -F at all. If it ANSWERS the -F but
+# expands every field to the empty string, rows come back and none of them
+# describes a client - and the loop below would then find neither a human to
+# keep nor debris to name, print "every attached client is debris" naming
+# nobody, and kill. Both would mean "no clients attached" and authorize the
+# kill, and both are ways this change could kill something the old existence
+# check protected. Both are checked explicitly and the old behavior kept:
+# defer, loudly, naming the reason.
+#
+# THE WINDOW A CLIENT'S LAST KEYSTROKE MUST FALL INSIDE FOR IT TO BE EVIDENCE
+# OF A HUMAN. Rationale, cost and why it is not configurable: above.
+HUMAN_GRACE_SEC=900
 CLIENT_FMT='#{client_tty}|#{client_activity}|#{client_pid}'
 _clients="$(tmuxc list-clients -t "=$NAME" -F "$CLIENT_FMT" 2>/dev/null)"
 if [ -z "$_clients" ] && [ -n "$(tmuxc list-clients -t "=$NAME" 2>/dev/null)" ]; then
@@ -1828,7 +1883,8 @@ if [ -z "$_clients" ] && [ -n "$(tmuxc list-clients -t "=$NAME" 2>/dev/null)" ];
   exit 0
 fi
 if [ -n "$_clients" ]; then
-  _death="$(_mtime_of "$SUSPECT")"
+  _now="$(date +%s)"
+  _death="$(_mtime_of "$SUSPECT")"   # log text only - see above; no verdict rests on it
   UM_PIDS="$(user_manager_pids)"
   _keep=""; _keep_why=""; _debris=""; _NL=$'\n'
   # THE SEPARATOR IS '|', NOT A SPACE. An empty field between two spaces is
@@ -1840,21 +1896,35 @@ if [ -n "$_clients" ]; then
     _who="${_ctty:-(no tty)} (pid ${_cpid:-unknown})"
     _orphan=""; client_is_orphaned "$_cpid" && _orphan=1
     _left_over="its parent chain reaches systemd --user, which already logged it as a left-over process"
-    if _is_epoch "$_cact" && _is_epoch "$_death"; then
-      if [ "$_cact" -gt "$_death" ]; then
-        _why="was active $(( _cact - _death ))s AFTER this session was first suspected dead"
-        [ -n "$_orphan" ] && _why="$_why (it is an orphan of systemd --user, but activity outranks ancestry)"
-        [ -z "$_keep" ] && { _keep="$_who"; _keep_why="$_why"; }
-        continue
-      fi
-      _why="its last activity was $(( _death - _cact ))s BEFORE this session was first suspected dead"
-      [ -n "$_orphan" ] && _why="$_why, and $_left_over"
-    elif [ -n "$_orphan" ]; then
-      _why="its last activity could not be read, and $_left_over"
-    else
-      _why="its last activity could not be read and it is no orphan of systemd --user"
+    # UNREADABLE ACTIVITY KEEPS THE VETO, ORPHAN OR NOT. This is the whole of
+    # the tmux < 2.9 path and of any format that did not expand.
+    if ! _is_epoch "$_cact"; then
+      _why="its last activity could not be read"
+      [ -n "$_orphan" ] && _why="$_why, and $_left_over - but ancestry never decides against a human"
       [ -z "$_keep" ] && { _keep="$_who"; _keep_why="$_why - the veto stands on what it cannot measure"; }
       continue
+    fi
+    # IDLENESS AGAINST NOW. A negative answer means the client's clock ran
+    # ahead of this host's; that is not staleness, and -lt keeps it a human.
+    _idle=$(( _now - _cact ))
+    if [ "$_idle" -lt "$HUMAN_GRACE_SEC" ]; then
+      _why="was active ${_idle}s ago (idle ${_idle}s of ${HUMAN_GRACE_SEC}s)"
+      [ -n "$_orphan" ] && _why="$_why (it is an orphan of systemd --user, but activity outranks ancestry)"
+      [ -z "$_keep" ] && { _keep="$_who"; _keep_why="$_why"; }
+      continue
+    fi
+    _why="it has been silent for ${_idle}s, past the ${HUMAN_GRACE_SEC}s grace"
+    if _is_epoch "$_death"; then
+      if [ "$_cact" -gt "$_death" ]; then
+        _why="$_why (its last activity was $(( _cact - _death ))s after this session was first suspected dead - an attach, then nothing)"
+      else
+        _why="$_why (its last activity was $(( _death - _cact ))s before this session was first suspected dead)"
+      fi
+    fi
+    if [ -n "$_orphan" ]; then
+      _why="$_why, and $_left_over"
+    elif [ -z "$UM_PIDS" ]; then
+      _why="$_why (no systemd --user on this host: ancestry was not measured)"
     fi
     _debris="${_debris:+$_debris$_NL}session-supervisor: $NAME - attached tmux client $_who is not a working human: $_why."
   done <<EOF
@@ -1863,10 +1933,16 @@ EOF
   [ -n "$_debris" ] && printf '%s\n' "$_debris" >&2
   if [ -n "$_keep" ]; then
     echo "session-supervisor: $NAME - ZOMBIE-shaped, but tmux client $_keep $_keep_why - deferring the kill." >&2
-    echo "session-supervisor: $NAME - a human may be working in that window; repair resumes the round after that client goes quiet or detaches." >&2
+    echo "session-supervisor: $NAME - a human may be working in that window; repair resumes the first round after that client has been silent for ${HUMAN_GRACE_SEC}s, or the round after it detaches." >&2
     exit 0
   fi
-  echo "session-supervisor: $NAME - every attached client is debris, not a working human - the veto measures ACTIVITY, not existence." >&2
+  if [ -z "$_debris" ]; then
+    echo "session-supervisor: $NAME - ZOMBIE-shaped, and this server answered rows that could not be read as clients" >&2
+    echo "session-supervisor: $NAME - (list-clients -F '$CLIENT_FMT' expanded every field to nothing) - deferring the kill." >&2
+    echo "session-supervisor: $NAME - measuring nobody while rows came back is not a measurement of nobody; a human may be working in that window." >&2
+    exit 0
+  fi
+  echo "session-supervisor: $NAME - every attached client is debris, not a working human - the veto measures IDLENESS against now, not existence." >&2
 fi
 rm -f "$SUSPECT"
 # TWO ROUNDS WITHOUT A RUNTIME: the pane is a bare shell wearing a live
