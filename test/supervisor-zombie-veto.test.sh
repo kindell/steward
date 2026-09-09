@@ -66,6 +66,8 @@
 #      cannot tell a re-attaching wrapper from a human who has just attached,
 #      so it must not try - but an indefinite deferral has to be legible on one
 #      line, which is exactly what the two-hour incident lacked.
+#  16. On a host with no `systemd --user` ancestry is not measured at all, and
+#      the journal must say that rather than assert the negative "no orphan".
 #
 # NOTHING HERE TOUCHES THE MACHINE: tmux, pgrep and ps are shims over a fixture
 # process table, and no tmux, ssh or sudo binary is ever reached.
@@ -304,6 +306,12 @@ has "2d and states the window it measured against" "$out2" "of ${GRACE}s"
 [ -f "$SUSPECT" ] && ok  "2e the suspect cadence is kept (marker stays)" \
                   || bad "2e the suspect cadence is kept (marker stays)" "marker gone"
 has "2f and says what would resume the repair" "$out2" "silent for ${GRACE}s"
+# AND THE CLIENT THAT DEFERS IS NOT SIMULTANEOUSLY CALLED DEBRIS. This is the
+# positive the old assertion 7c looked like it was making and could not: 7c
+# lives in the no-clients case, where the debris line is unreachable by
+# construction, so nothing there can fail. Here there IS a client, and a
+# journal that both defers to it and names it as debris is incoherent.
+hasnt "2g the human who holds the veto is not also named as debris" "$out2" "is not a working human"
 
 echo "== 3. an orphan of the user manager, long silent, is named as debris =="
 arm
@@ -371,7 +379,15 @@ run
 out7="$(cat "$T/out")"
 if repaired; then ok "7a the repair proceeds with no client attached"; else bad "7a the repair proceeds with no client attached" "tmux log: $(cat "$TMUX_LOG")"; fi
 has   "7b the zombie verdict is unchanged" "$out7" "ZOMBIE PANE"
-hasnt "7c and nothing is said about clients" "$out7" "attached tmux client"
+# WAS: hasnt "nothing is said about clients" ... "attached tmux client". That
+# string is only ever built per-client inside `if [ -n "$_clients" ]`, which by
+# construction does not run when no client is attached - seven mutations failed
+# to make it fail. What this case can really assert is that an empty listing is
+# not read as an unreadable one: the deferral at the top of the veto fires when
+# `-F` answers nothing while a PLAIN listing answers something, and with nobody
+# attached both are empty, so nothing must defer. Dropping that cross-check
+# turns this red.
+hasnt "7c an empty listing is not read as an unreadable one" "$out7" "deferring the kill"
 
 echo "== 8. the supervisor asks tmux for what it measures =="
 arm
@@ -506,6 +522,24 @@ if [ -n "$zage" ] && [ "$zage" -ge 7200 ] && [ "$zage" -le 7260 ]; then
 else
   bad "15c and the number is the session's age, not the client's idleness" "wanted 7200..7260, got '${zage:-none}'"
 fi
+
+echo "== 16. a host with no systemd --user does not assert a negative it never measured =="
+# A container or a non-systemd distro: user_manager_pids answers nothing, every
+# ancestry question is unanswerable, and the debris verdict rests on activity
+# alone - which is safe in direction. What must not happen is the journal
+# saying "it is no orphan of systemd --user", which is a measurement nobody
+# took. Until now nothing guarded that: deleting the fallback arm left the
+# suite fully green, and so did restoring the false claim verbatim.
+PROCTAB_NO_UM="$T/proctab-no-um"
+grep -v 'systemd --user' "$PROCTAB" > "$PROCTAB_NO_UM"
+arm
+client "$HUMAN_TTY" "$(( NOW - 3600 ))" "$HUMAN_PID"
+PROCTAB="$PROCTAB_NO_UM" run
+out16="$(cat "$T/out")"
+if repaired; then ok "16a the repair still proceeds on activity alone"; else bad "16a the repair still proceeds on activity alone" "tmux log: $(cat "$TMUX_LOG")"; fi
+has   "16b the line says ancestry was not measured" "$out16" "ancestry was not measured"
+hasnt "16c and claims no negative it never measured" "$out16" "no orphan"
+hasnt "16d nor that the system called it a left-over" "$out16" "left-over process"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
