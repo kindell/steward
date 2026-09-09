@@ -263,7 +263,12 @@ test('SCHEMA.md shows one ENDPOINT_ORIGINS spelling, the loader reads it, and it
   // And the paragraph says the two things "further https origins" alone does
   // not: loopback http is accepted here on DISCOVERY's own rule, and a bad
   // entry stops the desk at start rather than being found at the first login.
-  const para = SCHEMA.slice(SCHEMA.indexOf('`ENDPOINT_ORIGINS`'), SCHEMA.indexOf('\n3. '));
+  // The paragraph ends at the next numbered item AFTER it, not at the file's
+  // first "3." - searching from 0 means any unrelated numbered list added
+  // earlier empties the slice, and the test then reddens on a match against
+  // the empty string, naming nothing about what actually broke.
+  const from = SCHEMA.indexOf('`ENDPOINT_ORIGINS`');
+  const para = SCHEMA.slice(from, SCHEMA.indexOf('\n3. ', from));
   assert.match(para, /loopback/);
   assert.match(para, /78/);
 });
