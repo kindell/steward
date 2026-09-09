@@ -1062,6 +1062,109 @@ case "$UOUT" in
 esac
 rm -rf "$UFX"
 
+# ── THE TWO SIDES, PINNED TOGETHER ──────────────────────────────────────────
+#
+# THE GAP, measured on a live host 2026-09-09. Everything above measures what
+# enroll accepts against a request this file writes by hand. The requester
+# writes its own, and the two drifted: session-new put `id -un` in person=
+# while this file's owner check reads that field as a PRINCIPAL. On an account
+# whose login is a role ("steward") rather than a person's name the enrolment
+# was refused two machines from where the mistake was made, naming a value the
+# operator never typed.
+#
+# A comment on either side would not have caught it, because a comment is not
+# run. So the request is not written here at all: session-new BUILDS it, and
+# enroll is handed exactly what came off that wire. Whichever side moves next,
+# this case is the one that goes red.
+echo "session-new and enroll — one request, both sides"
+
+XFX="$FX/crosspin"
+mkdir -p "$XFX/sessions.d" "$XFX/ssh" "$XFX/state" "$XFX/repo/.git"
+
+XUU="$(id -un)"
+XPRIN="chief"; [ "$XPRIN" = "$XUU" ] && XPRIN="chieftain"
+
+# THE ACCOUNT THE STORY IS ABOUT: a person named by PRINCIPAL, running under a
+# unix login named for the ROLE. The estate's other account row (someone) is
+# left in place — the resolution must pick this one, not merely the only one.
+cat > "$FX/accounts.d/chief-farhost.conf" <<CONF
+PRINCIPAL="$XPRIN"
+HOST="farhost"
+USERNAME="$XUU"
+CONF
+
+# THE REQUESTING SESSION, in BOTH registers: the requester reads DOMAIN and HOST
+# off its own copy, the hub reads OWNER and ACCOUNT off its own. Two machines,
+# two registers, one row.
+xrow() { cat > "$1" <<CONF
+ID="asker-chief"
+HOST="farhost"
+OWNER="$XUU"
+ACCOUNT="chief-farhost"
+DOMAIN="acme"
+RC_LABEL="Hub: asker-chief"
+REPO_PATH="/srv/homes/$XUU/Projects/asker"
+CONF
+}
+xrow "$FX/reg/asker-chief.conf"
+xrow "$XFX/sessions.d/asker-chief.conf"
+
+# Stubs: tmux answers the pane's session name, ssh-keygen writes a key that is
+# not real and not the one the hand-written request above already registered,
+# and the bus client keeps the request instead of sending it.
+cat > "$FX/bin/tmux" <<EOF
+#!/bin/bash
+if [ "\$1" = "display-message" ]; then printf '%s\n' "\${FAKE_TMUX_SESSION:-}"; fi
+exit 0
+EOF
+cat > "$FX/bin/ssh-keygen" <<'EOF'
+#!/bin/bash
+f=""
+while [ $# -gt 0 ]; do
+  case "$1" in -f) f="${2:-}"; shift 2 ;; *) shift ;; esac
+done
+[ -n "$f" ] || exit 1
+: > "$f"
+printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICROSSPINFIXTUREKEYNOTREALxxxxxxxxxx crosspin\n' > "$f.pub"
+EOF
+cat > "$XFX/bus-send" <<EOF
+#!/bin/bash
+cat > "$XFX/sent.txt"
+EOF
+chmod +x "$FX/bin/tmux" "$FX/bin/ssh-keygen" "$XFX/bus-send"
+
+xout="$( PATH="$FX/bin:$PATH" HOME="$XFX" \
+         TMUX_PANE="%0" FAKE_TMUX_SESSION="asker-chief" \
+         STEWARD_ESTATE_ROOT="$FX" STEWARD_SESSIONS_D="$XFX/sessions.d" \
+         STEWARD_REGISTRY_LIB="$here/lib/registry.sh" \
+         STEWARD_SSH_DIR="$XFX/ssh" STEWARD_ENROLL_STATE_DIR="$XFX/state" \
+         STEWARD_BUS_SEND="$XFX/bus-send" \
+         bash "$here/linux/session-new.sh" widget "$XFX/repo" 2>&1 )"
+xrc=$?
+is "the requester builds a request, rc 0" "$xrc" "0"
+xreq="$(cat "$XFX/sent.txt" 2>/dev/null)"
+has "the request it built names the principal" "$xreq" "person=$XPRIN"
+
+# AND NOW THE HUB, fed exactly those bytes.
+xhub="$( STEWARD_ESTATE_ROOT="$FX" \
+         STEWARD_REGISTRY_DIR="$FX/reg" \
+         STEWARD_RELAY_ROOT="$FX" \
+         STEWARD_AUTHORIZED_KEYS="$FX/authorized_keys" \
+         STEWARD_BUS_SEND="$FX/bin/send" \
+         STEWARD_REGISTRY_LIB="$here/lib/registry.sh" STEWARD_ENROLL_FROM=asker-chief \
+         bash "$ENROLL" --send < "$XFX/sent.txt" 2>&1 )"
+xhrc=$?
+if [ "$xhrc" -eq 0 ]; then ok "enroll accepts the request the requester built"
+else bad "enroll accepts the request the requester built" "rc=$xhrc out=$xhub"; fi
+xid="$(printf '%s' "$xhub" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
+xbody="$(cat "$FX/reg/$xid.conf" 2>/dev/null)"
+has "the row is stamped under the account that resolved" "$xbody" 'ACCOUNT="chief-farhost"'
+# OWNER IS THE LOGIN, on both sides of the wire: the requester's own reservation
+# and the row the hub stamps say the same thing, and it is not the principal.
+has "the row the hub stamps owns it by the unix login" "$xbody" "OWNER=\"$XUU\""
+has "the requester's own reservation agrees" \
+    "$(cat "$XFX/sessions.d/acme-widget-$XPRIN.conf" 2>/dev/null)" "OWNER=\"$XUU\""
+
 # ── registry_estate_checkout: THE THREE OUTCOMES ────────────────────────────
 # Optional field, same contract as registry_liveness_cmd: absent is not broken,
 # invalid is a refusal, and a relative path is invalid because it would resolve
