@@ -3795,6 +3795,14 @@ registry_job_load() {
   # fields as absent, and an absent LOGIN means something specific from schema
   # 6 onward.
   registry_schema_check || return 78
+  # THE GATE'S ANSWER IS COPIED OUT OF REACH BEFORE THE ROW IS READ, the same
+  # shape registry_load uses. registry_schema_check publishes into the
+  # _REGISTRY_SCHEMA_SEEN global, and the `source` below runs where that global
+  # is writable - so a row carrying _REGISTRY_SCHEMA_SEEN="5" decided for itself
+  # whether the schema-6 billing gate applied to it. Measured: a job row with no
+  # LOGIN on a schema-6 estate refuses rc 78, and the same row plus that one
+  # line loaded rc 0. The copy below is read at every reference in this loader.
+  local _gate_schema="${_REGISTRY_SCHEMA_SEEN:-}"
   local conf="${1:-}"
   if [ ! -f "$conf" ]; then echo "registry: no such job conf '$conf'" >&2; return 1; fi
   JOB_NAME="$(basename "$conf" .conf)"
@@ -3824,13 +3832,13 @@ registry_job_load() {
   # WEAKER measurement than the session gate's account-first resolution, and
   # that is written out here rather than silently reused, so a reader does not
   # mistake it for the stronger check.
-  if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
-     && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
+  if [ -z "$LOGIN" ] && [ -n "$_gate_schema" ] \
+     && [ "$_gate_schema" -ge 6 ]; then
     local _req
     _req="$(registry_login_required_for)" || return 78
     if [ -z "$_req" ] || _registry_word_in_list "$OWNER" "$_req"; then
       echo "registry: $JOB_NAME REFUSING — no LOGIN: nothing states which model account pays" >&2
-      echo "registry: for this job's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2
+      echo "registry: for this job's calls. The estate is schema $_gate_schema, where the field is required" >&2
       echo "registry: for ${_req:-every principal}${_req:+ (LOGIN_REQUIRED_FOR)}." >&2
       echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
       return 78
@@ -3973,6 +3981,14 @@ registry_service_load() {
   # registry_job_load: a reader that does not understand the estate's schema
   # must not start interpreting service rows either.
   registry_schema_check || return 78
+  # THE GATE'S ANSWER IS COPIED OUT OF REACH BEFORE THE ROW IS READ, the same
+  # shape registry_load uses. registry_schema_check publishes into the
+  # _REGISTRY_SCHEMA_SEEN global, and the `source` below runs where that global
+  # is writable - so a row carrying _REGISTRY_SCHEMA_SEEN="5" decided for itself
+  # whether the schema-6 billing gate applied to it. Measured: a service row with no
+  # LOGIN on a schema-6 estate refuses rc 78, and the same row plus that one
+  # line loaded rc 0. The copy below is read at every reference in this loader.
+  local _gate_schema="${_REGISTRY_SCHEMA_SEEN:-}"
   local conf="${1:-}"
   if [ ! -f "$conf" ]; then echo "registry: no such service conf '$conf'" >&2; return 1; fi
   SERVICE_NAME="$(basename "$conf" .conf)"
@@ -4013,13 +4029,13 @@ registry_service_load() {
   # register has no identity model either, so OWNER is the only human a row
   # can name, and comparing against it is a WEAKER measurement than the
   # session gate's account-first resolution, written out rather than reused.
-  if [ -z "$LOGIN" ] && [ -n "${_REGISTRY_SCHEMA_SEEN:-}" ] \
-     && [ "$_REGISTRY_SCHEMA_SEEN" -ge 6 ]; then
+  if [ -z "$LOGIN" ] && [ -n "$_gate_schema" ] \
+     && [ "$_gate_schema" -ge 6 ]; then
     local _req
     _req="$(registry_login_required_for)" || return 78
     if [ -z "$_req" ] || _registry_word_in_list "$OWNER" "$_req"; then
       echo "registry: $SERVICE_NAME REFUSING — no LOGIN: nothing states which model account pays" >&2
-      echo "registry: for this service's calls. The estate is schema $_REGISTRY_SCHEMA_SEEN, where the field is required" >&2
+      echo "registry: for this service's calls. The estate is schema $_gate_schema, where the field is required" >&2
       echo "registry: for ${_req:-every principal}${_req:+ (LOGIN_REQUIRED_FOR)}." >&2
       echo "registry: register a login (steward registry login add) and set LOGIN on this row." >&2
       return 78

@@ -866,6 +866,23 @@ rc="$(laddasvcrc "$FX/services.d/withlogin-svc.conf")"
 [ "$rc" = "0" ] && ok "schema 6: a service row with LOGIN loads" \
   || bad "schema 6: a service row with LOGIN loads" "rc=$rc"
 
+# THE SAME LEVER THE SESSION LOADER ALREADY REFUSES, on the two loaders that
+# were left out of it. registry_schema_check publishes _REGISTRY_SCHEMA_SEEN as
+# a global and both loaders sourced the row where that global is writable, so a
+# job or service conf carrying the published name demoted the estate under
+# itself: measured rc 0 where the same row without the line refuses rc 78. The
+# gate answer is copied into a loader-private local before the source now.
+job leverschema-job 'KIND="command"' 'REPO_PATH="/x"' 'OWNER="alice"' 'DOMAIN="acme"' \
+  'TIMEOUT_MIN="5"' 'SCHEDULE_MINUTE="0"' 'COMMAND="true"' '_REGISTRY_SCHEMA_SEEN="5"'
+rc="$(laddajobrc "$FX/jobs.d/leverschema-job.conf")"
+[ "$rc" = "78" ] && ok "a job row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" \
+  || bad "a job row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" "rc=$rc"
+
+svc leverschema-svc 'OWNER="alice"' 'SERVICE_SCRIPT="run.sh"' '_REGISTRY_SCHEMA_SEEN="5"'
+rc="$(laddasvcrc "$FX/services.d/leverschema-svc.conf")"
+[ "$rc" = "78" ] && ok "a service row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" \
+  || bad "a service row setting _REGISTRY_SCHEMA_SEEN cannot demote the estate's schema" "rc=$rc"
+
 full_estate 5
 rc="$(laddajobrc "$FX/jobs.d/nologin-job.conf")"
 [ "$rc" = "0" ] && ok "schema 5: a job row without LOGIN still loads unchanged" \
