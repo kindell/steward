@@ -4918,6 +4918,60 @@ registry_mandate_active() {
   return 0
 }
 
+# registry_mandate_check - the register-wide MEASUREMENT: does the mandate
+# register hang together with the registers it points into? Its own thing, on
+# purpose, and not a branch in the adapter's turn loop (the other estate's hub,
+# 2026-09-09): a check that runs only when work runs, and only for the row on
+# turn, cannot answer "is my register coherent?" without first starting work -
+# and a broken row is found the moment it is needed. This one can be run over a
+# live estate at any time: before a yes, after a revocation, from the doctor.
+#
+# WHAT IT MEASURES, per row, in the order a person would ask:
+#   1. the row loads (the strict parser's own refusals)
+#   2. every LOGINS slug exists in logins.d
+#   3. LEGAL_OWNER_APPROVED equals each of those logins' own LEGAL_OWNER - the
+#      payer named on the mandate is the payer of the seat, not a different one
+#   4. THE SIGNER IS THE SEAT'S OWN PRINCIPAL. ACCEPT_SOURCE `unix-account:<a>`
+#      must name an account whose PRINCIPAL is the mandate's PRINCIPAL;
+#      `desk-oidc:<p>` must name the principal itself. Consent is not
+#      machinery: no agent may write a mandate for another human, not even on a
+#      relay that says she said yes (step-3 criterion 6). A row that fails this
+#      is not a malformed row - it is a FALSE CONSENT, and it is named as such.
+#   5. the register directory's own state, once, so an EMPTY register that is
+#      a symlink or world-writable refuses like one with a bad row would.
+# Every finding is a line on stdout (`<id> <what>`); rc 0 clean · 1 findings ·
+# 78 the register itself refuses. Rows are subshelled so ACCOUNT_*/LOGIN_*
+# globals never leak into the caller.
+registry_mandate_check() {
+  local dir; dir="$(registry_mandate_dir)" || return 78
+  _registry_mandate_dir_state "$dir" || return 78
+  [ -d "$dir" ] || { echo "registry: the mandate register does not exist: $dir" >&2; return 78; }
+  local id found=0 rc
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if ! registry_mandate_load "$id" >/dev/null 2>&1; then
+      rc=$?; echo "$id does-not-load (rc $rc)"; found=1; continue
+    fi
+    local principal="$MANDATE_PRINCIPAL" logins="$MANDATE_LOGINS" payer="$MANDATE_LEGAL_OWNER_APPROVED" src="$MANDATE_ACCEPT_SOURCE" l
+    for l in $logins; do
+      # SUBSHELLED: registry_login_load sets LOGIN_* in the calling shell.
+      local lo; lo="$( registry_login_load "$l" >/dev/null 2>&1 && printf '%s' "$LOGIN_LEGAL_OWNER" )"
+      if [ -z "$lo" ]; then echo "$id login-unknown $l"; found=1; continue; fi
+      if [ "$lo" != "$payer" ]; then echo "$id payer-mismatch $l: LEGAL_OWNER_APPROVED='$payer' but the login's LEGAL_OWNER is '$lo'"; found=1; fi
+    done
+    local ch="${src%%:*}" who="${src#*:}" signer=""
+    case "$ch" in
+      unix-account) signer="$( registry_account_load "$who" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
+                    [ -n "$signer" ] || { echo "$id signer-unknown $src (no such account)"; found=1; continue; } ;;
+      desk-oidc)    signer="$who" ;;
+    esac
+    if [ "$signer" != "$principal" ]; then
+      echo "$id FALSE-CONSENT: signed from $src (principal '$signer') but the mandate is $principal's - only the seat's own principal may consent"; found=1
+    fi
+  done < <(registry_mandate_list 2>/dev/null)
+  return $found
+}
+
 # registry_mandate_write <id> <content> <validate_fn> - the same thin wrapper the
 # other registers have; the strict loader is the readback, so "written" means
 # what every reader will see, refusals included.
