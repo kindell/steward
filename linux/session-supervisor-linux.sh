@@ -1909,7 +1909,15 @@ if [ -n "$_clients" ]; then
     # human. A `date` that answered nothing lands in the same place - an empty
     # $_now is 0 in arithmetic, every client looks aeons ahead, and the veto
     # holds. Every unmeasurable turn on this path falls toward the human.
-    _idle=$(( _now - _cact ))
+    # 10# ON EVERY EPOCH, BECAUSE THE ALTERNATIVE IS A FAIL-OPEN. _is_epoch
+    # accepts any run of digits, and bash reads a leading-zero run as OCTAL:
+    # 0888, 08 and 09 are invalid octal and an arithmetic EXPANSION error is
+    # FATAL to this whole compound - the debris print below, the _keep deferral
+    # and the empty-rows guard are all skipped, and execution resumes at the
+    # kill. A value we merely failed to READ would then outrank a human we
+    # measured. _is_epoch already guarantees a non-empty digit run, so 10#
+    # cannot itself error, and nothing changes for a %s tmux ever renders.
+    _idle=$(( _now - 10#$_cact ))
     if [ "$_idle" -lt "$HUMAN_GRACE_SEC" ]; then
       _why="was active ${_idle}s ago (idle ${_idle}s of ${HUMAN_GRACE_SEC}s)"
       [ -n "$_orphan" ] && _why="$_why (it is an orphan of systemd --user, but activity outranks ancestry)"
@@ -1919,9 +1927,9 @@ if [ -n "$_clients" ]; then
     _why="it has been silent for ${_idle}s, past the ${HUMAN_GRACE_SEC}s grace"
     if _is_epoch "$_death"; then
       if [ "$_cact" -gt "$_death" ]; then
-        _why="$_why (its last activity was $(( _cact - _death ))s after this session was first suspected dead - an attach, then nothing)"
+        _why="$_why (its last activity was $(( 10#$_cact - 10#$_death ))s after this session was first suspected dead - an attach, then nothing)"
       else
-        _why="$_why (its last activity was $(( _death - _cact ))s before this session was first suspected dead)"
+        _why="$_why (its last activity was $(( 10#$_death - 10#$_cact ))s before this session was first suspected dead)"
       fi
     fi
     if [ -n "$_orphan" ]; then
