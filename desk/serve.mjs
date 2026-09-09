@@ -455,6 +455,18 @@ const LOGIN_RE = /^[A-Za-z0-9._%+@-]{1,254}$/;
 // charset, not merely a superset that happens to be safe.
 const SLUG_RE = /^[a-z0-9-]+$/;
 
+// escapeForLog - a provider's own text, made safe to put in a journal line. A
+// journal record ENDS AT A NEWLINE, so text carrying one writes a second line
+// into the operator's log in this desk's voice - chosen by whoever controls
+// the `sub` of an id_token, read by whoever is looking for why a login was
+// refused. Escaped rather than dropped, because the line exists so the
+// operator can write the row it names; and only the bytes that are not
+// printable ASCII, so an ordinary identity comes through untouched.
+function escapeForLog(s) {
+  return String(s).replace(/[^\x20-\x7e]/g,
+    (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
 // logBridgeOutage - the ONE line an outage gets. Never the value's own text:
 // only its length, because that value is attacker-reachable and a log is not
 // the place to reflect it back. What an operator needs is what failed and how
@@ -755,7 +767,7 @@ async function authCallback(url, cookies, res) {
   const { slug, outage } = principalForIdentityCached('oidc', identity.slice('oidc:'.length));
   if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
   if (!slug) {
-    console.error('desk: no principal binds ' + identity.slice('oidc:'.length));
+    console.error('desk: no principal binds ' + escapeForLog(identity.slice('oidc:'.length)));
     return refuse(); // invitation binding attaches here (services plan)
   }
   // THE COOKIE CARRIES THE IDENTITY, NOT THE SLUG THIS LOGIN RESOLVED TO. The

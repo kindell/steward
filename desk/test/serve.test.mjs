@@ -1415,6 +1415,40 @@ describe('the front listener', () => {
     assert.ok(!/no principal binds/.test(newErr2), 'a bound identity must log no such line: ' + JSON.stringify(newErr2));
   });
 
+  // THE sub IS THE PROVIDER'S TEXT AND THE LINE ABOVE IS A JOURNAL LINE. A
+  // record ends at a newline, so a sub carrying one writes a SECOND line into
+  // the operator's log - text the provider chose, in this desk's voice, read
+  // by whoever is looking for why a login was refused. The identity still has
+  // to be readable enough to write the row from, so the bytes are escaped
+  // rather than dropped, and an ordinary sub is untouched (the assertion in
+  // the test above pins that line byte for byte).
+  it('a sub carrying a newline or a control character forges no second journal line', async () => {
+    const errBefore = peerHandle.getErr().length;
+    const go = await front('GET', '/desk/auth/login?provider=stub', visitor(30));
+    assert.equal(go.status, 303);
+    const state = cookieOf(go).find((c) => c.startsWith('__Host-desk-oauth='));
+    assert.ok(state);
+    const back = await fetch(go.headers.location, { redirect: 'manual' });
+    const cb = new URL(back.headers.get('location'));
+    stub.tokenResponse = {
+      id_token: stub.mintIdToken({ sub: 'nobody\ndesk: a line the provider wrote\u0007' }),
+      token_type: 'Bearer'
+    };
+    let done;
+    try {
+      done = await front('GET', cb.pathname + cb.search, from(30, { cookie: state }));
+    } finally {
+      stub.tokenResponse = null;
+    }
+    assert.equal(done.status, 403, 'an identity no row binds is still the same silent refusal');
+    const newErr = peerHandle.getErr().slice(errBefore);
+    const lines = newErr.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1, 'exactly one stderr line for the unbound identity: ' + JSON.stringify(newErr));
+    assert.ok(lines[0].startsWith('desk: no principal binds '), lines[0]);
+    assert.ok(!/[^\x20-\x7e]/.test(lines[0]),
+      'no byte outside printable ASCII reaches the journal: ' + JSON.stringify(lines[0]));
+  });
+
   // A method this desk would refuse anyway must not cost a rate-limit hit:
   // otherwise a HEAD sweep of the login path locks a visitor out of logging
   // in. HEAD is in the loop because that is exactly what used to happen - it
