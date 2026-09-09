@@ -1746,12 +1746,12 @@ registry_row_write() {
   # would not load and left the operator with "wrote it but it does not load
   # back" and nothing under it. Measured: a group-writable register on a
   # Debian host produced exactly that refusal, and finding the cause took a
-  # trace through two files. The refusal below stays — a row that does not read
-  # back is still deleted and still rc 70 — but it now carries the loader's own
+  # trace through two files. The refusal below stays - a row that does not read
+  # back is still deleted and still rc 70 - but it now carries the loader's own
   # words beneath it.
   #
   # COMMAND SUBSTITUTION IS STILL A SUBSHELL, so the reason the call was
-  # wrapped in `( … )` in the first place is unchanged: a loader that refuses
+  # wrapped in `( ... )` in the first place is unchanged: a loader that refuses
   # halfway through must not leak its half-set variables into this function's
   # caller.
   local staged_id; staged_id="$(_registry_stat_id "$final")"
@@ -4493,8 +4493,8 @@ _registry_login_dir_state() {
       echo "registry: cannot read the mode of the login register: $dir" >&2; return 78; }
     if _registry_group_or_other_writable "$dmode"; then
       # THE REMEDY TRAVELS WITH THE REFUSAL. This message is very often read
-      # two layers below where it is printed — the row writer's canonical
-      # readback goes through this loader — so the operator meets it already
+      # two layers below where it is printed - the row writer's canonical
+      # readback goes through this loader - so the operator meets it already
       # confused about which of several directories is meant. Naming the
       # directory and the exact command turns a diagnosis into a repair.
       echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w $dir" >&2

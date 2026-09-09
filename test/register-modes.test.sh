@@ -49,7 +49,7 @@ build_estate() { # <dir>
   return 0
 }
 
-# ── 1. THE SCAFFOLD PINS EVERY REGISTER'S MODE ─────────────────────────────
+# -- 1. THE SCAFFOLD PINS EVERY REGISTER'S MODE -----------------------------
 # The two registers whose loaders refuse a loose directory are 0700; the rest
 # are 0755. Both are ASSERTED under a umask that would otherwise produce
 # something else, in both directions.
@@ -64,7 +64,7 @@ for u in 002 077; do
   done
 done
 
-# ── 2. ONBOARDING'S FIRST STEP WORKS UNDER 002 ─────────────────────────────
+# -- 2. ONBOARDING'S FIRST STEP WORKS UNDER 002 --------------------------------
 # The whole bug in one case: issue an invitation on an estate built under the
 # Debian default and read the register back afterwards.
 echo "== invite issue succeeds under umask 002 =="
@@ -78,7 +78,7 @@ is "the invite register is still 700" "$(mode_of "$FX/issue/invites.d")" "700"
 n=0; for f in "$FX/issue"/invites.d/*.conf; do [ -e "$f" ] && n=$((n+1)); done
 is "exactly one row survived the write" "$n" "1"
 
-# ── 3. A LOOSE REGISTER IS STILL REFUSED, AND THE REFUSAL NAMES THE REMEDY ──
+# -- 3. A LOOSE REGISTER IS STILL REFUSED, AND THE REFUSAL NAMES THE REMEDY ----
 # Pinning the mode does not retire the guard: a directory somebody widens by
 # hand must still refuse. What changes is that the refusal now says which
 # directory and what to run - the operator used to be told only that a readback
@@ -97,7 +97,7 @@ has "the login refusal names the mode"    "$err" "group- or other-writable (mode
 has "and names the directory"             "$err" "$FX/loose/logins.d"
 has "and names the remedy"                "$err" "chmod g-w,o-w $FX/loose/logins.d"
 
-# ── 4. THE WRITER'S READBACK REFUSAL CARRIES THE LOADER'S OWN SENTENCE ──────
+# -- 4. THE WRITER'S READBACK REFUSAL CARRIES THE LOADER'S OWN SENTENCE --------
 # The readback used to run with `>/dev/null 2>&1`, so the one message that said
 # WHY the row would not load was thrown away and the operator got "wrote it but
 # it does not load back" with nothing under it. That is why this cost a trace

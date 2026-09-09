@@ -62,14 +62,14 @@ estate_scaffold() {
   #
   # invites.d IS THE THIRD, and it is the one that stopped onboarding dead. An
   # invitation is the ONLY door into this estate, and registry_row_write refuses
-  # a register that does not exist — so `steward invite issue` on a freshly
+  # a register that does not exist - so `steward invite issue` on a freshly
   # scaffolded estate answered "the invite register is not readable", rc 78, and
   # the first step of onboarding could not be taken at all.
   #
   # EVERY MODE HERE IS PINNED, NEVER LEFT TO THE AMBIENT umask. Measured on a
   # Debian/Ubuntu host, whose default umask is 002 (user-private groups): every
   # register came out 0775, and the invite and login loaders REFUSE a group- or
-  # other-writable register on purpose — a row at mode 600 inside a directory
+  # other-writable register on purpose - a row at mode 600 inside a directory
   # anybody can write to is not protected by its mode, because anybody can
   # rename it away and drop their own file under the same name. So `invite
   # issue` wrote its row, its own canonical readback refused the register it had
@@ -80,7 +80,7 @@ estate_scaffold() {
   # `mkdir -m`, NOT `mkdir` FOLLOWED BY `chmod`, and for two reasons. There is
   # no window in which the directory exists at the looser mode (browser-stack.sh
   # documents the same choice for the same reason), and `-m` is applied ONLY
-  # when this call is the one creating the directory — an estate directory
+  # when this call is the one creating the directory - an estate directory
   # somebody already tightened or loosened by hand is left exactly as it is,
   # the rule bin/steward's config init already follows. A register that IS
   # loose is not silently repaired here; it is refused by the loader, which now
@@ -89,7 +89,7 @@ estate_scaffold() {
   # THE ESTATE ROOT IS CREATED FIRST, on its own. `mkdir -m MODE -p a/b` applies
   # MODE to `b` only; every parent it has to create along the way gets the
   # ambient umask, so a one-shot call would have pinned the registers and left
-  # the directory holding them group-writable — and renaming a register is as
+  # the directory holding them group-writable - and renaming a register is as
   # good as writing to it.
   mkdir -m 0755 -p "$dir" 2>/dev/null \
     || { echo "scaffold: could not create $dir" >&2; return 70; }
@@ -97,8 +97,8 @@ estate_scaffold() {
   for _sc_reg in estate sessions.d entities.d projects.d mcp.d jobs.d \
                  services.d browsers.d hosts.d accounts.d logins.d invites.d; do
     # 0700 FOR THE TWO REGISTERS WHOSE LOADERS CHECK. logins.d and invites.d
-    # carry security artifacts — which account pays, and the digest of a
-    # one-time link token — and their readers refuse a loose directory. Pinning
+    # carry security artifacts - which account pays, and the digest of a
+    # one-time link token - and their readers refuse a loose directory. Pinning
     # them at 0700 means the check they make is a check the product itself can
     # always pass.
     case "$_sc_reg" in
