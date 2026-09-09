@@ -143,6 +143,13 @@ echo "helper: password locked" >&2
 echo "helper: lingering disabled, no session left (measured)" >&2
 case "\$all" in
   *--archive-home*)
+    # FX_REFUSE_ARCHIVE models the helper's BELT: the receipts above already
+    # went out, the account is locked, and only the move refuses. It is the
+    # one shape of failure that lands AFTER every register row is gone.
+    if [ -n "\${FX_REFUSE_ARCHIVE:-}" ]; then
+      echo "helper: REFUSING - the home and /home/.offboarded are on different filesystems" >&2
+      exit 70
+    fi
     rm -rf "$FX/home/\$u"
     echo "helper: archived /home/.offboarded/\$u-2026-09-09" >&2
     echo "helper: NOTHING BELONGING TO THE MEMBER WAS DELETED" >&2 ;;
@@ -170,7 +177,7 @@ chmod 755 "$FX/bin/mktemp"
 : > "$FX/calls"
 : > "$FX/argv"
 
-FX_SUDO_MODE=""; FX_FAIL_USER=""; FX_SNAPSHOT_RC=""
+FX_SUDO_MODE=""; FX_FAIL_USER=""; FX_SNAPSHOT_RC=""; FX_REFUSE_ARCHIVE=""
 run() {
   ( export PATH="$FX/bin:$PATH"
     export HOME="$HUBHOME"
@@ -183,7 +190,7 @@ run() {
     # account that lives on another machine, and without this the fixture's
     # own host slug would never match.
     export STEWARD_SELF_HOST="host-a"
-    export FX_SUDO_MODE FX_FAIL_USER FX_SNAPSHOT_RC
+    export FX_SUDO_MODE FX_FAIL_USER FX_SNAPSHOT_RC FX_REFUSE_ARCHIVE
     bash "$S" "$@" )
 }
 
@@ -212,6 +219,9 @@ printf 'PRINCIPAL="alice"\nHOST="host-b"\nUSERNAME="alice"\n' > "$ROOT/accounts.
 out="$(run offboard alice 2>&1)"; rc=$?
 is  "an account on another host refuses, rc 65" "$rc" "65"
 has "and names the host it lives on" "$out" "host-b"
+# BOTH MACHINES, NOT ONE. "run offboard on host-b" is only actionable if the
+# reader can tell it apart from the machine they are already standing on.
+has "and the host this run is standing on" "$out" "this host is host-a"
 is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
 have "the session row is untouched" "$ROOT/sessions.d/$SID.conf"
 have "the account row is untouched" "$ROOT/accounts.d/alice-host-a.conf"
@@ -249,6 +259,12 @@ has "the account was locked" "$calls" "steward-account-helper lock alice"
 has "and the home archived" "$calls" "steward-account-helper lock alice --archive-home"
 has "the desk was snapshotted" "$calls" "snapshot"
 if [ -d "$FX/home/alice" ]; then bad "and the home is out of the way" "still there"; else ok "and the home is out of the way"; fi
+# THE ARGV, NOT THE FLATTENED LINE. The calls log joins the words with spaces,
+# so it cannot tell one argument carrying a space from two arguments; this
+# record keeps the boundaries, and a username that ever reached the helper as
+# part of a string instead of as its own word would show up here first.
+has "and the helper was called with separate words, not one string" \
+    "$(cat "$FX/argv")" "sudo|-n|/usr/local/sbin/steward-account-helper|lock|alice|--archive-home"
 
 echo "== the receipt lists everything removed =="
 R="$HUBHOME/.local/state/fixture-state/offboards/alice.receipt.json"
@@ -263,6 +279,15 @@ has "it names the account" "$(cat "$R")" "alice-host-a"
 has "it names the principal" "$(cat "$R")" "principals.d/alice.conf"
 has "it says the home was archived, not deleted" "$(cat "$R")" "archived, not deleted"
 has "and names where the helper put it" "$(cat "$R")" "/home/.offboarded/alice-"
+
+echo "== and removed[] holds ONLY what was removed =="
+# A FIELD CALLED removed IS A PROMISE. A line saying the invitation was KEPT,
+# or that a home was left in place, is the opposite of a removal, and a reader
+# counting removed[] to see what this run did was being told the wrong number.
+is  "the receipt is at schema 2" "$(jq -r .schemaVersion "$R")" "2"
+no  "nothing in removed[] says it was kept" "$(jq -r '.removed|join(" ")' "$R")" "KEPT"
+has "the invitation is in kept[] instead" "$(jq -r '.kept|join(" ")' "$R")" "KEPT as history"
+is  "and a clean run warns about nothing" "$(jq -r '.warnings|length' "$R")" "0"
 
 echo "== a second run is a no-op =="
 # AND IT DOES NOT REWRITE THE RECEIPT. The second run removes nothing, so a
@@ -286,7 +311,17 @@ calls="$(cat "$FX/calls")"
 has "the account is still locked" "$calls" "steward-account-helper lock bo"
 no  "but the home is not archived" "$calls" "--archive-home"
 if [ -d "$FX/home/bo" ]; then ok "and the home is still there"; else bad "and the home is still there" "gone"; fi
-has "and the receipt says the home was kept" "$(cat "$HUBHOME/.local/state/fixture-state/offboards/bo.receipt.json")" "kept in place"
+BOR="$HUBHOME/.local/state/fixture-state/offboards/bo.receipt.json"
+has "and the receipt says the home was kept" "$(jq -r '.kept|join(" ")' "$BOR")" "kept in place"
+# THE KEY IS STILL IN THAT HOME. Both keys live in the person's home and were
+# meant to travel with it into the archive; --keep-home is the one path where
+# the home does not travel, so the hub's delivery key stays installed in a
+# directory the register no longer describes. The account is locked, so nothing
+# can use it - but the receipt is the record, and it has to say so.
+has "and that the delivery key is still installed there" \
+    "$(jq -r '.kept|join(" ")' "$BOR")" "delivery key is still installed"
+has "and the operator is told on stderr, not only in the file" "$out" "delivery key is still installed"
+no  "the kept home is not counted as a removal" "$(jq -r '.removed|join(" ")' "$BOR")" "kept in place"
 
 echo "== --json is exactly one JSON value on stdout =="
 newperson cyd "Cyd"
@@ -304,10 +339,17 @@ PERMISSION_MODE="bypassPermissions"
 EOF
 out="$(run offboard cyd --json 2>/dev/null)"; rc=$?
 is  "a --json offboarding succeeds" "$rc" "0"
-is  "and stdout is one line, not a prose list and a value" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1"
-if printf '%s' "$out" | jq -e .ok >/dev/null 2>&1; then ok "and it parses, ok true"; else bad "and it parses, ok true" "$out"; fi
+# COUNTED AS VALUES, NOT AS LINES. `jq -e .ok` is happy with a STREAM: two
+# objects printed back to back are one line and every one of them has .ok, so
+# the line count and a bare .ok together would still pass a verb that printed
+# its answer twice. Slurping counts what a caller would actually have to parse.
+is  "and stdout is exactly one JSON value, not a stream" \
+    "$(printf '%s' "$out" | jq -s 'length' 2>/dev/null)" "1"
+if printf '%s' "$out" | jq -s -e '.[0].ok' >/dev/null 2>&1; then ok "and it parses, ok true"; else bad "and it parses, ok true" "$out"; fi
 is  "and it names the verb" "$(printf '%s' "$out" | jq -r .kind 2>/dev/null)" "offboard"
 has "and carries the list of what went" "$(printf '%s' "$out" | jq -r '.removed|join(" ")' 2>/dev/null)" "$CSID"
+is  "and the same three lists the receipt carries" \
+    "$(printf '%s' "$out" | jq -r '[has("removed"),has("kept"),has("warnings")]|join(",")' 2>/dev/null)" "true,true,true"
 has "and names the receipt" "$(printf '%s' "$out" | jq -r .receipt 2>/dev/null)" "cyd.receipt.json"
 no  "and no prose leaked onto stdout" "$out" "offboard: "
 err="$(run offboard cyd --json 2>&1 >/dev/null)"
@@ -349,6 +391,14 @@ is  "the run fails, rc 70" "$rc" "70"
 is  "the receipt says failed" "$(jq -r .state "$ER")" "failed"
 has "and names the account it did lock" "$(jq -r '.removed|join(" ")' "$ER")" "elm locked"
 no  "and never claims the one it did not" "$(jq -r '.removed|join(" ")' "$ER")" "elmtwo locked"
+# WHERE THE RUN STOPPED IS PART OF THE RECORD. A receipt carrying only the
+# steps that worked leaves the reader with "state: failed" and no way to tell
+# what said no - and it is a warning, not a removal.
+is  "the refusal is one entry in warnings[]" \
+    "$(jq -r '[.warnings[]|select(startswith("stopped here:"))]|length' "$ER")" "1"
+has "and it says where the run stopped" "$(jq -r '.warnings|join(" ")' "$ER")" "stopped here:"
+has "quoting the helper's own words" "$(jq -r '.warnings|join(" ")' "$ER")" "helper: REFUSING"
+no  "and the refusal is not counted as a removal" "$(jq -r '.removed|join(" ")' "$ER")" "stopped here:"
 have "no row was removed" "$ROOT/accounts.d/elm-host-a.conf"
 have "neither was the second" "$ROOT/accounts.d/elm-second.conf"
 if [ -d "$FX/home/elm" ]; then ok "and no home was archived"; else bad "and no home was archived" "gone"; fi
@@ -387,7 +437,155 @@ has "and names the snapshot as the thing that failed" "$out" "desk snapshot fail
 has "and says what to run by hand" "$out" "steward desk snapshot"
 GR="$HUBHOME/.local/state/fixture-state/offboards/gam.receipt.json"
 is  "the receipt is still done" "$(jq -r .state "$GR")" "done"
-has "and carries the snapshot note" "$(jq -r '.removed|join(" ")' "$GR")" "desk snapshot failed"
+has "and carries the snapshot note as a warning" "$(jq -r '.warnings|join(" ")' "$GR")" "desk snapshot failed"
+no  "which is not a thing that was removed" "$(jq -r '.removed|join(" ")' "$GR")" "desk snapshot failed"
+
+echo "== the person a host row names is refused, not offboarded =="
+# A HOST ROW NAMES ITS OWNER AND ITS OPERATOR, and every loader in the fleet
+# refuses a host whose OWNER is not a form it recognises. Offboarding the
+# person a host row names leaves that row naming a principal that no
+# longer exists - the machine's own record of who answers for it, broken by a
+# verb that was only asked to clean up after a rehearsal. The register has to
+# be changed first, and by a hand that knows who takes over.
+newperson ivo "Ivo"
+printf 'OWNER="operator"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="ivo"\n' > "$ROOT/hosts.d/host-c.conf"
+: > "$FX/calls"
+out="$(run offboard ivo 2>&1)"; rc=$?
+is  "the machine's operator refuses, rc 65" "$rc" "65"
+has "and names the host row that names them" "$out" "hosts.d/host-c.conf"
+has "and which field does it" "$out" "OPERATOR"
+is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+# BOTH FIELDS, not only the one the estate happens to use. OWNER and OPERATOR
+# are deliberately separate on a host row - a machine can be owned by a company
+# and operated by a person - and a scan that read one of them would offboard
+# the other in silence.
+printf 'OWNER="ivo"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="operator"\n' > "$ROOT/hosts.d/host-c.conf"
+out="$(run offboard ivo 2>&1)"; rc=$?
+is  "the machine's owner refuses too, rc 65" "$rc" "65"
+has "and says it is the OWNER field" "$out" "OWNER"
+have "the principal row is untouched" "$ROOT/principals.d/ivo.conf"
+have "the account row is untouched" "$ROOT/accounts.d/ivo-host-a.conf"
+have "and the host row still names them" "$ROOT/hosts.d/host-c.conf"
+havenot "no receipt was written" "$HUBHOME/.local/state/fixture-state/offboards/ivo.receipt.json"
+rm -f "$ROOT/hosts.d/host-c.conf" "$ROOT/principals.d/ivo.conf" "$ROOT/accounts.d/ivo-host-a.conf"
+
+echo "== a row that cannot be matched or read is left in place, and SAID =="
+# THE RECEIPT IS PRESENTED AS THE RECORD OF A FINISHED CLEANUP. A live session
+# row, an unreadable login row or an account row the loader will not vouch for
+# is exactly what this verb exists to prevent, and passing over one in silence
+# is the one way the receipt can be true line by line and wrong as a whole.
+newperson ivy "Ivy"
+IVYSID="s-00000000000000ii"
+# An OLD-SHAPE session row: it names the person in OWNER and carries no
+# ACCOUNT at all, so no scan by account slug will ever find it.
+cat > "$ROOT/sessions.d/$IVYSID.conf" <<EOF
+ID="$IVYSID"
+SLUG="acme-ivy"
+DOMAIN="acme"
+HOST="host-a"
+REPO_PATH="$FX/home/ivy"
+OWNER="ivy"
+PERMISSION_MODE="bypassPermissions"
+EOF
+# A login row of hers the loader refuses: the required key ACCOUNT is missing.
+printf 'PRINCIPAL="ivy"\nPROVIDER="claude-max"\nCONFIG_DIR="~/.claude-logins/claude-max"\nLEGAL_OWNER="ivy"\n' \
+  > "$ROOT/logins.d/ivy-broken.conf"
+chmod 600 "$ROOT/logins.d/ivy-broken.conf"
+# And an account row of hers the loader refuses: no HOST.
+printf 'PRINCIPAL="ivy"\nUSERNAME="ivytwo"\n' > "$ROOT/accounts.d/ivy-broken.conf"
+# A session row filed under THAT account: its slug is the person's, but no run
+# can act on a row the loader will not vouch for, so this one is stranded the
+# same way the old-shape row above is.
+STRANDED="s-00000000000000ij"
+cat > "$ROOT/sessions.d/$STRANDED.conf" <<EOF
+ID="$STRANDED"
+ACCOUNT="ivy-broken"
+SLUG="acme-ivy-two"
+DOMAIN="acme"
+HOST="host-a"
+REPO_PATH="$FX/home/ivy"
+OWNER="ivy"
+PERMISSION_MODE="bypassPermissions"
+EOF
+out="$(run offboard ivy 2>&1)"; rc=$?
+IR="$HUBHOME/.local/state/fixture-state/offboards/ivy.receipt.json"
+is  "the offboarding still succeeds, rc 0" "$rc" "0"
+has "the old-shape session row is named on stderr" "$out" "$IVYSID"
+has "and the reader is told what to do with it" "$out" "left in place"
+has "the row filed under the broken account is named too" "$out" "$STRANDED"
+has "the login row that will not load is named too" "$out" "logins.d/ivy-broken.conf"
+has "and the account row that will not load" "$out" "accounts.d/ivy-broken.conf"
+kept="$(jq -r '.kept|join(" ")' "$IR")"
+has "the session row is in the receipt's kept list" "$kept" "$IVYSID"
+has "so is the stranded one" "$kept" "$STRANDED"
+has "so is the login row" "$kept" "logins.d/ivy-broken.conf"
+has "so is the account row" "$kept" "accounts.d/ivy-broken.conf"
+no  "and none of them is counted as removed" "$(jq -r '.removed|join(" ")' "$IR")" "ivy-broken"
+have "the session row really is still there" "$ROOT/sessions.d/$IVYSID.conf"
+have "and the stranded one" "$ROOT/sessions.d/$STRANDED.conf"
+have "and the login row" "$ROOT/logins.d/ivy-broken.conf"
+have "and the account row" "$ROOT/accounts.d/ivy-broken.conf"
+havenot "while the principal row went" "$ROOT/principals.d/ivy.conf"
+rm -f "$ROOT/sessions.d/$IVYSID.conf" "$ROOT/sessions.d/$STRANDED.conf" \
+      "$ROOT/logins.d/ivy-broken.conf" "$ROOT/accounts.d/ivy-broken.conf"
+
+echo "== a run that stopped AFTER the rows is not a finished run =="
+# THE SECOND RUN USED TO READ THE RECEIPT'S EXISTENCE AND NOTHING ELSE. A
+# failure late in the order - here the helper's belt refusing to move a home
+# across filesystems - leaves the register empty and the home in place, and the
+# next run found no rows, found a receipt, and reported the person as cleanly
+# gone. A cleanup that says "done" over an unarchived home is worse than one
+# that refuses: it is the answer an operator re-runs precisely to be sure.
+newperson hal "Hal"
+: > "$FX/calls"
+FX_REFUSE_ARCHIVE="1"
+out="$(run offboard hal 2>&1)"; rc=$?
+HR="$HUBHOME/.local/state/fixture-state/offboards/hal.receipt.json"
+is  "a home the helper will not move fails the run, rc 70" "$rc" "70"
+is  "the receipt says failed" "$(jq -r .state "$HR")" "failed"
+havenot "and the rows are gone all the same" "$ROOT/principals.d/hal.conf"
+if [ -d "$FX/home/hal" ]; then ok "while the home is still sitting there"; else bad "while the home is still sitting there" "gone"; fi
+# THE HELPER SPEAKS IN MANY LINES - three receipts and then the refusal - and
+# the receipt is built by splitting one accumulated string on newlines. Recorded
+# verbatim, one refusal arrived as FOUR entries, three of them in a field named
+# removed, telling the reader that "helper: password locked" was a thing this
+# run had removed.
+is  "the helper's four lines are one entry, not four" \
+    "$(jq -r '[.warnings[]|select(startswith("stopped here:"))]|length' "$HR")" "1"
+is  "and none of them became a removal" \
+    "$(jq -r '[.removed[]|select(startswith("helper:"))]|length' "$HR")" "0"
+is  "nor a warning of its own" \
+    "$(jq -r '[.warnings[]|select(startswith("helper:"))]|length' "$HR")" "0"
+has "the one entry still carries the helper's words" \
+    "$(jq -r '.warnings|join(" ")' "$HR")" "different filesystems"
+: > "$FX/calls"
+out="$(run offboard hal 2>&1)"; rc=$?
+FX_REFUSE_ARCHIVE=""
+is  "the next run refuses rather than reporting it done, rc 70" "$rc" "70"
+no  "and never says the person is cleanly gone" "$out" "nothing left to remove"
+has "it names the receipt to read" "$out" "hal.receipt.json"
+has "and the state that receipt is in" "$out" "failed"
+has "and repeats where the first run stopped" "$out" "stopped here:"
+is  "and it touched nothing" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+if [ -d "$FX/home/hal" ]; then ok "the home is still where the first run left it"; else bad "the home is still where the first run left it" "gone"; fi
+rm -f "$HR"
+
+echo "== a receipt that cannot be written fails the run =="
+# THE RECEIPT IS THE SECOND-RUN GUARD. Swallowing a write failure leaves the
+# register empty with nothing on disk that says so, and the next run reads that
+# as a person who was never offboarded at all.
+newperson hex "Hex"
+printf 'ESTATE_NAME="acme"\nSTATE_DIR_NAME="fixture-blocked"\nHUB_SESSION="host-a"\nHUB_HOST="host-a"\nHUB_SSH="steward@host-a"\n' \
+  > "$ROOT/estate/steward.conf"
+: > "$HUBHOME/.local/state/fixture-blocked"   # a FILE where the state directory must be
+out="$(run offboard hex 2>&1)"; rc=$?
+is  "a receipt that cannot be written is rc 70" "$rc" "70"
+has "and says which path it could not write" "$out" "receipt could not be written"
+has "and that the rows went anyway" "$out" "fixture-blocked"
+havenot "the principal row is gone all the same" "$ROOT/principals.d/hex.conf"
+rm -f "$HUBHOME/.local/state/fixture-blocked"
+printf 'ESTATE_NAME="acme"\nSTATE_DIR_NAME="fixture-state"\nHUB_SESSION="host-a"\nHUB_HOST="host-a"\nHUB_SSH="steward@host-a"\n' \
+  > "$ROOT/estate/steward.conf"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

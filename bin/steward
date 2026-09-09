@@ -4103,7 +4103,16 @@ cmd_invite() {
 # be visible inside every register loader this verb calls, and a loader
 # sourcing a conf that assigns the same name would overwrite it mid-run.
 
+# THREE LISTS, BECAUSE THEY ANSWER THREE DIFFERENT QUESTIONS. `removed` is the
+# promise the verb makes and the number a reader counts; a line saying the
+# invitation was KEPT, or that a home was left in place, or that a row could not
+# be read, is the OPPOSITE of a removal and belongs in `kept`; and something
+# that went wrong without stopping the run - a snapshot that failed, the step
+# the run stopped at - is a `warning`. They were one field until 2026-09-09,
+# and a caller counting `removed` was being told the wrong number.
 _OFFBOARD_REMOVED=""
+_OFFBOARD_KEPT=""
+_OFFBOARD_WARNINGS=""
 _OFFBOARD_RECEIPT=""
 _OFFBOARD_PRINCIPAL=""
 _OFFBOARD_JSON=""
@@ -4120,61 +4129,109 @@ _offboard_say() {
   else printf 'offboard: %s\n' "$1"; fi
 }
 
-# _offboard_note <text> - one thing that was done, printed and recorded.
+# _offboard_flat <text> - one line out of however many were handed in. EVERY
+# LIST IN THE RECEIPT IS A NEWLINE-SEPARATED ACCUMULATOR, split back apart when
+# the file is written, so a recorded value carrying a newline of its own does
+# not become one entry - it becomes as many entries as it has lines. The helper
+# is the case that matters: it answers in four or five `helper:` lines, and a
+# refusal recorded verbatim used to arrive as four separate entries, three of
+# them claiming to be things this run had removed.
+_offboard_flat() {
+  local _t="${1//$'\n'/ | }"
+  printf '%s' "$_t"
+}
+
+# _offboard_note <text> - one thing that was REMOVED, printed and recorded.
 _offboard_note() {
   _offboard_say "$1"
-  _OFFBOARD_REMOVED="$_OFFBOARD_REMOVED$1
+  _OFFBOARD_REMOVED="$_OFFBOARD_REMOVED$(_offboard_flat "$1")
 "
 }
 
-# _offboard_warn <text> - something that did not stop the offboarding but is
-# the operator's business anyway. ALWAYS stderr, json or not: it is not part of
-# the answer, and it must not be swallowed either.
+# _offboard_kept <text> [loud] - something deliberately NOT removed, or a row
+# this run could not act on and left where it stood. With a second argument it
+# goes to stderr instead of stdout: a row left behind is the operator's next
+# piece of work, and it must not scroll past inside a list of successes.
+_offboard_kept() {
+  if [ -n "${2:-}" ]; then printf 'offboard: %s\n' "$1" >&2
+  else _offboard_say "$1"; fi
+  _OFFBOARD_KEPT="$_OFFBOARD_KEPT$(_offboard_flat "$1")
+"
+}
+
+# _offboard_warn <text> - something that went wrong without stopping the
+# offboarding. ALWAYS stderr, json or not: it is not part of the answer, and it
+# must not be swallowed either.
 _offboard_warn() {
   printf 'offboard: %s\n' "$1" >&2
-  _OFFBOARD_REMOVED="$_OFFBOARD_REMOVED$1
+  _OFFBOARD_WARNINGS="$_OFFBOARD_WARNINGS$(_offboard_flat "$1")
 "
+}
+
+# _offboard_lists - the three lists as one json object. The receipt file and
+# the --json value carry the SAME shape, and this is the one place that builds
+# it: two copies of the split would be two answers to "what did this run do".
+_offboard_lists() {
+  printf '%s' "$_OFFBOARD_REMOVED" | jq -R -s -c \
+    --arg kept "$_OFFBOARD_KEPT" --arg warn "$_OFFBOARD_WARNINGS" \
+    'def lines: split("\n")|map(select(length>0));
+     {removed:lines,kept:($kept|lines),warnings:($warn|lines)}'
 }
 
 # _offboard_receipt <state> - the receipt file. 0700 directory, 0600 file.
 # Written when the run ends, and when it stops early: a run that locked one
 # account and then met a refusal on the next must leave behind what it DID do,
 # or the operator has to guess how far it got.
+#
+# RC 1 WHEN IT COULD NOT BE WRITTEN, AND THE CALLER MUST NOT SWALLOW THAT. This
+# file is the second-run guard: the next run reads it to decide whether the
+# person was already offboarded and how far the last attempt got. A run that
+# emptied the register and left nothing on disk saying so is a run the next one
+# reads as a person who was never offboarded at all.
 _offboard_receipt() { # <state>
   [ -n "$_OFFBOARD_RECEIPT" ] || return 0
   local dir; dir="$(dirname "$_OFFBOARD_RECEIPT")"
-  mkdir -p "$dir" 2>/dev/null || return 0
+  mkdir -p "$dir" 2>/dev/null || return 1
   chmod 700 "$dir" 2>/dev/null
-  local tmp; tmp="$(mktemp "$dir/.receipt.XXXXXX")" || return 0
-  printf '%s' "$_OFFBOARD_REMOVED" | jq -R -s -c \
+  local tmp; tmp="$(mktemp "$dir/.receipt.XXXXXX")" || return 1
+  _offboard_lists | jq -c \
     --arg p "$_OFFBOARD_PRINCIPAL" --arg st "$1" --argjson at "$(date -u +%s)" \
-    '{schemaVersion:1,principal:$p,state:$st,at:$at,
-      removed:(split("\n")|map(select(length>0)))}' > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    '{schemaVersion:2,principal:$p,state:$st,at:$at} + .' > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp" 2>/dev/null
-  mv "$tmp" "$_OFFBOARD_RECEIPT" 2>/dev/null
+  mv "$tmp" "$_OFFBOARD_RECEIPT" 2>/dev/null || { rm -f "$tmp"; return 1; }
   return 0
 }
 
 # _offboard_json - the one value stdout carries under --json. It names the
-# receipt AND repeats its list: a caller that cannot read the hub's home still
+# receipt AND repeats its lists: a caller that cannot read the hub's home still
 # gets to see what went.
 _offboard_json() {
-  printf '%s' "$_OFFBOARD_REMOVED" | jq -R -s -c \
+  _offboard_lists | jq -c \
     --arg p "$_OFFBOARD_PRINCIPAL" --arg r "$_OFFBOARD_RECEIPT" \
-    '{ok:true,kind:"offboard",principal:$p,receipt:$r,
-      removed:(split("\n")|map(select(length>0)))}'
+    '{ok:true,kind:"offboard",principal:$p,receipt:$r} + .'
+}
+
+# _offboard_receipt_lost - the one line a failed receipt write leaves behind.
+# Plain stderr even under --json: the JSON value has already been printed by
+# then (or is about to be), and stdout carries exactly one value.
+_offboard_receipt_lost() {
+  printf 'steward offboard: receipt could not be written: %s\n' "$_OFFBOARD_RECEIPT" >&2
 }
 
 # _offboard_fail <msg> <rc> - a refusal that writes the receipt before it
 # leaves, in the shape the caller asked for. The refusal goes INTO the receipt
 # too, for _redeem_fail's reason: a receipt carrying only the steps that worked
-# leaves the reader with "state: failed" and no way to tell what said no.
+# leaves the reader with "state: failed" and no way to tell what said no. It is
+# recorded as a WARNING - the place a run stopped is not a thing it removed -
+# and FLATTENED, because a helper's refusal is many lines and the receipt
+# splits on newlines.
 _offboard_fail() {
   local msg="steward offboard: $1"
-  _OFFBOARD_REMOVED="${_OFFBOARD_REMOVED}stopped here: $msg
+  _OFFBOARD_WARNINGS="${_OFFBOARD_WARNINGS}stopped here: $(_offboard_flat "$msg")
 "
   _reg_fail "$_OFFBOARD_JSON" "$msg"
-  _offboard_receipt failed
+  _offboard_receipt failed || _offboard_receipt_lost
   return "${2:-70}"
 }
 
@@ -4191,7 +4248,18 @@ _offboard_helper_fail() {
   return 77
 }
 
-# _offboard_accounts <principal> - the account slugs belonging to the person.
+# EVERY SCANNER ANSWERS IN TAGGED LINES, `<tag> <slug>`, because "the person's
+# rows" is two questions, not one: the rows this verb can act on, and the rows
+# that are just as much the person's but that the loader will not vouch for. A
+# scanner that answered with the first list alone dropped the second in silence,
+# and a row nobody was told about is a row nobody repairs. The slug is always
+# through registry_valid_name, so a tagged line cannot carry a space.
+#
+# _offboard_accounts <principal>
+#   row <slug>        - an account row of the person's that loads
+#   unreadable <slug> - a row that NAMES the person and does not load. Its HOST
+#                       and USERNAME are exactly what the loader refused to
+#                       vouch for, so nothing can be locked or archived from it.
 # SUBSHELLED SOURCE, the same reason registry_account_slug_available gives: a
 # hostile or malformed row must not overwrite this loop's own operands.
 _offboard_accounts() {
@@ -4202,19 +4270,34 @@ _offboard_accounts() {
     [ -e "$f" ] || continue
     slug="$(basename "$f" .conf)"
     registry_valid_name "$slug" || continue
-    p="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )"
-    [ "$p" = "$want" ] && printf '%s\n' "$slug"
+    if p="$( registry_account_load "$slug" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_PRINCIPAL" )" \
+       && [ "$p" = "$want" ]; then
+      printf 'row %s\n' "$slug"
+      continue
+    fi
+    # THE ROW IS STILL ASKED WHOSE IT IS. The loader refused it, so its own
+    # answer is worth nothing as a fact - but it is enough to decide whether
+    # THIS offboarding is the run that should be told about it.
+    p="$( PRINCIPAL=""; source "$f" 2>/dev/null; printf '%s' "$PRINCIPAL" )"
+    [ "$p" = "$want" ] && printf 'unreadable %s\n' "$slug"
   done
   return 0
 }
 
-# _offboard_sessions <account-slug> - the session ids filed under that account.
+# _offboard_sessions <account-slugs> <usernames> - the session rows of this
+# offboarding, given the person's account slugs and unix names (space-joined).
+#   row <id>    - filed under one of the person's accounts: this verb removes it
+#   orphan <id> - a row that names the person in OWNER and is NOT filed under an
+#                 account this run can act on: an old-shape row carrying no
+#                 ACCOUNT at all, or one filed under an account row the loader
+#                 refuses. No scan by account slug finds either, and both are a
+#                 live session row for a person the register says is gone.
 # The subshelled source is what _redeem_session_id does one screen up, for the
 # same reason and with the same set -u-safe default: sessions.d has no
 # single-row loader that leaves the caller's own names alone (registry_load
 # sets two dozen globals in the caller's scope, ACCOUNT and HOST among them).
 _offboard_sessions() {
-  local want="$1" d f a sid
+  local accounts=" $1 " owners=" $2 " d f a o sid
   d="$(registry_dir)"
   [ -d "$d" ] || return 0
   for f in "$d"/*.conf; do
@@ -4222,18 +4305,60 @@ _offboard_sessions() {
     sid="$(basename "$f" .conf)"
     registry_valid_name "$sid" || continue
     a="$( ACCOUNT=""; source "$f" 2>/dev/null; printf '%s' "$ACCOUNT" )"
-    [ "$a" = "$want" ] && printf '%s\n' "$sid"
+    if [ -n "$a" ]; then
+      case "$accounts" in *" $a "*) printf 'row %s\n' "$sid"; continue ;; esac
+    fi
+    o="$( OWNER=""; source "$f" 2>/dev/null; printf '%s' "$OWNER" )"
+    [ -n "$o" ] || continue
+    case "$owners" in *" $o "*) printf 'orphan %s\n' "$sid" ;; esac
   done
   return 0
 }
 
-# _offboard_logins <principal> - the login slugs belonging to the person.
+# _offboard_logins <principal>
+#   row <slug>        - a login row of the person's that loads
+#   unreadable <slug> - a row that names the person and does not (mode, owner,
+#                       a missing required key, a symlink). A row whose own
+#                       PRINCIPAL cannot be read either is left unsaid: nothing
+#                       here can attribute it, and warning about every broken
+#                       row in the register would bury the one that is the
+#                       person's under the ones that are not.
 _offboard_logins() {
-  local want="$1" slug p
+  local want="$1" d slug p
+  d="$(registry_login_dir)" || return 0
   registry_login_list 2>/dev/null | while IFS= read -r slug; do
     [ -n "$slug" ] || continue
-    p="$( registry_login_load "$slug" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
-    [ "$p" = "$want" ] && printf '%s\n' "$slug"
+    if p="$( registry_login_load "$slug" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )" \
+       && [ "$p" = "$want" ]; then
+      printf 'row %s\n' "$slug"
+      continue
+    fi
+    [ -f "$d/$slug.conf" ] || continue
+    p="$( PRINCIPAL=""; source "$d/$slug.conf" 2>/dev/null; printf '%s' "$PRINCIPAL" )"
+    [ "$p" = "$want" ] && printf 'unreadable %s\n' "$slug"
+  done
+  return 0
+}
+
+# _offboard_host_rows <principal> - the host rows that NAME the person, one
+# `<host> <field>` line each. A host row's OWNER and OPERATOR are the machine's
+# own record of who answers for it, and every loader in the fleet refuses a row
+# whose OWNER is not a principal it recognises: offboarding the person a host
+# row names leaves that row naming nobody. Read by a subshelled source,
+# not registry_host_load, for the reason _registry_host_hub_value gives - a
+# reader must not silently acquire an OWNER from a file it only asked one key of.
+_offboard_host_rows() {
+  local want="$1" d f h owner operator
+  d="$(registry_host_dir)"
+  [ -d "$d" ] || return 0
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    h="$(basename "$f" .conf)"
+    registry_valid_name "$h" || continue
+    owner="$(   OWNER="";    source "$f" 2>/dev/null; printf '%s' "$OWNER" )"
+    operator="$( OPERATOR=""; source "$f" 2>/dev/null; printf '%s' "$OPERATOR" )"
+    [ "$owner" = "$want" ] && printf '%s OWNER\n' "$h"
+    [ "$operator" = "$want" ] && printf '%s OPERATOR\n' "$h"
   done
   return 0
 }
@@ -4259,30 +4384,74 @@ cmd_offboard() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
 
-  _OFFBOARD_JSON="$want_json"; _OFFBOARD_REMOVED=""; _OFFBOARD_RECEIPT=""
+  _OFFBOARD_JSON="$want_json"; _OFFBOARD_REMOVED=""; _OFFBOARD_KEPT=""
+  _OFFBOARD_WARNINGS=""; _OFFBOARD_RECEIPT=""
   _OFFBOARD_PRINCIPAL="$principal"
 
-  local pconf accounts
+  local pconf acct_scan accounts="" acct_dead="" tag val
   pconf="$(registry_principal_dir)/$principal.conf"
-  accounts="$(_offboard_accounts "$principal")" || {
+  acct_scan="$(_offboard_accounts "$principal")" || {
     _reg_fail "$want_json" "steward offboard: the account register could not be read, so who belongs to '$principal' is unknown"
     return 78; }
+  while read -r tag val; do
+    case "$tag" in
+      row)        accounts="${accounts:+$accounts }$val" ;;
+      unreadable) acct_dead="${acct_dead:+$acct_dead }$val" ;;
+    esac
+  done <<EOF
+$acct_scan
+EOF
 
-  if [ ! -e "$pconf" ] && [ -z "$accounts" ]; then
-    local probe=""
+  if [ ! -e "$pconf" ] && [ -z "$accounts" ] && [ -z "$acct_dead" ]; then
+    local probe="" rfile="" rstate="" rstopped=""
     probe="$(registry_state_dir_name 2>/dev/null)" || probe=""
-    if [ -n "$probe" ] && [ -f "$HOME/.local/state/$probe/offboards/$principal.receipt.json" ]; then
-      # ALREADY OFFBOARDED. A second run is a no-op, not a refusal: a cleanup
-      # somebody re-runs to be sure must be safe to re-run. AND IT LEAVES THE
-      # RECEIPT ALONE - this run removed nothing, so writing one from here
-      # would publish an empty list over the record of what the first run did.
-      _OFFBOARD_RECEIPT="$HOME/.local/state/$probe/offboards/$principal.receipt.json"
+    [ -n "$probe" ] && rfile="$HOME/.local/state/$probe/offboards/$principal.receipt.json"
+    if [ -n "$rfile" ] && [ -f "$rfile" ]; then
+      # THE RECEIPT'S STATE, NOT ITS EXISTENCE. A receipt on disk says an
+      # offboarding RAN, never that it FINISHED - and the steps that come last
+      # are the ones outside the register: the account lock, the home. A run
+      # that emptied the register and then met the helper's belt leaves exactly
+      # this shape behind: no rows, a receipt, and a home still sitting under
+      # the person's own name. Reading the file's existence alone answered the
+      # next run with "nothing left to remove", rc 0 - to an operator who is
+      # re-running the cleanup precisely to be sure it is clean.
+      rstate="$(jq -r '.state // ""' "$rfile" 2>/dev/null)" || rstate=""
+      if [ "$rstate" != "done" ]; then
+        # BOTH LISTS ARE READ. `stopped here:` moved from removed[] to
+        # warnings[] at schemaVersion 2, and a receipt written by the older
+        # shape is exactly the one a reader is most likely to meet here.
+        rstopped="$(jq -r '((.warnings // []) + (.removed // []))[]
+                           | select(startswith("stopped here:"))' "$rfile" 2>/dev/null | head -1)"
+        [ -n "$rstopped" ] || rstopped="(the receipt does not say where it stopped)"
+        _reg_fail "$want_json" "steward offboard: the last offboarding of '$principal' did not finish - $rfile is in state '$rstate'. Its register rows are gone, so there is nothing left here to remove, but what that run had not done is still undone. Read the receipt, finish it by hand, and remove the receipt when it is: $rstopped"
+        return 70
+      fi
+      # ALREADY OFFBOARDED, AND FINISHED. A second run is a no-op, not a
+      # refusal: a cleanup somebody re-runs to be sure must be safe to re-run.
+      # AND IT LEAVES THE RECEIPT ALONE - this run removed nothing, so writing
+      # one from here would publish an empty list over the record of the first.
+      _OFFBOARD_RECEIPT="$rfile"
       _offboard_say "nothing left to remove for $principal"
       [ -n "$want_json" ] && _offboard_json
       return 0
     fi
     _reg_fail "$want_json" "steward offboard: no such principal '$principal' - nothing to offboard"
     return 78
+  fi
+
+  # THE MACHINES' OWN RECORD OF WHO ANSWERS FOR THEM COMES FIRST. A host row
+  # names an OWNER and an OPERATOR, and every loader in the fleet refuses a host
+  # whose OWNER is not a principal it recognises - so offboarding the person a
+  # host row names breaks that machine's row for every later reader, and
+  # does it while reporting rc 0. This verb never edits hosts.d: who takes over
+  # a machine is not a thing a cleanup gets to decide.
+  local host_rows hr_first hr_host hr_field
+  host_rows="$(_offboard_host_rows "$principal")"
+  if [ -n "$host_rows" ]; then
+    hr_first="$(printf '%s\n' "$host_rows" | head -1)"
+    hr_host="${hr_first%% *}"; hr_field="${hr_first##* }"
+    _reg_fail "$want_json" "steward offboard: hosts.d/$hr_host.conf names '$principal' as its $hr_field - offboarding would leave that machine's row naming a principal that no longer exists. Name whoever takes the machine over in the host row first; this verb never edits hosts.d."
+    return 65
   fi
 
   # THE HELPER IS LOCAL, AND SO IS EVERYTHING IT TOUCHES: it locks an account
@@ -4296,17 +4465,37 @@ cmd_offboard() {
   # needs the verb to reach the other machines (or the operator to run it on
   # each), and the receipt to say which hosts it covered. Refusing is the
   # honest half of that until it exists.
-  local self_host acct
-  self_host="$(_registry_self_host)"
+  # THE ACCOUNT ROWS ARE READ ONCE, into one <slug> TAB <host> TAB <username>
+  # list. The gate needs the host, the helper needs the username, and reading
+  # the row again for each is another chance for it to have changed between the
+  # decision and the act. TAB-SEPARATED because the loader checks that HOST is
+  # non-empty and lets USERNAME default, but validates the FORM of neither.
+  local acct rows="" usernames=""
   for acct in $accounts; do
-    registry_account_load "$acct" >/dev/null 2>&1 || {
-      _reg_fail "$want_json" "steward offboard: account row '$acct' does not load - repair it before offboarding '$principal'"
-      return 78; }
-    if [ "$ACCOUNT_HOST" != "$self_host" ]; then
-      _reg_fail "$want_json" "steward offboard: account $acct lives on host $ACCOUNT_HOST; run offboard on that host (this verb touches only the host it runs on)"
-      return 65
+    if registry_account_load "$acct" >/dev/null 2>&1; then
+      rows="$rows$acct	$ACCOUNT_HOST	$ACCOUNT_USERNAME
+"
+      usernames="${usernames:+$usernames }$ACCOUNT_USERNAME"
+    else
+      # It loaded during the scan a moment ago and does not now. Treat it as
+      # what it has become - a row nothing can vouch for - rather than reading
+      # the fields the loader just refused.
+      acct_dead="${acct_dead:+$acct_dead }$acct"
     fi
   done
+  accounts=""
+  local self_host racct rhost ruser
+  self_host="$(_registry_self_host)"
+  while IFS='	' read -r racct rhost ruser; do
+    [ -n "$racct" ] || continue
+    if [ "$rhost" != "$self_host" ]; then
+      _reg_fail "$want_json" "steward offboard: account $racct lives on host $rhost, and this host is $self_host; run offboard on $rhost (this verb touches only the host it runs on)"
+      return 65
+    fi
+    accounts="${accounts:+$accounts }$racct"
+  done <<EOF
+$rows
+EOF
 
   local state_dir
   state_dir="$(registry_state_dir_name)" || {
@@ -4314,56 +4503,77 @@ cmd_offboard() {
     return 78; }
   _OFFBOARD_RECEIPT="$HOME/.local/state/$state_dir/offboards/$principal.receipt.json"
 
-  local out rc username home locked=""
+  # THE ROWS THIS RUN CANNOT ACT ON ARE SAID BEFORE IT STARTS, and they are
+  # said out loud. An account row the loader will not vouch for is still the
+  # person's: its unix account stays open, and passing over it in silence is
+  # how an account outlives the register row that named it.
+  local dead
+  for dead in $acct_dead; do
+    _offboard_kept "accounts.d/$dead.conf does not load, so nothing here can name the unix account it stands for - left in place and NOT locked, repair the row and run offboard again" loud
+  done
+
+  local out rc home locked=""
   local hub_ak="${STEWARD_AUTHORIZED_KEYS:-$HOME/.ssh/authorized_keys}"
 
   # 1. STOP THE WORK, THROUGH THE HELPER. `lock` disables lingering, which
   # takes the account's user manager down and every session unit with it. It is
   # the only way the steward account can stop another person's sessions without
   # a shell in their home.
-  for acct in $accounts; do
-    registry_account_load "$acct" >/dev/null 2>&1 || continue
-    username="$ACCOUNT_USERNAME"
-    [ -n "$username" ] || continue
+  while IFS='	' read -r racct rhost ruser; do
+    [ -n "$ruser" ] || continue
     # THE HOME IS RESOLVED WHILE THE ROW STILL EXISTS. Once the account row is
     # gone there is nothing left that names the unix account, and the archive
     # step below would have nothing to ask about.
-    home="$(_registry_owner_home "$username" 2>/dev/null)" || home=""
-    out="$(sudo -n /usr/local/sbin/steward-account-helper lock "$username" 2>&1)"; rc=$?
+    home="$(_registry_owner_home "$ruser" 2>/dev/null)" || home=""
+    out="$(sudo -n /usr/local/sbin/steward-account-helper lock "$ruser" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
-      _offboard_helper_fail "the unix account '$username' could not be locked" "$rc" "$out"
+      _offboard_helper_fail "the unix account '$ruser' could not be locked" "$rc" "$out"
       return $?
     fi
-    _offboard_note "unix account $username locked, lingering disabled (its session units are down)"
-    locked="$locked$acct	$username	$home
+    _offboard_note "unix account $ruser locked, lingering disabled (its session units are down)"
+    locked="$locked$racct	$ruser	$home
 "
-  done
+  done <<EOF
+$rows
+EOF
 
   # 2. UNBIND THE BUS. The relay ROW lives in the hub's own authorized_keys and
   # is ours to remove; the relay KEY and the delivery key live in the person's
   # home and travel with it into the archive.
-  local sid sids="" tmp_ak
-  for acct in $accounts; do
-    for sid in $(_offboard_sessions "$acct"); do
-      sids="$sids $sid"
-      if grep -q "bus-relay-in $sid\"" "$hub_ak" 2>/dev/null; then
-        # ONE BACKUP, UNDER ONE NAME. A timestamped copy per offboarding turns
-        # the hub's .ssh into a pile of files that each authorize something,
-        # and the oldest of them authorizes everybody who ever left.
-        if cp "$hub_ak" "$hub_ak.bak-offboard" 2>/dev/null; then
-          chmod 600 "$hub_ak.bak-offboard" 2>/dev/null
-        else
-          _offboard_warn "no backup of $hub_ak could be made; the relay row for $sid is removed anyway - a row that stays is a channel that stays open"
-        fi
-        tmp_ak="$(mktemp "$(dirname "$hub_ak")/.authorized_keys.XXXXXX")" || {
-          _offboard_fail "no temporary file could be made beside $hub_ak, so the relay row for $sid was left in place" 70
-          return 70; }
-        grep -v "bus-relay-in $sid\"" "$hub_ak" > "$tmp_ak" \
-          || true   # grep exits 1 on an empty result, which is a valid outcome
-        mv "$tmp_ak" "$hub_ak" || { rm -f "$tmp_ak"; _offboard_fail "could not rewrite $hub_ak" 70; return 70; }
-        _offboard_note "relay row for $sid removed from $hub_ak"
+  local sid sids="" tmp_ak sess_scan
+  # THE OWNER NAMES ARE HANDED IN ALONGSIDE THE ACCOUNT SLUGS. A session row
+  # filed under one of the person's accounts is this verb's to remove; an
+  # old-shape row that names them in OWNER and carries no ACCOUNT is not - the
+  # register cannot tell whose account it ran under - but leaving it unsaid is
+  # what turns a completed cleanup into a live session for a person the
+  # register says is gone.
+  sess_scan="$(_offboard_sessions "$accounts" "$usernames $principal")"
+  while read -r tag val; do
+    case "$tag" in
+      row)    sids="${sids:+$sids }$val" ;;
+      orphan) _offboard_kept "sessions.d/$val.conf names '$principal' in OWNER but is not filed under any account row this run could act on - left in place, realign it by hand" loud ;;
+    esac
+  done <<EOF
+$sess_scan
+EOF
+  for sid in $sids; do
+    if grep -q "bus-relay-in $sid\"" "$hub_ak" 2>/dev/null; then
+      # ONE BACKUP, UNDER ONE NAME. A timestamped copy per offboarding turns
+      # the hub's .ssh into a pile of files that each authorize something,
+      # and the oldest of them authorizes everybody who ever left.
+      if cp "$hub_ak" "$hub_ak.bak-offboard" 2>/dev/null; then
+        chmod 600 "$hub_ak.bak-offboard" 2>/dev/null
+      else
+        _offboard_warn "no backup of $hub_ak could be made; the relay row for $sid is removed anyway - a row that stays is a channel that stays open"
       fi
-    done
+      tmp_ak="$(mktemp "$(dirname "$hub_ak")/.authorized_keys.XXXXXX")" || {
+        _offboard_fail "no temporary file could be made beside $hub_ak, so the relay row for $sid was left in place" 70
+        return 70; }
+      grep -v "bus-relay-in $sid\"" "$hub_ak" > "$tmp_ak" \
+        || true   # grep exits 1 on an empty result, which is a valid outcome
+      mv "$tmp_ak" "$hub_ak" || { rm -f "$tmp_ak"; _offboard_fail "could not rewrite $hub_ak" 70; return 70; }
+      _offboard_note "relay row for $sid removed from $hub_ak"
+    fi
   done
 
   # 3. THE ROWS, INNERMOST FIRST. A session references a login and an account;
@@ -4375,11 +4585,21 @@ cmd_offboard() {
       _offboard_note "sessions.d/$sid.conf removed"
     fi
   done
-  local lg
-  for lg in $(_offboard_logins "$principal"); do
-    rm -f "$(registry_login_dir)/$lg.conf" || { _offboard_fail "could not remove logins.d/$lg.conf" 70; return 70; }
-    _offboard_note "logins.d/$lg.conf removed"
-  done
+  local login_scan
+  login_scan="$(_offboard_logins "$principal")"
+  while read -r tag val; do
+    case "$tag" in
+      row) rm -f "$(registry_login_dir)/$val.conf" || { _offboard_fail "could not remove logins.d/$val.conf" 70; return 70; }
+           _offboard_note "logins.d/$val.conf removed" ;;
+      # A ROW THE LOADER REFUSES IS NOT A ROW TO DELETE ON A GUESS. What it is -
+      # a wrong mode, a missing key, a symlink somebody planted - is exactly
+      # what the loader would not vouch for, and removing a credential row on
+      # the strength of a bare `source` is the reading this verb must not do.
+      unreadable) _offboard_kept "logins.d/$val.conf names '$principal' and does not load, so nothing here can vouch for what it is - left in place, read it by hand" loud ;;
+    esac
+  done <<EOF
+$login_scan
+EOF
   for acct in $accounts; do
     if [ -e "$(registry_account_dir)/$acct.conf" ]; then
       rm -f "$(registry_account_dir)/$acct.conf" || { _offboard_fail "could not remove accounts.d/$acct.conf" 70; return 70; }
@@ -4461,7 +4681,12 @@ $ent_line"
   while IFS='	' read -r lacct lname lhome; do
     [ -n "$lname" ] || continue
     if [ -n "$keep_home" ]; then
-      _offboard_note "home of $lname kept in place (--keep-home)"
+      # AND THE KEY THAT STAYS WITH IT. Both keys live in the person's home and
+      # were meant to travel with it into the archive; this is the one path
+      # where the home does not travel, so the hub's delivery key is still
+      # installed in a directory the register no longer describes. The account
+      # is locked, so nothing can use it - but the receipt is the record.
+      _offboard_kept "home of $lname kept in place (--keep-home); the hub's delivery key is still installed in that home" loud
     elif [ -n "$lhome" ] && [ -d "$lhome" ]; then
       out="$(sudo -n /usr/local/sbin/steward-account-helper lock "$lname" --archive-home 2>&1)"; rc=$?
       if [ "$rc" -ne 0 ]; then
@@ -4483,7 +4708,7 @@ EOF
     inv_state="$( registry_invite_load "$inv" >/dev/null 2>&1 && \
                   [ "$INVITE_PRINCIPAL" = "$principal" ] && printf '%s' "$INVITE_STATE" )"
     [ -n "$inv_state" ] || continue
-    _offboard_note "invitation $inv KEPT as history (state $inv_state)"
+    _offboard_kept "invitation $inv KEPT as history (state $inv_state)"
   done
 
   # THE SNAPSHOT IS NOT FATAL AND NOT SILENT. It is a projection of the
@@ -4498,7 +4723,16 @@ EOF
   if [ -z "$_OFFBOARD_REMOVED" ]; then
     _offboard_say "nothing left to remove for $principal"
   fi
-  _offboard_receipt done
+  # THE RECEIPT IS THE LAST THING, AND ITS FAILURE IS THE RUN'S. Everything
+  # above has already happened; if nothing on disk says so, the next run reads
+  # an empty register and a missing receipt as a person who was never
+  # offboarded - and answers rc 78, "no such principal", over a home that is
+  # already archived and an account that is already locked.
+  if ! _offboard_receipt done; then
+    _offboard_receipt_lost
+    _reg_fail "$want_json" "steward offboard: '$principal' is out of the register, but the receipt could not be written: $_OFFBOARD_RECEIPT - nothing on disk records what this run did, and a later run cannot tell it finished"
+    return 70
+  fi
   [ -n "$want_json" ] && _offboard_json
   return 0
 }
