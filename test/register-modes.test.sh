@@ -67,6 +67,12 @@ build_estate() { # <dir>
 #
 # Section 5 derives the OTHER direction - the registers the loaders READ - from
 # lib/registry.sh. Two derivations facing opposite ways, and no list.
+#
+# THE FILTER IS NOT `\.d$`. Twelve of the thirteen directories the loop names
+# end in `.d`; the thirteenth is `estate`, and it is the one holding
+# steward.conf at mode 600. A filter that keeps only the `.d` names silently
+# drops the member with the most to lose, which is exactly what happened - so
+# the filter names it, and section 1 asserts the derived set contains it.
 _scaffold_registers() { # <path to lib/scaffold.sh>
   awk '
     !/^[[:space:]]*#/ && /for _sc_reg in/ { f=1; sub(/^.*for _sc_reg in/, "") }
@@ -77,7 +83,7 @@ _scaffold_registers() { # <path to lib/scaffold.sh>
       print
       if (!cont) exit
     }
-  ' "$1" | tr ' \t' '\n\n' | grep '\.d$' | sort -u
+  ' "$1" | tr ' \t' '\n\n' | grep -E '\.d$|^estate$' | sort -u
 }
 
 # dir_loose <name> <path> - the predicate, on ONE directory addressed by path.

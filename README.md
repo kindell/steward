@@ -49,13 +49,16 @@ estate scaffolded before this change keeps exactly the modes it had, and
 nothing repairs it - not a re-scaffold, not an upgrade. The two guarded
 registers will refuse and name the remedy the first time something reads them;
 the others stay group-writable silently. Check and repair such an estate by
-hand, once:
+hand, once. **The estate root and `estate/` are part of the repair**, not only
+the `*.d` registers: `estate/` holds `steward.conf`, and renaming a file is as
+good as writing to it, so a directory anybody can write to does not protect
+what is inside it whatever the modes in there say.
 
 ```sh
 ESTATE=/path/to/estate
-ls -ld "$ESTATE"/*.d                                # what the modes are now
-chmod g-w,o-w "$ESTATE"/*.d                         # no register stays writable by others
-chmod 0700 "$ESTATE"/invites.d "$ESTATE"/logins.d   # the two the loaders guard
+ls -ld "$ESTATE" "$ESTATE"/estate "$ESTATE"/*.d          # what the modes are now
+chmod g-w,o-w "$ESTATE" "$ESTATE"/estate "$ESTATE"/*.d   # nothing stays writable by others
+chmod 0700 "$ESTATE"/invites.d "$ESTATE"/logins.d        # the two the loaders guard
 ```
 
 ## Design rules
