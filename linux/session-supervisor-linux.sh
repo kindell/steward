@@ -1026,6 +1026,52 @@ runtime_alive_in_session() {
   done
   return 1
 }
+
+# ---- THE ZOMBIE VETO'S EVIDENCE OF A HUMAN --------------------------------
+# The kill veto further down asks "may a human be working in that window?".
+# Until 2026-09-09 it answered with the EXISTENCE of a tmux client, and that is
+# not the same question. What the three helpers below measure is stated at the
+# veto itself; here is only the machinery.
+
+# _is_epoch <s> - 0 iff the string is a bare, non-empty run of digits. Every
+# comparison below is arithmetic, and an unset or unexpandable tmux format
+# yields the EMPTY string, which `-gt` would read as 0 and call ancient.
+_is_epoch() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+
+# _mtime_of <path> - the file's mtime in epoch seconds, empty when unreadable.
+# TWO-SHOT WITH A SHAPE FILTER, the idiom lib/registry.sh:_registry_mode_of
+# documents: `stat -f` means FILESYSTEM STATUS on GNU, exits 0, and prints a
+# multi-line ext4 report that a non-empty check would happily accept as a
+# timestamp - and this supervisor's whole point is that it runs on Linux. Only
+# an all-digit answer counts; anything else falls through to the GNU form.
+_mtime_of() {
+  local p="$1" t
+  for t in "$(stat -f '%m' "$p" 2>/dev/null)" "$(stat -c '%Y' "$p" 2>/dev/null)"; do
+    _is_epoch "$t" && { printf '%s' "$t"; return 0; }
+  done
+  return 1
+}
+
+# THE USER MANAGER'S PIDS, read once per round by the veto (a pgrep per client
+# would be the same answer four times). systemd --user is the reaper a
+# session-scoped process falls to when the thing that started it dies, and it
+# says so itself in the journal: "Found left-over process N (tmux: client) in
+# control group while starting unit. Ignoring. This usually indicates unclean
+# termination of a previous run."
+UM_PIDS=""
+user_manager_pids() { pgrep -u "$(id -u)" -f 'systemd --user' 2>/dev/null; }
+
+# client_is_orphaned <pid> - 0 iff the client's parent chain reaches the user
+# manager. THE SAME CLIMB THE KILL VETO ALREADY USES (is_descendant), not a
+# second walk: one ps-climbing implementation, one ceiling, one ppid reader.
+client_is_orphaned() {
+  local pid="$1" um
+  _is_epoch "$pid" || return 1
+  for um in $UM_PIDS; do
+    is_descendant "$pid" "$um" && return 0
+  done
+  return 1
+}
 # Reap orphans BEFORE starting anew — otherwise the old claude keeps running
 # beside the new one, two processes with the same RC label and a
 # remote-control conflict. Only meaningful when no tmux session exists; with a
@@ -1713,18 +1759,114 @@ if [ ! -f "$SUSPECT" ]; then
   touch "$SUSPECT"
   exit 0
 fi
-# AN ATTACHED CLIENT DEFERS THE KILL. A human working in vi or bash in the
-# pane where claude crashed must never lose their editor to a repair — the
-# old send-keys repair would have typed into their vim buffer; this makes the
-# missing guard explicit instead. While any client is attached we warn loudly
-# and keep the suspect cadence (the marker stays, so the round after the
-# client detaches kills without a fresh grace round). The cost is accepted: a
-# stale forgotten attachment blocks repair with loud warnings — the
-# false-ALIVE direction this design already accepts everywhere else.
-if [ -n "$(tmuxc list-clients -t "=$NAME" 2>/dev/null)" ]; then
-  echo "session-supervisor: $NAME — ZOMBIE-shaped, but a tmux client is ATTACHED to session '$NAME' — deferring the kill." >&2
-  echo "session-supervisor: $NAME — a human may be working in that window; repair resumes the round after the client detaches." >&2
+# A WORKING HUMAN DEFERS THE KILL - AND A CLIENT IS NOT A HUMAN. A human
+# working in vi or bash in the pane where claude crashed must never lose their
+# editor to a repair; the old send-keys repair would have typed into their vim
+# buffer, and this veto is the guard that replaced it. That direction is
+# unchanged. What changed on 2026-09-09 is WHAT IT MEASURES.
+#
+# MEASURED ON A LIVE LINUX HOST 2026-09-09: the veto was
+# `[ -n "$(tmuxc list-clients ...)" ]`, and an estate's hub session sat DEAD FOR
+# TWO HOURS while this supervisor saw the zombie every round and refused to
+# repair it. The "human" was an orphaned `script -qfc env -u TMUX tmux ...
+# attach` whose parent chain ended at systemd --user, and which systemd had
+# ALREADY logged as debris ("Found left-over process 4166896 (tmux: client) in
+# control group while starting unit"). Its client_activity was 1788959854 =
+# 13:17:34 - THE EXACT SECOND the session's runtime died. Debris from an
+# earlier fault, holding the veto over the wreckage it came from.
+#
+# SO THE QUESTION IS ASKED OF THE CLIENT'S ACTIVITY, NOT OF ITS EXISTENCE.
+# A client whose last activity is not NEWER than the moment this session was
+# first suspected dead cannot be a human working in that pane now: whatever it
+# did, it did before or at the death. Any single keystroke after that moment
+# re-arms the veto and keeps it armed - the suspect marker is not touched
+# while we defer, so a human who reaches for the keyboard at any point during
+# the deferral outranks every measurement here, for as long as they keep
+# doing it.
+#
+# THE DEATH MOMENT IS THE SUSPECT MARKER'S mtime. It is a stand-in: the
+# runtime is gone, so nothing can report when it exited. The marker is written
+# by the FIRST runtime-free round, i.e. within one timer period after the
+# death, and it is never rewritten while this veto defers - so it is stable
+# across the whole deferral, which is the property the comparison needs.
+# #{session_activity} was considered and rejected: it moves with any pane
+# OUTPUT, including output a client's own redraw causes, so it can drift NEWER
+# than a live human's last keypress and turn that human into debris. The
+# marker can only err in the other direction.
+#
+# ANCESTRY DECIDES WHAT ACTIVITY CANNOT, AND NEVER OVERRULES IT. An attach
+# whose parent chain reaches systemd --user is one the system itself has
+# already called a left-over. That is evidence about PROVENANCE, and it is
+# reported on every client so the journal names the ghost - but a client with
+# FRESH activity defers the kill even when it is orphaned. On any host with a
+# console or desktop session a person's own terminal descends from the user
+# manager too, so letting ancestry beat a keystroke made two seconds ago would
+# reintroduce exactly the failure this veto exists to prevent. Orphanhood
+# therefore decides only the case activity cannot: a client whose activity is
+# unreadable (an older server, a format that did not expand) is debris if it
+# is orphaned, and keeps the veto if it is not.
+#
+# DELIBERATELY NOT A ROUND CAP. The tempting fix is "after N deferrals, kill
+# anyway". A ceiling that overrides a live human is precisely the failure this
+# veto was built to prevent - it would have repaired the ghost, and it would
+# also eventually type over somebody's editor. The fix is to measure the human
+# correctly, not to time them out.
+#
+# A MEASUREMENT THAT FAILS IS NOT A MEASUREMENT OF NOTHING. If the formatted
+# listing comes back empty while a PLAIN one does not, this server cannot tell
+# us what we are asking (a -F it will not take, a format it will not expand) -
+# and "empty" would then mean "no clients attached" and authorize the kill.
+# That is the one way this change could kill something the old existence check
+# protected, so it is checked explicitly and the old behavior is kept: defer,
+# loudly, naming the reason.
+CLIENT_FMT='#{client_tty}|#{client_activity}|#{client_pid}'
+_clients="$(tmuxc list-clients -t "=$NAME" -F "$CLIENT_FMT" 2>/dev/null)"
+if [ -z "$_clients" ] && [ -n "$(tmuxc list-clients -t "=$NAME" 2>/dev/null)" ]; then
+  echo "session-supervisor: $NAME - ZOMBIE-shaped, and a tmux client is attached that this server will not describe" >&2
+  echo "session-supervisor: $NAME - (list-clients -F '$CLIENT_FMT' answered nothing while a plain listing did) - deferring the kill." >&2
+  echo "session-supervisor: $NAME - a human may be working in that window; an unreadable client is treated as one." >&2
   exit 0
+fi
+if [ -n "$_clients" ]; then
+  _death="$(_mtime_of "$SUSPECT")"
+  UM_PIDS="$(user_manager_pids)"
+  _keep=""; _keep_why=""; _debris=""; _NL=$'\n'
+  # THE SEPARATOR IS '|', NOT A SPACE. An empty field between two spaces is
+  # eaten by `read` with whitespace IFS, and the pid would then be read as the
+  # activity - a bare number, which compares perfectly well as a timestamp and
+  # is wrong. None of tty, epoch or pid can contain a pipe.
+  while IFS='|' read -r _ctty _cact _cpid _crest; do
+    [ -n "$_ctty$_cact$_cpid" ] || continue
+    _who="${_ctty:-(no tty)} (pid ${_cpid:-unknown})"
+    _orphan=""; client_is_orphaned "$_cpid" && _orphan=1
+    _left_over="its parent chain reaches systemd --user, which already logged it as a left-over process"
+    if _is_epoch "$_cact" && _is_epoch "$_death"; then
+      if [ "$_cact" -gt "$_death" ]; then
+        _why="was active $(( _cact - _death ))s AFTER this session was first suspected dead"
+        [ -n "$_orphan" ] && _why="$_why (it is an orphan of systemd --user, but activity outranks ancestry)"
+        [ -z "$_keep" ] && { _keep="$_who"; _keep_why="$_why"; }
+        continue
+      fi
+      _why="its last activity was $(( _death - _cact ))s BEFORE this session was first suspected dead"
+      [ -n "$_orphan" ] && _why="$_why, and $_left_over"
+    elif [ -n "$_orphan" ]; then
+      _why="its last activity could not be read, and $_left_over"
+    else
+      _why="its last activity could not be read and it is no orphan of systemd --user"
+      [ -z "$_keep" ] && { _keep="$_who"; _keep_why="$_why - the veto stands on what it cannot measure"; }
+      continue
+    fi
+    _debris="${_debris:+$_debris$_NL}session-supervisor: $NAME - attached tmux client $_who is not a working human: $_why."
+  done <<EOF
+$_clients
+EOF
+  [ -n "$_debris" ] && printf '%s\n' "$_debris" >&2
+  if [ -n "$_keep" ]; then
+    echo "session-supervisor: $NAME - ZOMBIE-shaped, but tmux client $_keep $_keep_why - deferring the kill." >&2
+    echo "session-supervisor: $NAME - a human may be working in that window; repair resumes the round after that client goes quiet or detaches." >&2
+    exit 0
+  fi
+  echo "session-supervisor: $NAME - every attached client is debris, not a working human - the veto measures ACTIVITY, not existence." >&2
 fi
 rm -f "$SUSPECT"
 # TWO ROUNDS WITHOUT A RUNTIME: the pane is a bare shell wearing a live

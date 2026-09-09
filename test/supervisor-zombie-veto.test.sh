@@ -34,6 +34,9 @@
 #      keeps the veto. Ancestry decides only what activity cannot.
 #   6. No clients at all: unchanged, the repair proceeds.
 #   7. The supervisor ASKS tmux for the activity and the pid - it counts nothing.
+#   8. A server that will not answer the formatted listing at all is NOT read as
+#      "no clients attached": the veto is kept, which is the one way this change
+#      could have killed something the old existence check protected.
 #
 # NOTHING HERE TOUCHES THE MACHINE: tmux, pgrep and ps are shims over a fixture
 # process table, and no tmux, ssh or sudo binary is ever reached.
@@ -123,6 +126,9 @@ case "${argv[0]:-}" in
   has-session)  [ -f "$T_HAS_SESSION" ] && exit 0; exit 1 ;;
   list-panes)   [ -f "$T_HAS_SESSION" ] && echo 4242; exit 0 ;;
   list-clients)
+    # T_NO_FORMAT: a server that will not take -F at all (or will not expand
+    # the fields) - it answers a plain listing and nothing else.
+    [ -n "${T_NO_FORMAT:-}" ] && [ -n "$fmt" ] && exit 1
     [ -f "$CLIENTS" ] || exit 0
     while IFS='|' read -r tty act cpid; do
       [ -n "$tty$act$cpid" ] || continue
@@ -172,6 +178,7 @@ EOF
 chmod 755 "$BIN/tmux" "$BIN/pgrep" "$BIN/ps" "$BIN/killrec"
 export TMUX_LOG="$T/tmux.log" PGREP_LOG="$T/pgrep.log" KILL_LOG="$T/kill.log"
 export T_HAS_SESSION="$T/has-session"
+T_NO_FORMAT=""; export T_NO_FORMAT
 
 STATE="$HOMEDIR/.local/state/fixture-supervisor"
 SUSPECT="$STATE/$NAME.suspect"
@@ -305,6 +312,18 @@ log8="$(cat "$TMUX_LOG")"
 has "8a it asks for the client's activity" "$log8" "client_activity"
 has "8b and for the client's pid"          "$log8" "client_pid"
 has "8c and for the client's tty"          "$log8" "client_tty"
+
+echo "== 9. a server that will not describe its clients keeps the veto =="
+# The trap this change could have set: `list-clients -F` failing outright looks
+# exactly like "nobody is attached", and the repair would kill a session the old
+# existence check protected. The plain listing is the cross-check.
+arm
+client "$HUMAN_TTY" "$(( DEATH - 3600 ))" "$HUMAN_PID"
+T_NO_FORMAT=1 run
+out9="$(cat "$T/out")"
+if untouched; then ok "9a an unreadable client is treated as a human"; else bad "9a an unreadable client is treated as a human" "tmux log: $(cat "$TMUX_LOG")"; fi
+has "9b and the reason is named"   "$out9" "will not describe"
+has "9c the plain listing was the cross-check" "$out9" "while a plain listing did"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
