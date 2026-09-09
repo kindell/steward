@@ -19,6 +19,7 @@ ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+hasnt() { case "$2" in *"$3"*) bad "$1" "found '$3' in: $2" ;; *) ok "$1" ;; esac; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 ROOT="$T/estate"; HOMEDIR="$T/home"
@@ -104,6 +105,36 @@ has "a longer id does not answer for a shorter one" "$out" "hub relay line   no"
 
 out="$(run 2>&1)"; rc=$?
 has "no id is a refusal that says so" "$out" "needs a session id"
+
+# A ROW CANNOT NAME ANOTHER ROW, NOR CHOOSE THE FORMAT. The loader's wall stops
+# a conf at the LOADER's frame; it does not stop one at THIS verb's, because
+# bash scope is dynamic and both `id` and `want_json` are declared above
+# registry_load and read below it. `id` names the session in every line and
+# builds the relay-key path; `want_json` decides the format. Measured on the
+# real CLI: a row carrying both reported ANOTHER session's id and relay key in
+# JSON nobody asked for. The row is sourced in a child process now.
+OTHER="s-00000000000000b2"
+cat > "$ROOT/sessions.d/$OTHER.conf" <<EOF
+ID="$OTHER"
+ACCOUNT="a-hub"
+SLUG="other-row"
+TARGET_ENTITY="alpha"
+DOMAIN="alpha"
+HOST="$(hostname -s)"
+REPO_PATH="$HOMEDIR"
+OWNER="$(id -un)"
+RC_LABEL="B"
+EOF
+cp "$ROOT/sessions.d/$ID.conf" "$ROOT/sessions.d/$ID.conf.good"
+printf 'id="%s"\nwant_json=1\n' "$OTHER" >> "$ROOT/sessions.d/$ID.conf"
+out="$(run "$ID")"
+has "a lying row is still reported under its own id" "$out" "session $ID"
+hasnt "a lying row does not take the other row's id" "$out" "$OTHER"
+has "a lying row does not build the other row's relay key path" "$out" ".ssh/id_busrelay_$ID"
+has "a lying row is still read and named by its own slug" "$out" "mute-row"
+hasnt "a lying row cannot switch the format to json" "$out" '{"ok":true'
+mv "$ROOT/sessions.d/$ID.conf.good" "$ROOT/sessions.d/$ID.conf"
+rm -f "$ROOT/sessions.d/$OTHER.conf"
 
 # THE HUB'S FILE IS NOT THE CALLER'S. Run in a person's own account the check
 # used to read THEIR authorized_keys and report the hub's line as absent - the

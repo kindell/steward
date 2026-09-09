@@ -2831,16 +2831,40 @@ cmd_registry_session_check() {
   . "$HERE/lib/registry.sh"
 
   local conf conf_state="missing" owner="" slug="" host="" load_err="" load_rc=0 load_errf=""
+  local _sc_row="" _sc_rest=""
   conf="$(registry_dir)/$id.conf"
   if [ -f "$conf" ]; then
     load_errf="$(mktemp 2>/dev/null)" || {
       _reg_fail "$want_json" "steward registry session check: cannot create a temporary file" 70
       return 70
     }
-    registry_load "$id" >/dev/null 2>"$load_errf"; load_rc=$?
+    # THE ROW IS SOURCED IN A CHILD PROCESS, NOT IN THIS FRAME. The loader's
+    # own wall (_registry_source_row) stops a row from reaching the LOADER's
+    # locals; it cannot stop one from reaching THIS verb's, because bash scope
+    # is dynamic and every local declared above registry_load is still live
+    # beneath it. Both of the ones read after the load were writable by the
+    # row: `id`, which names the session in every line of output and builds
+    # the relay-key path, and `want_json`, which decides the FORMAT - so a row
+    # carrying id="<another row>" and want_json=1 made this verb report
+    # another session's id and relay key in JSON nobody asked for. Measured on
+    # the real CLI against a fixture.
+    #
+    # THE SUBSHELL IS THE CODEBASE'S OWN ANSWER - the shape
+    # registry_session_display uses for the same reason. Only the three fields
+    # named below cross back, as text; nothing the conf assigns survives the
+    # fork. HOST is validated non-empty by the loader, so the trailing field
+    # cannot be collapsed by command substitution stripping newlines, and SLUG
+    # may be empty without shifting the ones around it.
+    _sc_row="$( registry_load "$id" >/dev/null 2>"$load_errf" \
+                && printf '%s\n%s\n%s\n' "${OWNER:-}" "${SLUG:-}" "${HOST:-}" )"
+    load_rc=$?
     load_err="$(cat "$load_errf" 2>/dev/null)"; rm -f "$load_errf"
     if [ "$load_rc" -eq 0 ]; then
-      conf_state="ok"; owner="$OWNER"; slug="$SLUG"; host="$HOST"
+      conf_state="ok"
+      owner="${_sc_row%%$'\n'*}"
+      _sc_rest="${_sc_row#*$'\n'}"
+      slug="${_sc_rest%%$'\n'*}"
+      host="${_sc_rest#*$'\n'}"
     elif [ "$load_rc" -eq 78 ]; then
       _reg_fail "$want_json" "steward registry session check: $load_err" 78
       return 78
