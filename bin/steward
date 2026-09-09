@@ -4491,11 +4491,18 @@ _offboard_register_readable() {
       # warnings. (An unexpanded glob is neither -e nor -L, so the no-rows case
       # is unchanged.)
       [ -e "$reg_f" ] || [ -L "$reg_f" ] || continue
-      [ -r "$reg_f" ] && continue
+      # AND A ROW MUST BE A FILE. `-r` is true for a directory and for a fifo,
+      # so both walk past the check this loop exists for. Measured: a fifo named
+      # *.conf in sessions.d BLOCKED the run forever, after the unix account was
+      # already locked and before any receipt was written - the loader's `source`
+      # opens the pipe and waits for a writer that never comes. A directory named
+      # *.conf came back rc 0, state "done", warnings []. (An unexpanded glob is
+      # still neither -e nor -L, so the no-rows case is unchanged.)
+      { [ -f "$reg_f" ] && [ -r "$reg_f" ]; } && continue
       bad_row_list="${bad_row_list:+$bad_row_list, }$reg_f"
     done
     if [ -n "$bad_row_list" ]; then
-      _reg_fail "$want_json" "steward offboard: $bad_row_list cannot be read, so whether it names '$principal' is unknown - a row nobody can read is not a row that names nobody. Fix the mode or the owner of that file (or repair the link, if it is one) and run offboard again."
+      _reg_fail "$want_json" "steward offboard: $bad_row_list is not a regular file this run can read, so whether it names '$principal' is unknown - a row nobody can read is not a row that names nobody. Fix the mode or the owner of that file (or repair the link, if it is one) and run offboard again."
       return 78
     fi
   done <<'EOF'

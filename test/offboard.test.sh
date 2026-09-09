@@ -761,6 +761,22 @@ else
   is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
   havenot "and no receipt was written" "$KIPR"
 
+  # A ROW THAT IS NOT A FILE IS A ROW NOBODY CAN READ. `[ -r ]` is true for a
+  # directory and for a fifo, so both used to walk past the check this loop
+  # exists for. Measured before the `-f`: a directory named *.conf came back
+  # rc 0 with state "done" and warnings []; a FIFO named *.conf blocked the run
+  # forever, after the unix account was already locked and with no receipt
+  # written at all. A directory is the safe half to assert on - a fifo case
+  # would wedge this suite on a red.
+  mkdir -p "$ROOT/sessions.d/zz-notafile.conf"
+  : > "$FX/calls"
+  out="$(run offboard kip 2>&1)"; rc=$?
+  rmdir "$ROOT/sessions.d/zz-notafile.conf"
+  is  "a row that is not a file refuses, rc 78" "$rc" "78"
+  has "and names it" "$out" "zz-notafile.conf"
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  havenot "and no receipt was written" "$KIPR"
+
   # AND A LINK TO A READABLE DIRECTORY IS A REGISTER LIKE ANY OTHER: `-r` and
   # `-x` follow symlinks, so the refusal above must turn on the target being
   # gone and on nothing else.
@@ -848,7 +864,7 @@ else
     # WITHOUT THIS LINE the principals.d iteration passes by accident: the run
     # that walks past it prints "principals.d/lux.conf removed", which carries
     # the name too.
-    has "and says it could not READ it ($row)" "$out" "cannot be read"
+    has "and says it could not READ it ($row)" "$out" "is not a regular file this run can read"
     is  "and nothing was called at all ($row)" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
     have "the good account row is untouched ($row)" "$ROOT/accounts.d/lux-host-a.conf"
     have "the principal row is untouched ($row)" "$ROOT/principals.d/lux.conf"
