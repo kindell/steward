@@ -258,6 +258,41 @@ _resolver_table() {
 _registers_in() { printf '%s\n' "$1" \
   | grep -oE '_registry_estate_root\)/[a-z][a-z0-9_-]*\.d' | sed 's|.*/||' | sort -u; }
 
+# THE TABLE'S OWN PATTERN IS MEASURED, because the pattern is the guard. A
+# resolver the pattern cannot see contributes nothing and is reported as
+# nothing: it is not a named gap, it is an absence, and the derived set simply
+# comes back one register shorter than the code. Two spellings were invisible -
+# `registry_x_dir ()` with a space before the parens, which is valid bash and a
+# common style, and a private `_registry_x_dir`. Both are fed to the table here
+# from a fixture, so that widening the pattern later cannot narrow it again by
+# accident. The fixture is a file of resolvers, not lib/registry.sh: a guard
+# that can only be tested by editing the code it guards is not tested.
+SPELL="$FX/spellings.sh"
+cat > "$SPELL" <<'EOF'
+registry_plain_dir() {
+  printf '%s\n' "$(_registry_estate_root)/plain.d"
+}
+registry_spaced_dir ()  {
+  printf '%s\n' "$(_registry_estate_root)/spaced.d"
+}
+_registry_private_dir() {
+  printf '%s\n' "$(_registry_estate_root)/private.d"
+}
+registry_oneline_dir() { printf '%s\n' "$(_registry_estate_root)/oneline.d"; }
+EOF
+while read -r sp_fn sp_reg; do
+  [ -n "$sp_fn" ] || continue
+  sp_body="$(_resolver_table "$SPELL" | awk -F'\t' -v f="$sp_fn" '$1==f{print $2}')"
+  is "the table sees a resolver spelled $sp_fn" \
+     "$(printf '%s' "$sp_body" | grep -c . | tr -d ' ')" "1"
+  is "and derives $sp_reg from it" "$(_registers_in "$sp_body")" "$sp_reg"
+done <<'EOF'
+registry_plain_dir plain.d
+registry_spaced_dir spaced.d
+_registry_private_dir private.d
+registry_oneline_dir oneline.d
+EOF
+
 derived=""
 while IFS=$'\t' read -r fn body; do
   [ -n "$fn" ] || continue
