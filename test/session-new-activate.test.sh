@@ -241,8 +241,8 @@ hasnt "A6: nothing is enabled" "$(cat "$FX/systemctl.log" 2>/dev/null)" "enable"
 # than a person's name — "steward", the normal shape for a steward account —
 # the enrolment was refused two machines away with
 #
-#   owner check: 's-...' is owned by 'steward' (principal 'jon'), the request
-#   names 'steward'
+#   owner check: 's-...' is owned by '<login>' (principal '<person>'), the
+#   request names '<login>'
 #
 # a refusal naming a value the requester never typed. The hub side was right;
 # the requester was never updated to match. So the person a request names is

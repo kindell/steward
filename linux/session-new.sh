@@ -466,8 +466,8 @@ LOGIN_ANV="${LOGIN_FLAG:-$LOGIN_EGEN}"
 # the ordinary shape of a steward account, the enrolment was refused two
 # machines away with
 #
-#   owner check: 's-...' is owned by 'steward' (principal 'jon'), the request
-#   names 'steward'
+#   owner check: 's-...' is owned by '<login>' (principal '<person>'), the
+#   request names '<login>'
 #
 # a refusal naming a value the operator never typed, at the far end of a wire,
 # about a fact this side already had. The ownership rule is right and recent —
