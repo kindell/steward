@@ -3019,12 +3019,20 @@ registry_validate_runtime_set() {
   done <<< "$projects"
 }
 
-# _registry_word_in_list <word> <space-separated list> — rc 0 if the word is
-# one of the list's entries. The usual `case " $list " in *" $w "*` form,
-# padded on both sides so a prefix of another entry never matches by accident.
+# _registry_word_in_list <word> <space-separated list> - rc 0 if the word is
+# EXACTLY one of the list's entries.
 _registry_word_in_list() {
-  local w="${1:-}" list="${2:-}"
-  case " $list " in *" $w "*) return 0 ;; *) return 1 ;; esac
+  local w="${1:-}" e
+  # A WORD WITH WHITESPACE IS NEVER ONE ENTRY, and an empty word matches nothing.
+  # The old `case " $list " in *" $w "*` was a substring test over a space-run:
+  # `unix-account desk-oidc` passed the accept-channel check and `claude-max
+  # claude-team` passed the provider check, both rc 0 (mandate review,
+  # 2026-09-09; thirty adversarial values, one got through). Every closed
+  # vocabulary in this file goes through here, so the fix is made once.
+  [ -n "$w" ] || return 1
+  case "$w" in *[[:space:]]*) return 1 ;; esac
+  for e in ${2:-}; do [ "$e" = "$w" ] && return 0; done
+  return 1
 }
 
 # _registry_row_principal <session> — the HUMAN this row belongs to.
@@ -4681,11 +4689,10 @@ registry_login_load() {
       echo "registry: $f: ACCOUNT must be the account's real name, non-empty and without whitespace" >&2
       return 1 ;;
   esac
-  case " $_REGISTRY_LOGIN_PROVIDERS " in
-    *" $v_PROVIDER "*) ;;
-    *) echo "registry: $f: invalid PROVIDER '$v_PROVIDER' (one of: $_REGISTRY_LOGIN_PROVIDERS)" >&2
-       return 1 ;;
-  esac
+  if ! _registry_word_in_list "$v_PROVIDER" "$_REGISTRY_LOGIN_PROVIDERS"; then
+    echo "registry: $f: invalid PROVIDER '$v_PROVIDER' (one of: $_REGISTRY_LOGIN_PROVIDERS)" >&2
+    return 1
+  fi
   # LEGAL_OWNER is free text (a company name) and MUST NOT be empty — the same
   # requirement, for the same reason, as a host row's own LEGAL_OWNER: an
   # account with no named payer is precisely the state this register exists to
@@ -4708,7 +4715,7 @@ registry_login_load() {
   return 0
 }
 
-# ── THE MANDATE REGISTER ────────────────────────────────────────────────────
+# ── THE MANDATE REGISTER ----------------------------------------------------
 # mandates.d/<id>.conf - a person's REVOCABLE, VERSIONED, BOUNDED permission to
 # let their own registered session take ordered work while a capacity gate
 # holds. docs/superpowers/specs/2026-09-09-giving-back.md, Part 2. Its own
@@ -4767,10 +4774,13 @@ _registry_mandate_dir_state() {
   return 0
 }
 
-_registry_mandate_stamp_ok() { [[ "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; }
+# A REAL MONTH, DAY, HOUR, MINUTE AND SECOND - not four digits, two and two:
+# `0000-00-00T00:00:00Z` passed the digit-only form (review, low), and a stamp
+# that is not a moment cannot be compared with one that is.
+_registry_mandate_stamp_ok() { [[ "${1:-}" =~ ^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$ ]]; }
 
-# registry_mandate_load <id> - parse ONE mandate row. rc 0 · 1 (no such row, or
-# content refused) · 78 (register or file state refuses). RESET FIRST: a caller
+# registry_mandate_load <id> - parse ONE mandate row. rc 0 / 1 (no such row, or
+# content refused) / 78 (register or file state refuses). RESET FIRST: a caller
 # that gets a refusal must never still see the last row that parsed.
 registry_mandate_load() {
   MANDATE_ID=""; MANDATE_PRINCIPAL=""; MANDATE_LOGINS=""; MANDATE_LEGAL_OWNER_APPROVED=""
@@ -4837,7 +4847,7 @@ registry_mandate_load() {
   for tok in $v_SCOPE; do
     sk="${tok%%:*}"; sv="${tok#*:}"
     [ "$sk" != "$tok" ] && [ -n "$sv" ] || { echo "registry: $f: SCOPE token '$tok' is not key:value" >&2; return 1; }
-    case " $_REGISTRY_MANDATE_SCOPE_KEYS " in *" $sk "*) ;; *) echo "registry: $f: unknown SCOPE key '$sk' (one of: $_REGISTRY_MANDATE_SCOPE_KEYS)" >&2; return 1 ;; esac
+    _registry_word_in_list "$sk" "$_REGISTRY_MANDATE_SCOPE_KEYS" || { echo "registry: $f: unknown SCOPE key '$sk' (one of: $_REGISTRY_MANDATE_SCOPE_KEYS)" >&2; return 1; }
     [[ "$sv" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "registry: $f: SCOPE value '$sv' has characters outside A-Za-z0-9 . _ / -" >&2; return 1; }
     [ "$sk" = beneficiary ] && has_ben=1
   done
@@ -4848,7 +4858,7 @@ registry_mandate_load() {
   local r_open="" r_cap="" r_days="" r_idle=""
   for tok in $v_RESERVE; do
     sk="${tok%%:*}"; sv="${tok#*:}"
-    case " $_REGISTRY_MANDATE_RESERVE_KEYS " in *" $sk "*) ;; *) echo "registry: $f: unknown RESERVE key '$sk' (one of: $_REGISTRY_MANDATE_RESERVE_KEYS)" >&2; return 1 ;; esac
+    _registry_word_in_list "$sk" "$_REGISTRY_MANDATE_RESERVE_KEYS" || { echo "registry: $f: unknown RESERVE key '$sk' (one of: $_REGISTRY_MANDATE_RESERVE_KEYS)" >&2; return 1; }
     [[ "$sv" =~ ^[0-9]{1,5}$ ]] || { echo "registry: $f: RESERVE $sk must be a whole number, got '$sv'" >&2; return 1; }
     case "$sk" in open-below) r_open="$sv" ;; hard-cap) r_cap="$sv" ;; min-days-left) r_days="$sv" ;; idle-hours) r_idle="$sv" ;; esac
   done
@@ -4870,15 +4880,18 @@ registry_mandate_load() {
   [[ "$v_TERMS_VERSION" =~ ^[a-z0-9][a-z0-9.-]*$ ]] || { echo "registry: $f: invalid TERMS_VERSION '$v_TERMS_VERSION' (a-z 0-9 . and hyphen)" >&2; return 1; }
   # ACCEPT_SOURCE: <channel>:<identifier>, channel from the closed set of channels
   # this estate AUTHENTICATES as the person. The refusal names the norm.
+  # WHITESPACE IS REFUSED BEFORE THE COLON IS EVEN LOOKED FOR: the value is
+  # never word-split, so a space inside it reaches the channel check whole.
+  case "$v_ACCEPT_SOURCE" in *[[:space:]]*)
+    echo "registry: $f: ACCEPT_SOURCE must not contain whitespace, got '$v_ACCEPT_SOURCE'" >&2; return 1 ;; esac
   sk="${v_ACCEPT_SOURCE%%:*}"; sv="${v_ACCEPT_SOURCE#*:}"
   if [ "$sk" = "$v_ACCEPT_SOURCE" ] || [ -z "$sv" ]; then
     echo "registry: $f: ACCEPT_SOURCE must be <channel>:<identifier>, got '$v_ACCEPT_SOURCE'" >&2; return 1
   fi
-  case " $_REGISTRY_MANDATE_ACCEPT_CHANNELS " in
-    *" $sk "*) ;;
-    *) echo "registry: $f: ACCEPT_SOURCE channel '$sk' is not one this estate authenticates as the person (one of: $_REGISTRY_MANDATE_ACCEPT_CHANNELS). The bus authenticates a channel, not an author, and is coordination, not an audit trail (docs/auktoritet.md) - a yes must come from the person's own authenticated channel" >&2
-       return 1 ;;
-  esac
+  if ! _registry_word_in_list "$sk" "$_REGISTRY_MANDATE_ACCEPT_CHANNELS"; then
+    echo "registry: $f: ACCEPT_SOURCE channel '$sk' is not one this estate authenticates as the person (one of: $_REGISTRY_MANDATE_ACCEPT_CHANNELS). The bus authenticates a channel, not an author, and is coordination, not an audit trail (docs/auktoritet.md) - a yes must come from the person's own authenticated channel" >&2
+    return 1
+  fi
   [[ "$sv" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "registry: $f: ACCEPT_SOURCE identifier '$sv' must be a slug" >&2; return 1; }
 
   MANDATE_ID="$id"; MANDATE_PRINCIPAL="$v_PRINCIPAL"; MANDATE_LOGINS="$v_LOGINS"
@@ -4890,8 +4903,8 @@ registry_mandate_load() {
 }
 
 # registry_mandate_active <id> <now-iso> - the ONE question the adapter asks
-# before every turn (spec Part 6). rc 0 active · 1 not active (reason on stderr)
-# · 78 register refusal. Fails closed: a row that will not load is not active.
+# before every turn (spec Part 6). rc 0 active / 1 not active (reason on stderr)
+# / 78 register refusal. Fails closed: a row that will not load is not active.
 # Revocation and pause outrank validity; validity is inclusive of FROM and
 # exclusive of UNTIL, compared as ISO strings, which sort correctly in UTC.
 registry_mandate_active() {
@@ -5591,11 +5604,10 @@ registry_invite_load() {
   esac
   # THE PROVIDER VOCABULARY IS THE LOGIN REGISTER'S, for the same reason:
   # redemption writes a logins.d row carrying this value.
-  case " $_REGISTRY_LOGIN_PROVIDERS " in
-    *" $v_PROVIDER "*) ;;
-    *) echo "registry: $f: invalid PROVIDER '$(registry_printable "$v_PROVIDER")' (one of: $_REGISTRY_LOGIN_PROVIDERS)" >&2
-       return 1 ;;
-  esac
+  if ! _registry_word_in_list "$v_PROVIDER" "$_REGISTRY_LOGIN_PROVIDERS"; then
+    echo "registry: $f: invalid PROVIDER '$(registry_printable "$v_PROVIDER")' (one of: $_REGISTRY_LOGIN_PROVIDERS)" >&2
+    return 1
+  fi
   if ! [[ "$v_TOKEN_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "registry: $f: TOKEN_SHA256 must be 64 lowercase hex digits" >&2
     return 1

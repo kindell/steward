@@ -156,6 +156,18 @@ LEGAL_OWNER="Acme"
 EOF
 refuse badprincipal "a PRINCIPAL that is not a member form refuses" "PRINCIPAL"
 
+badrow twoproviders <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="acct-acme-team"
+PROVIDER="claude-max claude-team"
+CONFIG_DIR="~/.claude-logins/acme"
+LEGAL_OWNER="Acme"
+EOF
+# A VALUE NAMING TWO PROVIDERS IS NOT ONE PROVIDER. The membership test was a
+# substring of a space-run and this row loaded with rc 0 - found while reviewing
+# the mandate register, which had inherited the same form.
+refuse twoproviders "a PROVIDER spanning two entries refuses" "invalid PROVIDER"
+
 echo "== 3. a CR byte refuses (a file edited on another platform) =="
 printf 'PRINCIPAL="alice"\r\nACCOUNT="acct-acme-team"\r\nPROVIDER="claude-team"\r\nCONFIG_DIR="~/.claude-logins/acme"\r\nLEGAL_OWNER="Acme"\r\n' \
   > "$FX/bad.d/crlf.conf"; chmod 600 "$FX/bad.d/crlf.conf"

@@ -21,8 +21,20 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/mandates.d" "$FX/bad.d"; chmod 700 "$FX/mandates.d" "$FX/bad.d"   # pinned, not the runner's umask
 export STEWARD_MANDATES_DIR="$FX/mandates.d"
-row()    { cat > "$FX/mandates.d/$1.conf"; chmod 600 "$FX/mandates.d/$1.conf"; }
-badrow() { cat > "$FX/bad.d/$1.conf";      chmod 600 "$FX/bad.d/$1.conf"; }
+# A FIXTURE THAT WRITES EMPTY FAILS THE SUITE BY NAME. Found in review: the
+# `revoked` and `paused` rows were built with a GNU-only sed append, which BSD
+# sed refuses - writing ZERO BYTES - so on a mac both fixtures were empty files,
+# the loader refused them as malformed, and every assertion "passed" for a
+# reason that had nothing to do with revocation or pause: deleting the
+# revocation check left that suite at exactly the same count. A suite about
+# consent whose revocation test measures nothing is the one failure it cannot
+# afford. So the helpers refuse to hand back an empty fixture, appends are done
+# with printf (the two seds do not agree on appending), and a row built to carry
+# one specific key checks that the key really reached the file.
+row()    { cat > "$FX/mandates.d/$1.conf"; chmod 600 "$FX/mandates.d/$1.conf"; [ -s "$FX/mandates.d/$1.conf" ] || bad "FIXTURE '$1' WRITTEN EMPTY" "the builder produced zero bytes"; }
+badrow() { cat > "$FX/bad.d/$1.conf";      chmod 600 "$FX/bad.d/$1.conf";      [ -s "$FX/bad.d/$1.conf" ]      || bad "FIXTURE '$1' WRITTEN EMPTY" "the builder produced zero bytes"; }
+with_line()   { printf '%s\n%s\n' "$GOOD" "$1"; }                       # GOOD plus one appended line
+fixture_has() { grep -q "^$3=" "$1/$2.conf" || bad "FIXTURE '$2' LACKS $3" "the line the case is about never reached the file"; }
 GOOD='PRINCIPAL="simon"
 LOGINS="simon-varvet"
 LEGAL_OWNER_APPROVED="Varvet"
@@ -33,9 +45,16 @@ VALID_UNTIL="2026-12-31T00:00:00Z"
 TERMS_VERSION="1.0"
 ACCEPTED_AT="2026-09-09T21:00:00Z"
 ACCEPT_SOURCE="unix-account:simon-basement"'
-# refuse <name> <desc> <fragment> - writes GOOD with one line REPLACED (sed) or APPENDED, into bad.d
+# refuse <name> <desc> <fragment> <sed-edit> - GOOD with one line REPLACED or DELETED (portable sed: s and d only)
 refuse() { local n="$1" desc="$2" want="$3" edit="$4" err rc
   printf '%s\n' "$GOOD" | sed -E "$edit" > "$FX/bad.d/$n.conf"; chmod 600 "$FX/bad.d/$n.conf"
+  [ -s "$FX/bad.d/$n.conf" ] || bad "FIXTURE '$n' WRITTEN EMPTY" "sed -E '$edit' produced zero bytes"
+  err="$( STEWARD_MANDATES_DIR="$FX/bad.d" registry_mandate_load "$n" 2>&1 >/dev/null )"; rc=$?
+  if [ "$rc" -eq 0 ]; then bad "$desc" "accepted, should have refused"; else has "$desc" "$err" "$want"; fi; }
+# refuse_add <name> <desc> <fragment> <line> - GOOD with one line APPENDED (printf), the key checked present
+refuse_add() { local n="$1" desc="$2" want="$3" line="$4" err rc
+  with_line "$line" > "$FX/bad.d/$n.conf"; chmod 600 "$FX/bad.d/$n.conf"
+  fixture_has "$FX/bad.d" "$n" "${line%%=*}"
   err="$( STEWARD_MANDATES_DIR="$FX/bad.d" registry_mandate_load "$n" 2>&1 >/dev/null )"; rc=$?
   if [ "$rc" -eq 0 ]; then bad "$desc" "accepted, should have refused"; else has "$desc" "$err" "$want"; fi; }
 
@@ -50,8 +69,8 @@ echo "== 2. the parser refuses what a source would have run =="
 refuse cmdsub   "a command substitution refuses" "substitution"  's|^PRINCIPAL=.*|PRINCIPAL="$(id -un)"|'
 refuse backtick "a backtick refuses"             "substitution"  's|^SCOPE=.*|SCOPE="beneficiary:`id`"|'
 refuse varexp   "a variable expansion refuses"   "substitution"  's|^LOGINS=.*|LOGINS="${HOME}"|'
-refuse unknown  "an unknown key refuses"         "unknown key"   '$a PATH="/tmp/evil"'
-refuse dup      "a duplicate key refuses"        "duplicate key" '$a PRINCIPAL="bob"'
+refuse_add unknown  "an unknown key refuses"         "unknown key"   'PATH="/tmp/evil"'
+refuse_add dup      "a duplicate key refuses"        "duplicate key" 'PRINCIPAL="bob"'
 refuse unquoted "an unquoted value refuses"      'exactly KEY="VALUE"' 's|^PRINCIPAL=.*|PRINCIPAL=simon|'
 refuse trailing "trailing text after the quote refuses" 'exactly KEY="VALUE"' 's|^PRINCIPAL=.*|PRINCIPAL="simon" ; rm -rf /|'
 printf 'PRINCIPAL="simon"\r\n' > "$FX/bad.d/cr.conf"; printf '%s\n' "$GOOD" | grep -v PRINCIPAL >> "$FX/bad.d/cr.conf"; chmod 600 "$FX/bad.d/cr.conf"
@@ -85,9 +104,41 @@ refuse r-pct     "percentages are 0-100"                     "0-100"            
 refuse t-from    "VALID_FROM is ISO-8601 UTC"                "VALID_FROM must be ISO"   's|^VALID_FROM=.*|VALID_FROM="tomorrow"|'
 refuse t-order   "VALID_UNTIL is after VALID_FROM"           "must be after VALID_FROM" 's|^VALID_UNTIL=.*|VALID_UNTIL="2026-01-01T00:00:00Z"|'
 refuse t-acc     "ACCEPTED_AT is ISO-8601 UTC"               "ACCEPTED_AT must be ISO"  's|^ACCEPTED_AT=.*|ACCEPTED_AT="2026-09-09"|'
-refuse t-rev     "REVOKED_AT, when set, is ISO-8601 UTC"     "REVOKED_AT must be ISO"   '$a REVOKED_AT="yesterday"'
-refuse paused    "PAUSED is yes, no or absent"               "PAUSED must be"           '$a PAUSED="maybe"'
+refuse_add t-rev     "REVOKED_AT, when set, is ISO-8601 UTC"     "REVOKED_AT must be ISO"   'REVOKED_AT="yesterday"'
+refuse_add paused    "PAUSED is yes, no or absent"               "PAUSED must be"           'PAUSED="maybe"'
 refuse terms     "TERMS_VERSION is a version slug"           "invalid TERMS_VERSION"    's|^TERMS_VERSION=.*|TERMS_VERSION="v 1"|'
+
+refuse t-until   "VALID_UNTIL, when set, is ISO-8601 UTC"     "VALID_UNTIL must be ISO"  's|^VALID_UNTIL=.*|VALID_UNTIL="whenever"|'
+refuse t-zero    "a stamp must be a real moment - 0000-00-00 is not" "must be ISO"      's|^VALID_FROM=.*|VALID_FROM="0000-00-00T00:00:00Z"|'
+refuse s-chars   "SCOPE values have a closed character set"       "characters outside"  's|^SCOPE=.*|SCOPE="beneficiary:var\|vet"|'
+
+echo "== 4b. membership is EXACT - asserted on the HELPER, because no row can reach it =="
+# Review, high: `case " $SET " in *" $w "*` tested a substring of a space-run, so
+# `unix-account desk-oidc` matched two channels at once and loaded with rc 0.
+#
+# THE ROW-LEVEL CASES BELOW DO NOT PROVE THE FIX, AND THAT WAS MEASURED: with the
+# helper reverted to the substring form this suite still read 74/0. Every path
+# into the closed sets refuses a two-entry value EARLIER - SCOPE and RESERVE split
+# their tokens on whitespace, ACCEPT_SOURCE refuses whitespace before the colon -
+# so nothing a row can carry ever reaches the membership test with a space in it.
+# The property therefore has to be asserted where it lives: on the helper. These
+# four lines are what turn red when the substring form comes back.
+is "the helper refuses a word naming two entries"      "$(_registry_word_in_list 'unix-account desk-oidc' 'unix-account desk-oidc' && echo yes || echo no)" "no"
+is "...and the same for a provider pair"               "$(_registry_word_in_list 'claude-max claude-team' "$_REGISTRY_LOGIN_PROVIDERS" && echo yes || echo no)" "no"
+is "...and an empty word is not a member of anything"  "$(_registry_word_in_list '' 'unix-account desk-oidc' && echo yes || echo no)" "no"
+is "...while a real single entry still matches"        "$(_registry_word_in_list 'desk-oidc' 'unix-account desk-oidc' && echo yes || echo no)" "yes"
+
+echo "== 4c. the row-level paths refuse a two-entry value too, earlier and for their own reason =="
+# Review, high: `case " $SET " in *" $w "*` tested a substring of a space-run, so
+# a value naming two channels at once passed. The shared helper is exact now;
+# each closed set is asserted with a two-entry value.
+refuse a-two     "ACCEPT_SOURCE naming two channels is refused"   "whitespace"           's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="unix-account desk-oidc:jon"|'
+refuse s-two     "a SCOPE key spanning two keys is refused"       "not key:value"        's|^SCOPE=.*|SCOPE="beneficiary domain:varvet"|'
+# RESERVE's tokens are split on whitespace before the key is ever looked at, so
+# `open-below hard-cap:50` is two tokens - and the FIRST is refused for having no
+# value, not for an unknown key. The refusal that matters is that it is refused;
+# the fixture now names the one the reader will actually see.
+refuse r-two     "a RESERVE token spanning two keys is refused"   "must be a whole number" 's|^RESERVE=.*|RESERVE="open-below hard-cap:50 min-days-left:2 idle-hours:48"|'
 
 echo "== 5. ACCEPT_SOURCE: only a channel this estate authenticates as the person =="
 refuse a-bus   "a yes over the bus is refused by name"        "not one this estate authenticates"  's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="bus:s-6dbf0fa397e613a1"|'
@@ -119,12 +170,14 @@ echo "== 9. registry_mandate_active - the question asked before every turn =="
 active() { registry_mandate_active "$1" "$2" >/dev/null 2>&1 && echo yes || echo no; }
 reason() { registry_mandate_active "$1" "$2" 2>&1 >/dev/null; }
 is "within validity, not revoked, not paused: active"   "$(active good 2026-10-01T12:00:00Z)" "yes"
+is "AT VALID_FROM exactly: active (inclusive)"              "$(active good 2026-09-10T00:00:00Z)" "yes"
+is "a date without a time is a malformed now: not active"   "$(active good 2026-10-01)" "no"
 is "before VALID_FROM: not active"                        "$(active good 2026-09-09T23:59:59Z)" "no"; has "...and says so" "$(reason good 2026-09-09T23:59:59Z)" "not valid yet"
 is "at VALID_UNTIL: not active (exclusive)"               "$(active good 2026-12-31T00:00:00Z)" "no"; has "...and says so" "$(reason good 2026-12-31T00:00:00Z)" "expired"
 is "open-ended: active far in the future"                  "$(active openended 2030-01-01T00:00:00Z)" "yes"
-printf '%s\n' "$GOOD" | sed '$a REVOKED_AT="2026-09-20T10:00:00Z"' | row revoked
+with_line 'REVOKED_AT="2026-09-20T10:00:00Z"' | row revoked; fixture_has "$FX/mandates.d" revoked REVOKED_AT
 is "revoked: not active, whatever the dates"               "$(active revoked 2026-10-01T12:00:00Z)" "no"; has "...and names the revocation" "$(reason revoked 2026-10-01T12:00:00Z)" "revoked (since 2026-09-20T10:00:00Z)"
-printf '%s\n' "$GOOD" | sed '$a PAUSED="yes"' | row paused
+with_line 'PAUSED="yes"' | row paused; fixture_has "$FX/mandates.d" paused PAUSED
 is "paused: not active"                                    "$(active paused 2026-10-01T12:00:00Z)" "no"
 is "a row that will not load is not active (fail closed)" "$(active nosuch 2026-10-01T12:00:00Z)" "no"
 is "a malformed now is not active (fail closed)"           "$(active good 'now')" "no"

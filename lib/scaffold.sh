@@ -110,7 +110,7 @@ estate_scaffold() {
   local _sc_reg _sc_mode
   for _sc_reg in estate sessions.d entities.d projects.d mcp.d jobs.d \
                  services.d browsers.d hosts.d accounts.d principals.d \
-                 logins.d invites.d; do
+                 logins.d invites.d mandates.d; do
     # 0700 FOR THE TWO REGISTERS WHOSE LOADERS CHECK. logins.d and invites.d
     # carry security artifacts - which account pays, and the digest of a
     # one-time link token - and their readers refuse a loose directory. Pinning
@@ -123,7 +123,13 @@ estate_scaffold() {
     # MATCHES against, never what it accepts as proof, and no loader refuses
     # this register for being readable.
     case "$_sc_reg" in
-      logins.d|invites.d) _sc_mode=0700 ;;
+      # mandates.d IS 0700 LIKE logins.d: a mandate row says whose seat may be
+      # spent on what, and who consented - the same class of row as a login. It
+      # reached the loaders before it reached this list, and the register-modes
+      # guard caught it on its first real case (79/5): a register the loaders
+      # read but the scaffold never creates makes the whole programme inert on
+      # a fresh estate.
+      logins.d|invites.d|mandates.d) _sc_mode=0700 ;;
       *)                  _sc_mode=0755 ;;
     esac
     mkdir -m "$_sc_mode" -p "$dir/$_sc_reg" 2>/dev/null \
