@@ -311,8 +311,15 @@ The estate provides, in this order:
 2. `desk/providers.d/<slug>.conf` beside the registry, one per provider:
    `ISSUER` (or `ISSUER_TEMPLATE` with a literal `<tid>` for a multi-tenant
    provider that discovers through a common endpoint), `DISCOVERY`,
-   `CLIENT_ID`, `CLIENT_SECRET_FILE` (0600, the desk account's). The
-   provider's redirect URI is `<DESK_ORIGIN>/desk/auth/callback`.
+   `CLIENT_ID`, `CLIENT_SECRET_FILE` (0600, the desk account's), and
+   optionally `ENDPOINT_ORIGINS`: a space-separated list of further https
+   origins (scheme, host and port, nothing else) the provider's endpoints may
+   live on, needed by a provider that serves its token endpoint or its JWKS
+   from a host other than the issuer's. Naming an origin here is this estate
+   saying it trusts that host with the client secret and the signing keys, so
+   name only the ones the provider's own document uses; without the key the
+   endpoints must all sit on the issuer's origin. The provider's redirect URI
+   is `<DESK_ORIGIN>/desk/auth/callback`.
 3. A drop-in `~/.config/systemd/user/steward-desk.service.d/50-estate.conf`:
 
        [Service]
