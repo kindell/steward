@@ -359,7 +359,10 @@ calls="$(cat "$FX/calls")"
 has "it terminates the account's sessions" "$calls" "loginctl terminate-user -- alice"
 has "and asks logind what is left" "$calls" "loginctl --no-legend list-sessions"
 : > "$FX/calls"
-out="$( ( export FAKE_SESSIONS='c3 1001 alice seat0 pts/1'; run lock alice ) 2>&1 )"; rc=$?
+# --archive-home IS WHAT MAKES THE LAST ASSERTION IN THIS BLOCK REAL. Without
+# it there is no `mv` on this path whatever the helper does, so "the home was
+# not touched" held on a run that could never have touched it.
+out="$( ( export FAKE_SESSIONS='c3 1001 alice seat0 pts/1'; run lock alice --archive-home ) 2>&1 )"; rc=$?
 is  "a member who still has a session open is rc 70" "$rc" "70"
 has "and the refusal says why" "$out" "still has an open session"
 calls="$(cat "$FX/calls")"

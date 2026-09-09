@@ -744,10 +744,19 @@ else
   # false when it is there and is a file.
   mv "$ROOT/entities.d" "$ROOT/entities.d-real"
   printf 'this is a file, not a register\n' > "$ROOT/entities.d"
+  : > "$FX/calls"; rm -f "$KIPR"
   out="$(run offboard kip 2>&1)"; rc=$?
   rm -f "$ROOT/entities.d"; mv "$ROOT/entities.d-real" "$ROOT/entities.d"
   is  "a required register that is a file refuses, rc 78" "$rc" "78"
   no  "and does not claim it is not there" "$out" "is not there"
+  # THE SAME FOUR THINGS THE hosts.d HALF ASSERTS. This half used to assert the
+  # rc and the absence of one string, over a calls log and a receipt left behind
+  # by the case above it - so a run that locked the account and then refused
+  # would have passed it.
+  is  "and nothing was called at all" "$(wc -c < "$FX/calls" | tr -d ' ')" "0"
+  have "the account row is untouched" "$ROOT/accounts.d/kip-host-a.conf"
+  have "the principal row is untouched" "$ROOT/principals.d/kip.conf"
+  havenot "and no receipt was written" "$KIPR"
 
   # AND A LINK THAT POINTS AT SOMETHING IS NOT A LINK THAT POINTS AT NOTHING.
   # The `-L` arm was reached before the `-e` one, so EVERY non-directory

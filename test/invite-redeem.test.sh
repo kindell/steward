@@ -370,8 +370,12 @@ no  "and nothing re-created the account" "$calls" "steward-account-helper add bo
 # an invitation is consumed by the run that redeems it.
 issue() {
   local p="$1"; shift
-  local o l
-  o="$(run invite issue --name "$p Example" --principal "$p" --entity acme --host host-a "$@" 2>&1)"
+  local o l irc
+  o="$(run invite issue --name "$p Example" --principal "$p" --entity acme --host host-a "$@" 2>&1)"; irc=$?
+  # THE RC IS ASSERTED, NOT ASSUMED. Every scenario below is composed out of
+  # this one call, and an issue that failed for its own reasons would otherwise
+  # arrive as a redemption failing for reasons it never had.
+  [ "$irc" -eq 0 ] || bad "the fixture can issue for $p" "rc $irc from issue: $o"
   l="$(printf '%s\n' "$o" | grep -o 'https://desk.example.test/desk/invite/[A-Za-z0-9_-]*' | head -1)"
   TOK="${l##*/}"
   INVID="$(grep -l "PRINCIPAL=\"$p\"" "$ROOT"/invites.d/*.conf | tail -1)"
