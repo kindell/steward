@@ -51,8 +51,13 @@ function parseRow(text, file) {
     if (m) { out[m[1]] = m[2]; continue; }
     const a = line.match(ASSIGNMENT_RE);
     if (a && KNOWN_KEYS.has(a[1])) {
+      // THE MESSAGE MUST NAME WHAT THIS LINE GOT WRONG. A message that lists
+      // only the properties an indented, exported or spaced-out line already
+      // satisfies sends the operator back to a line that looks like a match,
+      // which is the same dead end the silent drop left them in.
       throw new Error('provider ' + file + ': ' + a[1] + ' must be written as ' + a[1] +
-        '="<value>" - one line, double quotes, and nothing but spacing after the closing quote');
+        '="<value>" - one line, no leading whitespace, no export prefix, no space around the =, ' +
+        'double quotes, and nothing but spacing after the closing quote');
     }
   }
   return out;
