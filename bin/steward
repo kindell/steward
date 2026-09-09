@@ -3772,6 +3772,11 @@ cmd_invite_redeem() {
                     shift 2 ;;
       -)  if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
           IFS= read -r token || :
+          # AND A CRLF LINE IS AN ORDINARY TOKEN LINE, exactly as above: `-` is
+          # the form a PROGRAM uses, and a program piping a line in ends it the
+          # way its own source did. ONE carriage return, at the end: anything
+          # else in the value is the value.
+          token="${token%$'\r'}"
           [ -n "$token" ] || { _reg_fail "$want_json" "steward invite redeem: no token on stdin - '-' means the token is one line on standard input"; return 64; }
           shift ;;
       --identity) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --identity needs a value"; return 64; }

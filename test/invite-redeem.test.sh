@@ -524,6 +524,15 @@ out="$(printf '%s\n' "$TOK" | run invite redeem - --identity oidc:issuer-z:SUB-S
 is  "a token read from stdin redeems, rc 0" "$rc" "0"
 no  "and the token reached no child's argv" "$(cat "$FX/argv" "$FX/calls")" "$TOK"
 no  "and nothing the run printed carries it" "$out" "$TOK"
+# AND A CRLF LINE ON STDIN IS AN ORDINARY TOKEN TOO. `-` is the form a PROGRAM
+# uses, and a program that pipes a line in is at least as likely to end it the
+# way its source did as a file is - the same carriage return, the same digest
+# taken over a token nobody was ever given, and the same refusal sending the
+# operator to reissue an invitation that was never wrong.
+issue nia
+out="$(printf '%s\r\n' "$TOK" | run invite redeem - --identity oidc:issuer-z:SUB-SR 2>&1)"; rc=$?
+is  "a CRLF line on stdin redeems exactly as an LF one, rc 0" "$rc" "0"
+has "and the run reached the last step" "$out" "12/12"
 # AND EVERY WAY OF ASKING FOR A TOKEN THAT ISN'T THERE IS rc 64, before the
 # register is opened at all.
 out="$(run invite redeem --token-file "$FX/no-such-file" --identity oidc:issuer-z:SUB-Q 2>&1)"; rc=$?
