@@ -574,6 +574,34 @@ has "and says the entity changed" "$out" "changed while redeeming"
 has "the concurrent member is still a member" "$(cat "$ROOT/entities.d/acme.conf")" "zoe"
 no  "and this run's member never landed" "$(cat "$ROOT/entities.d/acme.conf")" "uli"
 
+echo "== an entity row cannot choose whose membership this run writes =="
+# AN entities.d ROW IS SOURCED, AND BASH SCOPES DYNAMICALLY: a lowercase
+# assignment in it binds into whichever frame declared that name. p_slug is
+# this verb's own local - the principal the invitation names - and step 5 reads
+# it AFTER the load, to decide whether the member is already there and to
+# compose the new list; step 6 reads it again to mint the login row. A row line
+# p_slug="operator" made step 5 answer "already done" about somebody else's
+# membership, so the invited person never joined, and their login row was
+# minted against the name the row had chosen.
+issue wyn
+mkdir -p "$FX/home/wyn/.ssh"
+printf 'NAME="Wyn Example"\nOIDC_LOGIN="issuer-n:SUB-N"\n' > "$ROOT/principals.d/wyn.conf"
+printf 'PRINCIPAL="wyn"\nHOST="host-a"\nUSERNAME="wyn"\n' > "$ROOT/accounts.d/wyn-host-a.conf"
+wyn_members="$(sed -n 's/^MEMBERS="\(.*\)"$/\1/p' "$ROOT/entities.d/acme.conf")"
+printf 'NAME="Acme"\nMEMBERS="%s"\np_slug="operator"\n' "$wyn_members" > "$ROOT/entities.d/acme.conf"
+out="$(run invite redeem "$TOK" --identity oidc:issuer-n:SUB-N 2>&1)"; rc=$?
+is  "the redemption still succeeds" "$rc" "0"
+has "step 5 adds the principal the invitation names" "$out" "5/12 membership: wyn added"
+has "and the entity carries them" "$(cat "$ROOT/entities.d/acme.conf")" " wyn\""
+has "the login row is minted against the invited principal" \
+    "$(cat "$ROOT/logins.d/wyn-claude-max.conf")" 'PRINCIPAL="wyn"'
+no  "and not against the name the row put in its way" \
+    "$(cat "$ROOT/logins.d/wyn-claude-max.conf")" 'PRINCIPAL="operator"'
+# AND THE REST OF THE ROW SURVIVED THE READING. Only MEMBERS changes, and the
+# other three fields are composed out of the same load - a crossing that lost
+# NAME would rewrite the entity without its display name.
+has "the entity keeps its name" "$(cat "$ROOT/entities.d/acme.conf")" 'NAME="Acme"'
+
 echo "== a run whose every earlier mark is on disk does only step 12 =="
 # The resumption design is "ask the machine, step by step" - so every step
 # needs its already-done branch exercised, and the only way to reach the ones

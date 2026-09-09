@@ -4010,8 +4010,45 @@ cmd_invite_redeem() {
   _redeem_receipt running
 
   # -- STEP 5: membership of the entity -------------------------------------
-  registry_entity_load "$ent_slug" >/dev/null 2>&1 || {
+  # THE ROW IS SOURCED IN A CHILD PROCESS, NOT IN THIS FRAME - the shape
+  # `steward registry session check` uses. The loader's own wall stops a row
+  # from reaching the LOADER's locals; it cannot stop one from reaching THIS
+  # verb's, because bash scope is dynamic and every local declared above is
+  # still live here. p_slug is read straight after this load, to decide whether
+  # the member is already there and to compose the new list, and again by step
+  # 6 to mint the login row - so an entities.d row line p_slug="operator" made
+  # step 5 answer "already done" about somebody else's membership and minted
+  # the invited person's login against the name the row had chosen. The fork
+  # closes p_slug, ent_slug, login_slug, acct_slug, want_json and every other
+  # local at once, not just the ones a reader thought to name.
+  #
+  # ALL FOUR FIELDS COME BACK, because _entity_members_replace composes the row
+  # out of what the loader left behind: a crossing that carried only MEMBERS
+  # would rewrite the entity with its NAME, MANAGED_BY and MCP_ASSETS emptied.
+  # THE SENTINEL IS WHAT MAKES FOUR LINES READABLE AS FOUR: command
+  # substitution strips trailing newlines, so an empty MCP_ASSETS would
+  # otherwise collapse the last field into the one before it. A field carrying
+  # a newline of its own pushes the sentinel off line five - refused here, in
+  # the same words and with the same rc the writer's own emit would answer with
+  # further down.
+  local ent_row ent_end ent_over
+  ent_row="$( registry_entity_load "$ent_slug" >/dev/null 2>&1 \
+              && printf '%s\n%s\n%s\n%s\nok\n' \
+                   "$ENTITY_NAME" "$ENTITY_MEMBERS" "$ENTITY_MANAGED_BY" "$ENTITY_MCP_ASSETS" )" || {
     _redeem_fail "step 5 (membership): entity '$ent_slug' does not load" 78; return 78; }
+  { IFS= read -r ENTITY_NAME
+    IFS= read -r ENTITY_MEMBERS
+    IFS= read -r ENTITY_MANAGED_BY
+    IFS= read -r ENTITY_MCP_ASSETS
+    IFS= read -r ent_end
+    IFS= read -r ent_over
+  } <<EOF
+$ent_row
+EOF
+  if [ "$ent_end" != "ok" ] || [ -n "$ent_over" ]; then
+    _redeem_fail "step 5 (membership): entity '$ent_slug' carries a control character or newline in one of its fields" 64
+    return 64
+  fi
   case " $ENTITY_MEMBERS " in
     *" $p_slug "*) _redeem_note 5 membership "already done" ;;
     *)
