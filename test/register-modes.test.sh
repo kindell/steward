@@ -239,10 +239,18 @@ REG_SRC="$here/lib/registry.sh"
 # _resolver_table - one line per registry_*dir function in lib/registry.sh, as
 # "<function><TAB><body with comments stripped>". A comment is not code, and a
 # register named only in prose must not enter the derivation.
+#
+# THE OPTIONAL UNDERSCORE AND THE OPTIONAL SPACE are both real bash and both
+# were invisible to the first pattern: `registry_x_dir ()` is the same function
+# as `registry_x_dir()`, and a private `_registry_x_dir` that roots a path at
+# the estate is a path the code resolves whoever is allowed to call it. The
+# leading underscore is KEPT in the name rather than stripped - the name in the
+# failure message should be the name in the file, and the guarded-noun lookup
+# below asks for `registry_<noun>_dir` exactly, which a private helper is not.
 _resolver_table() {
   awk '
-    /^registry_[a-z_]*dir\(\)/ {
-      fn=$0; sub(/\(\).*/,"",fn)
+    /^_?registry_[a-z_]*dir[[:space:]]*\(\)/ {
+      fn=$0; sub(/[[:space:]]*\(\).*/,"",fn)
       line=$0; sub(/#.*/,"",line)
       if ($0 ~ /}[[:space:]]*$/) { print fn "\t" line; next }   # a one-line body
       inb=1; body=""; next
