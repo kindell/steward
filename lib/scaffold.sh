@@ -66,6 +66,20 @@ estate_scaffold() {
   # scaffolded estate answered "the invite register is not readable", rc 78, and
   # the first step of onboarding could not be taken at all.
   #
+  # principals.d IS THE FOURTH, AND IT IS THE VERY NEXT STEP OF THAT SAME PATH.
+  # `steward invite redeem` writes the person's principal row at step 2, through
+  # registry_row_write, which refuses a register that does not exist - so with
+  # invites.d fixed the door opened and the corridor behind it was still walled
+  # up: issue worked, redeem answered "the principal register is not readable",
+  # rc 78, and nobody could complete an onboarding on a fresh estate.
+  #
+  # FOUR REGISTERS FOUND ONE AT A TIME, EACH BY SOMEBODY READING TWO LISTS SIDE
+  # BY SIDE, is the reason test/register-modes.test.sh no longer keeps a list of
+  # its own: it DERIVES the wanted set from the registry_*dir resolvers that
+  # name these directories, so the next register to be read by a loader turns
+  # that test red until this line grows to match. A list is not maintained by
+  # care; it is maintained by something that measures it.
+  #
   # EVERY MODE HERE IS PINNED, NEVER LEFT TO THE AMBIENT umask. Measured on a
   # Debian/Ubuntu host, whose default umask is 002 (user-private groups): every
   # register came out 0775, and the invite and login loaders REFUSE a group- or
@@ -95,12 +109,19 @@ estate_scaffold() {
     || { echo "scaffold: could not create $dir" >&2; return 70; }
   local _sc_reg _sc_mode
   for _sc_reg in estate sessions.d entities.d projects.d mcp.d jobs.d \
-                 services.d browsers.d hosts.d accounts.d logins.d invites.d; do
+                 services.d browsers.d hosts.d accounts.d principals.d \
+                 logins.d invites.d; do
     # 0700 FOR THE TWO REGISTERS WHOSE LOADERS CHECK. logins.d and invites.d
     # carry security artifacts - which account pays, and the digest of a
     # one-time link token - and their readers refuse a loose directory. Pinning
     # them at 0700 means the check they make is a check the product itself can
     # always pass.
+    #
+    # principals.d IS 0755, THE SAME CLASS AS accounts.d. It carries person
+    # rows - a name, and the tailnet or OIDC logins that identify the human -
+    # which are identifiers, not secrets: the login word is what the desk gate
+    # MATCHES against, never what it accepts as proof, and no loader refuses
+    # this register for being readable.
     case "$_sc_reg" in
       logins.d|invites.d) _sc_mode=0700 ;;
       *)                  _sc_mode=0755 ;;
