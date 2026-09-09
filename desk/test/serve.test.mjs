@@ -1513,6 +1513,34 @@ describe('the front listener', () => {
     assert.equal(r.code, 78, r.err);
     assert.ok(/origin/.test(r.err), r.err);
   });
+
+  // A PROVIDER CONF THE LOADER WILL NOT TAKE STOPS THE FRONT, AND SAYS WHICH
+  // FILE AND WHICH KEY. The refusal itself is the loader's, but nothing
+  // measured that it reaches the operator as a startup failure rather than as
+  // a warning the front then runs past - a change that turned the loader's
+  // throw into a log and a skip would leave every other test green. The
+  // well-formed sibling in the same directory does not rescue it: the whole
+  // front refuses, exactly as it does for a bad DISCOVERY.
+  it('refuses to start when a provider names an ENDPOINT_ORIGINS the loader will not take', async () => {
+    const root = join(T, 'front-badorigins');
+    buildEstate(root);
+    appendFileSync(join(root, 'estate', 'steward.conf'),
+      'DESK_ORIGIN="' + FRONT_ORIGIN + '"\nDESK_SESSION_KEY_FILE="' + KEYFILE + '"\n');
+    mkdirSync(join(root, 'desk', 'providers.d'), { recursive: true });
+    const rows = 'ISSUER="' + stub.issuer + '"\nDISCOVERY="' + stub.origin + '/.well-known/openid-configuration"\n' +
+      'CLIENT_ID="cid"\nCLIENT_SECRET_FILE="' + join(T, 'secret') + '"\n';
+    writeFileSync(join(root, 'desk', 'providers.d', 'good.conf'), rows);
+    writeFileSync(join(root, 'desk', 'providers.d', 'bad.conf'), rows + 'ENDPOINT_ORIGINS="http://tokens.example.test"\n');
+    const r = await runToExit(frontEnv({
+      STEWARD_ESTATE_ROOT: root,
+      STEWARD_DESK_SOCK: join(T, 'front-badorigins.sock'),
+      STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:18445',
+      STEWARD_DESK_FRONT_PEER: '127.0.0.1'
+    }));
+    assert.equal(r.code, 78, r.err);
+    assert.match(r.err, /providers\.d\/bad\.conf/, r.err);
+    assert.match(r.err, /ENDPOINT_ORIGINS/, r.err);
+  });
 });
 
 // A FRONT WHOSE PEER IS NOT US: every request is refused before identity is
