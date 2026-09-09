@@ -1350,6 +1350,71 @@ describe('the front listener', () => {
     }
   });
 
+  // AN UNBOUND IDENTITY IS NAMED ON STDERR, NOT ON THE WIRE. The token
+  // verifies - this is a real subject a real provider vouched for - but no
+  // principal row claims it, so the browser gets the same silent 403 every
+  // other refusal in this function gets, and the operator gets the one line
+  // that lets them write the row: the identity exactly as it belongs in
+  // OIDC_LOGIN, with no oidc: prefix, no email, no name, no token.
+  //
+  // Verified by mutation: with the console.error line removed, the stderr
+  // assertion below goes red while every other assertion in this test stays
+  // green - the response to the browser does not move at all.
+  it('an identity no row binds is named on stderr, so the operator can write the row - the browser learns nothing new', async () => {
+    const errBefore = peerHandle.getErr().length;
+    const go = await front('GET', '/desk/auth/login?provider=stub', visitor(26));
+    assert.equal(go.status, 303);
+    const state = cookieOf(go).find((c) => c.startsWith('__Host-desk-oauth='));
+    assert.ok(state);
+    const back = await fetch(go.headers.location, { redirect: 'manual' });
+    const cb = new URL(back.headers.get('location'));
+    // Set only now: mintIdToken reads stub.lastAuthorize for the nonce, which
+    // this flow's own /authorize hit (just above) just populated. Setting it
+    // any earlier would mint a token for a stale or absent nonce and this
+    // login would be refused there instead, never reaching the code under
+    // test.
+    stub.tokenResponse = { id_token: stub.mintIdToken({ sub: 'nobody-9' }), token_type: 'Bearer' };
+    let done;
+    try {
+      done = await front('GET', cb.pathname + cb.search, from(26, { cookie: state }));
+    } finally {
+      stub.tokenResponse = null;
+    }
+    assert.equal(done.status, 403);
+    assert.equal((done.headers['set-cookie'] || []).some((c) => c.startsWith('__Host-desk-session=')), false,
+      'an unbound identity must set no session cookie');
+    assert.ok(cookieOf(done).includes('__Host-desk-oauth='), 'the state cookie must be cleared with the refusal');
+
+    const newErr = peerHandle.getErr().slice(errBefore);
+    const lines = newErr.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1, 'exactly one stderr line for the unbound identity: ' + JSON.stringify(newErr));
+    assert.equal(lines[0], 'desk: no principal binds stub:nobody-9', lines[0]);
+
+    // THE CLIENT-VISIBLE RESPONSE IS BYTE-IDENTICAL TO ANY OTHER REFUSAL THIS
+    // SAME FUNCTION PRODUCES. Compared against the callback's other refusal
+    // path (no state cookie at all, see the test above this block), headers
+    // minus date, so this change is provably stderr-only.
+    const other = await front('GET', '/desk/auth/callback?code=CODE&state=x', visitor(29));
+    assert.equal(other.status, done.status);
+    const stripDate = (h) => { const c = Object.assign({}, h); delete c.date; return c; };
+    assert.deepEqual(stripDate(done.headers), stripDate(other.headers));
+    assert.equal(done.body, other.body);
+
+    // A BOUND IDENTITY - THE ORDINARY SUCCESSFUL LOGIN - PRODUCES NO SUCH
+    // LINE AT ALL.
+    const errBefore2 = peerHandle.getErr().length;
+    const go2 = await front('GET', '/desk/auth/login?provider=stub', visitor(27));
+    assert.equal(go2.status, 303);
+    const state2 = cookieOf(go2).find((c) => c.startsWith('__Host-desk-oauth='));
+    assert.ok(state2);
+    const back2 = await fetch(go2.headers.location, { redirect: 'manual' });
+    const cb2 = new URL(back2.headers.get('location'));
+    const done2 = await front('GET', cb2.pathname + cb2.search, from(27, { cookie: state2 }));
+    assert.equal(done2.status, 303, 'the default stub subject (sub-1) is bound to principal e');
+    const newErr2 = peerHandle.getErr().slice(errBefore2);
+    assert.ok(!/no principal binds/.test(newErr2), 'a bound identity must log no such line: ' + JSON.stringify(newErr2));
+  });
+
   // A method this desk would refuse anyway must not cost a rate-limit hit:
   // otherwise a HEAD sweep of the login path locks a visitor out of logging
   // in. HEAD is in the loop because that is exactly what used to happen - it

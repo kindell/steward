@@ -754,7 +754,10 @@ async function authCallback(url, cookies, res) {
   const identity = identityOf(provider, claims);
   const { slug, outage } = principalForIdentityCached('oidc', identity.slice('oidc:'.length));
   if (outage) return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS);
-  if (!slug) return refuse(); // invitation binding attaches here (services plan)
+  if (!slug) {
+    console.error('desk: no principal binds ' + identity.slice('oidc:'.length));
+    return refuse(); // invitation binding attaches here (services plan)
+  }
   // THE COOKIE CARRIES THE IDENTITY, NOT THE SLUG THIS LOGIN RESOLVED TO. The
   // slug is today's answer and it is asked again on every request, at most
   // five seconds old (principalForIdentityCached); minting it
