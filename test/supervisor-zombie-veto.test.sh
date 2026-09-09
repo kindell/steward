@@ -58,6 +58,10 @@
 #  13. The grace's cost is bounded and STATED: a human idle longer than the
 #      window loses the pane, and the log says how long they were silent and
 #      what the window was.
+#  14. AN ACTIVITY VALUE THIS SUPERVISOR CANNOT DO ARITHMETIC ON MUST NOT
+#      DISCARD A LIVE HUMAN'S VETO. A fatal arithmetic error aborts the whole
+#      client loop and everything after it, including the deferral - so the
+#      veto fails OPEN on a value it merely failed to read.
 #
 # NOTHING HERE TOUCHES THE MACHINE: tmux, pgrep and ps are shims over a fixture
 # process table, and no tmux, ssh or sudo binary is ever reached.
@@ -452,6 +456,25 @@ out13="$(cat "$T/out")"
 if repaired; then ok "13a a human idle past the window loses the pane"; else bad "13a a human idle past the window loses the pane" "tmux log: $(cat "$TMUX_LOG")"; fi
 has "13b the log states the window that was applied" "$out13" "past the ${GRACE}s grace"
 has "13c and the veto says it measures idleness"     "$out13" "the veto measures IDLENESS"
+
+echo "== 14. an activity value that will not do arithmetic cannot discard a human =="
+# THE VETO MUST FAIL CLOSED, AND ARITHMETIC FAILS OPEN. _is_epoch accepts any
+# run of digits, and bash reads a leading-zero run as OCTAL: 0888, 08 and 09 are
+# invalid octal, and an arithmetic EXPANSION error is fatal to the whole
+# `if [ -n "$_clients" ]` compound - the debris print, the deferral AND the
+# empty-rows guard are all skipped, and execution resumes at the kill. Measured
+# 2026-09-09: a human idle 5s listed FIRST, plus one client whose activity is
+# 0888, gave REPAIRED with the human's veto silently discarded and only a bash
+# error in the journal. The property is that a value this supervisor cannot
+# measure never outranks a human it can - not that the arithmetic is right.
+arm
+client "$HUMAN_TTY" "$(( NOW - 5 ))" "$HUMAN_PID"
+client "$GHOST_TTY" "0888" "$GHOST_PID"
+run
+out14="$(cat "$T/out")"
+if untouched; then ok "14a a live human's veto survives an unarithmetic sibling"; else bad "14a a live human's veto survives an unarithmetic sibling" "tmux log: $(cat "$TMUX_LOG")"; fi
+has   "14b the deferral still names the human" "$out14" "$HUMAN_TTY"
+hasnt "14c and no arithmetic error escaped to the journal" "$out14" "value too great for base"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
