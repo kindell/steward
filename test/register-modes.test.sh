@@ -502,6 +502,51 @@ is "the principal row is on disk" "$([ -f "$E2E/principals.d/bo.conf" ] && echo 
 is "the account row is on disk"   "$([ -f "$E2E/accounts.d/bo-host-a.conf" ] && echo yes || echo no)" "yes"
 is "and every register is still right afterwards" "$(registers_wrong "$E2E")" ""
 
+# -- 7. THE OPERATOR'S HALF: AN ESTATE THAT ALREADY EXISTS IS NOT REPAIRED ----
+#
+# `mkdir -m` applies its mode ONLY when the call is the one creating the
+# directory. That is deliberate - an estate somebody tightened by hand is left
+# alone - but it has a consequence nothing said out loud: a host that scaffolded
+# its estate BEFORE the modes were pinned keeps 0775 on every register forever,
+# and the eight registers no loader checks stay group-writable with nothing
+# measuring or mentioning them. Measured: chmod 777 on a register, re-scaffold,
+# still 777. One such Linux host exists.
+#
+# The fact lived only in a comment inside lib/scaffold.sh, which is the one
+# place the operator of that host will not look. It is now in the README, and
+# BOTH HALVES OF THAT ARE MEASURED HERE: that the paragraph exists, and that the
+# repair it prints actually repairs a loose estate. Documentation asserted as
+# prose is documentation nobody has run.
+echo "== the README says the modes are pinned, and its repair works =="
+DOC="$(cat "$here/README.md")"
+has "the README names the pinned modes" "$DOC" "invites.d\` and \`logins.d\` at \`0700\`"
+has "and says they are applied only at creation" "$DOC" "only when the scaffold creates"
+has "and says an older estate is not repaired" "$DOC" "is not repaired"
+has "and names the repair" "$DOC" "chmod g-w,o-w"
+
+# THE ESTATE A PRE-FIX HOST HAS. Not a hypothetical: 0775 on every register is
+# exactly what the Debian default umask produced before the modes were pinned.
+( umask 022; build_estate "$FX/legacy" ) || bad "the legacy estate builds" "rc $?"
+chmod 0775 "$FX/legacy"/*.d
+is "an estate loosened the way a pre-fix host had it is caught, every register" \
+   "$(scaffold_loose "$FX/legacy" | grep -c 'is group- or other-writable')" "$sn"
+
+# AND THE README'S OWN COMMANDS ARE WHAT IS RUN - lifted out of the file, not
+# retyped here, so a repair that stops working in the README stops working in
+# this test.
+repair="$(grep -E '^chmod ' "$here/README.md")"
+rn="$(printf '%s\n' "$repair" | grep -c .)"
+if [ "$rn" -ge 1 ]; then ok "the README's repair is $rn commands"
+else bad "the README's repair is at least one command" "none found, so the run below proves nothing"; fi
+rrc=0; rout="$( ESTATE="$FX/legacy"; export ESTATE; eval "$repair" 2>&1 )" || rrc=$?
+is "running the README's repair exits 0" "$rrc" "0"
+is "and it complains about nothing"      "$rout" ""
+is "and no register is group- or other-writable afterwards" \
+   "$(scaffold_loose "$FX/legacy")" ""
+for d in invites.d logins.d; do
+  is "and the repaired $d is back to 700" "$(mode_of "$FX/legacy/$d")" "700"
+done
+
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
