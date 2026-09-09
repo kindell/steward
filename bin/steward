@@ -3179,10 +3179,24 @@ cmd_invite_issue() {
     rm -f "$oerr"; return 78; }
   rm -f "$oerr"
 
-  local id token digest now expires
-  id="$(registry_invite_mint_id)" || return 70
-  token="$(registry_invite_mint_token)" || return 70
-  digest="$(printf '%s' "$token" | _registry_sha256)" || return 78
+  # THE SAME ENVELOPE FOR THE THREE THAT FOLLOW, and for the same reason. All
+  # three were `|| return 70/78` with the library's prose on stderr and an empty
+  # stdout, which is precisely what the origin refusal above was fixed for
+  # eleven lines earlier in this function. The reason text stays the library's;
+  # only the envelope is this verb's. NOTHING HERE ECHOES THE TOKEN: the mint's
+  # own refusals name what it could not do, never what it made.
+  local id token digest now expires merr
+  merr="$(mktemp)" || { _reg_fail "$want_json" "steward invite issue: cannot create a temporary file"; return 70; }
+  id="$(registry_invite_mint_id 2>"$merr")" || {
+    _reg_fail "$want_json" "steward invite issue: $(tr '\n' ' ' < "$merr")"
+    rm -f "$merr"; return 70; }
+  token="$(registry_invite_mint_token 2>"$merr")" || {
+    _reg_fail "$want_json" "steward invite issue: $(tr '\n' ' ' < "$merr")"
+    rm -f "$merr"; return 70; }
+  digest="$(printf '%s' "$token" | _registry_sha256 2>"$merr")" || {
+    _reg_fail "$want_json" "steward invite issue: $(tr '\n' ' ' < "$merr")"
+    rm -f "$merr"; return 78; }
+  rm -f "$merr"
   now="$(date -u +%s)"
   expires=$((now + days * 86400))
 

@@ -172,6 +172,26 @@ is  "and --json still gets an object" "$(printf '%s' "$out" | jq -r '.ok' 2>/dev
 has "whose reason names DESK_ORIGIN" "$(printf '%s' "$out" | jq -r '.reason' 2>/dev/null)" "DESK_ORIGIN"
 is  "and no row was written" "$(ls "$R4/invites.d" | wc -l | tr -d ' ')" "0"
 
+# AND SO DO THE THREE MINTS BELOW IT. registry_invite_mint_id,
+# registry_invite_mint_token and _registry_sha256 were each `|| return 70/78`
+# with the library's prose on stderr and an EMPTY stdout - exactly the defect
+# the DESK_ORIGIN refusal above was fixed for, eleven lines earlier in the same
+# function. A front end parsing this got a parse error where every other
+# refusal hands it {ok:false,reason}.
+R9="$T/estate9"; mkroot "$R9"
+mkdir -p "$T/nohash"
+for tool in sha256sum shasum; do
+  printf '#!/bin/bash\necho "%s: broken on this host" >&2\nexit 3\n' "$tool" > "$T/nohash/$tool"
+  chmod 755 "$T/nohash/$tool"
+done
+out="$(PATH="$T/nohash:$PATH" STEWARD_ESTATE_ROOT="$R9" bash "$S" invite issue --name "Hex Example" \
+       --principal hex --entity acme --host host-a --json 2>/dev/null)"; rc=$?
+is  "a digest tool that runs and fails is rc 78" "$rc" "78"
+is  "and --json still gets an object" "$(printf '%s' "$out" | jq -r '.ok' 2>/dev/null)" "false"
+has "whose reason is the library's own words" "$(printf '%s' "$out" | jq -r '.reason' 2>/dev/null)" "sha256sum"
+is  "and stdout is exactly one value" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1"
+is  "and no row was written" "$(ls "$R9/invites.d" | wc -l | tr -d ' ')" "0"
+
 R5="$T/estate5"; mkroot "$R5"; rmdir "$R5/invites.d"
 out="$(STEWARD_ESTATE_ROOT="$R5" bash "$S" invite ls --json 2>/dev/null)"; rc=$?
 is  "ls without a register is rc 78" "$rc" "78"
