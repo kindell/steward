@@ -80,24 +80,32 @@ _scaffold_registers() { # <path to lib/scaffold.sh>
   ' "$1" | tr ' \t' '\n\n' | grep '\.d$' | sort -u
 }
 
-# scaffold_loose <estate> - one line per register the scaffold's list names
+# dir_loose <name> <path> - the predicate, on ONE directory addressed by path.
+# The estate ROOT is not a member of the scaffold's list - the scaffold creates
+# it on its own, before the loop - so it cannot be measured by walking that
+# list, and it is exactly as load-bearing as the directories inside it:
+# renaming a register is as good as writing to it. Silence is the pass.
+dir_loose() {
+  local r="$1" p="$2" m
+  if [ ! -d "$p" ]; then printf '%s missing\n' "$r"; return; fi
+  m="$(mode_of "$p")"
+  # THREE OCTAL DIGITS OR THE MEASUREMENT IS NOT ONE - the rule section 5
+  # states, for the same reason: stat answers "2755" for a setgid directory
+  # and nothing at all when it cannot look, and both would slip past the
+  # digit test below as "not group-writable".
+  case "$m" in
+    [0-7][0-7][0-7]) ;;
+    *) printf '%s mode "%s" is not three octal digits\n' "$r" "$m"; return ;;
+  esac
+  case "$m" in ?[2367]?|??[2367]) printf '%s mode %s is group- or other-writable\n' "$r" "$m" ;; esac
+}
+
+# scaffold_loose <estate> - one line per directory the scaffold's list names
 # that the estate gets wrong. SILENCE IS THE PASS, and the lines are the
-# failure message, so a broken estate names the register rather than a count.
+# failure message, so a broken estate names the directory rather than a count.
 scaffold_loose() {
-  local est="$1" r m
-  for r in $scaffolded; do
-    if [ ! -d "$est/$r" ]; then printf '%s missing\n' "$r"; continue; fi
-    m="$(mode_of "$est/$r")"
-    # THREE OCTAL DIGITS OR THE MEASUREMENT IS NOT ONE - the rule section 5
-    # states, for the same reason: stat answers "2755" for a setgid directory
-    # and nothing at all when it cannot look, and both would slip past the
-    # digit test below as "not group-writable".
-    case "$m" in
-      [0-7][0-7][0-7]) ;;
-      *) printf '%s mode "%s" is not three octal digits\n' "$r" "$m"; continue ;;
-    esac
-    case "$m" in ?[2367]?|??[2367]) printf '%s mode %s is group- or other-writable\n' "$r" "$m" ;; esac
-  done
+  local est="$1" r
+  for r in $scaffolded; do dir_loose "$r" "$est/$r"; done
 }
 
 echo "== the scaffold pins every register's mode =="
@@ -108,6 +116,19 @@ sn=0; for r in $scaffolded; do sn=$((sn+1)); done
 if [ "$sn" -ge 1 ]; then ok "the scaffold's own list names $sn registers"
 else bad "the scaffold's own list names at least one register" \
          "it named none, so every assertion built on it is vacuous"; fi
+
+# THE THIRTEENTH DIRECTORY IS NOT SPELLED `.d`. The scaffold's loop names
+# `estate` alongside the twelve registers, and it is the directory that holds
+# steward.conf at mode 600 - the one file on the estate whose mode is a
+# decision. A filter written as `\.d$` drops it, so the member of the
+# scaffold's own list with the most to lose was the one member nothing
+# measured. Named here rather than left to the count, so that dropping it
+# again fails with the reason instead of with an arithmetic surprise.
+case " $scaffolded " in
+  *" estate "*) ok "the scaffold's list includes the estate directory itself" ;;
+  *) bad "the scaffold's list includes the estate directory itself" \
+         "it names only: $scaffolded" ;;
+esac
 for u in 002 077; do
   ( umask "$u"; build_estate "$FX/e-$u" ) || bad "scaffold succeeds under umask $u" "rc $?"
   for d in logins.d invites.d; do
@@ -524,12 +545,17 @@ has "and says they are applied only at creation" "$DOC" "only when the scaffold 
 has "and says an older estate is not repaired" "$DOC" "nothing repairs it"
 has "and names the repair" "$DOC" "chmod g-w,o-w"
 
-# THE ESTATE A PRE-FIX HOST HAS. Not a hypothetical: 0775 on every register is
-# exactly what the Debian default umask produced before the modes were pinned.
+# THE ESTATE A PRE-FIX HOST HAS. Not a hypothetical: 0775 on every directory
+# the scaffold makes is exactly what the Debian default umask produced before
+# the modes were pinned - and that umask applied to the ESTATE ROOT and to
+# `estate/` too, not only to the twelve `.d` registers. An estate loosened on
+# the registers alone is a fixture that flatters the remedy.
 ( umask 022; build_estate "$FX/legacy" ) || bad "the legacy estate builds" "rc $?"
-chmod 0775 "$FX/legacy"/*.d
+chmod 0775 "$FX/legacy" "$FX/legacy"/estate "$FX/legacy"/*.d
 is "an estate loosened the way a pre-fix host had it is caught, every register" \
    "$(scaffold_loose "$FX/legacy" | grep -c 'is group- or other-writable')" "$sn"
+is "and the root it all sits in is caught too" \
+   "$(dir_loose "the estate root" "$FX/legacy" | grep -c 'is group- or other-writable')" "1"
 
 # AND THE README'S OWN COMMANDS ARE WHAT IS RUN - lifted out of the file, not
 # retyped here, so a repair that stops working in the README stops working in
@@ -543,6 +569,13 @@ is "running the README's repair exits 0" "$rrc" "0"
 is "and it complains about nothing"      "$rout" ""
 is "and no register is group- or other-writable afterwards" \
    "$(scaffold_loose "$FX/legacy")" ""
+# AND THE DIRECTORY THE REMEDY IS EASIEST TO FORGET. A repair that globs
+# `"$ESTATE"/*.d` reports success having left the estate root and `estate/` -
+# which holds steward.conf - exactly as loose as it found them. That is the
+# class of defect this branch exists to close, so it is asserted separately
+# from the loop: the root cannot be reached by walking the scaffold's list.
+is "and neither can the estate root be written by others" \
+   "$(dir_loose "the estate root" "$FX/legacy")" ""
 for d in invites.d logins.d; do
   is "and the repaired $d is back to 700" "$(mode_of "$FX/legacy/$d")" "700"
 done
