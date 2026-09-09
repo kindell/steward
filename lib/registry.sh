@@ -1740,15 +1740,27 @@ registry_row_replace() {
 # present is a REFUSAL, never an empty string: an empty digest compared against
 # a stored one would make every token match nothing, which reads as "wrong
 # token" instead of "this machine cannot check tokens".
+#
+# AND A TOOL THAT RAN AND FAILED IS NOT A TOOL THAT IS NOT THERE. Piping into
+# `cut` made this function return CUT'S status, and cut exits 0 on empty input:
+# a sha256sum that died came back rc 0 with an empty digest, and the callers
+# were then fail-closed only by luck - the invite loader's ^[0-9a-f]{64}$
+# refused the write at issue time, and at redeem the empty lookup answered "no
+# open invitation matches this token", a wrong-token message for a broken
+# machine. The digest is taken first, and its status is this function's.
 _registry_sha256() {
+  local d
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | cut -d' ' -f1
+    d="$(sha256sum)" || { echo "registry: REFUSING - sha256sum ran and failed, so nothing here can be digested" >&2; return 70; }
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | cut -d' ' -f1
+    d="$(shasum -a 256)" || { echo "registry: REFUSING - shasum ran and failed, so nothing here can be digested" >&2; return 70; }
   else
     echo "registry: REFUSING - no sha256 tool on PATH (looked for sha256sum and shasum)" >&2
     return 78
   fi
+  # BOTH TOOLS PRINT "<hex>  <name>", so the digest is everything up to the
+  # first space - the same field `cut -d' ' -f1` took.
+  printf '%s\n' "${d%% *}"
 }
 
 # registry_entity_write <slug> <content> <validate_fn> — THIN WRAPPER over

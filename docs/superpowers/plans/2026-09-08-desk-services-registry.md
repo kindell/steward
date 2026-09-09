@@ -710,7 +710,7 @@ esac
 - Produces:
   - `registry_row_replace <dir> <slug> <content> <validate_fn> <readback_fn> <label>` - the in-place twin of `registry_row_write`. Same lock, stage, validate, chmod, readback. rc 64 invalid slug, rc 65 the destination does NOT exist (there is nothing to replace) or is a symlink, rc 75 lock held, rc 78 the register directory is unreadable, rc 70 any write/validate/publish/readback failure. On a readback failure the PREVIOUS content is restored and the function refuses.
   - `registry_entity_replace <slug> <content> <validate_fn>` - the entity-register wrapper over it.
-  - `_registry_sha256` - reads stdin, prints the lowercase hex digest on stdout. rc 78 when neither `sha256sum` nor `shasum` is on PATH.
+  - `_registry_sha256` - reads stdin, prints the lowercase hex digest on stdout. rc 78 when neither `sha256sum` nor `shasum` is on PATH; rc 78 is "this machine cannot check tokens", not "the token is wrong". **rc 70 when the tool that IS there runs and fails** - piping into `cut` made the function return cut's status, and cut exits 0 on empty input, so a broken hash tool answered rc 0 with an empty digest and left every caller fail-closed by luck rather than by contract.
   - `registry_desk_origin` - the estate's `DESK_ORIGIN` value (form `^https?://[A-Za-z0-9.-]+(:[0-9]+)?$`), or rc 78 with the standard "an estate's names are never guessed" refusal.
 
 - [ ] **Step 1: Write the failing test**

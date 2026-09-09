@@ -3660,7 +3660,7 @@ cmd_invite_redeem() {
   # -- STEP 1: the token, the row, and the two refusals ---------------------
   local digest id
   digest="$(printf '%s' "$token" | _registry_sha256)" || {
-    _redeem_fail "no sha256 tool on PATH, so the token cannot be digested" 78; return 78; }
+    _redeem_fail "the token could not be digested on this machine - either no sha256 tool is on PATH, or the one that is there ran and failed; the refusal above says which" 78; return 78; }
   id="$(registry_invite_for_digest "$digest" 2>/dev/null)" || id=""
   if [ -z "$id" ]; then
     # THE SAME ANSWER FOR WRONG, USED AND EXPIRED. A refusal that distinguished

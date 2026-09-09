@@ -175,6 +175,26 @@ mkdir -p "$T/emptybin"
 is  "no digest tool on PATH is rc 78, never an empty digest" "$rc" "78"
 is  "and nothing is printed on stdout" "$(cat "$T/out")" ""
 has "and the refusal names what it looked for" "$(cat "$T/err")" "sha256sum"
+# A HASH TOOL THAT RAN AND FAILED IS NOT A HASH TOOL THAT IS NOT THERE. The rc
+# used to be `cut`'s, and `cut` exits 0 on empty input - so a sha256sum that
+# died came back rc 0 with an EMPTY digest, and every caller then worked with
+# the empty string: at issue the loader's ^[0-9a-f]{64}$ refused the write
+# (rc 70, by luck rather than by contract), and at redeem the empty lookup
+# reported "no open invitation matches this token" - a wrong-token message for
+# a broken machine. Measured with the shim below, before the fix: rc 0, stdout
+# empty. `cut` is on the fake PATH on purpose, so this measures the digest
+# tool's failure and not a missing `cut`.
+CUT_REAL="$(command -v cut)"
+for arm in sha256sum shasum; do
+  mkdir -p "$T/failbin-$arm"
+  ln -sf "$CUT_REAL" "$T/failbin-$arm/cut"
+  printf '#!/bin/bash\nexit 3\n' > "$T/failbin-$arm/$arm"
+  chmod 755 "$T/failbin-$arm/$arm"
+  ( hash -r 2>/dev/null; PATH="$T/failbin-$arm"; printf 'abc' | _registry_sha256 ) >"$T/out" 2>"$T/err"; rc=$?
+  is  "a $arm that runs and fails is rc 70, never an empty digest" "$rc" "70"
+  is  "and nothing is printed on stdout ($arm)" "$(cat "$T/out")" ""
+  has "and the refusal names the tool ($arm)" "$(cat "$T/err")" "$arm"
+done
 
 echo "== the estate names the desk's origin =="
 is  "DESK_ORIGIN resolves" "$(registry_desk_origin)" "https://desk.example.test"
