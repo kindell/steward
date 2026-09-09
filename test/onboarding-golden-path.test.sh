@@ -16,8 +16,8 @@ check(){ local d="$1"; shift; if "$@"; then ok; else bad "$d"; fi; }
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 
 echo "== the scaffold writes a readable estate =="
-estate_scaffold "$FX/e" org=acme team=kindell owner=alice session=home-alice \
-  assets="mail:kindell chromium-rig"
+estate_scaffold "$FX/e" org=acme team=crew owner=alice session=home-alice \
+  assets="mail:acme chromium-rig"
 rc=$?
 check "scaffold rc 0" [ "$rc" -eq 0 ]
 check "estate file written" [ -f "$FX/e/estate/steward.conf" ]
@@ -67,10 +67,10 @@ for d in sessions.d entities.d projects.d jobs.d services.d browsers.d hosts.d i
 done
 
 echo "== validation rejects invalid names =="
-estate_scaffold "$FX/bad-leading-digit" org=9acme team=kindell owner=alice session=home-alice >/dev/null 2>&1
+estate_scaffold "$FX/bad-leading-digit" org=9acme team=crew owner=alice session=home-alice >/dev/null 2>&1
 check "org with leading digit rejected" [ "$?" -eq 64 ]
 
-estate_scaffold "$FX/bad-leading-dash" org=-acme team=kindell owner=alice session=home-alice >/dev/null 2>&1
+estate_scaffold "$FX/bad-leading-dash" org=-acme team=crew owner=alice session=home-alice >/dev/null 2>&1
 check "org with leading dash rejected" [ "$?" -eq 64 ]
 
 echo "== assets is validated, not sourced blind =="
@@ -80,7 +80,7 @@ echo "== assets is validated, not sourced blind =="
 # anything after it runs as shell when the conf is loaded. Prove the field is
 # rejected BEFORE it ever reaches disk, and that the payload never ran.
 rm -f /tmp/SHOULD_NOT_EXIST
-estate_scaffold "$FX/inject" org=acme team=kindell owner=alice session=home-alice \
+estate_scaffold "$FX/inject" org=acme team=crew owner=alice session=home-alice \
   assets='x" ; touch /tmp/SHOULD_NOT_EXIST ; y="z' >/dev/null 2>&1
 inj_rc=$?
 check "malicious assets refused (rc 64)" [ "$inj_rc" -eq 64 ]
@@ -90,38 +90,38 @@ rm -f /tmp/SHOULD_NOT_EXIST
 
 # A HANDFUL OF OTHER INJECTION SHAPES, so the fix is a character allowlist and
 # not a single-pattern patch over the one example the review happened to try.
-estate_scaffold "$FX/inject-semicolon" org=acme team=kindell owner=alice session=s \
+estate_scaffold "$FX/inject-semicolon" org=acme team=crew owner=alice session=s \
   assets='a;touch /tmp/SHOULD_NOT_EXIST_2' >/dev/null 2>&1
 check "semicolon-only assets refused" [ "$?" -eq 64 ]
 check "semicolon payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_2 ]
 rm -f /tmp/SHOULD_NOT_EXIST_2
 
-estate_scaffold "$FX/inject-backtick" org=acme team=kindell owner=alice session=s \
+estate_scaffold "$FX/inject-backtick" org=acme team=crew owner=alice session=s \
   assets='a`touch /tmp/SHOULD_NOT_EXIST_3`' >/dev/null 2>&1
 check "backtick assets refused" [ "$?" -eq 64 ]
 check "backtick payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_3 ]
 rm -f /tmp/SHOULD_NOT_EXIST_3
 
-estate_scaffold "$FX/inject-cmdsub" org=acme team=kindell owner=alice session=s \
+estate_scaffold "$FX/inject-cmdsub" org=acme team=crew owner=alice session=s \
   assets='a$(touch /tmp/SHOULD_NOT_EXIST_4)' >/dev/null 2>&1
 check "command-substitution assets refused" [ "$?" -eq 64 ]
 check "command-substitution payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_4 ]
 rm -f /tmp/SHOULD_NOT_EXIST_4
 
-estate_scaffold "$FX/inject-and" org=acme team=kindell owner=alice session=s \
+estate_scaffold "$FX/inject-and" org=acme team=crew owner=alice session=s \
   assets='a && touch /tmp/SHOULD_NOT_EXIST_5' >/dev/null 2>&1
 check "&&-joined assets refused" [ "$?" -eq 64 ]
 check "&&-joined payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_5 ]
 rm -f /tmp/SHOULD_NOT_EXIST_5
 
-estate_scaffold "$FX/inject-newline" org=acme team=kindell owner=alice session=s \
+estate_scaffold "$FX/inject-newline" org=acme team=crew owner=alice session=s \
   assets="$(printf 'a\ntouch /tmp/SHOULD_NOT_EXIST_6')" >/dev/null 2>&1
 check "newline-embedded assets refused" [ "$?" -eq 64 ]
 check "newline payload never ran" [ ! -e /tmp/SHOULD_NOT_EXIST_6 ]
 rm -f /tmp/SHOULD_NOT_EXIST_6
 
 # A→B MUST STILL WORK: valid assets are not collateral damage from the fix.
-estate_scaffold "$FX/valid-assets" org=acme team=kindell owner=alice session=home-alice \
+estate_scaffold "$FX/valid-assets" org=acme team=crew owner=alice session=home-alice \
   assets="mail:acme chromium-rig" >/dev/null 2>&1
 check "valid assets scaffold rc 0" [ "$?" -eq 0 ]
 check "valid assets written verbatim" \
@@ -129,8 +129,8 @@ check "valid assets written verbatim" \
 
 echo "== the first team is registered =="
 tm="$( export STEWARD_ESTATE_ROOT="$FX/e" STEWARD_REGISTRY_DIR="$FX/e/sessions.d"
-       . "$here/lib/registry.sh"; registry_entity_load kindell >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS" )"
-check "team kindell has member alice" bash -c 'case " $1 " in *" alice "*) exit 0;; *) exit 1;; esac' _ "$tm"
+       . "$here/lib/registry.sh"; registry_entity_load crew >/dev/null 2>&1 && printf '%s' "$ENTITY_MEMBERS" )"
+check "team crew has member alice" bash -c 'case " $1 " in *" alice "*) exit 0;; *) exit 1;; esac' _ "$tm"
 
 echo "== the first session loads and belongs to the team =="
 ( export STEWARD_ESTATE_ROOT="$FX/e" STEWARD_REGISTRY_DIR="$FX/e/sessions.d"
@@ -143,11 +143,11 @@ check "session owner is alice" [ "$owner" = "alice" ]
 # ASSETS is written but not read by registry_load here (that reader is subsystem
 # B) — the declaration lives in the conf, so assert on the file.
 check "session declares its assets" \
-  grep -q 'ASSETS="mail:kindell chromium-rig"' "$FX/e/sessions.d/home-alice.conf"
+  grep -q 'ASSETS="mail:acme chromium-rig"' "$FX/e/sessions.d/home-alice.conf"
 
 echo "== the steward command exposes scaffold as --json =="
-out="$( "$here/bin/steward" scaffold "$FX/j" org=acme team=kindell owner=alice \
-        session=home-alice assets="mail:kindell" --json 2>/dev/null )"
+out="$( "$here/bin/steward" scaffold "$FX/j" org=acme team=crew owner=alice \
+        session=home-alice assets="mail:acme" --json 2>/dev/null )"
 rc=$?
 check "steward scaffold rc 0" [ "$rc" -eq 0 ]
 check "output is valid json" bash -c 'printf "%s" "$1" | jq -e . >/dev/null 2>&1' _ "$out"
@@ -158,7 +158,7 @@ check "json reports ok true" bash -c 'printf "%s" "$1" | jq -e ".ok == true" >/d
 
 # A REFUSAL IS STRUCTURED TOO, never a bare non-zero. A bad org must produce
 # json with ok=false and a reason, so the TUI can render it.
-bad_out="$( "$here/bin/steward" scaffold "$FX/bad" org=ACME team=kindell owner=alice session=s --json 2>/dev/null )"
+bad_out="$( "$here/bin/steward" scaffold "$FX/bad" org=ACME team=crew owner=alice session=s --json 2>/dev/null )"
 check "a refusal is json with ok=false" bash -c 'printf "%s" "$1" | jq -e ".ok == false" >/dev/null 2>&1' _ "$bad_out"
 
 echo

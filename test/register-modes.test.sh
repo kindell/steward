@@ -70,7 +70,7 @@ build_estate() { # <dir>
   local d="$1"
   # shellcheck source=/dev/null
   ( . "$here/lib/scaffold.sh"
-    estate_scaffold "$d" org=acme team=kindell owner=alice session=home-alice ) >/dev/null 2>&1 || return $?
+    estate_scaffold "$d" org=acme team=crew owner=alice session=home-alice ) >/dev/null 2>&1 || return $?
   printf 'DESK_ORIGIN="https://desk.example.test"\n' >> "$d/estate/steward.conf" || return 70
   printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$d/entities.d/acme.conf" || return 70
   printf 'OWNER="alice"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="alice"\n' > "$d/hosts.d/host-a.conf" || return 70
@@ -472,7 +472,7 @@ else
   ( umask 022
     # shellcheck source=/dev/null
     . "$FX/mut/lib/scaffold.sh"
-    estate_scaffold "$FX/mut/e" org=acme team=kindell owner=alice session=home-alice ) >/dev/null 2>&1
+    estate_scaffold "$FX/mut/e" org=acme team=crew owner=alice session=home-alice ) >/dev/null 2>&1
   is "a register the scaffold drops is named, and only it" \
      "$(registers_wrong "$FX/mut/e")" "projects.d missing"
 fi
