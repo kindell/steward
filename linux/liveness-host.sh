@@ -145,7 +145,12 @@ LIVE_NAMES=""; LIVE_ACT=""
 # nothing can descend from one. Treating it as unmeasurable would turn every
 # quiet home into a column of question marks.
 #
-# So the two are told apart by what tmux SAYS, measured against tmux 3.4:
+# So the two are told apart by what tmux SAYS, measured against tmux 3.4. The
+# quiet-home arm is a ONE-PHRASE allowlist, and that is a bounded claim: it holds
+# for tmux >= 3.0, whose wording is `no server running on <path>`. An older tmux
+# (2.x said `failed to connect to server`) sends a quiet home to `omitted`
+# instead - a question mark with a sentence, never a fabricated death, which is
+# the direction this whole branch is built to fail in.
 #   no server running on <path>                     -> nothing is up  (a measurement)
 #   error connecting to <path> (Permission denied)  -> could not ask  (unmeasurable)
 #   error connecting to <path> (No such file ...)   -> could not ask  (unmeasurable)
@@ -155,31 +160,43 @@ LIVE_NAMES=""; LIVE_ACT=""
 # rewords its own message, this branch degrades into naming a probe it could not
 # make - a question mark with a sentence attached - and never into inventing a
 # dead fleet. The safe direction is the one that cannot fabricate a negative.
+# THE DECISION IS MADE ON tmux's OWN WORDS, SO BOTH STREAMS ARE READ AS ONE.
+# An earlier form of this captured stderr to a mktemp file, and that was wrong
+# twice over: it added a dependency this file does not declare in MISSING, and
+# the header two screens up promises the answerer touches nothing - a temp file
+# is a thing touched, and one the caller's own 30-second deadline leaks every
+# time it kills the process group. `2>&1` needs neither.
+#
+# WHICH MAKES THE OUTPUT AMBIGUOUS ON SUCCESS, AND SO IT IS SHAPE-CHECKED. A
+# warning printed by a tmux that still answered would otherwise be read as a
+# session row, and a fabricated session name is worse than a lost warning. Every
+# line must be `<name> <digits>`, which is exactly the -F format asked for;
+# anything else is forwarded to stderr as what it is. The lesson is the one this
+# estate learned from `stat -f` the same morning: a two-shot probe that does not
+# CHECK THE SHAPE of what came back is not a two-shot probe.
 TMUX_REASON=""
 if [ -z "$MISSING" ]; then
-  # The command's own stderr is the evidence that decides the branch, so it is
-  # captured rather than discarded. A home that cannot even hold a temporary
-  # file cannot be probed either, and says so rather than guessing.
-  _lserr="$(mktemp 2>/dev/null)" || _lserr=""
-  if [ -z "$_lserr" ]; then
-    TMUX_REASON="could not create a temporary file to capture tmux's own error"
+  _lsout="$(_tmux list-sessions -F '#{session_name} #{session_activity}' 2>&1)"; _lsrc=$?
+  # Newlines out, and the trailing separator with them: a reason that ends in a
+  # space reaches the desk as a visible one.
+  _lsmsg="$(printf '%s' "$_lsout" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  if [ "$_lsrc" -ne 0 ]; then
+    case "$_lsmsg" in
+      *"no server running"*)
+        # A MEASUREMENT: there is no server, so there are no live sessions.
+        # The empty list below is the honest answer, not a missing one.
+        _ls="" ;;
+      *)
+        TMUX_REASON="tmux could not be asked (rc $_lsrc)${_lsmsg:+: $_lsmsg}" ;;
+    esac
   else
-    _ls="$(_tmux list-sessions -F '#{session_name} #{session_activity}' 2>"$_lserr")"; _lsrc=$?
-    _lsmsg="$(tr '\n' ' ' < "$_lserr")"; rm -f "$_lserr"
-    if [ "$_lsrc" -ne 0 ]; then
-      case "$_lsmsg" in
-        *"no server running"*)
-          # A MEASUREMENT: there is no server, so there are no live sessions.
-          # The empty list below is the honest answer, not a missing one.
-          _ls="" ;;
-        *)
-          TMUX_REASON="tmux could not be asked (rc $_lsrc)${_lsmsg:+: $_lsmsg}" ;;
-      esac
-    fi
-    if [ -z "$TMUX_REASON" ]; then
-      LIVE_NAMES=" $(printf '%s' "$_ls" | awk '{print $1}' | tr '\n' ' ')"
-      LIVE_ACT="$_ls"
-    fi
+    _ls="$(printf '%s\n' "$_lsout" | grep -E '^[^ ]+ [0-9]+$')"
+    _noise="$(printf '%s\n' "$_lsout" | grep -Ev '^[^ ]+ [0-9]+$' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    [ -z "$_noise" ] || echo "liveness-host: tmux answered, and also said: $_noise" >&2
+  fi
+  if [ -z "$TMUX_REASON" ]; then
+    LIVE_NAMES=" $(printf '%s' "$_ls" | awk '{print $1}' | tr '\n' ' ')"
+    LIVE_ACT="$_ls"
   fi
   # SAID ONCE, FOR THE HOME, not once per row. The omission below carries the
   # sentence to the reader of the answer; this carries it to whoever is reading
@@ -375,9 +392,21 @@ for conf in "$RDIR"/*.conf; do
     fi
   else
     # A PANE ROW WHOSE TMUX COULD NOT BE ASKED IS UNMEASURABLE, and is named
-    # rather than answered. Every probe below this line reads the tmux answer,
-    # directly or through the pane walk; without it the three of them would
-    # agree on a confident `down` / `not-running` that nobody measured.
+    # rather than answered. This guard covers the FLEET-WIDE probe only - the one
+    # list-sessions call made once for the home. The per-row list-panes call has
+    # its own guard at the pane walk below, because it can fail on its own long
+    # after this one succeeded.
+    #
+    # THE THIRD READER, `ps` INSIDE is_descendant, IS DELIBERATELY NOT GUARDED,
+    # and the asymmetry is the point rather than an omission. `ps -o ppid= -p
+    # <pid>` exiting non-zero is how that walk NORMALLY ends: the process died
+    # between two steps of the climb, which is a measurement and the common one.
+    # There is no message that separates "this pid is gone" from "ps is broken"
+    # the way `no server running` separates a quiet home from an unreachable
+    # one, so a guard there would have to treat the ordinary case as a failure -
+    # trading a rare false negative for a constant false unknown. A broken `ps`
+    # is caught one level up, by the MISSING check, which is the only place the
+    # distinction can actually be made.
     #
     # THE CODEX BRANCH ABOVE IS DELIBERATELY UNTOUCHED BY THIS. A codex row is a
     # thread, not a pane: it is measured at a socket and a state directory and
@@ -419,7 +448,32 @@ for conf in "$RDIR"/*.conf; do
       # name prefixes a sibling's would otherwise borrow the sibling's panes.
       # EVERY window (-s), never just the current one: a human who opens a second
       # window makes the runtime in window 0 invisible to a current-window probe.
-      panes="$(_tmux list-panes -s -t "=$id" -F '#{pane_pid}' 2>/dev/null || true)"
+      # THE SECOND DOOR, AND IT WAS LEFT OPEN BY THE FIRST VERSION OF THIS FIX.
+      # `|| true` here is the same defect the list-sessions probe above was just
+      # repaired for, and it lands somewhere WORSE: list-sessions said this
+      # session is up, so a failed list-panes produced `tmux: up, agent:
+      # not-running` with an empty stderr - a confident, specific, false report
+      # that a live session has no runtime, which is the exact line an operator
+      # acts on. The closed door at least looked like a question.
+      #
+      # AN UP SESSION ALWAYS HAS A PANE, so an empty answer is as unmeasurable as
+      # a failed one and both take this branch. The likeliest cause of either is
+      # a race - the session ended between the two calls - and "it ended while I
+      # was looking" is still not the same fact as "nothing runs in it".
+      panes="$(_tmux list-panes -s -t "=$id" -F '#{pane_pid}' 2>&1)"; _lprc=$?
+      if [ "$_lprc" -ne 0 ] || [ -z "$panes" ]; then
+        _lpmsg="$(printf '%s' "$panes" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        # NOT ECHOED TO STDERR, UNLIKE THE FLEET-WIDE FAILURE ABOVE, and the
+        # split is deliberate: that one is said once for the home because it
+        # erases every row at once and leaves nothing in the answer to read.
+        # This one is PER ROW and travels inside `omitted`, which is the
+        # document its reader already has. Repeating it on stderr would print
+        # the same sentence once per session in a home where the pane read is
+        # broken for all of them - and a diagnosis said nine times is a
+        # diagnosis nobody finishes reading.
+        add_omit "$id" "cannot probe on $SELF_HOST: tmux listed the session as up but its panes could not be read (rc $_lprc)${_lpmsg:+: $_lpmsg}"
+        continue
+      fi
       if [ -n "$panes" ]; then
         for pid in $RUNTIME_PIDS; do
           for pane in $panes; do

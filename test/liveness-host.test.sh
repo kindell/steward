@@ -530,11 +530,21 @@ echo "== a tmux server that could not be ASKED is unknown, never a home full of 
 # runtime's measurement.
 mkdir -p "$T/bin4"
 for f in systemctl pgrep ps; do cp "$T/bin/$f" "$T/bin4/$f"; done
+#
+# THE STDERR IS HOSTILE ON PURPOSE. This diff is the first thing that carries an
+# estate's FREE TEXT into a reason, and from there into the desk's HTML and into
+# a TSV whose fields are positional. A fixture whose stub says nothing cannot
+# fail the JSON claim below - gut both escapes in _json_str and the suite still
+# reads green. So the stub says the four things that break the three layers: a
+# double quote and a backslash (which close a JSON string), a TAB (which invents
+# a ninth TSV field), and a script tag (which is markup on the page).
 for trc in 1 124; do
-  { printf '#!/bin/bash\n'
-    printf 'echo "$@" >> "${TMUX_LOG:?}"\n'
-    printf 'exit %s\n' "$trc"
-  } > "$T/bin4/tmux"
+  cat > "$T/bin4/tmux" <<EOF
+#!/bin/bash
+echo "\$@" >> "\${TMUX_LOG:?}"
+printf 'no route: peer said "down\\\\here"\tafter-tab <script>alert(1)</script>\n' >&2
+exit $trc
+EOF
   chmod +x "$T/bin4/tmux"
   out4="$( env -i HOME="$T/home" PATH="$T/bin4:/usr/bin:/bin" \
             STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
@@ -552,6 +562,30 @@ for trc in 1 124; do
      "$(printf '%s' "$out4" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-c3" or . == "s-d4")] | length')" "4"
   eq "rc $trc: and the reason names tmux" \
      "$(printf '%s' "$out4" | jq -r '.omitted["s-a1"] | test("tmux")')" "true"
+  # THE FOUR HOSTILE SHAPES, EACH ASSERTED WHERE IT WOULD DO ITS DAMAGE.
+  eq "rc $trc: the quote and backslash survive as data, not as structure" \
+     "$(printf '%s' "$out4" | jq -r '.omitted["s-a1"] | test("down\\\\here")')" "true"
+  eq "rc $trc: the script tag is carried as text" \
+     "$(printf '%s' "$out4" | jq -r '.omitted["s-a1"] | test("<script>")')" "true"
+  # THE TAB IS CARRIED, NOT STRIPPED - and MEASURED rather than assumed, because
+  # the first version of this block asserted the opposite and was wrong. What
+  # matters is not that the character is absent; it is that it never becomes
+  # STRUCTURE at any of the three layers it crosses.
+  #
+  # LAYER ONE, THIS FILE'S JSON: a RAW control character inside a JSON string is
+  # invalid, and one raw tab would take the WHOLE home to `seam-unparseable` -
+  # every row, not just this one. _json_str emits the two-character escape
+  # instead, so the bytes on stdout carry no literal tab anywhere.
+  eq "rc $trc: no literal tab is emitted - it is escaped, not raw" \
+     "$(printf '%s' "$out4" | grep -c "$(printf '\t')")" "0"
+  # LAYER TWO, THE SEAM'S TSV: measured end to end against lib/liveness.sh - the
+  # decoded tab goes through `jq -r @tsv`, which re-escapes it, and the row stays
+  # EIGHT fields. A ninth field would shift `reason` into a column a view reads
+  # as something else.
+  eq "rc $trc: the reason is one TSV field, not two" \
+     "$(printf '%s' "$out4" | jq -r '[.omitted["s-a1"]] | @tsv' | awk -F'\t' '{print NF}')" "1"
+  eq "rc $trc: and the answer still has exactly the four pane rows" \
+     "$(printf '%s' "$out4" | jq -r '.omitted | length')" "4"
   # THE FAILURE IS SAID OUT LOUD. A silent omission is how six causes render as
   # one word with nowhere to look; this file's seam keeps stderr as the channel.
   if [ -s "$T/err-$trc" ]; then ok "rc $trc: the failure is said on stderr"
@@ -564,6 +598,79 @@ for trc in 1 124; do
   # A PROBE THAT FAILED IS NOT A PROBE THAT WAS SKIPPED: it was attempted.
   eq "rc $trc: tmux was actually asked" \
      "$(grep -c 'list-sessions' "$T/tmuxlog-$trc" | tr -d ' ')" "1"
+done
+
+echo "== the SECOND door: a session listed as up whose panes cannot be read =="
+# THE FIX THAT SHIPPED FIRST LEFT THIS ONE OPEN, and a review caught it. It lands
+# somewhere worse than the closed door: list-sessions has already said the
+# session is UP, so a failed list-panes produced `tmux: up, agent: not-running`
+# with an empty stderr. A confident, specific, false report that a live session
+# has no runtime - which is the line an operator acts on, unlike a question mark.
+#
+# The stub answers list-sessions normally and fails ONLY list-panes, so exactly
+# one fact differs from the healthy fixture.
+mkdir -p "$T/bin7"
+for f in systemctl pgrep ps; do cp "$T/bin/$f" "$T/bin7/$f"; done
+cat > "$T/bin7/tmux" <<'EOF'
+#!/bin/bash
+echo "$@" >> "${TMUX_LOG:?}"
+for a in "$@"; do
+  case "$a" in
+    list-sessions) printf 's-a1 1756540800\ns-b2 1756540900\ns-d4 1756541000\ns-g7 1756541100\n'; exit 0 ;;
+    list-panes)    echo "error connecting to /x (Connection refused)" >&2; exit 1 ;;
+  esac
+done
+exit 0
+EOF
+chmod +x "$T/bin7/tmux"
+out7="$( env -i HOME="$T/home" PATH="$T/bin7:/usr/bin:/bin" \
+          STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+          STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+          STEWARD_CODEX_STATE_DIR="$CX" \
+          STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
+          TMUX_LOG="$T/tmuxlog-panes" bash "$CMD" 2>"$T/err-panes" )"
+eq "no up row is answered as not-running" \
+   "$(printf '%s' "$out7" | jq -r '[.sessions[] | select(.tmux == "up") | select(.agent == "not-running")] | length')" "0"
+eq "the three up pane rows are omitted instead" \
+   "$(printf '%s' "$out7" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-d4")] | length')" "3"
+eq "and the reason says the panes could not be read" \
+   "$(printf '%s' "$out7" | jq -r '.omitted["s-a1"] | test("panes could not be read")')" "true"
+# A DOWN ROW NEVER REACHED THE PANE WALK, so it keeps its measurement.
+eq "the row that was never up is still measured" \
+   "$(printf '%s' "$out7" | jq -r '.sessions["s-c3"].agent')" "not-running"
+eq "and the codex rows are untouched" \
+   "$(printf '%s' "$out7" | jq -r '.sessions["s-g7"].agent')" "running"
+
+echo "== pgrep: rc 1 is a measurement, anything above it is not =="
+# THE BRANCH EXISTED AND NOTHING WOULD HAVE NOTICED IF IT STOPPED. pgrep exits 1
+# when nothing matched - the ordinary quiet home - and greater than 1 when it
+# could not look at all. Collapsing the two is the same fabrication as the tmux
+# door: an empty list makes every live pane row read `not-running`.
+mkdir -p "$T/bin8"
+for f in systemctl tmux ps; do cp "$T/bin/$f" "$T/bin8/$f"; done
+for prc in 1 2; do
+  printf '#!/bin/bash\nexit %s\n' "$prc" > "$T/bin8/pgrep"; chmod +x "$T/bin8/pgrep"
+  out8="$( env -i HOME="$T/home" PATH="$T/bin8:/usr/bin:/bin" \
+            STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+            STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+            STEWARD_CODEX_STATE_DIR="$CX" \
+            STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
+            TMUX_LOG="$T/tmuxlog-pg$prc" bash "$CMD" 2>"$T/err-pg$prc" )"
+  if [ "$prc" = 1 ]; then
+    eq "rc 1: nothing matched is a measurement, rows stay in sessions" \
+       "$(printf '%s' "$out8" | jq -r '.sessions | length')" "9"
+    eq "rc 1: and a live pane row honestly reads not-running" \
+       "$(printf '%s' "$out8" | jq -r '.sessions["s-a1"].agent')" "not-running"
+    eq "rc 1: nothing is excused" \
+       "$(printf '%s' "$out8" | jq -r '.omitted | length')" "0"
+  else
+    eq "rc 2: no pane row is invented as not-running" \
+       "$(printf '%s' "$out8" | jq -r '[.sessions[] | select(.tmux != "n/a")] | length')" "0"
+    eq "rc 2: the pane rows are omitted with pgrep named" \
+       "$(printf '%s' "$out8" | jq -r '.omitted["s-a1"] | test("pgrep")')" "true"
+    eq "rc 2: the codex rows still answer" \
+       "$(printf '%s' "$out8" | jq -r '.sessions | length')" "5"
+  fi
 done
 
 echo "== but a home with NO SERVER is measured, not excused =="

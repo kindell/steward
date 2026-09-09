@@ -437,10 +437,10 @@ test('an age that is not a finite non-negative number reads unknown', () => {
 test('an unknown row says why, on every surface that shows liveness', () => {
   const snap = {
     host: 'h', generatedAt: G, viewer: 'a', readAll: true,
-    entities: [], projects: [],
+    entities: [], projects: [{ id: 'p-1', name: 'Proj' }],
     sessions: [{
       id: 's-dark', slug: 'dark', label: 'Dark', owner: 'a', mine: false,
-      domain: null, project: null, runtime: 'claude-code', host: 'h', repo: 'r',
+      domain: null, project: 'p-1', runtime: 'claude-code', host: 'h', repo: 'r',
       liveness: { state: 'unknown', measuredAt: G, ageSeconds: null,
                   reason: 'cannot probe on basement: tmux could not be asked (rc 124)' },
       mcp: []
@@ -451,6 +451,12 @@ test('an unknown row says why, on every surface that shows liveness', () => {
   const page = pageSession(snap, 's-dark');
   assert.ok(page.includes('tmux could not be asked (rc 124)'), page);
   assert.ok(page.includes('<th>why</th>'), page);
+  // THE THIRD SURFACE, AND THE TEST USED TO CLAIM IT WITHOUT TOUCHING IT: the
+  // session TABLE, which pageProject and pageTeam render through livenessWord.
+  // Measured by a review: deleting `+ why(lv)` there left this suite green.
+  // A page reached from a project is where a colleague looks first.
+  const proj = pageProject(snap, 'p-1');
+  assert.ok(proj.includes('tmux could not be asked (rc 124)'), proj);
 });
 
 test('a measured row carries no reason and grows no row for one', () => {
