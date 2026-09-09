@@ -1033,17 +1033,57 @@ runtime_alive_in_session() {
 # suspect flow's responsibility).
 # DEPLOY-DAY RUNBOOK: do a ONE-TIME per-host read-only sweep for
 # --remote-control-labeled claudes running OUTSIDE the declared socket before
-# turning this supervisor on. This reap matches on the label alone (there is
-# no pane to bind to when no tmux session exists), so a same-label claude
-# living in an abandoned default-socket homonym session would be shot as an
-# orphan here. The sweep finds those before the first round can.
+# turning this supervisor on. A claude on ANOTHER socket descends from no pane
+# this function can see, so it is an orphan by this test too. The sweep finds
+# those before the first round can.
+#
+# THE VETO IS THE WHOLE SOCKET'S PANES, NOT THIS SESSION'S. The guard above
+# says only that MY session is gone; it says nothing about anyone else's. The
+# kill set used to be "every pid in this home whose argv matches CLAUDE_PAT",
+# bound to no pane at all — and CLAUDE_PAT is a LABEL, which is not an
+# identity: two rows in one home may carry the same one.
+#
+# MEASURED ON A LIVE LINUX HOST 2026-09-09: two sessions in one home, one uid,
+# the same RC_LABEL. The zombie repair calls kill-session BEFORE spawn_session,
+# so the has-session guard is always false on that path — and each repair
+# SIGTERMed the OTHER session's live claude, which two rounds later became the
+# other's zombie verdict. An alternating mutual kill, 13 destroyed
+# conversations in 55 minutes. The label collision is fixed in its own place
+# (the write-time uniqueness check on a session row), but this function must
+# not depend on labels being unique to avoid killing a live conversation.
+#
+# THE LATENT CASE THIS ALSO CLOSES IS WIDER THAN THE ONE THAT FIRED. An
+# RC-FREE row (RC_LABEL="") sets CLAUDE_PAT='^[^ ]*claude( |$)' — ANY claude in
+# the home. One respawn of such a row would have killed every claude that home
+# was running. No such row exists on the affected host today; the pane binding
+# means none ever can.
+#
+# STRICTLY NARROWER, BY CONSTRUCTION: every candidate that used to be killed is
+# still considered, and the only thing added is a reason to SKIP one. This can
+# kill fewer processes than before, never more — which is the property that
+# makes the change reviewable. The empty pane set (no tmux server, no session
+# anywhere) skips nothing, so the deploy-day sweep case is unchanged.
+#
+# It also makes the function do what its own name already claims: kill a
+# runtime that belongs to NO live pane.
 reap_orphan_claude() {
   tmuxc has-session -t "=$NAME" 2>/dev/null && return 0
-  local pid
+  # EVERY PANE IN EVERY WINDOW OF EVERY SESSION ON THE SOCKET (-a). Not
+  # session_pane_pids: that asks about "=$NAME", which is precisely the
+  # session the caller has just established does not exist.
+  local all_panes; all_panes="$(tmuxc list-panes -a -F '#{pane_pid}' 2>/dev/null)"
+  local pid pane bound
   # STEWARD_KILL overrides only in the test — kill is a bash builtin and
   # cannot be stubbed via PATH, so the test aims it at a script of its own.
   # The default is empty; then the builtin kill runs for real.
   for pid in $(matching_claude_pids); do
+    # is_descendant CLIMBS, so a login prefix or a wrapper shell between the
+    # pane and the runtime does not turn a live conversation into an orphan.
+    bound=""
+    for pane in $all_panes; do
+      is_descendant "$pid" "$pane" && { bound=1; break; }
+    done
+    [ -n "$bound" ] && continue
     ${STEWARD_KILL:-kill} "$pid" 2>/dev/null && echo "session-supervisor: $NAME killed orphan claude $pid (no tmux session)" >&2
   done
 }
