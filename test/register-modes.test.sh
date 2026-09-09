@@ -190,7 +190,8 @@ else bad "the derivation found at least one register" "it found none, so every a
 # the check its loader makes, because anyone who can read the directory can
 # read every row in it.
 guarded=""
-for noun in $(grep -oE 'the [a-z]+ register is group- or other-writable' "$REG_SRC" \
+for noun in $(grep -v '^[[:space:]]*#' "$REG_SRC" \
+              | grep -oE 'the [a-z]+ register is group- or other-writable' \
               | awk '{print $2}' | sort -u); do
   g="$(_registers_in "$(_resolver_table "$REG_SRC" | awk -F'\t' -v f="registry_${noun}_dir" '$1==f{print $2}')")"
   if [ -z "$g" ]; then
@@ -209,6 +210,14 @@ registers_wrong() {
   for r in $derived; do
     if [ ! -d "$est/$r" ]; then printf '%s missing\n' "$r"; continue; fi
     m="$(mode_of "$est/$r")"
+    # THREE OCTAL DIGITS OR THE MEASUREMENT IS NOT ONE. stat answers "2755" for
+    # a setgid directory and nothing at all when it cannot look, and both would
+    # slip past the digit tests below as "not group-writable" - a guard that
+    # passes on an unread mode is the failure this whole suite is about.
+    case "$m" in
+      [0-7][0-7][0-7]) ;;
+      *) printf '%s mode "%s" is not three octal digits\n' "$r" "$m"; continue ;;
+    esac
     case " $guarded " in
       # 0700: the group and other digits are both zero. The loader's own check
       # only refuses WRITE, but a register whose contents are worth that check
