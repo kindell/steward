@@ -36,9 +36,9 @@
 # quota at all - `tokens-written`, `exhausted` - which an estate wants beside
 # the quota rows, grouped and sorted with them, and which used to have no honest
 # word: `unknown` there would have claimed a failed measurement that was never
-# attempted. The spelling is the fleet's (kindell/butler fleet/src/core.js, per
-# butler's reading of it), not a new coinage, so two spellings of one idea do
-# not become two vocabularies. ABSENCE IS STILL `unknown`: usage_for below says
+# attempted. The spelling is the fleet tool's (its core.js already uses it, per
+# the reading of the estate that keeps that tool), not a new coinage, so two
+# spellings of one idea do not become two vocabularies. ABSENCE IS STILL `unknown`: usage_for below says
 # `unknown` for a window nobody mentioned, never `not-applicable`, because a row
 # that is missing did not tell us its window has no percentage - it told us
 # nothing.

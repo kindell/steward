@@ -427,7 +427,7 @@ case "$u" in *"the valve was given for"*"bin/DOES-NOT-EXIST"*) ok ;; *) bad "the
 # ── 19. THE VALVE HOLDS ONE HOME. Given twice it used to overwrite the first
 #         silently while --file kept accumulating, so a two-home run produced one
 #         OK and one refusal whose text was IDENTICAL to the run without any valve
-#         at all. Measured on basement 2026-08-22. The usage line's trailing "..."
+#         at all. Measured on a Linux host 2026-08-22. The usage line's trailing "..."
 #         is what makes the repeated form look supported. ──
 rig
 run "$FX/home1" >/dev/null

@@ -88,10 +88,10 @@ wanted them grouped and sorted with the others. Before r2 those rows had no
 honest word: `unknown` would have claimed a quota measurement that was never
 attempted, and a note is for what did not *fit*, not for what had no *word*.
 
-**The spelling is the fleet's, not the product's.** `not-applicable` is the word
-the bo's fleet code already uses (kindell/butler `fleet/src/core.js`, per the
-mini hub's reading on 2026-09-09; the product cannot read that file from the
-first estate and cites it as his measurement). It is deliberately not `n/a`:
+**The spelling is the fleet tool's, not the product's.** `not-applicable` is the
+word the fleet tool's own `core.js` already uses (per the reading of the estate
+that keeps that tool, 2026-09-09; the product cannot read that file and cites
+the reading as a measurement, not its own). It is deliberately not `n/a`:
 two spellings of one idea are two vocabularies. The product's liveness seam is
 **not** the precedent - it has no such word - and this spec borrows no
 authority from it.

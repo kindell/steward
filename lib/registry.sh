@@ -2229,7 +2229,7 @@ registry_account_slug_available() {
 # CONVENIENCE. The reap's finder is `pgrep -u "$(id -u)"` and a tmux socket
 # lives in one home on one host, so neither harm can cross a unix account or a
 # machine. The same estate carries six CROSS-home duplicate labels today by
-# design (two people with a "Chalmers" session each); refusing those would be a
+# design (two people with an "Acme" session each); refusing those would be a
 # refusal with no failure behind it.
 #
 # AN EMPTY LABEL IS NEVER A COLLISION. RC_LABEL="" is the RC-FREE CHOICE, not

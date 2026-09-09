@@ -442,7 +442,7 @@ test('an unknown row says why, on every surface that shows liveness', () => {
       id: 's-dark', slug: 'dark', label: 'Dark', owner: 'a', mine: false,
       domain: null, project: 'p-1', runtime: 'claude-code', host: 'h', repo: 'r',
       liveness: { state: 'unknown', measuredAt: G, ageSeconds: null,
-                  reason: 'cannot probe on basement: tmux could not be asked (rc 124)' },
+                  reason: 'cannot probe on h1: tmux could not be asked (rc 124)' },
       mcp: []
     }]
   };

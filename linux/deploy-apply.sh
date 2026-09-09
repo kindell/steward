@@ -134,7 +134,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "deploy-apply: --accept-drift requires a value (home root)" >&2; exit 64; }
       # ONE HOME PER RUN. ACCEPT_HOME is a scalar: before 2026-08-22 a second
       # --accept-drift overwrote the first WITHOUT A WORD, while --file went on
-      # accumulating into a shared list. Measured on basement: two homes in one run
+      # accumulating into a shared list. Measured on a Linux host: two homes in one run
       # gave one OK and one refusal whose text was IDENTICAL to the run with no
       # valve at all — the valve that had been given vanished, and nothing in the
       # output told the two cases apart. The usage line promised repetition with a

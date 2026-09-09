@@ -20,7 +20,7 @@
 # SCOPE IS THE HOME - (OWNER, HOST) - NOT THE ESTATE. The harm is bounded by
 # the home twice over: the reap's finder is `pgrep -u "$(id -u)"`, and a tmux
 # socket lives in one home on one host. The affected estate carries six
-# cross-home duplicate labels TODAY by design (two people with a "Chalmers"
+# cross-home duplicate labels TODAY by design (two people with an "Acme"
 # session each), and refusing those would be a refusal with no measurement
 # behind it.
 #

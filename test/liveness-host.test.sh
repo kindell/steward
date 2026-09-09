@@ -452,7 +452,7 @@ echo "== a probe that cannot be made is NAMED, never invented =="
 # /usr/bin, the shim finds it there, and the three claims below then measure a
 # host where nothing is missing. Green on a mac, red on every Linux host, for a
 # reason that has nothing to do with the product: measured 2026-09-09, these
-# three were the only red in the suite on basement and they are red at the
+# three were the only red in the suite on the Linux host and they are red at the
 # commit that introduced them. Built like the `stat` case below instead - every
 # command on this machine EXCEPT the one under test - so the absence is real
 # wherever the suite runs.
