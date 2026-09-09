@@ -4845,9 +4845,33 @@ EOF
   # against the writer's own grammar first - see below: the loader checks that
   # HOST is non-empty and lets USERNAME default, so the separators this list is
   # built on are exactly the characters neither field was ever checked for.
-  local acct rows="" usernames="" acct_bad=""
+  #
+  # THE ROW IS SOURCED IN A CHILD PROCESS, NOT IN THIS FRAME - the shape
+  # `steward registry session check` uses, and for the same reason. The
+  # loader's own wall stops a row from reaching the LOADER's locals; it cannot
+  # stop one from reaching THIS verb's, because bash scope is dynamic and every
+  # local declared above this loop is still live inside it. MEASURED: an
+  # accounts.d row carrying the line keep_home="" cleared the operator's own
+  # flag, so --archive-home went to the helper AGAINST --keep-home and a home
+  # the operator asked to keep was moved; want_json="1" in the same row turned
+  # the answer into JSON nobody asked for. The fork closes every local at once -
+  # keep_home, want_json, accounts, rows, usernames, acct_bad, principal - and
+  # not just the ones a reviewer thought to name.
+  #
+  # HOST COMES BACK FIRST AND USERNAME LAST, because the crossing is text and
+  # the fields are exactly the two the loader does not check the FORM of. HOST
+  # is loader-checked non-empty, so the first line cannot be collapsed; USERNAME
+  # is the remainder, so a hand-edited value carrying newlines arrives WHOLE and
+  # is refused below by the field it actually came from. Printed the other way
+  # round, a forged USERNAME would be reported as a bad HOST.
+  local acct rows="" usernames="" acct_bad="" ac_row ac_rc ac_host ac_user
   for acct in $accounts; do
-    if registry_account_load "$acct" >/dev/null 2>&1; then
+    ac_row="$( registry_account_load "$acct" >/dev/null 2>&1 \
+               && printf '%s\n%s\n' "$ACCOUNT_HOST" "$ACCOUNT_USERNAME" )"
+    ac_rc=$?
+    if [ "$ac_rc" -eq 0 ]; then
+      ac_host="${ac_row%%$'\n'*}"
+      ac_user="${ac_row#*$'\n'}"
       # THE TWO FIELDS THE LOADER DOES NOT CHECK THE FORM OF, CHECKED HERE.
       # registry_account_load validates PRINCIPAL and asks only that HOST be
       # non-empty; USERNAME it lets default. THE WRITER'S OWN PREDICATES, CALLED
@@ -4860,14 +4884,14 @@ EOF
       # inside this very list, and the run locked a unix account NO register row
       # names and archived its home - rc 0, filed under this person's
       # offboarding.
-      if ! _registry_host_form "$ACCOUNT_HOST"; then
+      if ! _registry_host_form "$ac_host"; then
         acct_bad="${acct_bad:+$acct_bad }$acct:HOST"
-      elif ! _registry_username_form "$ACCOUNT_USERNAME"; then
+      elif ! _registry_username_form "$ac_user"; then
         acct_bad="${acct_bad:+$acct_bad }$acct:USERNAME"
       else
-        rows="$rows$acct	$ACCOUNT_HOST	$ACCOUNT_USERNAME
+        rows="$rows$acct	$ac_host	$ac_user
 "
-        usernames="${usernames:+$usernames }$ACCOUNT_USERNAME"
+        usernames="${usernames:+$usernames }$ac_user"
       fi
     else
       # It loaded during the scan a moment ago and does not now. Treat it as

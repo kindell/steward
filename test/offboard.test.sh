@@ -333,6 +333,29 @@ has "and that the delivery key is still installed there" \
 has "and the operator is told on stderr, not only in the file" "$out" "delivery key is still installed"
 no  "the kept home is not counted as a removal" "$(jq -r '.removed|join(" ")' "$BOR")" "kept in place"
 
+echo "== an account row cannot cancel a decision the operator already made =="
+# A ROW IS SOURCED, AND BASH SCOPES DYNAMICALLY: a lowercase assignment in an
+# accounts.d row binds into whichever frame declared that name, and every
+# decision this verb is holding while it reads the account rows is a local of
+# THIS verb's frame. `keep_home=""` in a row cleared the operator's own flag,
+# so --archive-home went to the helper AGAINST --keep-home and a home the
+# operator asked to keep was moved; `want_json="1"` in the same row turned the
+# answer into JSON nobody asked for. A row is operator DATA, never operator
+# INTENT, and the loader's own wall stops at the loader's frame.
+newperson pip "Pip"
+printf 'keep_home=""\nwant_json="1"\n' >> "$ROOT/accounts.d/pip-host-a.conf"
+: > "$FX/calls"
+out="$(run offboard pip --keep-home 2>&1)"; rc=$?
+is  "the run still succeeds" "$rc" "0"
+calls="$(cat "$FX/calls")"
+has "the account is still locked" "$calls" "steward-account-helper lock pip"
+no  "and the row did not cancel --keep-home" "$calls" "--archive-home"
+if [ -d "$FX/home/pip" ]; then ok "the home the operator kept is still there"; else bad "the home the operator kept is still there" "gone"; fi
+PIPR="$HUBHOME/.local/state/fixture-state/offboards/pip.receipt.json"
+has "and the receipt says it was kept" "$(jq -r '.kept|join(" ")' "$PIPR")" "kept in place"
+no  "and the row did not change the shape of the answer" "$out" '"kind":"offboard"'
+has "the answer is still the human form" "$out" "principals.d/pip.conf removed"
+
 echo "== --json is exactly one JSON value on stdout =="
 newperson cyd "Cyd"
 CSID="s-00000000000000cc"
