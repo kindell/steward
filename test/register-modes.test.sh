@@ -32,7 +32,34 @@ echo "register-modes"
 # The same two-shot stat idiom the library uses: neither flag exists on both
 # platforms, and a wrong-platform `stat -f` on GNU answers about the FILESYSTEM
 # with exit 0, so the BSD form must be probed first and shape-checked.
-mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+#
+# THE SHAPE CHECK IS THE WHOLE THING, AND THIS FILE DESCRIBED IT WITHOUT DOING
+# IT. `||` only reaches the GNU form when the BSD form FAILS, and on GNU it does
+# not fail: `stat -f` there means "show the FILESYSTEM status", exits 0, and
+# hands back a multi-line ext4 report. The report is non-empty, so the fallback
+# never ran and every caller compared `File: ... Type: ext2/ext3` against an
+# octal mode. Measured 2026-09-09 on the Linux host: 62/20, all twenty the same
+# root, and red since the commit that wrote them - so the guard this suite
+# exists to hold was unwatched on the only platform it was written to fix.
+#
+# `mkdir -m 0700 -p` behaves identically on both platforms (measured), so the
+# product was right and the MEASURER was broken. Copied properly now from
+# lib/registry.sh:_registry_mode_of, whose comment documents this exact trap:
+# the filter is what makes it platform-independent, not the order.
+#
+# ONE TO FOUR DIGITS, like the library: a setgid directory answers `2755`, and
+# that is a real mode a caller must be able to see and refuse. Callers here
+# narrow it further - registers_wrong wants exactly three - which is their
+# check to make, not this reader's.
+mode_of() {
+  local p="$1" m
+  for m in "$(stat -f '%Lp' "$p" 2>/dev/null)" "$(stat -c '%a' "$p" 2>/dev/null)"; do
+    case "$m" in
+      [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$m"; return 0 ;;
+    esac
+  done
+  return 1
+}
 
 # -- an estate a real onboarding can be run against -------------------------
 # Scaffolded by the product's own engine, then given the three rows `invite
