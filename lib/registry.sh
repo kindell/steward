@@ -4497,7 +4497,14 @@ _registry_login_dir_state() {
       # readback goes through this loader - so the operator meets it already
       # confused about which of several directories is meant. Naming the
       # directory and the exact command turns a diagnosis into a repair.
-      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w $dir" >&2
+      #
+      # THE PATH IN THE COMMAND IS QUOTED, and that is not cosmetic. Unquoted,
+      # an estate at `/srv/my estate` printed `chmod g-w,o-w /srv/my
+      # estate/logins.d`; pasting it gave two "No such file or directory"
+      # complaints and left the register at 775. A remedy that reports success
+      # and repairs nothing is worse than no remedy, because the operator stops
+      # looking. Quoting also covers a path carrying a glob character.
+      echo "registry: the login register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w \"$dir\"" >&2
       return 78
     fi
   fi
@@ -5210,8 +5217,11 @@ registry_invite_load() {
       # THE REMEDY TRAVELS WITH THE REFUSAL, the login reader's rule for the
       # login reader's reason: this sentence is most often read through the row
       # writer's readback, where the operator has no way of knowing which
-      # directory the loader was looking at.
-      echo "registry: the invite register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w $dir" >&2
+      # directory the loader was looking at. The path is quoted for the login
+      # reader's other reason too - unquoted, the command is unsafe to paste on
+      # an estate whose path contains a space, and it fails while looking like
+      # it worked.
+      echo "registry: the invite register is group- or other-writable (mode $dmode), refusing: $dir - run: chmod g-w,o-w \"$dir\"" >&2
       return 78
     fi
   fi
