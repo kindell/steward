@@ -494,6 +494,75 @@ if [ "$rc3" -ne 0 ]; then ok "an argument is refused"; else bad "an argument is 
 # empty home.
 eq "and stdout stays empty" "$(cat "$T/argout")" ""
 
+echo "== a tmux server that could not be ASKED is unknown, never a home full of 'down' =="
+# MEASURED 2026-09-09 on a live host: a tmux call that FAILS is swallowed by the
+# `|| true` on the one list-sessions probe, and every pane row in the home is
+# then written into `sessions` as tmux `down`, agent `not-running`. Three
+# demonstrably live sessions — one of them the session running the measurement —
+# reported dead, with an EMPTY stderr and an EMPTY `omitted`. Nothing anywhere
+# said a probe had failed.
+#
+# That is a guess wearing a measurement's clothes, which is the one thing this
+# file promises never to produce. It is also not hypothetical: the whole desk
+# generation fell out this way at 13:30, 0 of 81 rows carrying a life sign
+# across five homes, and a person read his own working session as dead.
+#
+# TWO RETURN CODES, because they arrive by different doors and neither may be
+# read as an answer: 124 is the aggregator's own `timeout` ceiling cutting a
+# slow home off, 1 is a server that was not there to be asked. A third door —
+# any other non-zero — is covered by the same branch.
+#
+# THE CODEX ROWS MUST SURVIVE IT. A codex row is a thread, not a pane, and never
+# needed tmux at all; an outage in one runtime's probe may not erase the other
+# runtime's measurement.
+mkdir -p "$T/bin4"
+for f in systemctl pgrep ps; do cp "$T/bin/$f" "$T/bin4/$f"; done
+for trc in 1 124; do
+  { printf '#!/bin/bash\n'
+    printf 'echo "$@" >> "${TMUX_LOG:?}"\n'
+    printf 'exit %s\n' "$trc"
+  } > "$T/bin4/tmux"
+  chmod +x "$T/bin4/tmux"
+  out4="$( env -i HOME="$T/home" PATH="$T/bin4:/usr/bin:/bin" \
+            STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
+            STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
+            STEWARD_CODEX_STATE_DIR="$CX" \
+            STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
+            TMUX_LOG="$T/tmuxlog-$trc" bash "$CMD" 2>"$T/err-$trc" )"
+
+  eq "rc $trc: the answer is still valid JSON" \
+     "$(printf '%s' "$out4" | jq -r '.sessions | type')" "object"
+  # THE POINT OF THE WHOLE BLOCK: no pane row may carry a negative word.
+  eq "rc $trc: no pane row is invented as not-running" \
+     "$(printf '%s' "$out4" | jq -r '[.sessions[] | select(.tmux != "n/a") | .agent] | length')" "0"
+  eq "rc $trc: the four pane rows are omitted instead" \
+     "$(printf '%s' "$out4" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-c3" or . == "s-d4")] | length')" "4"
+  eq "rc $trc: and the reason names tmux" \
+     "$(printf '%s' "$out4" | jq -r '.omitted["s-a1"] | test("tmux")')" "true"
+  # THE FAILURE IS SAID OUT LOUD. A silent omission is how six causes render as
+  # one word with nowhere to look; this file's seam keeps stderr as the channel.
+  if [ -s "$T/err-$trc" ]; then ok "rc $trc: the failure is said on stderr"
+  else bad "rc $trc: the failure is said on stderr" "stderr was empty"; fi
+  # THE OTHER RUNTIME IS UNTOUCHED.
+  eq "rc $trc: the codex rows are still measured" \
+     "$(printf '%s' "$out4" | jq -r '.sessions | length')" "5"
+  eq "rc $trc: and a healthy codex row still reads running" \
+     "$(printf '%s' "$out4" | jq -r '.sessions["s-g7"].agent')" "running"
+  # A PROBE THAT FAILED IS NOT A PROBE THAT WAS SKIPPED: it was attempted.
+  eq "rc $trc: tmux was actually asked" \
+     "$(grep -c 'list-sessions' "$T/tmuxlog-$trc" | tr -d ' ')" "1"
+done
+
+echo "== and the other direction still holds: a session that is really down is down =="
+# The pairing is what makes the claim mean anything. `s-c3` has an armed timer
+# and no tmux session on a HEALTHY server: that is a measurement, and it must
+# keep its negative word. Asserted here beside its opposite so the two read
+# together; the fixture at the top of this file pins the same row's fields.
+eq "a genuinely absent session is still not-running" \
+   "$(printf '%s' "$out" | jq -r '.sessions["s-c3"].agent')" "not-running"
+eq "and it is NOT omitted — it was measured" \
+   "$(printf '%s' "$out" | jq -r '.omitted | has("s-c3")')" "false"
+
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
