@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, generateKeyPairSync, createSign } from 'node:crypto';
@@ -183,6 +183,29 @@ test('loadProviders refuses an ENDPOINT_ORIGINS entry that has no origin to name
   const doc = Object.assign({}, SPLIT_ORIGIN_DOC, { token_endpoint: 'zz://evil.example/token' });
   await assert.rejects(discover(providerFrom('opaque-doc'), serving(doc)),
     /discovery for opaque-doc points token_endpoint off its own origin/);
+});
+
+// THE SCHEMA SHOWS ONE SPELLING AND IT IS THE ONE THE LOADER READS. An
+// operator copies what the schema shows, so a spelling the loader would
+// refuse - or, before this round, silently drop - makes the schema itself the
+// bug. The example is lifted out of the file and run through the loader here,
+// with its <placeholders> filled in.
+const SCHEMA = readFileSync(new URL('../SCHEMA.md', import.meta.url), 'utf8');
+
+test('SCHEMA.md shows one ENDPOINT_ORIGINS spelling, the loader reads it, and it says what a bad entry costs', () => {
+  const shown = SCHEMA.match(/^\s*ENDPOINT_ORIGINS=.*$/gm) || [];
+  assert.equal(shown.length, 1, 'exactly one spelling, so there is one form to copy');
+  let n = 0;
+  const line = shown[0].trim().replace(/<[^>]+>/g, () => 'h' + (++n) + '.example.test');
+  const p = loadProviders(providersDir({ 'documented.conf': providerRow() + line + '\n' }));
+  assert.deepStrictEqual(p.get('documented').endpointOrigins,
+    ['https://h1.example.test', 'https://h2.example.test']);
+  // And the paragraph says the two things "further https origins" alone does
+  // not: loopback http is accepted here on DISCOVERY's own rule, and a bad
+  // entry stops the desk at start rather than being found at the first login.
+  const para = SCHEMA.slice(SCHEMA.indexOf('`ENDPOINT_ORIGINS`'), SCHEMA.indexOf('\n3. '));
+  assert.match(para, /loopback/);
+  assert.match(para, /78/);
 });
 
 test('discover refuses a plaintext endpoint on a host that is not loopback', async (t) => {
