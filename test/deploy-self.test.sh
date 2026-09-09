@@ -123,9 +123,25 @@ EOF
 chmod 755 "$FX/binsys/systemctl"
 : > "$FX/systemctl.calls"
 
+# A PATH THAT CLAIMS A TOOL IS ABSENT MUST BE THE WHOLE PATH, not a prefix onto
+# the real one. Case (d) below asserts "no systemctl on PATH" - and it used to
+# build that as `$FX/bin:$PATH` with the stub directory merely left out. Leaving
+# out the stub removes the STUB; it does not remove the host's own
+# /usr/bin/systemctl, which is exactly what a Linux host has. macOS passed the
+# case by accident (there is no systemctl to find); Linux found the real one,
+# reloaded a real user manager, and the line about the absent manager was never
+# written: 65/1 on every Linux host since the case was added. Same class, same
+# repair as liveness-host (07d203d): every command on this machine EXCEPT the one
+# under test, symlinked into one directory that IS the path.
+mkdir -p "$FX/binall"
+ln -s /usr/bin/* "$FX/binall/" 2>/dev/null
+ln -s /bin/*     "$FX/binall/" 2>/dev/null
+rm -f "$FX/binall/systemctl"
+
 run() {  # run <hostname answer> <host argument>
-  ( _rp="$FX/bin:$PATH"
-    [ -n "${NO_SYSTEMCTL_STUB:-}" ] || _rp="$FX/binsys:$_rp"
+  ( if [ -n "${NO_SYSTEMCTL_STUB:-}" ]; then _rp="$FX/bin:$FX/binall"      # absence: the WHOLE path
+    else                                    _rp="$FX/binsys:$FX/bin:$PATH"  # presence: the stub, then the world
+    fi
     export PATH="$_rp"
     export HOME="$FX/home"
     # LEFT UNSET UNLESS THE CALLER SET IT. Production reads this with
