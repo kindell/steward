@@ -2283,7 +2283,7 @@ cmd_registry_login_add() {
 # directory on disk is about to be written. A row that does not resolve prints
 # its refusal in place of the path rather than being skipped.
 cmd_registry_login_ls() {
-  local want_json="" a slug dir account_username cred first=1
+  local want_json="" a slug dir account_username cred _login_row _why first=1
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
@@ -2295,12 +2295,18 @@ cmd_registry_login_ls() {
       # so ("<slug>: UNREADABLE"); a machine consumer needs the same
       # distinction — a refused row is not the same fact as an absent one,
       # in the one register whose whole purpose is that a bad row is visible.
+      # THE ROW'S OWN REFUSAL TRAVELS WITH THE WORD. `UNREADABLE` alone sends a
+      # reader looking for a permission problem when the cause is a field in the
+      # row, and the parser has already said which field - it was being thrown
+      # away one line above. Measured the hard way: a `2>&1` on a deciding line
+      # cost a cross-platform hunt for a message the code had produced all along.
+      _why="$(registry_login_load "$slug" 2>&1 >/dev/null | tr '\n' ' ' | sed -e 's/[[:space:]]*$//')"
       if [ -n "$want_json" ]; then
         [ "$first" = 1 ] || printf ','
         first=0
-        printf '{"login":"%s","unreadable":true}' "$slug"
+        printf '{"login":"%s","unreadable":true,"why":"%s"}' "$slug" "$(printf '%s' "${_why:-unreadable}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
       else
-        echo "$slug: UNREADABLE"
+        printf '%s: UNREADABLE -- %s\n' "$slug" "${_why:-no reason given}"
       fi
       continue
     }
@@ -2320,7 +2326,14 @@ cmd_registry_login_ls() {
     # registry_login_principal_gate already makes. registry_login_state does it
     # once and also answers the question an operator actually has before typing
     # /login: is this directory already logged in?
-    IFS=$'\t' read -r account_username dir cred <<<"$(registry_login_state "$slug")"
+    # COUNT FIRST, THEN READ. `IFS=$'\t' read ... <<<"$(fn)"` runs the
+    # substitution with that temporary IFS on bash 3.2 - the assignment is
+    # visible inside it there, though not on 5.x - so the whole of
+    # registry_login_state ran with IFS=TAB and every space-separated list it
+    # touched stopped splitting. Two lines, and the substitution keeps a normal
+    # IFS. The same "capture first" shape this file already uses elsewhere.
+    _login_row="$(registry_login_state "$slug")"
+    IFS=$'\t' read -r account_username dir cred <<<"$_login_row"
     if [ -n "$want_json" ]; then
       [ "$first" = 1 ] || printf ','
       first=0
@@ -2367,8 +2380,10 @@ cmd_registry_login_shell() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
   registry_login_load "$slug" >/dev/null || fel "login '$slug' does not resolve" 78
-  local user dir cred
-  IFS=$'\t' read -r user dir cred <<<"$(registry_login_state "$slug")"
+  local user dir cred _login_row
+  # Capture first - see cmd_registry_login_ls for the bash 3.2 reason.
+  _login_row="$(registry_login_state "$slug")"
+  IFS=$'\t' read -r user dir cred <<<"$_login_row"
   case "$dir" in
     '('*) fel "login '$slug': $dir" 78 ;;
   esac

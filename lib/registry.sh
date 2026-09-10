@@ -3022,6 +3022,16 @@ registry_validate_runtime_set() {
 # _registry_word_in_list <word> <space-separated list> - rc 0 if the word is
 # EXACTLY one of the list's entries.
 _registry_word_in_list() {
+  # THE SPLIT IS THIS FUNCTION'S, NOT THE CALLER'S. `for e in $list` splits on
+  # whatever IFS happens to be, and every closed vocabulary in this file now
+  # comes through here - so one caller with an odd IFS silently breaks all of
+  # them. Measured 2026-09-10 on bash 3.2: a caller wrote
+  # `IFS=$'\t' read -r a b c <<<"$(fn)"`, that temporary assignment is visible
+  # INSIDE the substitution on 3.2 (it is not on 5.x), the provider list arrived
+  # as ONE word, `claude-team` did not match, and eighteen assertions failed one
+  # register away from the cause. A local IFS makes the question unanswerable
+  # by the caller's state.
+  local IFS=$' \t\n'
   local w="${1:-}" e
   # A WORD WITH WHITESPACE IS NEVER ONE ENTRY, and an empty word matches nothing.
   # The old `case " $list " in *" $w "*` was a substring test over a space-run:
@@ -5002,8 +5012,20 @@ registry_mandate_write() {
 # same isolation registry_login_principal_gate documents.
 registry_login_unix_account() {
   local login="${1:-}" principal host f cand user
+  # THE ROW'S OWN REFUSAL IS KEPT, NOT DISCARDED. This line used to end in
+  # `>/dev/null 2>&1` and return a bare 1, so a row that failed to LOAD was
+  # reported by the caller as "no account for this principal on this host" - a
+  # true sentence about the wrong thing, pointing at accounts.d while the fault
+  # was a field in the login row. It cost a cross-platform hunt to find a
+  # message the code had already produced and thrown away. stdout is still
+  # silenced; stderr is the evidence.
+  REGISTRY_LOGIN_UNIX_ACCOUNT_WHY=""
+  local _err; _err="$( registry_login_load "$login" 2>&1 >/dev/null )"
   principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
-  [ -n "$principal" ] || return 1
+  if [ -z "$principal" ]; then
+    REGISTRY_LOGIN_UNIX_ACCOUNT_WHY="${_err:-the login row does not load}"
+    return 1
+  fi
   host="$(_registry_self_host)"
   # ONE LOAD PER CANDIDATE, IN A PLAIN COMMAND SUBSTITUTION - not a pipeline into
   # `grep -q` with a second load behind it. The pipeline form loaded every row
@@ -5033,7 +5055,16 @@ registry_login_unix_account() {
 # the filesystem, and the vendor is only asked when the caller says so.
 registry_login_state() {
   local login="${1:-}" user dir cred="-"
-  user="$(registry_login_unix_account "$login")" || { printf '%s\t%s\t%s\n' "-" "(no account for this login's principal on this host)" "-"; return 1; }
+  user="$(registry_login_unix_account "$login")" || {
+    # WHICH OF THE TWO FAILURES IT WAS. A row that does not LOAD and a principal
+    # with no account on this host are different facts with different repairs,
+    # and the second sentence was being printed for both.
+    if [ -n "${REGISTRY_LOGIN_UNIX_ACCOUNT_WHY:-}" ]; then
+      printf '%s\t(%s)\t%s\n' "-" "$REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" "-"
+    else
+      printf '%s\t%s\t%s\n' "-" "(no account for this login's principal on this host)" "-"
+    fi
+    return 1; }
   if ! dir="$(registry_login_config_dir "$login" "$user" 2>/dev/null)"; then
     printf '%s\t%s\t%s\n' "$user" "(does not resolve)" "-"; return 1
   fi

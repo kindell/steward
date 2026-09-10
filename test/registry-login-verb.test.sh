@@ -566,6 +566,31 @@ run4 shell mine -- sh -c 'exit 42' 2>/dev/null; is "12: the command's exit statu
 err="$(run4 shell 2>&1)"; rc=$?
 is  "12: no login at all is a usage error (64)" "$rc" "64"
 has "12: ...and prints the usage line"          "$err" "steward registry login shell <login>"
+printf 'PRINCIPAL="me"\nACCOUNT="me@example.test"\nPROVIDER="claude-pro"\nCONFIG_DIR="~/.claude-logins/mine"\nLEGAL_OWNER="Acme"\n' > "$FX4/logins.d/badrow.conf"
+chmod 600 "$FX4/logins.d/badrow.conf"
+out="$(run4 ls 2>/dev/null)"
+# THE ROW'S OWN REFUSAL REACHES THE LISTING. A login whose row does not LOAD is
+# a different fact from a principal with no account here, and the second
+# sentence used to be printed for both - sending a reader to accounts.d while
+# the fault was a field in the login row. The message existed all along, behind
+# a `2>&1` on the deciding line.
+has "12: a row that does not load reports ITS OWN refusal" "$out" "UNREADABLE -- "
+has "12: ...and the refusal names the field"               "$out" "invalid PROVIDER"
+is  "12: ...and not the account sentence" "$(printf '%s\n' "$out" | grep -c "no account for this login")" "0"
+
+echo "== 13. the listing does not depend on the CALLER's IFS =="
+# The eighteen macOS failures were not in the join. `IFS=$'\t' read -r a b c
+# <<<"$(registry_login_state ...)"` runs the substitution under that IFS on bash
+# 3.2, so the whole state function ran with IFS=TAB and every space-separated
+# list it touched stopped splitting. The verb captures first and reads second
+# now, and the helper pins its own IFS - two independent guards, either of which
+# would have prevented it.
+out="$( IFS=$'\t'; run4 ls 2>/dev/null )"
+has "13: with IFS=TAB the row still resolves" "$out" "$FX4/home/.claude-logins/mine"
+is  "13: ...and no row claims a missing account" "$(printf '%s\n' "$out" | grep -c "no account for this login")" "0"
+out="$( IFS=,; run4 shell mine -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null )"
+is  "13: shell sets the directory under a comma IFS too" "$out" "$FX4/home/.claude-logins/mine"
+rm -f "$FX4/logins.d/badrow.conf"
 rm -rf "$FX4"
 
 echo "pass=$pass fail=$fail"
