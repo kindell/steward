@@ -247,5 +247,43 @@ is "14b and the word expired is not one of them" \
 is "14c nor the twins word for a permanent absence" \
    "$(_registry_word_in_list not-applicable "$_CREDENTIAL_STATES" && echo IN || echo out)" "out"
 
+echo "== 15. registry_credential_cmd: absent, present, not absolute =="
+# THE TWIN IS registry_usage_cmd, and this is deliberately the same three
+# outcomes in the same order, because an estate that has learned one key should
+# not have to learn a second grammar for the next. A missing key is NORMAL - an
+# estate with no credential shim is not a broken estate - so it is rc 0 and
+# silence, never a refusal.
+_cbase='LABEL_PREFIX="com.fixture.claude"
+HUB_HOST="h1"
+OP_TOKEN_FILE_NAME="fixture-token"'
+printf '%s\n' "$_cbase" > "$FX/estate/steward.conf"
+v="$(registry_credential_cmd)"; rc=$?
+is "15a no CREDENTIAL_CMD line: rc 0"          "$rc" "0"
+is "15b no CREDENTIAL_CMD line: prints nothing" "$v" ""
+printf '%s\nCREDENTIAL_CMD="/abs/cred-shim"\n' "$_cbase" > "$FX/estate/steward.conf"
+v="$(registry_credential_cmd)"; rc=$?
+is "15c a well-formed value: rc 0"        "$rc" "0"
+is "15d a well-formed value: prints it"   "$v" "/abs/cred-shim"
+printf '%s\nCREDENTIAL_CMD="relative/cred-shim"\n' "$_cbase" > "$FX/estate/steward.conf"
+registry_credential_cmd >/dev/null 2>"$FX/reg.err"; rc=$?
+is  "15e a relative value: rc 78"              "$rc" "78"
+has "15f the refusal names the field"          "$(cat "$FX/reg.err")" "CREDENTIAL_CMD"
+# A BARE NAME IS NOT A PATH, and it is the mistake an operator actually makes:
+# `CREDENTIAL_CMD="cred-shim"` reads as if PATH would be searched, and a seam
+# that searched PATH would run whatever a login shell happened to find first.
+printf '%s\nCREDENTIAL_CMD="cred-shim"\n' "$_cbase" > "$FX/estate/steward.conf"
+registry_credential_cmd >/dev/null 2>"$FX/reg.err"; rc=$?
+is  "15g a bare name: rc 78"                   "$rc" "78"
+has "15h the bare-name refusal names the field" "$(cat "$FX/reg.err")" "CREDENTIAL_CMD"
+# AND IT DOES NOT LEAK INTO THE CALLER. The reader sources the estate file, so
+# a caller holding its own CREDENTIAL_CMD must not have it overwritten - the
+# same dynamic-scope rule the registry loaders live under.
+CREDENTIAL_CMD="untouched-by-the-reader"
+printf '%s\nCREDENTIAL_CMD="/abs/other"\n' "$_cbase" > "$FX/estate/steward.conf"
+registry_credential_cmd >/dev/null 2>&1
+is "15i the caller\'s own variable survives the read" "$CREDENTIAL_CMD" "untouched-by-the-reader"
+unset CREDENTIAL_CMD
+printf '%s\n' "$_cbase" > "$FX/estate/steward.conf"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -2905,6 +2905,37 @@ registry_usage_cmd() {
   printf '%s\n' "$USAGE_CMD"
 }
 
+# registry_credential_cmd - the estate's own credential shim, or the empty
+# string.
+#
+# THE TWIN IS registry_usage_cmd, immediately above: same three outcomes, same
+# optional-field reasoning, same "local before source" discipline, same
+# absolute-path form. Read its essay, and the liveness one above that, rather
+# than a third copy.
+#
+# WHY THE THIRD COPY EXISTS AT ALL, since somebody will ask: the three seams
+# have started to diverge, and this reader is the cheapest part of that
+# divergence, not the expensive one. When a shared helper is written, these
+# three collapse into it together; until then a copy that is honest about
+# being one beats a parameterised reader nobody can follow.
+registry_credential_cmd() {
+  local _estate; _estate="$(registry_estate_file)"
+  [ -f "$_estate" ] || { printf ''; return 0; }
+  local CREDENTIAL_CMD=""
+  # shellcheck source=/dev/null
+  if ! source "$_estate"; then
+    echo "registry: REFUSING - the estate file could not be read: $_estate" >&2
+    return 78
+  fi
+  [ -n "$CREDENTIAL_CMD" ] || { printf ''; return 0; }
+  if ! [[ "$CREDENTIAL_CMD" =~ ^/[A-Za-z0-9/._-]+$ ]]; then
+    echo "registry: REFUSING - CREDENTIAL_CMD in $_estate is not an absolute path: '$CREDENTIAL_CMD'" >&2
+    echo "registry: expected the form ^/[A-Za-z0-9/._-]+\$ - got '$CREDENTIAL_CMD'" >&2
+    return 78
+  fi
+  printf '%s\n' "$CREDENTIAL_CMD"
+}
+
 # registry_estate_checkout — where the estate's own git working copy lives, or
 # the empty string.
 #
