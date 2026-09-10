@@ -247,5 +247,30 @@ is "14b and the word expired is not one of them" \
 is "14c nor the twins word for a permanent absence" \
    "$(_registry_word_in_list not-applicable "$_CREDENTIAL_STATES" && echo IN || echo out)" "out"
 
+echo "== 15. registry_credential_cmd: absent, present, not absolute =="
+# THE THIRD KEY OF ONE CLASS, tested with the same three cases as its twins
+# rather than assumed to inherit them. No new grammar: if this form is wrong
+# on some point it is wrong for LIVENESS_CMD and USAGE_CMD too, and the fix
+# belongs to all three in one commit.
+base='LABEL_PREFIX="com.fixture.claude"
+HUB_HOST="h1"
+OP_TOKEN_FILE_NAME="fixture-token"'
+printf '%s\n' "$base" > "$FX/estate/steward.conf"
+v="$(registry_credential_cmd)"; rc=$?
+is "15a no CREDENTIAL_CMD line: rc 0" "$rc" "0"
+is "15b no CREDENTIAL_CMD line: prints nothing" "$v" ""
+printf '%s\nCREDENTIAL_CMD="/abs/cred-shim"\n' "$base" > "$FX/estate/steward.conf"
+v="$(registry_credential_cmd)"; rc=$?
+is "15c a well-formed CREDENTIAL_CMD: rc 0" "$rc" "0"
+is "15d and it prints the value" "$v" "/abs/cred-shim"
+printf '%s\nCREDENTIAL_CMD="relative/cred-shim"\n' "$base" > "$FX/estate/steward.conf"
+registry_credential_cmd >/dev/null 2>"$FX/reg.err"; rc=$?
+is  "15e a relative CREDENTIAL_CMD: rc 78" "$rc" "78"
+has "15f and the refusal names the key" "$(cat "$FX/reg.err")" "CREDENTIAL_CMD"
+# THE PATH THAT MATTERS MOST HERE: the program this key names READS A
+# CREDENTIAL, so a value that would resolve against whatever directory
+# happened to be current is refused before anything runs it.
+printf '%s\n' "$base" > "$FX/estate/steward.conf"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
