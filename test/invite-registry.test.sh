@@ -81,6 +81,23 @@ is  "a row missing required keys is rc 1" "$rc" "1"
 has "and names a missing key" "$(cat "$T/err")" "missing required key"
 rm -f "$ROOT/invites.d/inv-0000000c.conf"
 
+# STATE SPANNING TWO ADJACENT ENTRIES IS NOT A STATE. Every other field in
+# this loader is validated by FORM - slug expressions, 64 hex digits, epoch
+# digits - and an expression anchored at both ends cannot be satisfied by two
+# values joined with a space. STATE is the only field checked by MEMBERSHIP,
+# and the substring form asked whether the value sits between two spaces
+# somewhere in the list, which two ADJACENT entries satisfy. So the one field
+# that could not be written as a shape was the one that leaked: `open
+# redeemed` and `redeemed revoked` both loaded, while `bogus` was refused -
+# which is why no existing case caught it.
+for _bad in "open redeemed" "redeemed revoked"; do
+  write_row inv-0000000c "$_bad" "$FUTURE" "$D1"
+  registry_invite_load inv-0000000c 2>"$T/spanerr"; _rc=$?
+  is "a STATE spanning two entries is refused: '$_bad'" "$_rc" "1"
+  has "and the refusal names STATE" "$(cat "$T/spanerr")" "invalid STATE"
+done
+rm -f "$ROOT/invites.d/inv-0000000c.conf"
+
 printf 'PRINCIPAL="alice"\nSTATE="open"\nWHATEVER="x"\n' > "$ROOT/invites.d/inv-0000000d.conf"
 chmod 600 "$ROOT/invites.d/inv-0000000d.conf"
 registry_invite_load inv-0000000d 2>"$T/err"; rc=$?

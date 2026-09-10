@@ -5784,11 +5784,20 @@ registry_invite_load() {
       return 1
     fi
   done
-  case " $_REGISTRY_INVITE_STATES " in
-    *" $v_STATE "*) ;;
-    *) echo "registry: $f: invalid STATE '$(registry_printable "$v_STATE")' (one of: $_REGISTRY_INVITE_STATES)" >&2
-       return 1 ;;
-  esac
+  # EXACT MEMBERSHIP, AND THIS FIELD IS THE ONE THAT NEEDED IT. Every other
+  # field in this loader is validated by FORM - PRINCIPAL, ENTITY and HOST
+  # against slug expressions, TOKEN_SHA256 against 64 hex digits, ISSUED_AT
+  # and EXPIRES_AT against epoch digits - and a regular expression anchored at
+  # both ends cannot be satisfied by two values joined with a space. STATE is
+  # the only field checked by MEMBERSHIP, and the substring form asks whether
+  # the value sits between two spaces somewhere in the list, which a value
+  # spanning two ADJACENT entries satisfies. Measured: `open redeemed` and
+  # `redeemed revoked` both loaded; `bogus` was refused. So the one field that
+  # could not be expressed as a shape was the one that leaked.
+  if ! _registry_word_in_list "$v_STATE" "$_REGISTRY_INVITE_STATES"; then
+    echo "registry: $f: invalid STATE '$(registry_printable "$v_STATE")' (one of: $_REGISTRY_INVITE_STATES)" >&2
+    return 1
+  fi
   if [ -n "$v_REDEEMED_AT" ] && ! [[ "$v_REDEEMED_AT" =~ ^[0-9]{1,12}$ ]]; then
     echo "registry: $f: REDEEMED_AT must be epoch seconds, got '$(registry_printable "$v_REDEEMED_AT")'" >&2
     return 1
