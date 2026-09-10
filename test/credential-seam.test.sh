@@ -248,11 +248,17 @@ is "14c nor the twins word for a permanent absence" \
    "$(_registry_word_in_list not-applicable "$_CREDENTIAL_STATES" && echo IN || echo out)" "out"
 
 echo "== 15. registry_credential_cmd: absent, present, not absolute =="
-# THE TWIN IS registry_usage_cmd, and this is deliberately the same three
-# outcomes in the same order, because an estate that has learned one key should
-# not have to learn a second grammar for the next. A missing key is NORMAL - an
-# estate with no credential shim is not a broken estate - so it is rc 0 and
-# silence, never a refusal.
+# THE THIRD KEY OF ONE CLASS, tested with the same three cases as its twins
+# rather than assumed to inherit them. No new grammar: if this form is wrong
+# on some point it is wrong for LIVENESS_CMD and USAGE_CMD too, and the fix
+# belongs to all three in one commit.
+#
+# TWO CASES BEYOND THE TWINS' OWN, and both earn their place. The program this
+# key names READS A CREDENTIAL, so a value resolving against whatever
+# directory happened to be current - or against whatever PATH a login shell
+# searched - is refused before anything runs it. And the reader sources the
+# estate file, so it is proven not to overwrite a caller's own CREDENTIAL_CMD:
+# the dynamic-scope rule every loader in registry.sh lives under.
 _cbase='LABEL_PREFIX="com.fixture.claude"
 HUB_HOST="h1"
 OP_TOKEN_FILE_NAME="fixture-token"'

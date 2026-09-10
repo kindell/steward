@@ -102,10 +102,10 @@ usage() {
 # `steward config init`/`set` (further down) both decide "is this key
 # writable" through this one predicate and this one piece of text — never
 # two independently maintained copies that could quietly drift apart.
-_CFG_ALLOWED_KEYS_TEXT="STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD, STEWARD_USAGE_CMD"
+_CFG_ALLOWED_KEYS_TEXT="STEWARD_ESTATE_ROOT, STEWARD_TMUX_SOCKET, STEWARD_LIVENESS_CMD, STEWARD_USAGE_CMD, STEWARD_CREDENTIAL_CMD"
 _CFG_ALLOWED_KEY() { # <key> - true iff key is one of the writable operator-config keys.
   case "$1" in
-    STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD|STEWARD_USAGE_CMD) return 0 ;;
+    STEWARD_ESTATE_ROOT|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD|STEWARD_USAGE_CMD|STEWARD_CREDENTIAL_CMD) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -196,10 +196,12 @@ _operator_config_load() {
   _CFG_SOURCE_STEWARD_TMUX_SOCKET="unset"
   _CFG_SOURCE_STEWARD_LIVENESS_CMD="unset"
   _CFG_SOURCE_STEWARD_USAGE_CMD="unset"
+  _CFG_SOURCE_STEWARD_CREDENTIAL_CMD="unset"
   [ -n "${STEWARD_ESTATE_ROOT:-}" ]  && _CFG_SOURCE_STEWARD_ESTATE_ROOT="process-environment"
   [ -n "${STEWARD_TMUX_SOCKET:-}" ]  && _CFG_SOURCE_STEWARD_TMUX_SOCKET="process-environment"
   [ -n "${STEWARD_LIVENESS_CMD:-}" ] && _CFG_SOURCE_STEWARD_LIVENESS_CMD="process-environment"
   [ -n "${STEWARD_USAGE_CMD:-}" ]    && _CFG_SOURCE_STEWARD_USAGE_CMD="process-environment"
+  [ -n "${STEWARD_CREDENTIAL_CMD:-}" ] && _CFG_SOURCE_STEWARD_CREDENTIAL_CMD="process-environment"
 
   # A SYMLINK IS REFUSED OUTRIGHT, before anything else is asked of it —
   # including the "no file at all" check just below. `-L` does NOT follow
@@ -246,7 +248,7 @@ _operator_config_load() {
   fi
 
   local lineno=0 saw_format="" line key value
-  local have_root="" have_socket="" have_liveness="" have_usage=""
+  local have_root="" have_socket="" have_liveness="" have_usage="" have_credential=""
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno+1))
 
@@ -332,6 +334,21 @@ EOF
         if [ -z "${STEWARD_USAGE_CMD:-}" ]; then
           STEWARD_USAGE_CMD="$value"; export STEWARD_USAGE_CMD
           _CFG_SOURCE_STEWARD_USAGE_CMD="config-file"
+        fi
+        ;;
+      # THE CREDENTIAL SEAM IS THE THIRD KEY OF THE SAME CLASS: an absolute
+      # path to a program the estate supplies. Same duplicate refusal, same
+      # "the environment wins" rule, same provenance - and no new grammar,
+      # because three keys for one idea must not acquire three rules.
+      STEWARD_CREDENTIAL_CMD)
+        if [ -n "$have_credential" ]; then
+          _CFG_ERROR="steward: $f:$lineno: duplicate key 'STEWARD_CREDENTIAL_CMD'"
+          return 78
+        fi
+        have_credential=1
+        if [ -z "${STEWARD_CREDENTIAL_CMD:-}" ]; then
+          STEWARD_CREDENTIAL_CMD="$value"; export STEWARD_CREDENTIAL_CMD
+          _CFG_SOURCE_STEWARD_CREDENTIAL_CMD="config-file"
         fi
         ;;
     esac
@@ -8071,6 +8088,7 @@ if [ -n "${STEWARD_CFG_DEBUG:-}" ]; then
   printf 'STEWARD_TMUX_SOCKET=%s source=%s\n'  "${STEWARD_TMUX_SOCKET:-}" "$_CFG_SOURCE_STEWARD_TMUX_SOCKET"
   printf 'STEWARD_LIVENESS_CMD=%s source=%s\n' "${STEWARD_LIVENESS_CMD:-}" "$_CFG_SOURCE_STEWARD_LIVENESS_CMD"
   printf 'STEWARD_USAGE_CMD=%s source=%s\n'    "${STEWARD_USAGE_CMD:-}"    "$_CFG_SOURCE_STEWARD_USAGE_CMD"
+  printf 'STEWARD_CREDENTIAL_CMD=%s source=%s\n' "${STEWARD_CREDENTIAL_CMD:-}" "$_CFG_SOURCE_STEWARD_CREDENTIAL_CMD"
   exit 0
 fi
 

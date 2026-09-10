@@ -55,6 +55,7 @@ has "no file: estate root source unset" "$out" "STEWARD_ESTATE_ROOT= source=unse
 has "no file: tmux socket source unset" "$out" "STEWARD_TMUX_SOCKET= source=unset"
 has "no file: liveness cmd source unset" "$out" "STEWARD_LIVENESS_CMD= source=unset"
 has "no file: usage cmd source unset" "$out" "STEWARD_USAGE_CMD= source=unset"
+has "no file: credential cmd source unset" "$out" "STEWARD_CREDENTIAL_CMD= source=unset"
 
 echo "== 2. valid file, unset env: value from file, source config-file =="
 cat > "$FX/valid" <<'EOF'
@@ -95,6 +96,20 @@ has "usage cmd: taken from the file" "$out" "STEWARD_USAGE_CMD=/abs/usage-shim s
 out="$(debug "$FX/valid-usage" env STEWARD_USAGE_CMD=/from/env-shim)"
 has "usage cmd: the environment value is untouched" "$out" "STEWARD_USAGE_CMD=/from/env-shim source=process-environment"
 
+# THE THIRD KEY OF THE SAME CLASS, and it is tested as its own key rather than
+# assumed to inherit the twin's behaviour: three keys for one idea are three
+# places the rule can drift, and only a case per key notices when one does.
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=/abs/one\nSTEWARD_CREDENTIAL_CMD=/abs/cred-shim\n' > "$FX/valid-cred"
+# 0600, PINNED - the reader refuses a group- or other-writable operator config,
+# and under the Debian default umask of 002 a fixture that lets the shell pick
+# the mode measures the HOST. Written wrong first: both cases below failed on
+# the refusal instead of on the key.
+chmod 600 "$FX/valid-cred"
+out="$(debug "$FX/valid-cred")"
+has "credential cmd: taken from the file" "$out" "STEWARD_CREDENTIAL_CMD=/abs/cred-shim source=config-file"
+out="$(debug "$FX/valid-cred" env STEWARD_CREDENTIAL_CMD=/from/env-cred)"
+has "credential cmd: the environment value is untouched" "$out" "STEWARD_CREDENTIAL_CMD=/from/env-cred source=process-environment"
+
 echo "== 4. refusal branches: each one rc 78 =="
 
 check_refuse() { # <description> <config-content> [grep-for]
@@ -134,6 +149,13 @@ STEWARD_ESTATE_ROOT=/abs/one
 STEWARD_USAGE_CMD=/abs/one-shim
 STEWARD_USAGE_CMD=/abs/two-shim
 " "STEWARD_USAGE_CMD"
+
+check_refuse "duplicate credential cmd key" \
+  "FORMAT=1
+STEWARD_ESTATE_ROOT=/abs/one
+STEWARD_CREDENTIAL_CMD=/abs/one-shim
+STEWARD_CREDENTIAL_CMD=/abs/two-shim
+" "STEWARD_CREDENTIAL_CMD"
 
 check_refuse "relative usage cmd value" \
   "FORMAT=1
