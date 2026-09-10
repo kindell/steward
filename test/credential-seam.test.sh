@@ -1,0 +1,185 @@
+#!/bin/bash
+# test/credential-seam.test.sh - the credential seam: WHEN does a login run out?
+#
+# THE MEASUREMENT IS INJECTED, AND HERE THAT IS A SECRECY RULE BEFORE IT IS A
+# COST ONE. A real credential shim reads a real credential. Every case below is
+# a stub written by this file; nothing here may ever name a real account, a
+# real credential directory, or hold a real token.
+#
+# THE ONE PROPERTY THIS SUITE EXISTS FOR is at the bottom, and it is not a
+# parser test: a shim that puts a SECRET where a timestamp belongs must not be
+# able to get that secret out of the seam - not in a row, not in a note, not on
+# stderr. The contract says these columns are times; the guard has to hold when
+# the shim is wrong, because a shim that is right needs no guard.
+#
+# A DEADLINE IS NOT A STATE. No case here asserts the word `expired`, because
+# the seam never writes it. It reports WHEN; the comparison against a clock
+# belongs to whoever raises an alarm.
+set -u
+
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
+is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
+has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+hasnt() { case "$2" in *"$3"*) bad "$1" "found '$3' in: $2" ;; *) ok "$1" ;; esac; }
+
+FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
+mkdir -p "$FX/home" "$FX/estate" "$FX/logins.d"
+# 0700, PINNED - the login reader refuses a group- or other-writable register,
+# so a fixture that lets `mkdir` pick the mode measures the HOST, not the
+# product. See test/register-modes.test.sh.
+chmod 700 "$FX/logins.d"
+HOME="$FX/home"; export HOME
+STEWARD_ESTATE_ROOT="$FX"; export STEWARD_ESTATE_ROOT
+
+# TWO LOGINS, so a lookup that answers "yes" to everything and one that answers
+# "yes" to nothing are both visible; a single-row register cannot tell them apart.
+for slug in alpha beta; do
+  { printf 'PRINCIPAL="a"\nACCOUNT="%s@fixture.invalid"\n' "$slug"
+    printf 'PROVIDER="claude-max"\nCONFIG_DIR="cfg-%s"\nLEGAL_OWNER="a"\n' "$slug"
+  } > "$FX/logins.d/$slug.conf"
+done
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX/estate/steward.conf"
+
+# shellcheck source=/dev/null
+. "$here/lib/registry.sh"
+# shellcheck source=/dev/null
+. "$here/lib/credential.sh"
+
+TAB="$(printf '\t')"
+
+stub() { printf '#!/bin/bash\n%s\n' "$2" > "$FX/$1"; chmod +x "$FX/$1"; printf '%s' "$FX/$1"; }
+
+# THE ROWS ARE READ BACK FROM A FILE, NEVER FROM `$(credential_rows)`, because
+# it sets CREDENTIAL_SEAM_REASON and CREDENTIAL_DROPPED in the CALLER's shell
+# and a command substitution is a subshell: captured that way both would come
+# back as whatever they were before the call.
+run_rows() {
+  STEWARD_CREDENTIAL_CMD="$1" credential_rows >"$FX/rows" 2>"$FX/err"
+  ROWS="$(cat "$FX/rows")"; ERR="$(cat "$FX/err")"
+}
+field() { printf '%s' "$1" | awk -F'\t' -v n="$2" 'NR==1{print $n}'; }
+
+echo "== 1. the four path gates, and an unconfigured seam that says so quietly =="
+STEWARD_CREDENTIAL_CMD="" credential_rows >"$FX/rows" 2>"$FX/err"
+is "1a an unset seam is a normal state" "$CREDENTIAL_SEAM_REASON" "seam-not-configured"
+is "1b and it prints nothing at all"    "$(cat "$FX/err")" ""
+run_rows "credshim"
+is "1c a bare name is refused, not resolved through PATH" "$CREDENTIAL_SEAM_REASON" "seam-not-a-path"
+run_rows "./credshim"
+is "1d a relative path is refused"      "$CREDENTIAL_SEAM_REASON" "seam-not-absolute"
+run_rows "$FX/no-such-shim"
+is "1e a missing shim is named"         "$CREDENTIAL_SEAM_REASON" "seam-not-found"
+printf '#!/bin/bash\ntrue\n' > "$FX/notx"; chmod 644 "$FX/notx"
+run_rows "$FX/notx"
+is "1f a shim that cannot be run is named" "$CREDENTIAL_SEAM_REASON" "seam-not-executable"
+
+echo "== 2. a shim that fails, says nothing, or hangs =="
+run_rows "$(stub failing 'echo "provider refused" >&2; exit 3')"
+is  "2a a failing shim leaves a reason" "$CREDENTIAL_SEAM_REASON" "seam-failed"
+has "2b and its stderr is kept as evidence" "$ERR" "provider refused"
+run_rows "$(stub quiet 'exit 0')"
+is  "2c an empty answer is not an estate without credentials" "$CREDENTIAL_SEAM_REASON" "seam-no-output"
+STEWARD_CREDENTIAL_TIMEOUT=1 run_rows "$(stub hung 'echo "waiting on the keychain" >&2; sleep 30')"
+is  "2d a hung shim is killed and named" "$CREDENTIAL_SEAM_REASON" "seam-timeout"
+has "2e and what it managed to say survives the kill" "$ERR" "waiting on the keychain"
+
+echo "== 3. a well-formed answer passes through unchanged =="
+run_rows "$(stub good "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t2026-10-09T20:54:20Z\t2026-09-10T06:32:25Z\tmeasured\n'")"
+is "3a the row survives"        "$(field "$ROWS" 6)" "measured"
+is "3b access time is verbatim" "$(field "$ROWS" 3)" "2026-09-10T13:30:08Z"
+is "3c refresh time is verbatim" "$(field "$ROWS" 4)" "2026-10-09T20:54:20Z"
+is "3d nothing is dropped"      "$CREDENTIAL_DROPPED" "0"
+is "3e and nothing is said"     "$ERR" ""
+
+echo "== 4. the two words that are not failures =="
+run_rows "$(stub nocred "printf 'beta\tclaude-max\t\t\t2026-09-10T06:32:25Z\tno-credential\n'")"
+is "4a a login with nothing to expire keeps its word" "$(field "$ROWS" 6)" "no-credential"
+run_rows "$(stub unread "printf 'beta\tclaude-max\t\t\t2026-09-10T06:32:25Z\tunreadable\n'")"
+is "4b a credential that could not be read keeps its word" "$(field "$ROWS" 6)" "unreadable"
+
+echo "== 5. an empty column keeps its place - the hand-rolled splitter =="
+# `IFS=<tab> read` collapses a run of tabs, which would slide the state word
+# into a time field and publish a vocabulary word AS A TIMESTAMP.
+run_rows "$(stub gap "printf 'alpha\tclaude-max\t\t2026-10-09T20:54:20Z\t\tmeasured\n'")"
+is "5a an empty access column stays empty" "$(field "$ROWS" 3)" ""
+is "5b and refresh does not slide left"    "$(field "$ROWS" 4)" "2026-10-09T20:54:20Z"
+is "5c and the state is still the state"   "$(field "$ROWS" 6)" "measured"
+
+echo "== 6. rows the register cannot vouch for are dropped, loudly =="
+run_rows "$(stub unknownlogin "printf 'gamma\tclaude-max\t2026-09-10T13:30:08Z\t\t\tmeasured\n'")"
+is  "6a a login the register does not know is dropped" "$ROWS" ""
+is  "6b and counted"                                   "$CREDENTIAL_DROPPED" "1"
+has "6c and never silent"                              "$ERR" "unknown login (1)"
+run_rows "$(stub unknownprov "printf 'alpha\tacme-cloud\t2026-09-10T13:30:08Z\t\t\tmeasured\n'")"
+is  "6d an unknown provider is dropped"  "$CREDENTIAL_DROPPED" "1"
+has "6e and named as its own reason"     "$ERR" "unknown provider (1)"
+run_rows "$(stub short "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\n'")"
+is  "6f a short row is dropped, not padded into a measurement" "$CREDENTIAL_DROPPED" "1"
+has "6g and named as malformed"          "$ERR" "malformed (1)"
+run_rows "$(stub wide "printf 'alpha\tclaude-max\ta\tb\tc\tmeasured\tnote\textra\n'")"
+is  "6h a row with more columns than the contract is dropped" "$CREDENTIAL_DROPPED" "1"
+
+echo "== 7. a time that is not a time is emptied and the FIELD is named =="
+run_rows "$(stub badstamp "printf 'alpha\tclaude-max\tyesterday\t2026-10-09T20:54:20Z\t\tmeasured\n'")"
+is  "7a the unreadable time is emptied"  "$(field "$ROWS" 3)" ""
+is  "7b the readable one is untouched"   "$(field "$ROWS" 4)" "2026-10-09T20:54:20Z"
+has "7c and the note says WHICH field"   "$(field "$ROWS" 7)" "access:not-a-stamp"
+is  "7d the row is kept - it is still evidence the login was looked at" \
+    "$(printf '%s\n' "$ROWS" | grep -c .)" "1"
+
+echo "== 8. a state outside the vocabulary becomes unknown, never a fifth colour =="
+run_rows "$(stub badstate "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\texpired\n'")"
+is  "8a a word the vocabulary does not have becomes unknown" "$(field "$ROWS" 6)" "unknown"
+has "8b and the note says it was the state"  "$(field "$ROWS" 7)" "state:not-in-vocabulary"
+is  "8c the measured time is still reported" "$(field "$ROWS" 3)" "2026-09-10T13:30:08Z"
+
+echo "== 9. a row must contain what its own word promises =="
+run_rows "$(stub emptymeasured "printf 'alpha\tclaude-max\t\t\t2026-09-10T06:32:25Z\tmeasured\n'")"
+is  "9a 'measured' with no time at all is not a measurement" "$(field "$ROWS" 6)" "unknown"
+has "9b and says so"  "$(field "$ROWS" 7)" "measured-without-a-time"
+run_rows "$(stub contradiction "printf 'beta\tclaude-max\t2026-09-10T13:30:08Z\t\t\tno-credential\n'")"
+is  "9c 'no-credential' carrying a time contradicts itself" "$(field "$ROWS" 6)" "unknown"
+has "9d and says so"  "$(field "$ROWS" 7)" "no-credential-with-a-time"
+
+echo "== 10. absence becomes a word, and the word is unknown =="
+run_rows "$(stub onlyalpha "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\tmeasured\n'")"
+hit="$(credential_for alpha "$ROWS")"
+is "10a a login that was answered about comes back as itself" "$(field "$hit" 3)" "2026-09-10T13:30:08Z"
+miss="$(credential_for beta "$ROWS")"
+is "10b a login nobody mentioned is unknown, NOT no-credential" "$(field "$miss" 6)" "unknown"
+is "10c and it carries the login it is about"  "$(field "$miss" 1)" "beta"
+# A HEALTHY SEAM THAT SIMPLY DID NOT MENTION THE LOGIN still owes the reader a
+# word. `not-reported` is that word: the seam worked, and this login was not in
+# the answer - which is a different thing to fix than a seam that never ran.
+is "10d a working seam that skipped a login says exactly that" "$(field "$miss" 7)" "not-reported"
+STEWARD_CREDENTIAL_CMD="" credential_rows >/dev/null 2>&1
+miss2="$(credential_for beta "")"
+is "10e an unconfigured seam says so in the absent row" "$(field "$miss2" 7)" "seam-not-configured"
+
+echo "== 11. THE RULE: a value cannot leave this seam, even when the shim is wrong =="
+# The contract says columns 3-5 are timestamps. This shim has a field-order bug
+# and puts the credential itself in one - the case the guard exists for.
+SECRET='sk-ant-oat01-FIXTURE-NOT-A-REAL-TOKEN-0123456789abcdef'
+run_rows "$(stub leaky "printf 'alpha\tclaude-max\t$SECRET\t\t\tmeasured\n'")"
+hasnt "11a the secret is not in the row"      "$ROWS" "$SECRET"
+hasnt "11b nor in the note"                   "$(field "$ROWS" 7)" "$SECRET"
+hasnt "11c nor on stderr"                     "$ERR" "$SECRET"
+hasnt "11d not even a prefix of it - a prefix of a secret is a secret" \
+      "$ROWS$ERR" "sk-ant-oat01"
+is    "11e and the length is not published either" \
+      "$(printf '%s%s' "$ROWS" "$ERR" | grep -oE '[0-9]{2,}' | grep -c "${#SECRET}" || true)" "0"
+has   "11f what IS published is the shape that was wrong" "$(field "$ROWS" 7)" "access:not-a-stamp"
+# AND THE SEVENTH COLUMN: a shim's own free text is not forwarded, because a
+# column the product passes through verbatim is a column a shim can put a
+# credential in.
+run_rows "$(stub leakynote "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\tmeasured\t$SECRET\n'")"
+hasnt "11g a note written by the shim is not forwarded" "$ROWS" "$SECRET"
+is    "11h the note that survives is the seam's own" "$(field "$ROWS" 7)" ""
+is    "11i and the measurement is still reported"    "$(field "$ROWS" 3)" "2026-09-10T13:30:08Z"
+
+printf '\n  %d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
