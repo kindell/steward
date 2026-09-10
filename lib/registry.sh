@@ -5001,17 +5001,23 @@ registry_mandate_write() {
 # SUBSHELLED PER ROW, so ACCOUNT_* never leaks into the caller's frame - the
 # same isolation registry_login_principal_gate documents.
 registry_login_unix_account() {
-  local login="${1:-}" principal host f cand
+  local login="${1:-}" principal host f cand user
   principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
   [ -n "$principal" ] || return 1
   host="$(_registry_self_host)"
+  # ONE LOAD PER CANDIDATE, IN A PLAIN COMMAND SUBSTITUTION - not a pipeline into
+  # `grep -q` with a second load behind it. The pipeline form loaded every row
+  # twice and made the answer depend on SIGPIPE and on a pipeline's exit status,
+  # neither of which this question is about; a substitution that either prints a
+  # name or prints nothing is the same on every shell.
   for f in "$(registry_account_dir)"/*.conf; do
     [ -f "$f" ] || continue
     cand="$(basename "$f" .conf)"
-    ( registry_account_load "$cand" >/dev/null 2>&1 \
-      && [ "$ACCOUNT_PRINCIPAL" = "$principal" ] && [ "$ACCOUNT_HOST" = "$host" ] \
-      && printf '%s' "$ACCOUNT_USERNAME" ) | grep -q . && {
-        ( registry_account_load "$cand" >/dev/null 2>&1 && printf '%s\n' "$ACCOUNT_USERNAME" ); return 0; }
+    user="$( registry_account_load "$cand" >/dev/null 2>&1 \
+             && [ "$ACCOUNT_PRINCIPAL" = "$principal" ] \
+             && [ "$ACCOUNT_HOST" = "$host" ] \
+             && printf '%s' "$ACCOUNT_USERNAME" )"
+    [ -n "$user" ] && { printf '%s\n' "$user"; return 0; }
   done
   return 1
 }
