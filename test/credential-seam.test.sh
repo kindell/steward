@@ -176,6 +176,21 @@ has   "11f what IS published is the shape that was wrong" "$(field "$ROWS" 7)" "
 # AND THE SEVENTH COLUMN: a shim's own free text is not forwarded, because a
 # column the product passes through verbatim is a column a shim can put a
 # credential in.
+# AND THE STATE COLUMN, which is the one this section did not pin. Columns 3-5
+# are timestamps and column 7 is the note; column 6 is a word from a closed
+# list - and the gate that refuses a foreign word WRITES THE NOTE ABOUT THE
+# VALUE IT JUST REFUSED. Today it writes only the shape. Change it to include
+# the value it saw and the secret walks out in the note, and until this case
+# existed that change cost ZERO of 69 assertions: the code was right and the
+# proof was missing. A shim with a field-order bug can put a credential in any
+# column, so every column needs the same case, not just the ones that look
+# like they hold data.
+run_rows "$(stub leakystate "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\t$SECRET\n'")"
+hasnt "11j a secret in the STATE column does not reach the row" "$ROWS" "$SECRET"
+hasnt "11k nor stderr"                                          "$ERR"  "$SECRET"
+is    "11l the state is the word for a foreign one"  "$(field "$ROWS" 6)" "unknown"
+is    "11m and the note names the shape, not the value" "$(field "$ROWS" 7)" "state:not-in-vocabulary"
+
 run_rows "$(stub leakynote "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\tmeasured\t$SECRET\n'")"
 hasnt "11g a note written by the shim is not forwarded" "$ROWS" "$SECRET"
 is    "11h the note that survives is the seam's own" "$(field "$ROWS" 7)" ""
