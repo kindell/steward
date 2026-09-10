@@ -267,13 +267,19 @@ registry_schema_check() {
   # derivation above cannot see that reader, so the key would leak through
   # this source with nothing to notice. Naming it here is what puts it inside
   # the derived set. DESK_ORIGIN has a reader in this file and was still
-  # missing from this line, which is the third time the list has been short.
+  # missing from this line, which is now the FOURTH time the list has been
+  # short - CREDENTIAL_CMD was added to the library's readers and not to this
+  # line, and registry_load leaked it into every caller until the derived
+  # check in test/identity-schema.test.sh said so. That check earns its keep:
+  # it builds the key set FROM this library rather than from a second list,
+  # so a key added anywhere is tested here without anybody remembering to.
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
         RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
         BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" \
         PAUSED_DIR_NAME="" LEGACY_LOGIN="" LOGIN_REQUIRED_FOR="" \
-        LIVENESS_CMD="" USAGE_CMD="" ESTATE_CHECKOUT="" MAIL_ACCOUNT_FILE="" \
+        LIVENESS_CMD="" USAGE_CMD="" CREDENTIAL_CMD="" ESTATE_CHECKOUT="" \
+        MAIL_ACCOUNT_FILE="" \
         ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE="" \
         DESK_ORIGIN="" DESK_SESSION_KEY_FILE=""
   # shellcheck source=/dev/null
