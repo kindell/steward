@@ -72,7 +72,7 @@ CREDENTIAL_DROPPED=0
 #                   never will - it is permanent. A login with no credential is
 #                   TEMPORARY: somebody signs in and there is one. A view that
 #                   greys out the first is right; greying out the second hides
-#                   the row an operator is about to act on. (butler, 2026-09-10)
+#                   the row an operator is about to act on. (hub review, 2026-09-10)
 #   unreadable      the credential is there and could not be read. The reason
 #                   is in the note. An operator fixes a permission or a path.
 #   unknown         we asked and got back nothing we could read. An operator
@@ -103,8 +103,8 @@ credential_rows() {
     return 0
   fi
   # THE THIRD COPY. This file is the third seam and it copies from the other
-  # two rather than sharing with them. That was decided deliberately (butler,
-  # 2026-09-10) and it comes with an expiry, so the copy names its siblings
+  # two rather than sharing with them. That was decided deliberately (hub
+  # review, 2026-09-10) and it comes with an expiry, so the copy names its siblings
   # line by line and the reader can see the whole debt in one place:
   #
   #   the four path gates below   <- lib/usage.sh, usage_rows, verbatim
@@ -287,7 +287,7 @@ credential_rows() {
     # hole was closed across the register the day before; this seam was
     # written from the old shape.
     #
-    # THE RULE THAT SEPARATES A SAFE USE FROM A HOLE (butler, from a sweep of
+    # THE RULE THAT SEPARATES A SAFE USE FROM A HOLE (hub review, from a sweep of
     # all 17 occurrences): it is a hole when the needle is FREE TEXT FROM
     # OUTSIDE, or when the list spans more rows than the needle's own origin.
     # Both are true here - the needle is a raw field from a foreign shim and
