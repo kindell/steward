@@ -112,9 +112,17 @@ attacker.
 
 Measured on bash 3.2 / macOS while writing this: `[[ $v =~ ^.{1,200}$ ]]`
 ACCEPTS a value containing a newline; `^[[:print:]]{1,200}$` refuses it. A
-length-only rule would therefore have shipped the hole. (Wanted: the same
-two measurements on bash 5 / Linux before implementation - the regex engine
-is not the same one.)
+length-only rule would therefore have shipped the hole. Measured again on
+bash 5.2 / Linux: identical on both lines - no engine difference between the
+platforms.
+
+A tab is not `[[:print:]]` either, so a signature pasted with a tab in it is
+refused. That is the right outcome - a tab is a control character in a
+line-oriented bridge - but the refusal must NAME THE CHARACTER it found
+(`a control character (tab) at position N`), not merely say the value is
+invalid. The person pasting a contact address cannot see the difference
+between a space and a tab, and a refusal they cannot act on sends them to
+ask someone.
 
 #### Two structural fixes this key must not be alone in carrying
 
@@ -204,8 +212,9 @@ test here does the same. Specifically required:
   separately, because the two failures are different - it does NOT start on
   the injected origin. A test that only checks the rc would still pass if the
   refusal moved to a later guard that let the origin through first.
-- `DESK_CONTACT` carrying a bare control character (no newline): refused. The
-  rule is the character class, not the line count.
+- `DESK_CONTACT` carrying a bare control character (no newline), and one
+  carrying a tab: both refused, and the refusal NAMES the character it found.
+  The rule is the character class, not the line count.
 - The two structural fixes get their own tests, independent of this key:
   `desk-paths` refusing a control character in `DESK_ORIGIN` and in
   `DESK_SESSION_KEY_FILE`, and `serve.mjs` exiting 78 on a bridge output
