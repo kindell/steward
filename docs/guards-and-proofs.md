@@ -134,10 +134,26 @@ and nothing sources it - so a guard that starts from callers has nothing to
 find. Its absence surfaces later as a deployed host dying on a source line,
 rc 78, in a journal nobody reads.
 
-## 8. A pass that a different gate produced has measured that gate.
+## 8. An error that is not distinguished from an answer becomes an answer.
 
 A test that passes because a DIFFERENT guard refused the fixture first has
-measured that other guard, not the one it names. Four attempts at one measurement in a
+measured that other guard, not the one it names.
+
+The wider form cost more than a wasted measurement. A verb called a function
+that does not exist; bash returned 127; the `|| continue` beside the call read
+that as "not a row I own"; so EVERY row already present in the home was
+classified as no longer owned. Run in plan mode against a real estate, it
+offered to delete all thirteen of one person's sessions and all seven of
+another's. Without the plan mode it would have emptied two people's registers
+in one line. The regression test for it costs 15 of that suite's 32
+assertions.
+
+Three shapes of the same defect turned up in a single day: a missing command
+returning 127, a directory that could not be read, and a stub that wrote
+nothing. All three were read as answers by the code beside them. An `|| true`,
+a `2>/dev/null`, a `|| continue` - each is a place where an error and an
+answer become the same value, and each needs the question asked out loud:
+what does this branch mean when the thing before it did not run at all? Four attempts at one measurement in a
 single day were refused by an earlier gate - a bad id form, a wrong key set,
 an invalid enum value, a field count one short - and each refusal looked
 like an answer. When a probe reports what you expected, check that it
