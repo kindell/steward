@@ -58,6 +58,15 @@ nothing, and it looks exactly like a guard that is genuinely redundant. Two
 zeros in one sweep turned out to be edits that never landed. Diff the file,
 or assert the replacement happened, before you believe any number.
 
+A mutation can also fail to apply by CRASHING IN ITS OWN SHELL - a quoting
+error in the command that was supposed to edit the file. Measured the same
+day, by the person who had written this rule that morning: the suite ran, the
+numbers came back unchanged, and the number was reported as a cost of zero.
+On disk nothing had been edited at all. **A mutation that crashed looks
+exactly like a guard that is redundant**, and the difference is visible only
+if you require a receipt that the file changed - not that the command
+returned.
+
 **That check is necessary and not sufficient.** A mutation that DID apply
 and still cost zero is, so far, only a question: one such mutation was
 neutralised by a third resolution twenty lines further down, which refused
