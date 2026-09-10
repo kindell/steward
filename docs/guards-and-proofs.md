@@ -67,6 +67,13 @@ exactly like a guard that is redundant**, and the difference is visible only
 if you require a receipt that the file changed - not that the command
 returned.
 
+And a mutation can apply cleanly and still be a no-op. One replaced `measured`
+at end-of-line in a verb whose rows carry a trailing tab: the edit was in the
+file, the receipt said so, and it changed nothing the code did. **Applied is
+not the same as effective.** The receipt to require is a behaviour that
+changed, not a file that did - which usually means running the mutated code
+once by hand and looking at its output before trusting any number.
+
 **That check is necessary and not sufficient.** A mutation that DID apply
 and still cost zero is, so far, only a question: one such mutation was
 neutralised by a third resolution twenty lines further down, which refused
