@@ -181,5 +181,22 @@ hasnt "11g a note written by the shim is not forwarded" "$ROWS" "$SECRET"
 is    "11h the note that survives is the seam's own" "$(field "$ROWS" 7)" ""
 is    "11i and the measurement is still reported"    "$(field "$ROWS" 3)" "2026-09-10T13:30:08Z"
 
+echo "== 12. the row carries no path, and no-credential is not not-applicable =="
+# A PATH INSIDE SOMEBODY'S HOME is not needed to answer this row's question and
+# is read by more people than that home's owner. The shim may name one on
+# stderr, to the operator repairing it; the row may not carry one.
+run_rows "$(stub pathy "printf 'alpha\tclaude-max\t\t\t2026-09-10T06:32:25Z\tunreadable\t/home/someone/.claude/.credentials.json\n'")"
+hasnt "12a a path written by the shim does not reach the row" "$ROWS" "/home/someone"
+is    "12b the state still says what happened"  "$(field "$ROWS" 6)" "unreadable"
+# TWO WORDS THAT MEAN DIFFERENT THINGS DO NOT SHARE A SPELLING. usage's
+# `not-applicable` is permanent by construction; a missing credential is
+# temporary - somebody signs in and it exists. A view greying out the first is
+# right and greying out the second hides the row about to be acted on.
+run_rows "$(stub nocred2 "printf 'beta\tclaude-max\t\t\t2026-09-10T06:32:25Z\tno-credential\n'")"
+is    "12c a missing credential is not spelled not-applicable" "$(field "$ROWS" 6)" "no-credential"
+run_rows "$(stub napp "printf 'beta\tclaude-max\t\t\t2026-09-10T06:32:25Z\tnot-applicable\n'")"
+is    "12d and the twin's word is not in this vocabulary"      "$(field "$ROWS" 6)" "unknown"
+has   "12e it is refused like any other foreign word"          "$(field "$ROWS" 7)" "state:not-in-vocabulary"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

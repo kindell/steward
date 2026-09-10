@@ -18,6 +18,12 @@
 # every reader that wanted a different threshold would have to un-derive it.
 # Say the time; let the caller say the verdict.
 #
+# AND NEVER A PATH. The row carries times, a word and a note - never where the
+# credential file lives. A path inside somebody's home is not needed to answer
+# this row's question, and the row is read by more people than that home's
+# owner. The estate's shim may name a path ON STDERR, to the operator fixing
+# it; the row that travels into views and documents may not.
+#
 # NEVER THE VALUE, NEVER ITS LENGTH. The only things that leave this seam are
 # timestamps and closed vocabulary. A token's value never appears in a row, a
 # note, or an error message - and neither does its length, which is a fact
@@ -57,8 +63,16 @@ CREDENTIAL_DROPPED=0
 # difference between three different things an operator must do:
 #   measured        both times below are what the credential says
 #   no-credential   this login HAS no credential to expire. Not a failed
-#                   measurement - the same distinction usage_rows draws with
-#                   `not-applicable`. An operator does nothing about it.
+#                   measurement - an operator does nothing about it.
+#
+#                   ITS OWN WORD, AND NOT usage's `not-applicable`, though both
+#                   are "this is not a number". They mean different things and
+#                   sharing a spelling would hide the difference: a window that
+#                   is `not-applicable` has no percentage BY CONSTRUCTION and
+#                   never will - it is permanent. A login with no credential is
+#                   TEMPORARY: somebody signs in and there is one. A view that
+#                   greys out the first is right; greying out the second hides
+#                   the row an operator is about to act on. (butler, 2026-09-10)
 #   unreadable      the credential is there and could not be read. The reason
 #                   is in the note. An operator fixes a permission or a path.
 #   unknown         we asked and got back nothing we could read. An operator
@@ -88,14 +102,35 @@ credential_rows() {
     CREDENTIAL_SEAM_REASON="seam-not-configured"
     return 0
   fi
-  # THE FOUR PATH GATES ARE KNOWINGLY DUPLICATED from usage_rows, word for
-  # word, and the reason to copy rather than share is the one usage_rows itself
-  # gives for duplicating the liveness deadline: collapsing three seams onto a
-  # shared runner is its own change, and doing it here would move a guard two
-  # other seams depend on inside the commit that adds a third caller for it.
-  # The gate matters more here than anywhere: the shim this seam runs READS A
-  # CREDENTIAL, and "whatever PATH happens to find" is not a thing to hand that
-  # authority to.
+  # THE THIRD COPY. This file is the third seam and it copies from the other
+  # two rather than sharing with them. That was decided deliberately (butler,
+  # 2026-09-10) and it comes with an expiry, so the copy names its siblings
+  # line by line and the reader can see the whole debt in one place:
+  #
+  #   the four path gates below   <- lib/usage.sh, usage_rows, verbatim
+  #   the outer deadline block    <- lib/usage.sh, usage_rows, which itself
+  #                                  copied it from lib/liveness.sh,
+  #                                  liveness_rows, where the evidence for
+  #                                  every line of it is written out
+  #   _credential_stamp_ok        <- lib/usage.sh, _usage_stamp_ok, same
+  #                                  grammar, renamed
+  #   the register-asked-once and drop-and-count-loudly shape
+  #                               <- lib/usage.sh, usage_rows
+  #
+  # WHY COPY NOW: this row prevents a repeat of six days of silence, while the
+  # extraction prevents a drift that has not happened yet; and an extraction
+  # would touch TWO deployed seams that both changed this week, which is a
+  # bigger review surface than the whole new seam.
+  #
+  # A FOURTH COPY IS NOT ACCEPTABLE. The trigger for extracting all of this
+  # into one shared runner is written in the hub's queue: a fourth seam, OR the
+  # first divergence between these three. Whoever reaches either of those does
+  # the extraction then, while it is still mechanical - waiting past that turns
+  # it into archaeology.
+  #
+  # The gate matters more here than in either sibling: the shim this seam runs
+  # READS A CREDENTIAL, and "whatever PATH happens to find" is not a thing to
+  # hand that authority to.
   case "$cmd" in
     */*) ;;
     *) echo "credential: STEWARD_CREDENTIAL_CMD must be a PATH to an executable, not the bare name '$cmd' - set it to the full path of the estate shim" >&2
