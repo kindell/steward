@@ -1423,7 +1423,8 @@ cmd_registry() {
       case "${1:-}" in
         add) shift; cmd_registry_login_add "$@" ;;
         ls)  shift; cmd_registry_login_ls "$@" ;;
-        *)   _reg_fail "" "steward registry login: add|ls" 64; return 64 ;;
+        shell) shift; cmd_registry_login_shell "$@" ;;
+        *)   _reg_fail "" "steward registry login: add|ls|shell" 64; return 64 ;;
       esac ;;
     principal)
       shift
@@ -2273,15 +2274,16 @@ cmd_registry_login_add() {
   return 0
 }
 
-# cmd_registry_login_ls [--json] — one line per row: slug, account, provider,
-# the RESOLVED directory, and who pays.
+# cmd_registry_login_ls [--json] - one line per row: slug, account, provider,
+# the RESOLVED directory, whether that directory holds a credential, and who
+# pays.
 #
 # THE RESOLVED DIRECTORY IS SHOWN, not the raw field. The raw one is a grammar
 # fragment; what an operator needs to know before an interactive login is which
 # directory on disk is about to be written. A row that does not resolve prints
 # its refusal in place of the path rather than being skipped.
 cmd_registry_login_ls() {
-  local want_json="" a slug dir account_username first=1
+  local want_json="" a slug dir account_username cred first=1
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
@@ -2310,24 +2312,86 @@ cmd_registry_login_ls() {
     # that carries the difference when they do not. Loaded in a subshell,
     # the same isolation registry_login_principal_gate uses, so a load run
     # on the side never touches this loop's own locals.
-    account_username="$( registry_account_load "$LOGIN_ACCOUNT" >/dev/null 2>&1 && printf '%s' "$ACCOUNT_USERNAME" )"
-    if [ -z "$account_username" ]; then
-      dir="(account does not resolve)"
-    elif ! dir="$(registry_login_config_dir "$slug" "$account_username" 2>/dev/null)"; then
-      dir="(does not resolve)"
-    fi
+    # THE JOIN IS THE PRINCIPAL, NOT THE ACCOUNT FIELD. LOGIN_ACCOUNT is the
+    # account's REAL NAME - an address - and registry_account_load takes an
+    # accounts.d SLUG, so handing it one could only ever fail: every correct row
+    # in a sound register printed "(account does not resolve)". The link between
+    # a login and a unix account is the human, which is the join
+    # registry_login_principal_gate already makes. registry_login_state does it
+    # once and also answers the question an operator actually has before typing
+    # /login: is this directory already logged in?
+    IFS=$'\t' read -r account_username dir cred <<<"$(registry_login_state "$slug")"
     if [ -n "$want_json" ]; then
       [ "$first" = 1 ] || printf ','
       first=0
-      printf '{"login":"%s","account":"%s","provider":"%s","config_dir":"%s","legal_owner":"%s"}' \
-        "$slug" "$LOGIN_ACCOUNT" "$LOGIN_PROVIDER" "$dir" "$LOGIN_LEGAL_OWNER"
+      printf '{"login":"%s","account":"%s","provider":"%s","unix_account":"%s","config_dir":"%s","credential":"%s","legal_owner":"%s"}' \
+        "$slug" "$LOGIN_ACCOUNT" "$LOGIN_PROVIDER" "$account_username" "$dir" "$cred" "$LOGIN_LEGAL_OWNER"
     else
-      printf '%-16s %-28s %-12s %-40s %s\n' \
-        "$slug" "$LOGIN_ACCOUNT" "$LOGIN_PROVIDER" "$dir" "$LOGIN_LEGAL_OWNER"
+      printf '%-16s %-28s %-12s %-40s %-10s %s\n' \
+        "$slug" "$LOGIN_ACCOUNT" "$LOGIN_PROVIDER" "$dir" "$cred" "$LOGIN_LEGAL_OWNER"
     fi
   done
   [ -n "$want_json" ] && printf ']}\n'
   return 0
+}
+
+# cmd_registry_login_shell <login> [-- command...] - a shell with the login's own
+# CLAUDE_CONFIG_DIR, after printing which directory and which account it is.
+#
+# WHY THIS VERB EXISTS, and it is one measured evening: every login is just a
+# directory in CLAUDE_CONFIG_DIR, and nothing tells a person which one they are
+# standing in until after they have typed /login. On 2026-09-09 a login meant
+# for `~/.claude-logins/point` landed in `~/.claude` instead - the estate's
+# LEGACY_LOGIN, a different subscription - and every session on that account was
+# signed out mid-work. The directory was never wrong; the person could not see
+# it. So this verb says it BEFORE the prompt, on stderr, where a pipe cannot
+# swallow it.
+#
+# IT REFUSES ANOTHER PERSON'S LOGIN. The directory is inside their home and
+# their credentials are in it; a shell aimed there from this account would at
+# best fail on 0750 and at worst be someone spending another person's seat. The
+# refusal names the human, because that is who has to run it instead.
+#
+# EXEC, NOT A SUBSHELL: what follows is the caller's own session, so ^C, job
+# control and the exit status all belong to them.
+cmd_registry_login_shell() {
+  local slug="" a
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --) shift; break ;;
+      -*) fel "steward registry login shell: unknown flag '$1'" 64 ;;
+      *) [ -z "$slug" ] || fel "steward registry login shell: one login at a time" 64; slug="$1"; shift ;;
+    esac
+  done
+  [ -n "$slug" ] || fel "usage: steward registry login shell <login> [-- command...]" 64
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  registry_login_load "$slug" >/dev/null || fel "login '$slug' does not resolve" 78
+  local user dir cred
+  IFS=$'\t' read -r user dir cred <<<"$(registry_login_state "$slug")"
+  case "$dir" in
+    '('*) fel "login '$slug': $dir" 78 ;;
+  esac
+  local me; me="$(id -un)"
+  if [ "$user" != "$me" ]; then
+    fel "login '$slug' belongs to $LOGIN_PRINCIPAL and lives in ${user}'s home ($dir). Run it as $user; a shell aimed at another person's credentials is not this account's to open." 77
+  fi
+  # THE THREE FACTS A PERSON NEEDS BEFORE TYPING /login, and the one they cannot
+  # see from the prompt: which directory, whose subscription pays for it, and
+  # whether it is already logged in. ON STDERR so `login shell x -- cmd` in a
+  # pipeline still carries them to the terminal.
+  {
+    printf 'login    %s (%s, paid by %s)\n' "$slug" "$LOGIN_ACCOUNT" "$LOGIN_LEGAL_OWNER"
+    printf 'dir      %s\n' "$dir"
+    case "$cred" in
+      yes) printf 'state    already logged in - /login here would RE-authenticate or switch account\n' ;;
+      no)  printf 'state    no credential yet - /login here is the first sign-in for this account\n' ;;
+      *)   printf 'state    %s\n' "$cred" ;;
+    esac
+  } >&2
+  export CLAUDE_CONFIG_DIR="$dir" STEWARD_LOGIN="$slug"
+  if [ "$#" -gt 0 ]; then exec "$@"; fi
+  exec "${SHELL:-/bin/bash}"
 }
 
 # cmd_registry_project_add <slug> --parent <entity-slug> --name "Display Name" [--json]

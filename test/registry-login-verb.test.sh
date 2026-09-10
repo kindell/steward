@@ -285,9 +285,15 @@ esac
 STUB
 chmod +x "$FX2/homelookup"
 
+# STEWARD_SELF_HOST IS PART OF THE FIXTURE NOW, because the listing resolves a
+# login to a unix account through accounts.d BY PRINCIPAL - and an account row
+# is per HOST. Without a self-image the fixture's `HOST="h1"` rows belong to a
+# machine this run is not, and every row lists as unresolvable. That is the
+# resolver being right: a person may have accounts on several machines and only
+# the one on this host has the home the credentials sit in.
 run2() {
   STEWARD_ESTATE_ROOT="$FX2" STEWARD_CONFIG_FILE="$FX2/no-such-config" \
-  STEWARD_HOME_LOOKUP_CMD="$FX2/homelookup" \
+  STEWARD_SELF_HOST=h1 STEWARD_HOME_LOOKUP_CMD="$FX2/homelookup" \
   bash "$STEWARD" registry login "$@" 2>&1
 }
 
@@ -379,7 +385,7 @@ chmod +x "$FX3/homelookup3"
 
 run3() {
   STEWARD_ESTATE_ROOT="$FX3" STEWARD_CONFIG_FILE="$FX3/no-such-config" \
-  STEWARD_HOME_LOOKUP_CMD="$FX3/homelookup3" \
+  STEWARD_SELF_HOST=h1 STEWARD_HOME_LOOKUP_CMD="$FX3/homelookup3" \
   bash "$STEWARD" registry login "$@" 2>&1
 }
 
@@ -396,12 +402,30 @@ is "10e: rc 0 --json"                     "$rc" "0"
 is "10e: config_dir field carries the same resolution" \
   "$(printf '%s' "$out" | jq -r '.logins[0].config_dir')" "/srv/homes/a-user/.claude-logins/r1"
 
-echo "-- 10f. MINOR-1: an account row that does not resolve prints a named refusal, not a path --"
-run3 add r2 --principal alice --account acct-ghost --provider claude-team \
+echo "-- 10f. a login whose PRINCIPAL has no account on this host names the refusal, not a path --"
+# THIS CASE USED TO ASSERT THE BUG. It added a row with `--account acct-ghost`
+# and expected "(account does not resolve)" - which only made sense while the
+# listing looked ACCOUNT up as an accounts.d slug. ACCOUNT is the account's REAL
+# NAME (an address; see registry_login_load's own comment), so `acct-ghost` is
+# not an unresolvable slug, it is just a name, and there is nothing there to
+# resolve. The fixture hid the defect by giving every account row a slug that
+# happened to equal the ACCOUNT field, so the wrong lookup succeeded here and
+# failed on every real estate: measured 2026-09-09, all four correct rows on
+# basement printed "(account does not resolve)".
+#
+# The genuinely unresolvable case is a login whose PRINCIPAL has no account on
+# THIS host - the person's credentials live on another machine - and that is
+# what is asserted now.
+run3 add r2 --principal nobody --account somebody@example.test --provider claude-team \
   --config-dir '~/.claude-logins/r2' --legal-owner 'Acme Corp' --json >/dev/null
 out="$(run3 ls)"; rc=$?
 is "10f: rc 0" "$rc" "0"
-has "10f: the row names the account refusal, not a path" "$out" "(account does not resolve)"
+has "10f: the row names the refusal, not a path" "$out" "no account for this login's principal on this host"
+has "10f: and the resolvable row beside it is unaffected" "$out" "/srv/homes/a-user/.claude-logins/r1"
+is  "10f: --json carries the same refusal in config_dir" \
+  "$(printf '%s' "$(run3 ls --json)" | jq -r '.logins[] | select(.login=="r2") | .config_dir' | grep -c "no account for")" "1"
+is  "10f: and its credential column is a dash, never a no" \
+  "$(printf '%s' "$(run3 ls --json)" | jq -r '.logins[] | select(.login=="r2") | .credential')" "-"
 
 rm -rf "$FX3"
 
@@ -456,6 +480,93 @@ out_K="$(
 is "11b: cmd_registry_login_add leaves the caller's K untouched" "$out_K" "SENTINEL"
 is "11b: the row was still written correctly under the harness" \
   "$(load_login kleaktest)" "alice|acct-acme-team|claude-team|~/.claude-logins/kleaktest|Acme Corp"
+
+
+echo "== 12. login shell: the directory and the account are SAID before anything is typed =="
+# WHY THIS VERB EXISTS, and it is one measured evening: a login is just a
+# directory in CLAUDE_CONFIG_DIR, and nothing tells a person which one they are
+# standing in until after they have typed /login. On 2026-09-09 a login meant
+# for `~/.claude-logins/point` landed in `~/.claude` - a different subscription -
+# and every session on that account was signed out mid-work.
+FX4="$(mktemp -d)"
+mkdir -p "$FX4/estate" "$FX4/logins.d" "$FX4/accounts.d" "$FX4/home/.claude-logins/mine"
+chmod 700 "$FX4/logins.d"
+# THE LOGIN DIRECTORY AND ITS PARENT ARE PINNED, NOT LEFT TO THE RUNNER'S UMASK.
+# registry_login_config_dir refuses a group- or other-writable target OR parent,
+# and under the Debian default of 002 `mkdir -p` makes both 775 - so the fixture
+# would measure the host's umask instead of the product. This is not a
+# hypothetical: the same 775 on a real home stopped seven sessions from starting
+# on 2026-09-09, and the refusal reached only the supervisor's journal.
+chmod 755 "$FX4/home/.claude-logins" "$FX4/home/.claude-logins/mine"
+cp "$FX/estate/steward.conf" "$FX4/estate/steward.conf"
+ME="$(id -un)"
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="%s"\n' "$ME" > "$FX4/accounts.d/a-me.conf"
+printf 'PRINCIPAL="them"\nHOST="h1"\nUSERNAME="someone-else"\n'  > "$FX4/accounts.d/a-them.conf"
+chmod 600 "$FX4/accounts.d"/*.conf
+cat > "$FX4/homelookup4" <<STUB
+case "\$1" in
+  $ME) printf '$FX4/home\n' ;;
+  someone-else) printf '/srv/homes/someone-else\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX4/homelookup4"
+run4() { STEWARD_ESTATE_ROOT="$FX4" STEWARD_CONFIG_FILE="$FX4/no-such-config" \
+         STEWARD_SELF_HOST=h1 STEWARD_HOME_LOOKUP_CMD="$FX4/homelookup4" \
+         bash "$STEWARD" registry login "$@"; }
+run4 add mine  --principal me   --account me@example.test   --provider claude-team --config-dir '~/.claude-logins/mine'  --legal-owner 'Acme' --json >/dev/null 2>&1
+run4 add yours --principal them --account them@example.test --provider claude-team --config-dir '~/.claude-logins/yours' --legal-owner 'Acme' --json >/dev/null 2>&1
+
+# THE VARIABLE IS THE POINT: the shell runs a command with the login's own
+# directory in CLAUDE_CONFIG_DIR, which is the whole mechanism a session uses.
+out="$(run4 shell mine -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null)"
+is "12: the command runs with the login's directory in CLAUDE_CONFIG_DIR" "$out" "$FX4/home/.claude-logins/mine"
+out="$(run4 shell mine -- sh -c 'printf %s "$STEWARD_LOGIN"' 2>/dev/null)"
+is "12: and STEWARD_LOGIN names the login" "$out" "mine"
+
+# THE THREE LINES GO TO STDERR, so a command in a pipeline still carries them to
+# the terminal - the person must see them even when stdout is captured.
+err="$(run4 shell mine -- true 2>&1 >/dev/null)"
+has "12: the banner names the login and who pays"  "$err" "login    mine (me@example.test, paid by Acme)"
+has "12: the banner names the resolved directory"  "$err" "dir      $FX4/home/.claude-logins/mine"
+has "12: and says there is no credential yet"      "$err" "no credential yet"
+out="$(run4 shell mine -- sh -c 'echo ON-STDOUT' 2>/dev/null)"
+is  "12: nothing of the banner leaks onto stdout"  "$out" "ON-STDOUT"
+
+# AN ALREADY-LOGGED-IN DIRECTORY SAYS SO, because /login there means something
+# different: re-authenticate, or switch the account under running sessions.
+printf '{}' > "$FX4/home/.claude-logins/mine/.credentials.json"
+err="$(run4 shell mine -- true 2>&1 >/dev/null)"
+has "12: an existing credential is reported as such" "$err" "already logged in"
+
+# AN UNREADABLE DIRECTORY IS `unreadable`, NEVER `no`. Run from the hub account
+# every other person's login directory is unreachable (homes are 0750), and a
+# plain existence test answers "not logged in" for a directory that is perfectly
+# well logged in - an unmeasurable rendered as a negative fact, which would send
+# someone to run /login where none was needed. Simulated here by taking away our
+# own read bit, which is the same question from the same side.
+chmod 000 "$FX4/home/.claude-logins/mine"
+out="$(run4 ls 2>/dev/null)"
+has "12: an unreadable login directory reads 'unreadable'" "$out" "unreadable"
+is  "12: ...and never 'no'" "$(printf '%s\n' "$out" | awk '$1=="mine"{print $0}' | grep -c ' no ')" "0"
+is  "12: --json carries the same word" \
+    "$(run4 ls --json 2>/dev/null | jq -r '.logins[] | select(.login=="mine") | .credential')" "unreadable"
+chmod 755 "$FX4/home/.claude-logins/mine"
+
+# ANOTHER PERSON'S LOGIN IS REFUSED, and the refusal names the human who must
+# run it instead - their credentials are in their own 0750 home.
+err="$(run4 shell yours -- true 2>&1)"; rc=$?
+is  "12: another person's login refuses rc 77" "$rc" "77"
+has "12: ...and names the person"              "$err" "belongs to them"
+has "12: ...and names the directory"           "$err" "/srv/homes/someone-else/.claude-logins/yours"
+err="$(run4 shell nosuch -- true 2>&1)"; rc=$?
+is  "12: an unknown login refuses rc 78" "$rc" "78"
+# THE COMMAND'S OWN EXIT STATUS IS THE CALLER'S: exec, not a subshell.
+run4 shell mine -- sh -c 'exit 42' 2>/dev/null; is "12: the command's exit status is passed through" "$?" "42"
+err="$(run4 shell 2>&1)"; rc=$?
+is  "12: no login at all is a usage error (64)" "$rc" "64"
+has "12: ...and prints the usage line"          "$err" "steward registry login shell <login>"
+rm -rf "$FX4"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

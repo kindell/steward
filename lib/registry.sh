@@ -4981,6 +4981,73 @@ registry_mandate_write() {
   registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_mandate_load "mandate"
 }
 
+# registry_login_unix_account <login-slug> - the UNIX ACCOUNT on THIS host that
+# a login's credentials live under, resolved through accounts.d by PRINCIPAL.
+# Empty output and rc 1 when this host has no account for that person.
+#
+# WHY THIS EXISTS AT ALL. `registry_login_config_dir` needs a unix account to
+# resolve `~` against, and the only field a login row carries is ACCOUNT - which
+# is the account's REAL NAME (an address like `jon@varvet.com`), not an
+# accounts.d slug (`jon-basement`). Passing it to registry_account_load can only
+# ever fail, and `steward registry login ls` did exactly that: every correct row
+# printed "(account does not resolve)" while the register was perfectly sound.
+# The link between a login and a unix account is the PRINCIPAL - the human -
+# which is the same join registry_login_principal_gate makes.
+#
+# THE HOST MATTERS: a person can have an account on several machines, and only
+# the one on THIS host has the home the credentials sit in. Same self-image the
+# rest of the estate uses (STEWARD_SELF_HOST, else `hostname -s`).
+#
+# SUBSHELLED PER ROW, so ACCOUNT_* never leaks into the caller's frame - the
+# same isolation registry_login_principal_gate documents.
+registry_login_unix_account() {
+  local login="${1:-}" principal host f cand
+  principal="$( registry_login_load "$login" >/dev/null 2>&1 && printf '%s' "$LOGIN_PRINCIPAL" )"
+  [ -n "$principal" ] || return 1
+  host="$(_registry_self_host)"
+  for f in "$(registry_account_dir)"/*.conf; do
+    [ -f "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    ( registry_account_load "$cand" >/dev/null 2>&1 \
+      && [ "$ACCOUNT_PRINCIPAL" = "$principal" ] && [ "$ACCOUNT_HOST" = "$host" ] \
+      && printf '%s' "$ACCOUNT_USERNAME" ) | grep -q . && {
+        ( registry_account_load "$cand" >/dev/null 2>&1 && printf '%s\n' "$ACCOUNT_USERNAME" ); return 0; }
+  done
+  return 1
+}
+
+# registry_login_state <login-slug> - one line: `<unix-account> <dir> <credential>`
+# where credential is `yes`, `no`, `unreadable` (another person's home, which
+# this account may not look into) or `-` when the directory did not resolve.
+#
+# THE CREDENTIAL IS THE CHEAP HALF OF "IS THIS DIRECTORY LOGGED IN". The
+# expensive half - which ACCOUNT actually answers - costs a request against the
+# very subscription window it would report, on the person's own seat, and this
+# verb is read from a terminal by someone about to log in. So the default asks
+# the filesystem, and the vendor is only asked when the caller says so.
+registry_login_state() {
+  local login="${1:-}" user dir cred="-"
+  user="$(registry_login_unix_account "$login")" || { printf '%s\t%s\t%s\n' "-" "(no account for this login's principal on this host)" "-"; return 1; }
+  if ! dir="$(registry_login_config_dir "$login" "$user" 2>/dev/null)"; then
+    printf '%s\t%s\t%s\n' "$user" "(does not resolve)" "-"; return 1
+  fi
+  # NOT OURS TO READ IS NOT "NOT LOGGED IN", and the question is simply whether
+  # this process can look - not whether it owns the directory. A directory we own
+  # but cannot read is just as unmeasurable as another person's; the remedy
+  # differs, the answer does not. Homes are 0750: run from the hub
+  # account, every other person's login directory is unreadable, and a plain
+  # `[ -s ... ]` then answers `no` for a directory that is perfectly well logged
+  # in. That is an unmeasurable rendered as a negative fact - the failure this
+  # estate spent a whole day removing from its liveness and usage seams - and it
+  # would send someone to run /login in a directory that did not need it. The
+  # question is asked only when the answer can be known.
+  if [ ! -r "$dir" ]; then cred="unreadable"
+  elif [ -s "$dir/.credentials.json" ]; then cred="yes"
+  else cred="no"; fi
+  printf '%s\t%s\t%s\n' "$user" "$dir" "$cred"
+  return 0
+}
+
 # registry_login_principal_gate <login-slug> <account-slug> [label] — GATE 1:
 # a login's PRINCIPAL must be the SAME HUMAN as the account it would ride on.
 # Shared by `steward registry session add` and the hub's enroll, so the pair
