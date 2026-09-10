@@ -113,7 +113,7 @@ revision="$(git -C "$estate_dir" rev-parse --short HEAD 2>/dev/null)"
 # for every principal in the estate - so the producer would measure only its own
 # rows and every colleague's session would land as `unknown` in a file that
 # otherwise describes it fully. Measured before this was changed: the producing
-# account saw 2 sessions of 24. The seam underneath is what this reads instead.
+# account saw a fraction of the sessions on the host. The seam underneath is what this reads instead.
 #
 # ONE CALL FOR THE WHOLE FLEET - liveness_rows takes no arguments and answers
 # about everything the estate's shim can measure, by design.
