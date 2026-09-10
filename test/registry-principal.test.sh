@@ -152,11 +152,26 @@ echo "== PARALLEL sanity — a real race never yields more than one winner =="
 # the SAME NEW login both pass it before either has staged anything. Fire a
 # 20-way race at one login across 20 distinct slugs: at most one row for that
 # login may land, exactly one call may succeed, and every loser must be
-# refused as a duplicate — rc 65 if the pre-check caught it, rc 70 if only
-# the under-lock recheck did (no remapping between the two, per the
-# controller ruling on the earlier fix round: registry_row_write hardcodes
-# 70 for every validate_fn failure, the same as every other validator in
-# this file).
+# refused with a rc this file documents.
+#
+# THERE ARE THREE SUCH RCS, NOT TWO. 65 if the pre-check caught the duplicate,
+# 70 if only the under-lock recheck did (no remapping between the two, per the
+# controller ruling on the earlier fix round: registry_row_write hardcodes 70
+# for every validate_fn failure, the same as every other validator in this
+# file) — and 75 for a loser that never got the lock at all, which
+# _registry_lock_take returns after 20 bounded tries and which lib/registry.sh
+# documents in four places.
+#
+# THE THIRD ONE WAS MISSING HERE, and its absence was invisible: on an idle
+# machine all twenty callers take the lock in turn and 75 never happens. Under
+# load it does, and the suite went red for a product doing exactly what it
+# says. Measured: idle 1x0 19x70 -> green; under CPU load 1x0 18x70 1x75 ->
+# red, four runs in six; after a full 104-suite run, three 75s at once.
+#
+# So the vocabulary lives in ONE place below, the race and the deterministic
+# lock case both read it, and the histogram is printed either way - a red run
+# on a loaded machine should say what it saw, not just that it counted wrong.
+_loser_rc_is_legal() { case "$1" in 65|70|75) return 0 ;; *) return 1 ;; esac; }
 for i in $(seq 1 20); do
   ( r=0; bash "$here/bin/steward" registry principal add "raced$i" --name Raced \
       --tailscale-login raced-shared@example.com >/dev/null 2>&1 || r=$?
@@ -169,15 +184,36 @@ is  "at most one winner under a 20-way race (got $_won)" \
 _zeros=0; _bad=0
 for i in $(seq 1 20); do
   v="$(cat "$T/rc_$i" 2>/dev/null)"
-  case "$v" in
-    0)     _zeros=$((_zeros+1)) ;;
-    65|70) : ;;
-    *)     _bad=$((_bad+1)) ;;
-  esac
+  if [ "$v" = "0" ]; then _zeros=$((_zeros+1))
+  elif _loser_rc_is_legal "$v"; then :
+  else _bad=$((_bad+1)); fi
 done
+printf '  rc histogram: %s\n' \
+  "$(for i in $(seq 1 20); do cat "$T/rc_$i" 2>/dev/null; echo; done | sort | uniq -c \
+     | awk '{printf "%sx%s ", $1, $2}')"
 is "exactly one concurrent add succeeds" "$_zeros" "1"
-is "every loser is refused as a duplicate (rc 65 or 70)" "$_bad" "0"
+is "every loser is refused with a documented rc (65, 70 or 75)" "$_bad" "0"
 grep -l 'TAILSCALE_LOGIN="raced-shared@example.com"' "$ROOT"/principals.d/*.conf 2>/dev/null | xargs rm -f 2>/dev/null || true
+
+echo "== THE THIRD LOSER — one who never gets the lock, made to happen on purpose =="
+# The race above can only OBSERVE a 75; it cannot GUARANTEE one, so on an idle
+# machine dropping 75 from the vocabulary costs nothing and the widening would
+# be free. Hold the lock the way the product holds it and the refusal is
+# deterministic: _registry_lock_take gives up after 20 tries at 0.1s.
+_lock="$ROOT/principals.d/.write.lock"
+mkdir "$_lock"
+_r=0; _out="$(bash "$here/bin/steward" registry principal add lockedout --name Lockedout \
+     --tailscale-login lockedout@example.com 2>&1)" || _r=$?
+rmdir "$_lock" 2>/dev/null || true
+is  "a caller that never gets the lock is refused, not served" "$_r" "75"
+has "and the refusal names the lock it waited for" "$_out" ".write.lock"
+has "and says how to clear it if nothing is writing" "$_out" "rmdir"
+# THIS is the assertion that makes the widening cost something: take 75 out of
+# _loser_rc_is_legal and it falls here, on any machine, in two seconds.
+is  "the race's vocabulary accepts the refusal the product actually gives" \
+    "$(_loser_rc_is_legal "$_r" && echo accepted || echo REJECTED)" "accepted"
+is  "no row was published for a caller that never got the lock" \
+    "$(ls "$ROOT/principals.d"/lockedout.conf 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
