@@ -144,6 +144,7 @@ import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, ICON } from './render.mjs';
+import { parseBridge } from './bridge.mjs';
 import { normalizeAddr, parseFrontListen, parseFrontPeer, visitorAddress, RateLimiter } from './front.mjs';
 import { parseCookies, serializeCookie, loadSessionKey, mintSession, verifySession, mintState, verifyState } from './cookie.mjs';
 import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from './oidc.mjs';
@@ -192,16 +193,12 @@ function deskPaths() {
     console.error('desk: desk-paths could not name the desk directory and socket');
     process.exit(78);
   }
-  const found = {};
-  for (const line of out.split('\n')) {
-    const m = line.match(/^(dir|sock|origin|providers|session_key)=(.+)$/);
-    if (m) found[m[1]] = m[2];
-  }
-  if (!found.dir || !found.sock) {
-    console.error('desk: desk-paths printed neither a dir= nor a sock= line');
+  const parsed = parseBridge(out);
+  if (!parsed.ok) {
+    console.error('desk: ' + parsed.reason);
     process.exit(78);
   }
-  return found;
+  return parsed.found;
 }
 
 // parseListen - STEWARD_DESK_LISTEN as a loopback host and a port, or a
