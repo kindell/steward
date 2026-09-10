@@ -5505,9 +5505,10 @@ _realign_login_registered() { # <login>
 # comparing by hand - which is what this verb is for. A property nobody can
 # measure on demand is a property that is true until the day it is not.
 #
-# (The first pass of that measurement said jon had 12 extra rows and andreas
-# 14. It compared directory LISTINGS; the extras were `.bak-*` files from old
-# renames, which the register's own `*.conf` glob never sees. The verb counts
+# (The first pass of that measurement said one home had 12 extra rows and
+# another 14. It compared directory LISTINGS; the extras were `.bak-*` files
+# from old renames, which the register's own `*.conf` glob never sees. It
+# counts
 # rows, not files, for the same reason.)
 #
 # THE PLAN IS THE FIRST-CLASS MODE. `--plan` changes nothing and prints what
@@ -5541,8 +5542,8 @@ cmd_registry_session_project() {
 
   local host; host="$(_registry_self_host)"
   # THE UNIX ACCOUNT IS RESOLVED THROUGH accounts.d, BY PRINCIPAL AND HOST -
-  # never guessed from the owner name. A person can be `jon` in the register
-  # and `steward` on the machine, and this estate has exactly that.
+  # never guessed from the owner name. A person can be `ada` in the register
+  # and `steward-ada` on the machine, and at least one estate is exactly that.
   local acctdir user f cand
   acctdir="$(registry_account_dir)" || { _reg_fail "$want_json" "steward registry session project: the account register does not resolve" 78; return 78; }
   for f in "$acctdir"/*.conf; do
@@ -5561,7 +5562,7 @@ cmd_registry_session_project() {
     # the case it forgot. What is actually missing is a REGISTER ROW, and the
     # operator who is told that knows what to do.
     #
-    # WHY NO BYPASS IS ADDED HERE (butler, 2026-09-10): inventing a principal
+    # WHY NO BYPASS IS ADDED HERE (hub review, 2026-09-10): inventing a principal
     # for an account the register does not bind is precisely what this verb
     # exists not to do. A machine account - a steward, a role - is still owned
     # by a person, and the row that says so belongs in accounts.d. With that
