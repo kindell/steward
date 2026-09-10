@@ -88,10 +88,29 @@ way `DESK_ORIGIN` and `DESK_SESSION_KEY_FILE` already do.
 
 #### Why the shape is part of the contract, not a nicety
 
-`desk/bin/desk-paths` is a LINE-ORIENTED `key=value` bridge and
-`desk/serve.mjs:196-199` reads it with `found[m[1]] = m[2]` - **the last
-line for a key wins**. A value carrying a newline therefore does not corrupt
-its own line; it writes a NEW one. A `DESK_CONTACT` of
+**This is not a hazard the new key would introduce. It is live today, and
+was live while this section said otherwise.** `desk/bin/desk-paths` is a
+LINE-ORIENTED `key=value` bridge and `desk/serve.mjs` read it with
+`found[m[1]] = m[2]` - **the last line for a key wins**. The estate file is
+sourced as shell, so a quoted value may legally span lines, and a value
+carrying a newline therefore does not corrupt its own line; it writes a NEW
+one.
+
+Measured 2026-09-10 against the shipped bridge, through
+`DESK_SESSION_KEY_FILE`, a key that had shipped for weeks:
+
+```
+DESK_SESSION_KEY_FILE="/var/fixture/key
+origin=https://elsewhere.example"
+```
+
+emitted `origin=https://desk.example.test` and then, two lines later,
+`origin=https://elsewhere.example`. Its regex `^/.+$` admitted the value
+because `.` matches a newline. Both halves are fixed on the main branch now
+(`ec04dfe`, `5a68fd1`); the rule below is what the new key must satisfy
+along with every other.
+
+The same shape written as a `DESK_CONTACT` would be
 
 ```
 someone@example.invalid
@@ -139,7 +158,22 @@ and the sixth key will not remember this section.
 
 Both are the same lesson the credential seam learned from its own column 6:
 a guard that only covers the fields that look dangerous covers the wrong
-set.
+set. Built and measured: the two guards cost 2 and 3 assertions
+respectively and neither masks the other, because they cover different
+lines - `front_value` the two conf-derived values, `emit` every printed line
+including the three DERIVED ones (`dir`, `sock`, `providers`) that pass
+through no key expression at all.
+
+#### One deployment note the operator's half depends on
+
+A deployed desk may run with its estate root pointing at the estate's
+CHECKOUT rather than at the deployed `~/scripts`. Where it does, `providers=`
+is printed only in that environment, because `desk/providers.d` lives in the
+repository and has no manifest row. That is a convention, not a defect - it
+holds as long as the checkout tracks the main branch, which is the same
+condition the deployed product tree already lives under - but a reader
+comparing two hosts' bridge output should know why one prints four lines and
+another three.
 
 ### The same page for the same condition elsewhere
 
