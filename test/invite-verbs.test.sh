@@ -74,6 +74,13 @@ out="$(bash "$S" invite issue --name "Cy" --principal cy --entity acme --host ho
 is  "an unknown runtime is rc 64" "$rc" "64"
 out="$(bash "$S" invite issue --name "Cy" --principal cy --entity acme --host host-a --provider nonsense 2>&1)"; rc=$?
 is  "an unknown provider is rc 64" "$rc" "64"
+# AND A PROVIDER THAT SPANS TWO ENTRIES, which the substring form accepted: a
+# command-line argument is free text and the list is the whole vocabulary, so
+# `case " $list " in *" $v "*` matched a value sitting across two neighbours.
+# The refusal must name the field, not leave the caller to discover it later.
+out2="$(bash "$S" invite issue --name "Cy2" --principal cy2 --entity acme --host host-a --provider 'claude-max claude-team' 2>&1)"; rc2=$?
+is  "a provider spanning two entries is rc 64 too" "$rc2" "64"
+has "and the refusal names --provider" "$out2" "invalid --provider"
 out="$(bash "$S" invite issue --name "Cy" --principal cy --entity acme --host host-a --days 0 2>&1)"; rc=$?
 is  "zero days is rc 64" "$rc" "64"
 is  "and none of those wrote a row" "$(ls "$ROOT/invites.d" | wc -l | tr -d ' ')" "1"
