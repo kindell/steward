@@ -54,9 +54,20 @@ EOF
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
 cp "$here/lib/registry.sh" "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
 printf '#!/bin/sh\nexit 0\n' > "$HOMEDIR/.local/bin/claude"; chmod 755 "$HOMEDIR/.local/bin/claude"
-# tmux is stubbed to a no-op: this suite stops caring the moment the credential
-# directory has been judged, which happens long before any pane is touched.
-printf '#!/bin/sh\nexit 1\n' > "$BIN/tmux"; chmod 755 "$BIN/tmux"
+# THE TMUX DOUBLE RECORDS WHAT IT WAS ASKED, and that is not tidiness - the
+# first version of it was `exit 1` and nothing else, and it made assertion 5c
+# VACUOUS: "the session never started" grepped the round's output for
+# `new-session`, a string a silent stub can never produce, so the assertion
+# passed whether the round refused or not. MEASURED: with the whole creation
+# guard removed, 5c still passed.
+#
+# That is the double carrying away the very thing the assertion was about. A
+# stub that only returns a code can answer "did it fail?" and nothing else;
+# one that logs its argv can answer "what did it try?", which is what an
+# assertion about behaviour needs.
+TMUX_LOG="$T/tmux.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexit 1\n' "$TMUX_LOG" > "$BIN/tmux"
+chmod 755 "$BIN/tmux"; : > "$TMUX_LOG"
 
 # The login's home is resolved through the product's own hook, so the suite
 # never writes into the running user's real home.
@@ -78,6 +89,7 @@ EOF
 
 CFG="$HOMEDIR/.claude-logins/alpha"
 run() {
+  : > "$TMUX_LOG"
   ( umask 002
     HOME="$HOMEDIR" \
     STEWARD_ESTATE_ROOT="$ROOT" \
@@ -89,7 +101,7 @@ run() {
     STEWARD_KEY_SETTLE_SEC=0 \
     PATH="$BIN:$PATH" \
     bash "$SUP" "$NAME" >"$T/out" 2>&1 )
-  RC=$?; OUT="$(cat "$T/out")"
+  RC=$?; OUT="$(cat "$T/out")"; TMUXED="$(cat "$TMUX_LOG" 2>/dev/null)"
 }
 mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
 
@@ -100,6 +112,11 @@ is "1a the directory now exists"                "$( [ -d "$CFG" ] && echo yes ||
 is "1b at 0700, not at whatever the umask said" "$(mode_of "$CFG")" "700"
 is "1c and so is the parent it was made under"  "$(mode_of "$HOMEDIR/.claude-logins")" "700"
 has "1d and the round says it did it"           "$OUT" "created the credential directory 0700"
+# THE DOUBLE MUST BE ABLE TO SAY BOTH THINGS, or an assertion that reads it
+# proves nothing. This is the happy path: the directory was made, the gate
+# passed, and the round went on to ask tmux for a session. If this line ever
+# goes quiet, assertion 5c below stops being an assertion and nobody notices.
+has "1e and the round got as far as asking tmux for a session" "$TMUXED" "new-session"
 
 echo "== 2. and that is the whole point: a second round still passes the gate =="
 # THE REGRESSION, stated as the incident: leave the creation to the umask and
@@ -148,7 +165,12 @@ run
 rm -f "$BIN/chmod"
 is  "5a the round refuses immediately"        "$RC" "78"
 has "5b naming the mode the chmod failed to remove" "$OUT" "group- or other-writable"
-is  "5c and the session never started"        "$(printf '%s' "$OUT" | grep -c 'new-session')" "0"
+is  "5c and the session never started"        "$(printf '%s' "$TMUXED" | grep -c 'new-session')" "0"
+# AND THE DOUBLE IS PROVED TO BE ABLE TO SAY OTHERWISE. An assertion that
+# reads a log nothing ever writes to is not an assertion; this pins that the
+# stub does record, so 5c can fail.
+# (1e above is what proves 5c can fail: the same log carries `new-session` on
+# the happy path, so its absence here is a measurement and not a silent stub.)
 
 echo "== 6. a session with no login is untouched by any of it =="
 # The estate that has not moved to named logins must not acquire a new failure
