@@ -31,6 +31,10 @@
 #
 # Exit code: 0 = all green · 1 = at least one suite red or carrying a silent
 # syntax error
+#
+# WRITING OR BELIEVING A GUARD: docs/guards-and-proofs.md. A green run is a
+# claim about the tests until you know why it is green - that file carries the
+# measurements behind that sentence.
 
 set -u
 
