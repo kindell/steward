@@ -4846,8 +4846,9 @@ registry_mandate_load() {
     [[ "$k" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "registry: $f: invalid login slug '$k' in LOGINS" >&2; return 1; }
   done
   # LEGAL_OWNER_APPROVED: the PAYER's approval, by name. The person's yes is
-  # necessary and not sufficient - a Point seat is never chosen for Varvet work
-  # because it stands at 2 %. Must equal each login's LEGAL_OWNER (register check).
+  # necessary and not sufficient - one estate's seat is never chosen for another
+  # estate's work because it stands at 2 %. Must equal each login's LEGAL_OWNER
+  # (register check).
   v_LEGAL_OWNER_APPROVED="$(printf '%s' "$v_LEGAL_OWNER_APPROVED" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   [ -n "$v_LEGAL_OWNER_APPROVED" ] || { echo "registry: $f: missing LEGAL_OWNER_APPROVED (whose seat is this, and did they say yes?)" >&2; return 1; }
   # SCOPE: key:value tokens with a CLOSED key set, at least one beneficiary.

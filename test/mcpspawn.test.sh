@@ -126,7 +126,7 @@ echo "== 3. rc 2 -- the render REFUSED: an empty document, never a legacy set ==
 # failed to resolve, so the document the register contributes is empty and the
 # refusal is named on stderr for the caller to alarm with. It is no longer
 # strict: the operator's own account-level connectors are theirs, not something
-# a failed render may take away (Jon, 2026-09-04).
+# a failed render may take away (the estate owner, 2026-09-04).
 out3="$(prep s-refused "$DOC" 2>"$FX/e3")"; rc3=$?
 err3="$(cat "$FX/e3")"
 is  "3a rc 2"                        "$rc3" "2"

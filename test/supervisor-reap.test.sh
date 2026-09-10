@@ -63,7 +63,7 @@ printf '#!/bin/sh\nexit 0\n' > "$HOMEDIR/.local/bin/claude"; chmod 755 "$HOMEDIR
 
 # THE SHARED LABEL: the exact shape of the live collision - two rows, one home,
 # one uid, one label. MINE is the row being supervised; SIB is its sibling.
-LABEL='Steward -> Basement'
+LABEL='Steward -> Host-A'
 MINE="s-0000000000000001"
 SIB="s-0000000000000002"
 FREE="s-0000000000000003"

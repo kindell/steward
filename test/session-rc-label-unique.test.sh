@@ -83,7 +83,7 @@ REPO_PATH="/tmp/x"
 ID="asker"
 CONF
 
-LABEL='Steward-Basement'
+LABEL='Steward-Host-A'
 
 echo "== 1-2. the predicate: same home only, non-empty labels only =="
 # Two rows in the SAME home carrying the SAME label - the live shape.
@@ -195,14 +195,14 @@ is  "4a nothing was written to the register" "$after_rows" "$before_rows"
 is  "4b and no key line was appended"        "$after_keys" "$before_keys"
 
 echo "== 5. a DIFFERENT label in the same home still registers =="
-out5="$(req acme-widget-someone 'Steward-Basement (Jon)' bb | enroll)"; rc5=$?
+out5="$(req acme-widget-someone 'Steward-Host-A (Alice)' bb | enroll)"; rc5=$?
 id5="$(printf '%s' "$out5" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 if [ "$rc5" -eq 0 ] && [ -n "$id5" ] && [ -f "$FX/reg/$id5.conf" ]; then
   ok "5a a distinct label in the same home is registered"
 else
   bad "5a a distinct label in the same home is registered" "rc=$rc5 out=$out5"
 fi
-has "5b under the label that was asked for" "$(cat "$FX/reg/$id5.conf" 2>/dev/null)" 'RC_LABEL="Steward-Basement (Jon)"'
+has "5b under the label that was asked for" "$(cat "$FX/reg/$id5.conf" 2>/dev/null)" 'RC_LABEL="Steward-Host-A (Alice)"'
 
 echo "== 6. the duplicate that already exists still LOADS =="
 # The estate this happened on still carries its pair. A load-time refusal

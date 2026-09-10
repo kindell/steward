@@ -680,20 +680,20 @@ printf '     (20: baseline rc=%s; non-PASS probes in this fixture: %s)\n' "$rc0"
 mkfx "$FX/m1"; d="$FX/m1"
 mkdir -p "$d/mandates.d" "$d/logins.d" "$d/accounts.d"; chmod 700 "$d/mandates.d" "$d/logins.d" "$d/accounts.d"
 wr() { cat > "$1"; chmod 600 "$1"; }
-printf 'PRINCIPAL="simon"\nACCOUNT="s@ex.test"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/sv"\nLEGAL_OWNER="Varvet"\n' | wr "$d/logins.d/simon-varvet.conf"
-printf 'PRINCIPAL="simon"\nHOST="h1"\nUSERNAME="simon"\n' | wr "$d/accounts.d/simon-h1.conf"
-printf 'PRINCIPAL="jon"\nHOST="h1"\nUSERNAME="jon"\n'     | wr "$d/accounts.d/jon-h1.conf"
-mrow() { printf 'PRINCIPAL="simon"\nLOGINS="simon-varvet"\nLEGAL_OWNER_APPROVED="Varvet"\nSCOPE="beneficiary:varvet"\nRESERVE="open-below:25 hard-cap:50 min-days-left:2 idle-hours:48"\nVALID_FROM="2026-09-10T00:00:00Z"\nTERMS_VERSION="v1"\nACCEPTED_AT="2026-09-09T21:00:00Z"\nACCEPT_SOURCE="%s"\n' "$2" | wr "$d/mandates.d/$1.conf"; }
-mrow ok unix-account:simon-h1
+printf 'PRINCIPAL="bob"\nACCOUNT="s@ex.test"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/sv"\nLEGAL_OWNER="Acme"\n' | wr "$d/logins.d/bob-acme.conf"
+printf 'PRINCIPAL="bob"\nHOST="h1"\nUSERNAME="bob"\n' | wr "$d/accounts.d/bob-h1.conf"
+printf 'PRINCIPAL="alice"\nHOST="h1"\nUSERNAME="alice"\n'     | wr "$d/accounts.d/alice-h1.conf"
+mrow() { printf 'PRINCIPAL="bob"\nLOGINS="bob-acme"\nLEGAL_OWNER_APPROVED="Acme"\nSCOPE="beneficiary:acme"\nRESERVE="open-below:25 hard-cap:50 min-days-left:2 idle-hours:48"\nVALID_FROM="2026-09-10T00:00:00Z"\nTERMS_VERSION="v1"\nACCEPTED_AT="2026-09-09T21:00:00Z"\nACCEPT_SOURCE="%s"\n' "$2" | wr "$d/mandates.d/$1.conf"; }
+mrow ok unix-account:bob-h1
 out="$(run "$d" "$d/hostcmd")"; rc=$?
 has "20: a coherent register is PASS" "$(line_for "$out" mandates)" "mandates  PASS  "
 has "20: ...and counts its rows" "$(line_for "$out" mandates)" "1 mandate(s)"
 is  "20: ...and a PASS from mandates leaves the doctor's rc as it was" "$rc" "$rc0"
-mrow relay unix-account:jon-h1
+mrow relay unix-account:alice-h1
 out="$(run "$d" "$d/hostcmd")"; rc=$?
 has "20: a row signed by someone else is FAIL" "$(line_for "$out" mandates)" "mandates  FAIL  "
 has "20: ...and the line names FALSE-CONSENT" "$(line_for "$out" mandates)" "FALSE-CONSENT"
-has "20: ...with both names" "$(line_for "$out" mandates)" "principal 'jon'"
+has "20: ...with both names" "$(line_for "$out" mandates)" "principal 'alice'"
 # 78 is the register-refusal code every registry probe uses for a FAIL, and the
 # doctor's rc is its worst probe - so a FALSE-CONSENT row is rc 78 whatever the
 # baseline was.

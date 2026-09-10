@@ -67,7 +67,7 @@ row s-owner 'BROWSER_RIG="yes"
 BROWSER_DISPLAY="24"
 BROWSER_CDP="9327"
 BROWSER_VNC="5924"
-BROWSER_PROFILE="varvet"'
+BROWSER_PROFILE="acme"'
 is "an owner still loads" "$(rc_of s-owner)" "0"
 
 row s-borrow 'BROWSER_RIG="shared"

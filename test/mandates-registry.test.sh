@@ -35,16 +35,16 @@ row()    { cat > "$FX/mandates.d/$1.conf"; chmod 600 "$FX/mandates.d/$1.conf"; [
 badrow() { cat > "$FX/bad.d/$1.conf";      chmod 600 "$FX/bad.d/$1.conf";      [ -s "$FX/bad.d/$1.conf" ]      || bad "FIXTURE '$1' WRITTEN EMPTY" "the builder produced zero bytes"; }
 with_line()   { printf '%s\n%s\n' "$GOOD" "$1"; }                       # GOOD plus one appended line
 fixture_has() { grep -q "^$3=" "$1/$2.conf" || bad "FIXTURE '$2' LACKS $3" "the line the case is about never reached the file"; }
-GOOD='PRINCIPAL="simon"
-LOGINS="simon-varvet"
-LEGAL_OWNER_APPROVED="Varvet"
-SCOPE="beneficiary:varvet project:steward repo:kindell/steward job:build"
+GOOD='PRINCIPAL="bob"
+LOGINS="bob-acme"
+LEGAL_OWNER_APPROVED="Acme"
+SCOPE="beneficiary:acme project:steward repo:acme/steward job:build"
 RESERVE="open-below:25 hard-cap:50 min-days-left:2 idle-hours:48"
 VALID_FROM="2026-09-10T00:00:00Z"
 VALID_UNTIL="2026-12-31T00:00:00Z"
 TERMS_VERSION="1.0"
 ACCEPTED_AT="2026-09-09T21:00:00Z"
-ACCEPT_SOURCE="unix-account:simon-basement"'
+ACCEPT_SOURCE="unix-account:bob-host-a"'
 # refuse <name> <desc> <fragment> <sed-edit> - GOOD with one line REPLACED or DELETED (portable sed: s and d only)
 refuse() { local n="$1" desc="$2" want="$3" edit="$4" err rc
   printf '%s\n' "$GOOD" | sed -E "$edit" > "$FX/bad.d/$n.conf"; chmod 600 "$FX/bad.d/$n.conf"
@@ -61,7 +61,7 @@ refuse_add() { local n="$1" desc="$2" want="$3" line="$4" err rc
 echo "== 1. a valid row loads with every field set, optional ones included =="
 printf '%s\n' "$GOOD" | row good
 out="$( registry_mandate_load good >/dev/null 2>&1; printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' "$MANDATE_ID" "$MANDATE_PRINCIPAL" "$MANDATE_LOGINS" "$MANDATE_LEGAL_OWNER_APPROVED" "$MANDATE_RESERVE" "$MANDATE_VALID_FROM" "$MANDATE_VALID_UNTIL" "$MANDATE_TERMS_VERSION" "$MANDATE_ACCEPT_SOURCE" "$MANDATE_PAUSED" )"
-is "every field lands" "$out" "good|simon|simon-varvet|Varvet|open-below:25 hard-cap:50 min-days-left:2 idle-hours:48|2026-09-10T00:00:00Z|2026-12-31T00:00:00Z|1.0|unix-account:simon-basement|"
+is "every field lands" "$out" "good|bob|bob-acme|Acme|open-below:25 hard-cap:50 min-days-left:2 idle-hours:48|2026-09-10T00:00:00Z|2026-12-31T00:00:00Z|1.0|unix-account:bob-host-a|"
 printf '%s\n' "$GOOD" | grep -v VALID_UNTIL | row openended
 ( registry_mandate_load openended >/dev/null 2>&1 ) && ok "VALID_UNTIL is optional: open-ended validity loads" || bad "VALID_UNTIL is optional" "refused"
 
@@ -71,9 +71,9 @@ refuse backtick "a backtick refuses"             "substitution"  's|^SCOPE=.*|SC
 refuse varexp   "a variable expansion refuses"   "substitution"  's|^LOGINS=.*|LOGINS="${HOME}"|'
 refuse_add unknown  "an unknown key refuses"         "unknown key"   'PATH="/tmp/evil"'
 refuse_add dup      "a duplicate key refuses"        "duplicate key" 'PRINCIPAL="bob"'
-refuse unquoted "an unquoted value refuses"      'exactly KEY="VALUE"' 's|^PRINCIPAL=.*|PRINCIPAL=simon|'
-refuse trailing "trailing text after the quote refuses" 'exactly KEY="VALUE"' 's|^PRINCIPAL=.*|PRINCIPAL="simon" ; rm -rf /|'
-printf 'PRINCIPAL="simon"\r\n' > "$FX/bad.d/cr.conf"; printf '%s\n' "$GOOD" | grep -v PRINCIPAL >> "$FX/bad.d/cr.conf"; chmod 600 "$FX/bad.d/cr.conf"
+refuse unquoted "an unquoted value refuses"      'exactly KEY="VALUE"' 's|^PRINCIPAL=.*|PRINCIPAL=bob|'
+refuse trailing "trailing text after the quote refuses" 'exactly KEY="VALUE"' 's|^PRINCIPAL=.*|PRINCIPAL="bob" ; rm -rf /|'
+printf 'PRINCIPAL="bob"\r\n' > "$FX/bad.d/cr.conf"; printf '%s\n' "$GOOD" | grep -v PRINCIPAL >> "$FX/bad.d/cr.conf"; chmod 600 "$FX/bad.d/cr.conf"
 err="$( STEWARD_MANDATES_DIR="$FX/bad.d" registry_mandate_load cr 2>&1 >/dev/null )"; has "a CR byte refuses" "$err" "control character"
 
 echo "== 3. every required key is required, once each =="
@@ -86,16 +86,16 @@ for k in PRINCIPAL LOGINS LEGAL_OWNER_APPROVED SCOPE RESERVE VALID_FROM TERMS_VE
 done
 
 echo "== 4. each field's own shape =="
-refuse p-caps    "PRINCIPAL is a lowercase slug"            "invalid PRINCIPAL"        's|^PRINCIPAL=.*|PRINCIPAL="Simon"|'
+refuse p-caps    "PRINCIPAL is a lowercase slug"            "invalid PRINCIPAL"        's|^PRINCIPAL=.*|PRINCIPAL="Bob"|'
 refuse l-empty   "LOGINS must name a login"                 "at least one login"       's|^LOGINS=.*|LOGINS=""|'
-# NOT "simon varvet" - that is two VALID slugs separated by a space, which is
+# NOT "bob acme" - that is two VALID slugs separated by a space, which is
 # exactly the list grammar LOGINS has, and the loader accepted it correctly on
 # the first run. The fixture was wrong, not the loader. Capitals are invalid.
-refuse l-bad     "a login slug is a slug"                    "invalid login slug"       's|^LOGINS=.*|LOGINS="Simon-Varvet"|'
+refuse l-bad     "a login slug is a slug"                    "invalid login slug"       's|^LOGINS=.*|LOGINS="Bob-Acme"|'
 refuse lo-empty  "the payer must be named"                   "LEGAL_OWNER_APPROVED"     's|^LEGAL_OWNER_APPROVED=.*|LEGAL_OWNER_APPROVED="  "|'
 refuse s-noben   "SCOPE without a beneficiary refuses"       "beneficiary"              's|^SCOPE=.*|SCOPE="project:steward"|'
-refuse s-key     "SCOPE has a closed key set"                "unknown SCOPE key"        's|^SCOPE=.*|SCOPE="beneficiary:varvet budget:all"|'
-refuse s-shape   "SCOPE tokens are key:value"                "not key:value"            's|^SCOPE=.*|SCOPE="beneficiary:varvet steward"|'
+refuse s-key     "SCOPE has a closed key set"                "unknown SCOPE key"        's|^SCOPE=.*|SCOPE="beneficiary:acme budget:all"|'
+refuse s-shape   "SCOPE tokens are key:value"                "not key:value"            's|^SCOPE=.*|SCOPE="beneficiary:acme steward"|'
 refuse r-key     "RESERVE has a closed key set"              "unknown RESERVE key"      's|^RESERVE=.*|RESERVE="open-below:25 hard-cap:50 min-days-left:2 idle-hours:48 max-jobs:3"|'
 refuse r-missing "RESERVE needs all four numbers"            "must carry all of"        's|^RESERVE=.*|RESERVE="open-below:25 hard-cap:50"|'
 refuse r-int     "RESERVE values are whole numbers"          "whole number"             's|^RESERVE=.*|RESERVE="open-below:25% hard-cap:50 min-days-left:2 idle-hours:48"|'
@@ -132,8 +132,8 @@ echo "== 4c. the row-level paths refuse a two-entry value too, earlier and for t
 # Review, high: `case " $SET " in *" $w "*` tested a substring of a space-run, so
 # a value naming two channels at once passed. The shared helper is exact now;
 # each closed set is asserted with a two-entry value.
-refuse a-two     "ACCEPT_SOURCE naming two channels is refused"   "whitespace"           's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="unix-account desk-oidc:jon"|'
-refuse s-two     "a SCOPE key spanning two keys is refused"       "not key:value"        's|^SCOPE=.*|SCOPE="beneficiary domain:varvet"|'
+refuse a-two     "ACCEPT_SOURCE naming two channels is refused"   "whitespace"           's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="unix-account desk-oidc:alice"|'
+refuse s-two     "a SCOPE key spanning two keys is refused"       "not key:value"        's|^SCOPE=.*|SCOPE="beneficiary domain:acme"|'
 # RESERVE's tokens are split on whitespace before the key is ever looked at, so
 # `open-below hard-cap:50` is two tokens - and the FIRST is refused for having no
 # value, not for an unknown key. The refusal that matters is that it is refused;
@@ -142,10 +142,10 @@ refuse r-two     "a RESERVE token spanning two keys is refused"   "must be a who
 
 echo "== 5. ACCEPT_SOURCE: only a channel this estate authenticates as the person =="
 refuse a-bus   "a yes over the bus is refused by name"        "not one this estate authenticates"  's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="bus:s-6dbf0fa397e613a1"|'
-refuse a-norm  "...and the refusal names the norm"           "not an audit trail"                 's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="slack:jon"|'
+refuse a-norm  "...and the refusal names the norm"           "not an audit trail"                 's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="slack:alice"|'
 refuse a-shape "ACCEPT_SOURCE is channel:identifier"         "must be <channel>:<identifier>"      's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="unix-account"|'
-refuse a-id    "the identifier is a slug"                    "must be a slug"                     's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="desk-oidc:jon@varvet.com"|'
-printf '%s\n' "$GOOD" | sed 's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="desk-oidc:jon"|' | row oidc
+refuse a-id    "the identifier is a slug"                    "must be a slug"                     's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="desk-oidc:alice@acme.com"|'
+printf '%s\n' "$GOOD" | sed 's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="desk-oidc:alice"|' | row oidc
 ( registry_mandate_load oidc >/dev/null 2>&1 ) && ok "a Desk OIDC login is an accepted channel" || bad "desk-oidc accepted" "refused"
 
 echo "== 6. the file's and the register's own state come before the content =="
@@ -184,7 +184,7 @@ is "a malformed now is not active (fail closed)"           "$(active good 'now')
 
 echo "== 10. the writer reads back through the strict parser =="
 ( registry_mandate_write written "$GOOD" true >/dev/null 2>&1 ) && ok "a valid row writes and reads back" || bad "write round trip" "refused"
-is "and it loads"      "$( registry_mandate_load written >/dev/null 2>&1 && echo "$MANDATE_LOGINS" )" "simon-varvet"
+is "and it loads"      "$( registry_mandate_load written >/dev/null 2>&1 && echo "$MANDATE_LOGINS" )" "bob-acme"
 ( registry_mandate_write badw "$(printf '%s\n' "$GOOD" | sed 's|^ACCEPT_SOURCE=.*|ACCEPT_SOURCE="bus:x"|')" true >/dev/null 2>&1 ) && bad "a refused row must not be written" "written" || ok "a row the reader refuses is not written"
 [ -e "$FX/mandates.d/badw.conf" ] && bad "...and leaves no file behind" "file exists" || ok "...and leaves no file behind"
 

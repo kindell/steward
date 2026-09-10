@@ -184,10 +184,10 @@ mcp_spawn_prepare() { # <session-id> <document-path>
     # (Gmail, Slack, Drive, Calendar, HubSpot, Microsoft 365) live in exactly one
     # of those sources, so a granted set of three silently replaced a working set
     # of ten when a session moved onto a host where the register had rows for it.
-    # Measured on a live session 2026-09-04; Jon's ruling the same day: every
-    # connector the user has must reach the session. Giving a configured asset
-    # precedence over a connector of the same name is a later feature, not this
-    # one.
+    # Measured on a live session 2026-09-04; the estate owner ruled the same
+    # day: every connector the user has must reach the session. Giving a
+    # configured asset precedence over a connector of the same name is a later
+    # feature, not this one.
     printf ' --mcp-config "%s"' "$doc"
     # DEGRADED IS DETECTED FROM THE RENDER'S OWN WORD. The render already
     # decided what "omitted" means and already named each one; re-deriving it
