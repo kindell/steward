@@ -1226,7 +1226,7 @@ test('credentialAlerts: alarms once the deadline is inside the threshold', () =>
 })
 
 test('credentialAlerts: stays quiet outside the threshold', () => {
-  const { alerts } = credentialAlerts({}, [row('jon', '2026-10-09T20:54:20Z')], NOW, { days: 3 })
+  const { alerts } = credentialAlerts({}, [row('far-away', '2026-10-09T20:54:20Z')], NOW, { days: 3 })
   assert.deepEqual(alerts, [])
 })
 
