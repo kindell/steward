@@ -25,13 +25,19 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync, unlinkSy
 import { homedir, userInfo } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, busAlert, malformedAlert, parseBusDump, jobAlerts, groupJobAlerts, hostAlerts, HOST_UNKNOWN_CYCLES, authExpired, authAlerts, restartIntentFresh } from './lib.mjs'
+import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, busAlert, malformedAlert, parseBusDump, jobAlerts, groupJobAlerts, hostAlerts, HOST_UNKNOWN_CYCLES, authExpired, authAlerts, restartIntentFresh, credentialAlerts } from './lib.mjs'
 import { sendMail } from './send-mail.mjs'
 import { runResume, injectNote, sleep, redeliverStuck, clearStuckInput } from './resume.mjs'
 import { listSessions, hostOperators, estate as readEstate } from './estate.mjs'
 
 const exec = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
+// THE PRODUCT'S OWN CLI, FOUND FROM HERE AND NOT FROM PATH. A watch that
+// resolved `steward` through PATH would run whichever copy a login shell
+// happened to find first - and on a host that has both a checkout and a
+// deployed home that is a real choice, made silently, by an environment this
+// process does not control.
+const STEWARD_BIN = join(HERE, '..', 'bin', 'steward')
 const DRY = !!process.env.STEWARD_WATCH_DRY_RUN
 // The cap on a restart marker. An intent ages: a marker older than this is
 // forgotten, not current, and a real crash after it must alarm.
@@ -407,6 +413,59 @@ try {
         }
       }
     } catch (e) { console.error(`job alarm error: ${e.message}`) }
+  }
+
+  // --- credentials: is a refresh token about to run out? ---------------------
+  // WHY THIS RUNS THE PRODUCT'S OWN VERB rather than the estate's shim. The
+  // seam is bash and this file is node; running the shim here would put the
+  // seam's field counting, its stamp grammar and its closed state vocabulary
+  // into a second language. `steward registry credentials --json` is the one
+  // reader, and this is one of its two consumers.
+  //
+  // A FAILED MEASUREMENT TOUCHES NO STATE, the same rule the job probe lives
+  // under: if the verb cannot answer, an empty row list would read as "every
+  // credential is fine" and the state would be rewritten to say so - and the
+  // next cycle, with a working verb, would then alarm about everything at once.
+  {
+    try {
+      let rows = null
+      try {
+        const { stdout } = await exec(STEWARD_BIN, ['registry', 'credentials', '--json'],
+                                      { maxBuffer: 4 * 1024 * 1024, timeout: 60000 })
+        const parsed = JSON.parse(stdout)
+        if (Array.isArray(parsed.rows)) rows = parsed.rows
+      } catch (e) { console.error(`credential probe failed: ${e.message}`) }
+      if (rows) {
+        const days = Number(est.credentialWarnDays || 3)
+        const { alerts, next } = credentialAlerts(state.credentialAlerts, rows, new Date().toISOString(), { days })
+        state.credentialAlerts = next
+        for (const a of alerts) {
+          // THE SUBJECT SAYS WHICH LOGIN AND HOW LONG, because a subject that
+          // said only "a credential expires" is a subject somebody reads on a
+          // phone and postpones. The three kinds are deliberately different
+          // sentences: one is a warning, one is an outage, and one is a
+          // measurement this alarm could not read.
+          const subject = a.kind === 'expired'
+            ? `${PREFIX}: the login ${a.login} has an EXPIRED refresh token - it cannot sign in`
+            : a.kind === 'unreadable-deadline'
+              ? `${PREFIX}: the login ${a.login} has a refresh deadline that cannot be read`
+              : `${PREFIX}: the login ${a.login} needs a new sign-in within ${a.days} day(s)`
+          const body = `Login: ${a.login}\n`
+            + `Refresh token expires: ${a.refreshExpires || '(none reported)'}\n`
+            + `Measured at: ${a.measuredAt || '(not stamped)'}\n\n`
+            + (a.kind === 'expired'
+                ? 'This login can no longer refresh its session. Somebody must sign in again on the host that owns it.'
+                : a.kind === 'unreadable-deadline'
+                  ? 'The seam reported a deadline this alarm could not parse. It is being reported rather than'
+                    + ' ignored, because a deadline nobody can read is not a deadline that has been checked.'
+                  : `The refresh token runs out inside the estate's warning window of ${a.days} day(s).`
+                    + ' Signing in again before then avoids an outage; after it, the session stops mid-work.')
+            + `\n\nThe deadline above is what the estate's own credential reader measured. This message is the`
+            + ` only place that compared it to a clock. (${new Date().toISOString()})`
+          try { await mail(subject, body) } catch (e) { console.error(`mail error (credential:${a.login}): ${e.message}`) }
+        }
+      }
+    } catch (e) { console.error(`credential alarm error: ${e.message}`) }
   }
 
   // --- hosts: do the machines we operate answer? -----------------------------

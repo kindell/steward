@@ -2948,6 +2948,45 @@ registry_credential_cmd() {
   printf '%s\n' "$CREDENTIAL_CMD"
 }
 
+# registry_credential_warn_days - how much warning the estate wants before a
+# credential's refresh deadline, in days. Default 3.
+#
+# THIS KEY DIFFERS FROM ITS SIBLINGS IN KIND, not only in type. A missing
+# CREDENTIAL_CMD means the estate has no credential seam; a missing threshold
+# does NOT mean the estate wants no warning - it means it has not said how
+# much. So absence answers 3 and stays quiet, where the CMD readers answer
+# nothing at all.
+#
+# ZERO IS REFUSED RATHER THAN ACCEPTED. A threshold of zero is an alarm that
+# fires only once the deadline has passed, which is precisely the incident this
+# exists to prevent - and an operator who typed it almost certainly meant "warn
+# me immediately", not "warn me never". The refusal says the key's name so the
+# estate can fix it rather than wonder why nothing arrived. The upper bound is
+# a year: a value larger than the credential's own lifetime alarms about every
+# login on every cycle forever, which is the same silence by a different route.
+registry_credential_warn_days() {
+  local _estate; _estate="$(registry_estate_file)"
+  [ -f "$_estate" ] || { printf '3\n'; return 0; }
+  local CREDENTIAL_WARN_DAYS=""
+  # shellcheck source=/dev/null
+  if ! source "$_estate"; then
+    echo "registry: REFUSING - the estate file could not be read: $_estate" >&2
+    return 78
+  fi
+  # THE LINE'S PRESENCE IS WHAT DECIDES, not the value's emptiness: a key
+  # written as CREDENTIAL_WARN_DAYS="" is a value somebody meant to set and
+  # got wrong, and answering the default there would hide the mistake.
+  if ! grep -q '^CREDENTIAL_WARN_DAYS=' "$_estate" 2>/dev/null; then
+    printf '3\n'; return 0
+  fi
+  if ! [[ "$CREDENTIAL_WARN_DAYS" =~ ^[0-9]+$ ]] \
+     || [ "$CREDENTIAL_WARN_DAYS" -lt 1 ] || [ "$CREDENTIAL_WARN_DAYS" -gt 365 ]; then
+    echo "registry: REFUSING - CREDENTIAL_WARN_DAYS in $_estate must be a whole number of days from 1 to 365: '$(registry_printable "$CREDENTIAL_WARN_DAYS")'" >&2
+    return 78
+  fi
+  printf '%s\n' "$CREDENTIAL_WARN_DAYS"
+}
+
 # registry_estate_checkout — where the estate's own git working copy lives, or
 # the empty string.
 #

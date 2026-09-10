@@ -104,11 +104,20 @@ $row"; fi
     ping="$(registry_ping_msg)" || exit 78
     state="$(registry_state_dir_name)" || exit 78
     paused="$(registry_paused_dir_name)" || exit 78
+    # NOT `optional`, AND NOT SWALLOWED. This reader has a default of its own -
+    # absence answers 3 - so the only way it can fail is a value the estate got
+    # WRONG, and a malformed threshold must refuse here rather than arrive as an
+    # empty string the watch would then have to guess about. The first version
+    # of this line wrote `2>/dev/null || printf ''`, which turned a refusal into
+    # a blank: an error read as an answer, in the same file that exists to stop
+    # the watch guessing.
+    warndays="$(registry_credential_warn_days)" || exit 78
     jq -cn --arg hubSession "$hub" --arg hubHost "$hubHost" --arg tmuxSocket "$sock" --arg pingMsg "$ping" \
            --arg stateDirName "$state" --arg pausedDirName "$paused" \
            --arg mailAccountFile "$(optional registry_mail_account_file)" --arg alertTo "$(optional registry_alert_to)" \
            --arg jobStatusCmd "$(optional registry_job_status_cmd)" --arg hostStatusCmd "$(optional registry_host_status_cmd)" \
-           '{hubSession:$hubSession,hubHost:$hubHost,tmuxSocket:$tmuxSocket,pingMsg:$pingMsg,stateDirName:$stateDirName,pausedDirName:$pausedDirName,mailAccountFile:$mailAccountFile,alertTo:$alertTo,jobStatusCmd:$jobStatusCmd,hostStatusCmd:$hostStatusCmd}'
+           --arg credentialWarnDays "$warndays" \
+           '{hubSession:$hubSession,hubHost:$hubHost,tmuxSocket:$tmuxSocket,pingMsg:$pingMsg,stateDirName:$stateDirName,pausedDirName:$pausedDirName,mailAccountFile:$mailAccountFile,alertTo:$alertTo,jobStatusCmd:$jobStatusCmd,hostStatusCmd:$hostStatusCmd,credentialWarnDays:$credentialWarnDays}'
     ;;
   *) echo "usage: registry-dump sessions|hosts|estate" >&2; exit 64 ;;
 esac

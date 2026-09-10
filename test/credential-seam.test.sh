@@ -291,5 +291,36 @@ is "15i the caller\'s own variable survives the read" "$CREDENTIAL_CMD" "untouch
 unset CREDENTIAL_CMD
 printf '%s\n' "$_cbase" > "$FX/estate/steward.conf"
 
+echo "== 16. registry_credential_warn_days: a threshold with a default =="
+# UNLIKE ITS SIBLINGS THIS KEY HAS A DEFAULT, and that is a real difference in
+# kind: a missing CREDENTIAL_CMD means the estate has no seam, but a missing
+# threshold does not mean the estate wants no warning - it means it has not
+# said how much warning. Silence there must not disable the alarm, so the
+# reader answers 3 and says nothing.
+printf '%s\n' "$_cbase" > "$FX/estate/steward.conf"
+v="$(registry_credential_warn_days)"; rc=$?
+is "16a absent: rc 0"          "$rc" "0"
+is "16b absent: the default 3" "$v" "3"
+printf '%s\nCREDENTIAL_WARN_DAYS="7"\n' "$_cbase" > "$FX/estate/steward.conf"
+v="$(registry_credential_warn_days)"; rc=$?
+is "16c a plain integer is taken" "$v" "7"
+is "16d and it is rc 0"           "$rc" "0"
+# A THRESHOLD OF ZERO IS NOT A THRESHOLD, it is an alarm that fires only once
+# the deadline has already passed - which is the incident this exists to
+# prevent. Refused rather than quietly accepted.
+for bad_v in "0" "-1" "3.5" "three" "" "999999"; do
+  printf '%s\nCREDENTIAL_WARN_DAYS="%s"\n' "$_cbase" "$bad_v" > "$FX/estate/steward.conf"
+  registry_credential_warn_days >/dev/null 2>"$FX/reg.err"; rc=$?
+  is  "16e '$bad_v' is refused"        "$rc" "78"
+  has "16f and the refusal names it"   "$(cat "$FX/reg.err")" "CREDENTIAL_WARN_DAYS"
+done
+# AND IT DOES NOT LEAK, same rule as every other reader here.
+CREDENTIAL_WARN_DAYS="untouched"
+printf '%s\nCREDENTIAL_WARN_DAYS="9"\n' "$_cbase" > "$FX/estate/steward.conf"
+registry_credential_warn_days >/dev/null 2>&1
+is "16g the caller's own variable survives" "$CREDENTIAL_WARN_DAYS" "untouched"
+unset CREDENTIAL_WARN_DAYS
+printf '%s\n' "$_cbase" > "$FX/estate/steward.conf"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

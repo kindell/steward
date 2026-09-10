@@ -104,9 +104,31 @@ is  "tmuxSocket"  "$(printf '%s' "$e" | jq -r .tmuxSocket)" "hub-one.sock"
 is  "pingMsg"     "$(printf '%s' "$e" | jq -r .pingMsg)" "[bus] you have mail"
 is  "the alarm channel is EMPTY when the estate names none (the watch decides)" "$(printf '%s' "$e" | jq -r '.mailAccountFile + "|" + .alertTo')" "|"
 is  "the probe hooks are EMPTY when absent"    "$(printf '%s' "$e" | jq -r '.jobStatusCmd + "|" + .hostStatusCmd')" "|"
+# THE THRESHOLD CARRIES ITS DEFAULT THROUGH THE BRIDGE, and that is the point of
+# testing it here rather than only at the reader: a watch that received an empty
+# string would have to invent a number, and inventing one is how a threshold
+# nobody chose ends up deciding when an alarm fires.
+is  "the credential threshold defaults to 3 across the bridge" \
+    "$(printf '%s' "$e" | jq -r .credentialWarnDays)" "3"
 printf 'MAIL_ACCOUNT_FILE="alerts.env"\nALERT_TO="human@example.invalid"\nJOB_STATUS_CMD="/opt/probe/jobs --json"\n' >> "$FX/estate.conf"
 e="$(run estate 2>/dev/null)"
 is  "...and filled when present" "$(printf '%s' "$e" | jq -r '.mailAccountFile + "|" + .alertTo + "|" + .jobStatusCmd')" "alerts.env|human@example.invalid|/opt/probe/jobs --json"
+# A MALFORMED THRESHOLD REFUSES THE WHOLE DUMP rather than arriving as a blank.
+# The first version of this bridge line wrote `2>/dev/null || printf ''`, which
+# turned the reader's refusal into an empty string - an error read as an answer,
+# in the one file that exists so the watch never has to guess.
+cp "$FX/estate.conf" "$FX/estate.conf.keep"
+printf 'CREDENTIAL_WARN_DAYS="0"\n' >> "$FX/estate.conf"
+run estate >/dev/null 2>"$FX/dump.err"; rc=$?
+is  "a threshold of 0 refuses the dump" "$rc" "78"
+has "and the refusal names the key"     "$(cat "$FX/dump.err")" "CREDENTIAL_WARN_DAYS"
+printf 'CREDENTIAL_WARN_DAYS="7"\n' > /dev/null
+cp "$FX/estate.conf.keep" "$FX/estate.conf"
+printf 'CREDENTIAL_WARN_DAYS="7"\n' >> "$FX/estate.conf"
+is  "a stated threshold survives the bridge" \
+    "$(run estate 2>/dev/null | jq -r .credentialWarnDays)" "7"
+cp "$FX/estate.conf.keep" "$FX/estate.conf"
+
 printf 'RC_LABEL_PREFIX="Hub: "\nHUB_HOST="host-one"\n' > "$FX/estate-bare.conf"
 STEWARD_ESTATE="$FX/estate-bare.conf" STEWARD_REGISTRY_DIR="$FX/reg" bash "$DUMP" estate >/dev/null 2>&1; rc=$?
 is  "a required key missing (HUB_SESSION): rc 78" "$rc" "78"
