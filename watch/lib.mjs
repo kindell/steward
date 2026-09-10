@@ -622,6 +622,60 @@ export function jobAlerts(prev = {}, jobs = [], opts = {}) {
   return { alerts, next }
 }
 
+
+// credentialAlerts(prev, rows, nowIso, opts) -> { alerts, next }
+//
+// THE ONE PLACE IN THIS SYSTEM THAT COMPARES A CREDENTIAL DEADLINE TO A CLOCK.
+// The seam reads and stamps, the verb renders, and this decides. That split is
+// deliberate: a row rendered on a host whose clock is wrong is still a truthful
+// record of what was read and when it was read, and exactly one component is
+// allowed to turn such a record into "act now". Put the comparison in the seam
+// or the verb as well and there are two opinions, formed against two clocks,
+// with no way for a reader to tell which one they are looking at.
+//
+// AN UNPARSEABLE DEADLINE ALARMS. Treating a stamp this cannot read as "far
+// away" is how a deadline passes in silence - the same mistake as reading an
+// error as an answer, which cost this repository three separate defects in one
+// day.
+//
+// DE-DUPLICATION IS NOT A NICETY HERE. The watch runs every five minutes; a
+// three-day warning window without it is 864 identical mails, which trains the
+// reader to filter exactly the message that matters. The key carries the KIND
+// as well as the deadline, so a login that crosses from expiring to expired
+// alarms a second time - that transition is news - while an unchanged state is
+// silent. A renewed credential drops out of the state entirely, so the next
+// approach of the same login alarms again.
+export function credentialAlerts(prev = {}, rows = [], nowIso = new Date().toISOString(), opts = {}) {
+  const days = opts.days ?? 3
+  const now = Date.parse(nowIso)
+  const alerts = []
+  const next = {}
+  for (const r of rows) {
+    // Only a row that CLAIMS a measurement can carry a deadline. no-credential
+    // says there is nothing to expire; unreadable and unknown are measurement
+    // problems, and the doctor is where a measurement problem belongs.
+    if (r.state !== 'measured') continue
+    const raw = r.refresh_expires ?? ''
+    let kind = null
+    if (!raw) {
+      // A measured row with no refresh deadline is not this alarm's business:
+      // the seam's own contradiction guard already rewrote the state for a row
+      // that claimed a measurement and carried no time at all.
+      continue
+    }
+    const at = Date.parse(raw)
+    if (Number.isNaN(at)) kind = 'unreadable-deadline'
+    else if (at <= now) kind = 'expired'
+    else if (at - now <= days * 86400000) kind = 'expiring'
+    if (!kind) continue
+    const key = `${kind}|${raw}`
+    next[r.login] = key
+    if (prev[r.login] === key) continue
+    alerts.push({ login: r.login, kind, refreshExpires: raw, measuredAt: r.measured_at ?? '', days })
+  }
+  return { alerts, next }
+}
+
 // Unmeasured must persist before it alarms. A single network failure against an
 // address is not news; three cycles in a row (about 15 minutes) is. Broken, on
 // the other hand, alarms at once - there the uncertainty is not the problem.

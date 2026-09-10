@@ -6,7 +6,7 @@
 // are passed in as the estate's data rather than assumed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, resumeStep, busAlert, malformedAlert, parseBusDump, fleetHttp, browserActivity, claudePin, unpinnedSessions, brandedBrowsers, jobAlerts, groupJobAlerts, hostAlerts, authExpired, authAlerts, browserSleep, restartIntentFresh } from '../lib.mjs'
+import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, resumeStep, busAlert, malformedAlert, parseBusDump, fleetHttp, browserActivity, claudePin, unpinnedSessions, brandedBrowsers, jobAlerts, groupJobAlerts, hostAlerts, authExpired, authAlerts, browserSleep, restartIntentFresh, credentialAlerts } from '../lib.mjs'
 
 const PING = '[bus] you have mail - read your inbox (the command is in your instructions)'
 const OPTS = { pingText: PING, subjectPrefix: 'hub-one watch', attachHint: 'tmux -S ~/.tmux/hub-one.sock attach -t <session>' }
@@ -1195,3 +1195,106 @@ test('sessionScope: a host operated by ANOTHER hub => foreign (neither read nor 
   assert.equal(sessionScope({ host: 'hub-one' }, { localHub: 'host-two', operators }), 'foreign')
 })
 
+
+// --- credentialAlerts -------------------------------------------------------
+// THE ONLY PLACE IN THIS SYSTEM THAT COMPARES A CREDENTIAL DEADLINE TO A CLOCK.
+// The seam measures and stamps; the verb renders; this decides. That split is
+// the whole design: a row rendered on a host with a wrong clock is still a
+// truthful record of what was read and when, and only one component is allowed
+// to turn it into "act now".
+const NOW = '2026-10-02T12:00:00Z'
+const row = (login, refresh, state = 'measured', access = '') =>
+  ({ login, provider: 'claude-max', refresh_expires: refresh, access_expires: access,
+     measured_at: '2026-10-02T11:55:00Z', state, note: '' })
+
+// THE BOUNDARY IS ASSERTED FROM BOTH SIDES, and writing it taught me the real
+// number: a deadline of Oct 5 14:13 with a three-day window does not alarm at
+// Oct 2 12:00 - it is three days and two hours away. The first version of this
+// test asserted an alarm there and failed, and the code was right. An estate
+// reading "three days" should know it means three days to the minute.
+test('credentialAlerts: silent just OUTSIDE the threshold', () => {
+  const { alerts } = credentialAlerts({}, [row('jens', '2026-10-05T14:13:51Z')], NOW, { days: 3 })
+  assert.deepEqual(alerts, [])
+})
+
+test('credentialAlerts: alarms once the deadline is inside the threshold', () => {
+  const { alerts } = credentialAlerts({}, [row('jens', '2026-10-05T14:13:51Z')],
+                                      '2026-10-02T14:20:00Z', { days: 3 })
+  assert.equal(alerts.length, 1)
+  assert.equal(alerts[0].login, 'jens')
+  assert.equal(alerts[0].kind, 'expiring')
+})
+
+test('credentialAlerts: stays quiet outside the threshold', () => {
+  const { alerts } = credentialAlerts({}, [row('jon', '2026-10-09T20:54:20Z')], NOW, { days: 3 })
+  assert.deepEqual(alerts, [])
+})
+
+test('credentialAlerts: alarms harder on a deadline already past', () => {
+  const { alerts } = credentialAlerts({}, [row('old', '2026-09-30T00:00:00Z')], NOW, { days: 3 })
+  assert.equal(alerts.length, 1)
+  assert.equal(alerts[0].kind, 'expired')
+})
+
+// A WATCH THAT RUNS EVERY FIVE MINUTES WOULD SEND 864 MAILS OVER THREE DAYS.
+test('credentialAlerts: does not repeat an alert it has already sent', () => {
+  const rows = [row('jens', '2026-10-05T14:13:51Z')]
+  const inside = '2026-10-02T14:20:00Z'
+  const first = credentialAlerts({}, rows, inside, { days: 3 })
+  assert.equal(first.alerts.length, 1)
+  const again = credentialAlerts(first.next, rows, inside, { days: 3 })
+  assert.deepEqual(again.alerts, [])
+})
+
+test('credentialAlerts: alarms again when the same login crosses into expired', () => {
+  const rows = [row('jens', '2026-10-05T14:13:51Z')]
+  const first = credentialAlerts({}, rows, '2026-10-02T14:20:00Z', { days: 3 })
+  const later = credentialAlerts(first.next, rows, '2026-10-06T00:00:00Z', { days: 3 })
+  assert.equal(later.alerts.length, 1)
+  assert.equal(later.alerts[0].kind, 'expired')
+})
+
+test('credentialAlerts: forgets a login whose credential was renewed, so it can alarm again later', () => {
+  const first = credentialAlerts({}, [row('jens', '2026-10-05T14:13:51Z')], '2026-10-02T14:20:00Z', { days: 3 })
+  const renewed = credentialAlerts(first.next, [row('jens', '2026-11-05T00:00:00Z')], '2026-10-02T14:20:00Z', { days: 3 })
+  assert.deepEqual(renewed.alerts, [])
+  assert.equal(Object.keys(renewed.next).length, 0)
+})
+
+// A ROW THAT SAYS THERE IS NOTHING TO EXPIRE IS NOT AN EMERGENCY, and a row
+// the seam could not read is not a deadline either - it is a measurement
+// problem, and the doctor is where that belongs.
+test('credentialAlerts: is silent for no-credential and for unreadable', () => {
+  const rows = [row('a', '', 'no-credential'), row('b', '', 'unreadable'), row('c', '', 'unknown')]
+  const { alerts } = credentialAlerts({}, rows, NOW, { days: 3 })
+  assert.deepEqual(alerts, [])
+})
+
+// ISOLATING THE STATE FILTER. The case above cannot prove it: those rows carry
+// no deadline either, so the empty-deadline check catches them first and
+// removing the state filter costs nothing - the two guards mask each other,
+// exactly as two guards did in this seam's twin. A row that is NOT measured and
+// still carries a time is the case that separates them. The seam's own
+// contradiction guard would rewrite such a row before it ever reached here,
+// and that is precisely why this alarm must not depend on it having done so.
+test('credentialAlerts: ignores a deadline on a row that does not claim a measurement', () => {
+  const soon = '2026-10-02T13:00:00Z'
+  const rows = [row('a', soon, 'no-credential'), row('b', soon, 'unreadable'), row('c', soon, 'unknown')]
+  const { alerts } = credentialAlerts({}, rows, NOW, { days: 3 })
+  assert.deepEqual(alerts, [], 'a state that is not "measured" is not a deadline this may act on')
+})
+
+// AN UNPARSEABLE STAMP MUST NOT READ AS "far away". Treating a stamp it
+// cannot parse as safe is how a deadline goes past in silence.
+test('credentialAlerts: alarms about a stamp it cannot parse rather than ignoring it', () => {
+  const { alerts } = credentialAlerts({}, [row('x', 'not-a-time')], NOW, { days: 3 })
+  assert.equal(alerts.length, 1)
+  assert.equal(alerts[0].kind, 'unreadable-deadline')
+})
+
+test('credentialAlerts: takes the threshold from its caller and has a default of three days', () => {
+  const rows = [row('j', '2026-10-06T00:00:00Z')]
+  assert.equal(credentialAlerts({}, rows, NOW, { days: 3 }).alerts.length, 0)
+  assert.equal(credentialAlerts({}, rows, NOW, { days: 7 }).alerts.length, 1)
+  assert.equal(credentialAlerts({}, rows, NOW).alerts.length, 0)
+})
