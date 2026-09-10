@@ -34,16 +34,17 @@ export function normalizeAddr(raw) {
 
 // isCgnat - 100.64.0.0/10: the tailnet's own address range. The second octet
 // carries the /10: 64..127. EVERY OCTET IS RANGE-CHECKED, not merely counted
-// in digits: `100.64.999.999` is three digits per field and is not an
-// address, and a check that says yes to it says yes about something the rest
-// of this file will then compare, bind or log.
+// in digits: an octet spelled `999` is three digits and is not a value, and a
+// check that says yes to it says yes about something the rest of this file
+// will then compare, bind or log.
 //
 // AND AN OCTET MUST BE SPELLED THE ONE WAY THE KERNEL SPELLS IT. A numeric
-// range check alone says yes to `100.064.0.1`, and parseFrontPeer then keeps
-// that string verbatim while the socket layer reports the peer as
-// `100.64.0.1` - so the two never compare equal, visitorAddress returns null
-// for every visitor, and the whole front answers "Forbidden: not the front
-// peer" for ever, one log line a minute, from a setting that looks right.
+// range check alone says yes to a zero-padded octet such as `064`, and
+// parseFrontPeer then keeps that string verbatim while the socket layer
+// reports the same peer with the octet spelled `64` - so the two never compare
+// equal, visitorAddress returns null for every visitor, and the whole front
+// answers "Forbidden: not the front peer" for ever, one log line a minute,
+// from a setting that looks right.
 // node:net's own parser refuses the padded form too (isIP returns 0), and it
 // is the parser the rest of this file already trusts.
 export function isCgnat(addr) {
