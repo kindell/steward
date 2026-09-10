@@ -2354,7 +2354,7 @@ cmd_registry_login_ls() {
 # WHY THIS VERB EXISTS, and it is one measured evening: every login is just a
 # directory in CLAUDE_CONFIG_DIR, and nothing tells a person which one they are
 # standing in until after they have typed /login. On 2026-09-09 a login meant
-# for `~/.claude-logins/point` landed in `~/.claude` instead - the estate's
+# for `~/.claude-logins/<login>` landed in `~/.claude` instead - the estate's
 # LEGACY_LOGIN, a different subscription - and every session on that account was
 # signed out mid-work. The directory was never wrong; the person could not see
 # it. So this verb says it BEFORE the prompt, on stderr, where a pipe cannot

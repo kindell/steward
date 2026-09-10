@@ -411,7 +411,7 @@ echo "-- 10f. a login whose PRINCIPAL has no account on this host names the refu
 # resolve. The fixture hid the defect by giving every account row a slug that
 # happened to equal the ACCOUNT field, so the wrong lookup succeeded here and
 # failed on every real estate: measured 2026-09-09, all four correct rows on
-# basement printed "(account does not resolve)".
+# a live host printed "(account does not resolve)".
 #
 # The genuinely unresolvable case is a login whose PRINCIPAL has no account on
 # THIS host - the person's credentials live on another machine - and that is
@@ -486,7 +486,8 @@ echo "== 12. login shell: the directory and the account are SAID before anything
 # WHY THIS VERB EXISTS, and it is one measured evening: a login is just a
 # directory in CLAUDE_CONFIG_DIR, and nothing tells a person which one they are
 # standing in until after they have typed /login. On 2026-09-09 a login meant
-# for `~/.claude-logins/point` landed in `~/.claude` - a different subscription -
+# for `~/.claude-logins/<login>` landed in `~/.claude` - a different
+# subscription -
 # and every session on that account was signed out mid-work.
 FX4="$(mktemp -d)"
 mkdir -p "$FX4/estate" "$FX4/logins.d" "$FX4/accounts.d" "$FX4/home/.claude-logins/mine"

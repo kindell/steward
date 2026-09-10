@@ -4997,10 +4997,10 @@ registry_mandate_write() {
 #
 # WHY THIS EXISTS AT ALL. `registry_login_config_dir` needs a unix account to
 # resolve `~` against, and the only field a login row carries is ACCOUNT - which
-# is the account's REAL NAME (an address like `jon@varvet.com`), not an
-# accounts.d slug (`jon-basement`). Passing it to registry_account_load can only
-# ever fail, and `steward registry login ls` did exactly that: every correct row
-# printed "(account does not resolve)" while the register was perfectly sound.
+# is the account's REAL NAME (an address like `<person>@<company>.example`), not
+# an accounts.d slug (`<person>-<host>`). Passing that to registry_account_load
+# can only ever fail, and `steward registry login ls` did exactly that: every
+# CORRECT row printed "(account does not resolve)" while the register was sound.
 # The link between a login and a unix account is the PRINCIPAL - the human -
 # which is the same join registry_login_principal_gate makes.
 #
