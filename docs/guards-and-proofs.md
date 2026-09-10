@@ -16,16 +16,27 @@ Remove a guard, run the suite. If nothing fails, the guard is either
 
 Measured, both kinds in one day:
 
-- Unproven: two guards in a seam's row parser each cost nothing when
-  removed. They were not weak; they were **masking each other**. One guard
-  cleaned up the evidence before the other could see it, in both directions.
-  Adding one case that isolates the second guard - a row that does not
-  trigger the first - moved it from `113 -> 113/0` to `115 -> 113/2`.
-- Genuinely redundant: a length bound on a percentage field cost nothing,
-  because the canonicalisation behind it produces the right number anyway.
-  It stays, because it bounds WORK rather than meaning: 200 003 characters
-  cost 90 ms in the expression and 1 ms at the bound, and the seam runs on a
-  timer.
+**Both outcomes occurred in the SAME PAIR of guards**, and that is what
+makes the pair worth reading: identical symptom, identical cause - they were
+**masking each other**, each cleaning up the evidence before the other could
+see it - and opposite correct actions.
+
+- Unproven: the vocabulary guard. A case that ISOLATES it - a row that does
+  not trigger its neighbour - moved it from `113 -> 113/0` to
+  `115 -> 113/2`. It had a test waiting to be written.
+- Genuinely redundant: the guard that would quote a raw value. It stays,
+  with both reasons written out beside it, and **no test was written for it
+  on purpose**.
+
+A second genuine redundancy, measured the same day: a length bound on a
+percentage field. The bound is redundant because THE EXPRESSION already
+refuses every long value except a run of leading zeros, and those
+canonicalise to the right number - not because the canonicalisation catches
+long values, which it does not. Measured: 1000 zeros followed by `100`
+matches the expression and yields 100; 30 nines does not match at all. It
+stays because it bounds WORK rather than meaning: 200 003 characters cost
+90 ms in the expression and 4 ms in the canonicalisation, against about 1 ms
+at the bound - so the expression IS the work - and the seam runs on a timer.
 
 Write BOTH numbers next to the guard when you settle one, so the next sweep
 does not have to rediscover it. Do **not** write a test to make a zero look
@@ -46,6 +57,13 @@ A mutation that silently failed to apply produces a green run that proves
 nothing, and it looks exactly like a guard that is genuinely redundant. Two
 zeros in one sweep turned out to be edits that never landed. Diff the file,
 or assert the replacement happened, before you believe any number.
+
+**That check is necessary and not sufficient.** A mutation that DID apply
+and still cost zero is, so far, only a question: one such mutation was
+neutralised by a third resolution twenty lines further down, which refused
+with the same rc - rule 8's class, occurring in the middle of a mutation
+round, where rule 3 sounds reassuring. Reading WHY the green is green
+belongs to rule 1 and rule 8 together.
 
 ## 4. A guard is proven only against inputs someone thought of.
 
@@ -85,7 +103,8 @@ exactly one by membership - and the membership one is the field that leaked.
 
 **When sweeping for this pattern, do not require `case` and the pattern on
 the same line.** A line-bound grep found 17 of the 38 sites; every
-multi-line `case` was invisible to it, including all four holes' siblings.
+multi-line `case` was invisible to it - including the two live holes in one
+seam, which are written across two lines each.
 
 ## 6. Every column can hold a secret, not just the ones that look like data.
 
@@ -115,10 +134,10 @@ and nothing sources it - so a guard that starts from callers has nothing to
 find. Its absence surfaces later as a deployed host dying on a source line,
 rc 78, in a journal nobody reads.
 
-## 8. A test double carries the bug it simulates, or it proves nothing.
+## 8. A pass that a different gate produced has measured that gate.
 
-Related: a test that passes because a DIFFERENT guard refused the fixture
-first has measured that other guard. Four attempts at one measurement in a
+A test that passes because a DIFFERENT guard refused the fixture first has
+measured that other guard, not the one it names. Four attempts at one measurement in a
 single day were refused by an earlier gate - a bad id form, a wrong key set,
 an invalid enum value, a field count one short - and each refusal looked
 like an answer. When a probe reports what you expected, check that it
