@@ -69,32 +69,73 @@ exit 0
 EOF
   chmod +x "$bin/$1"
 }
-mk_logger Xvfb
+# THE STUBS ARE FUNCTIONS, NOT FILES IN A DIRECTORY ON PATH, and the reason is
+# the whole safety of this suite. The script's first line is
+# `export PATH="/usr/bin:/bin:$PATH"`, which puts the REAL binaries ahead of
+# any stub directory. On a machine without them that is harmless and the stub
+# wins by accident; on a Linux session host /usr/bin/Xvfb EXISTS, so the suite
+# reached the real one and tried to start X servers on the fixture's displays
+# :5 :6 :8 :12 - which on a live host are somebody's rigs. It failed only
+# because those displays were already locked. On a host with those displays
+# free it would have started a real Xvfb and then a real browser on somebody's
+# screen. Measured 2026-09-10.
+#
+# A bash function beats PATH no matter what the script does to PATH afterwards,
+# which is why stat and pgrep were already functions - the file header explains
+# that, and the same argument applies to every one of these.
+_bs_log() { echo "$1 ${*:2} [TZ=${TZ:-<unset>}]" >> "$CALL_LOG"; return 0; }
+Xvfb()             { _bs_log Xvfb "$@"; }
+x11vnc()           { _bs_log x11vnc "$@"; }
+setxkbmap()        { _bs_log setxkbmap "$@"; }
+xmodmap()          { _bs_log xmodmap "$@"; }
+autocutsel()       { _bs_log autocutsel "$@"; }
+export -f _bs_log Xvfb x11vnc setxkbmap xmodmap autocutsel
 mk_logger chromium-browser
-mk_logger x11vnc
-mk_logger setxkbmap
-mk_logger xmodmap
-mk_logger autocutsel
+BS_STUB_BIN="$bin"; export BS_STUB_BIN
 
-cat > "$bin/sg" <<'EOF'
-#!/bin/bash
-# stub: ignores the group name ($1), runs the -c string with bash -c.
-shift
-if [ "$1" = "-c" ]; then
+# sg, same reasoning - and NOT `exec`, which inside a function would replace
+# the suite's own shell instead of the stub process it used to be.
+# CHROMIUM CANNOT BE A FUNCTION, and sg is why it does not have to be. The
+# script runs it as `sg video -c "sg render -c \"exec chromium-browser ...\""`,
+# and `exec` resolves through PATH ONLY - it never sees a shell function. So
+# the one stub that must stay a file on disk is chromium-browser, and the gate
+# it always passes through is this one: sg puts the stub directory FIRST in the
+# PATH of the shell it runs, which is the shell that will exec. Measured: with
+# the function form alone, Xvfb was intercepted and chromium was not, and six
+# assertions failed with the browser missing from the call log.
+sg() {
   shift
-  exec /bin/bash -c "$1"
-else
-  exec "$@"
-fi
-EOF
-chmod +x "$bin/sg"
+  if [ "${1:-}" = "-c" ]; then
+    shift
+    PATH="$BS_STUB_BIN:$PATH" /bin/bash -c "$1"
+  else
+    PATH="$BS_STUB_BIN:$PATH" "$@"
+  fi
+}
+export -f sg
 
 # ---------------------------------------------------------------------------
 # stat/pgrep as bash FUNCTIONS, exported to the child process — they beat PATH
 # regardless of the script's own PATH rewrite (see the file header).
+# GNU FIRST, BSD AS FALLBACK, AND THE SHAPE IS CHECKED. `stat -f` is not a
+# spelling difference: on GNU it means FILESYSTEM status and SUCCEEDS, printing
+# `File: ... ID: ... Type: ext2/ext3 ...`, which the script then read as a file
+# mode and refused with "the requirement is 700". A wrong answer that exits 0
+# cannot be caught by rc alone, so the mode is accepted only when it looks like
+# one. Same class as the operator-config fix, which had it the other way round.
 stat() {
   if [ "${1:-}" = "-c" ] && [ "${2:-}" = "%a" ]; then
-    /usr/bin/stat -f '%Lp' "$3" 2>/dev/null
+    local _m
+    _m="$(/usr/bin/stat -c '%a' "$3" 2>/dev/null)"
+    case "$_m" in
+      [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s\n' "$_m"; return 0 ;;
+    esac
+    _m="$(/usr/bin/stat -f '%Lp' "$3" 2>/dev/null)"
+    case "$_m" in
+      [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s\n' "$_m"; return 0 ;;
+    esac
+    echo "stat stub: neither GNU nor BSD stat produced a mode for $3" >&2
+    return 1
   else
     echo "stat stub: unexpected arguments: $*" >&2
     return 1
@@ -108,6 +149,26 @@ hostname() {
   printf '%s\n' testhost
 }
 export -f stat pgrep hostname
+
+# THE SANDBOX REFUSES TO RUN IF IT IS NOT IN EFFECT. Pure introspection - no
+# binary is invoked to find out, because invoking the thing you are unsure
+# about is how this defect would be discovered rather than prevented. If any
+# name below is not a function, PATH would decide, and on a session host PATH
+# means the real X server.
+for _n in Xvfb x11vnc setxkbmap xmodmap autocutsel sg stat pgrep hostname; do
+  if [ "$(type -t "$_n")" != "function" ]; then
+    echo "browser-stack.test: REFUSING TO RUN - '$_n' is not a stub function," >&2
+    echo "  so PATH would decide, and on a host with a real X server this suite" >&2
+    echo "  would start one on the fixture's displays. Fix the stub, do not run." >&2
+    exit 1
+  fi
+done
+unset _n
+if [ ! -x "$bin/chromium-browser" ]; then
+  echo "browser-stack.test: REFUSING TO RUN - the chromium stub file is missing," >&2
+  echo "  and it is the one stub PATH decides, because the script execs it." >&2
+  exit 1
+fi
 
 # The registry's HOST field is an ssh-alias-shaped, lowercase machine name. The
 # test owns that value: using the developer machine's real hostname made the
