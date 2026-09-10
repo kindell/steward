@@ -1415,6 +1415,107 @@ _registry_validate_project_stage() {
 # account, login, project, session — add (login also has ls). A later scope
 # adds non-`add` verbs; this refuses anything else by name rather than
 # falling through to the estate-client fallback the top-level dispatcher owns.
+
+# cmd_registry_credentials - the credential seam, rendered once for two
+# consumers.
+#
+# WHY A VERB EXISTS FOR THIS SEAM AND NOT FOR ITS TWINS. The consumers are in
+# two languages: `steward doctor` is bash and can source lib/credential.sh
+# directly, but the watch that must ALARM on these deadlines is node. The
+# alternative was letting the watch run the estate's shim itself, which would
+# put this seam's field-count rules, its stamp grammar and its closed state
+# vocabulary into a second implementation - and a contract implemented twice
+# is a contract that disagrees with itself on the day it matters.
+#
+# THIS VERB NEVER LOOKS AT A CLOCK, and that is a rule and not an omission.
+# The row carries measured_at and the two deadlines; comparing them against
+# now is the ALARM's work. A verb that printed `expired` would be deciding it
+# against the clock of whichever machine rendered the row - and a host with a
+# wrong clock would then produce a row that lies in a way no consumer can
+# detect. The measurement carries the time; the alarm compares.
+cmd_registry_credentials() {
+  local want_json=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) want_json=1; shift ;;
+      *) fel "steward registry credentials: unknown flag '$1' (allowed: --json)" 64; return 64 ;;
+    esac
+  done
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  # shellcheck source=lib/credential.sh
+  . "$HERE/lib/credential.sh"
+
+  # THE ENVIRONMENT WINS OVER THE ESTATE, the same way it does for every other
+  # key in the operator config: an operator debugging a shim must be able to
+  # point at another one for one command without editing the estate's file.
+  if [ -z "${STEWARD_CREDENTIAL_CMD:-}" ]; then
+    local _from_estate
+    _from_estate="$(registry_credential_cmd)" || return 78
+    STEWARD_CREDENTIAL_CMD="$_from_estate"
+  fi
+  export STEWARD_CREDENTIAL_CMD
+
+  local _rows _err
+  _rows="$(mktemp 2>/dev/null)" && _err="$(mktemp 2>/dev/null)" || {
+    rm -f "$_rows"; echo "steward: could not create a temporary file" >&2; return 70
+  }
+  # NOT IN A COMMAND SUBSTITUTION: credential_rows sets CREDENTIAL_SEAM_REASON
+  # and CREDENTIAL_DROPPED in the CALLER's shell, and a subshell would hand
+  # back whatever they were before the call. lib/credential.sh says so at
+  # length; this is the caller that would have got it wrong.
+  credential_rows >"$_rows" 2>"$_err"
+  local reason="${CREDENTIAL_SEAM_REASON:-}" dropped="${CREDENTIAL_DROPPED:-0}"
+
+  # AN UNCONFIGURED SEAM IS A NORMAL STATE. An estate that has not named a
+  # credential shim is not a broken estate, so it is rc 0 and no rows - with
+  # the reason on stderr, because silence would leave an operator wondering
+  # whether the seam ran and found nothing or never ran at all.
+  case "$reason" in
+    ""|"seam-ok") ;;
+    seam-not-configured)
+      echo "steward: no credential seam configured (seam-not-configured)" >&2
+      rm -f "$_rows" "$_err"; return 0 ;;
+    *)
+      echo "steward: the credential seam did not answer ($reason)" >&2
+      [ -s "$_err" ] && cat "$_err" >&2
+      rm -f "$_rows" "$_err"; return 78 ;;
+  esac
+  [ -s "$_err" ] && cat "$_err" >&2
+
+  if [ -z "$want_json" ]; then
+    cat "$_rows"
+    rm -f "$_rows" "$_err"; return 0
+  fi
+
+  # THE JSON IS BUILT WITH THE HOUSE HELPER, not by hand. `_json` hands every
+  # value to jq as an --arg, so a note this file did not write cannot break
+  # out of its string - and the rows are assembled with jq -s rather than by
+  # printing commas, because a hand-built array is one early `continue` away
+  # from emitting invalid JSON to a parser that will simply refuse it.
+  local line tab login provider access refresh measured state note rest
+  tab="$(printf '\t')"
+  {
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      rest="$line"
+      login="${rest%%$tab*}";    rest="${rest#*$tab}"
+      provider="${rest%%$tab*}"; rest="${rest#*$tab}"
+      access="${rest%%$tab*}";   rest="${rest#*$tab}"
+      refresh="${rest%%$tab*}";  rest="${rest#*$tab}"
+      measured="${rest%%$tab*}"; rest="${rest#*$tab}"
+      state="${rest%%$tab*}";    rest="${rest#*$tab}"
+      note="$rest"
+      _json login "$login" provider "$provider" access_expires "$access" \
+            refresh_expires "$refresh" measured_at "$measured" \
+            state "$state" note "$note"
+    done < "$_rows"
+  } | jq -s --argjson dropped "$dropped" '{dropped: $dropped, rows: .}'
+  rm -f "$_rows" "$_err"
+  return 0
+}
+
 cmd_registry() {
   case "${1:-}" in
     team)
@@ -1463,6 +1564,7 @@ cmd_registry() {
         realign) shift; cmd_registry_session_realign "$@" ;;
         *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check, realign)" 64 ;;
       esac ;;
+    credentials) shift; cmd_registry_credentials "$@" ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
     *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, principal, project, session, migrate-session)" 64 ;;
   esac
