@@ -267,10 +267,14 @@ registry_schema_check() {
   # derivation above cannot see that reader, so the key would leak through
   # this source with nothing to notice. Naming it here is what puts it inside
   # the derived set. DESK_ORIGIN has a reader in this file and was still
-  # missing from this line, which is now the FOURTH time the list has been
-  # short - CREDENTIAL_CMD was added to the library's readers and not to this
-  # line, and registry_load leaked it into every caller until the derived
-  # check in test/identity-schema.test.sh said so. That check earns its keep:
+  # missing from this line, which is now the FIFTH time the list has been
+  # short - CREDENTIAL_CMD and then CREDENTIAL_WARN_DAYS were added to the
+  # library's readers and not to this line, both on the same day and both by
+  # the same author, and registry_load leaked each into every caller until the
+  # derived check in test/identity-schema.test.sh said so. Twice in one day is
+  # the argument: this line cannot be maintained by memory, and the only reason
+  # it has not cost anything is that the check builds its key set from the
+  # library rather than from a second list. That check earns its keep:
   # it builds the key set FROM this library rather than from a second list,
   # so a key added anywhere is tested here without anybody remembering to.
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
@@ -278,7 +282,8 @@ registry_schema_check() {
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
         BROWSER_LABEL_PREFIX="" OP_TOKEN_FILE_NAME="" STATE_DIR_NAME="" \
         PAUSED_DIR_NAME="" LEGACY_LOGIN="" LOGIN_REQUIRED_FOR="" \
-        LIVENESS_CMD="" USAGE_CMD="" CREDENTIAL_CMD="" ESTATE_CHECKOUT="" \
+        LIVENESS_CMD="" USAGE_CMD="" CREDENTIAL_CMD="" CREDENTIAL_WARN_DAYS="" \
+        ESTATE_CHECKOUT="" \
         MAIL_ACCOUNT_FILE="" \
         ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE="" \
         DESK_ORIGIN="" DESK_SESSION_KEY_FILE=""
@@ -5094,7 +5099,7 @@ registry_mandate_write() {
 # SUBSHELLED PER ROW, so ACCOUNT_* never leaks into the caller's frame - the
 # same isolation registry_login_principal_gate documents.
 registry_login_unix_account() {
-  local login="${1:-}" principal host f cand user
+  local login="${1:-}" principal host f cand user _hits="" _answer="" _n=0
   # THE ROW'S OWN REFUSAL IS KEPT, NOT DISCARDED. This line used to end in
   # `>/dev/null 2>&1` and return a bare 1, so a row that failed to LOAD was
   # reported by the caller as "no account for this principal on this host" - a
@@ -5122,8 +5127,38 @@ registry_login_unix_account() {
              && [ "$ACCOUNT_PRINCIPAL" = "$principal" ] \
              && [ "$ACCOUNT_HOST" = "$host" ] \
              && printf '%s' "$ACCOUNT_USERNAME" )"
-    [ -n "$user" ] && { printf '%s\n' "$user"; return 0; }
+    [ -n "$user" ] || continue
+    _hits="$_hits $cand"
+    [ -n "$_answer" ] || _answer="$user"
+    _n=$(( _n + 1 ))
   done
+
+  # A LOGIN HAS NO HOME DIRECTORY; THE PAIR (login, account) HAS ONE. This
+  # function used to return on the FIRST matching row, which meant that when a
+  # person had two accounts on one host the answer was decided by GLOB ORDER -
+  # and glob order is alphabetical, not meaningful.
+  #
+  # Measured on a live host 2026-09-10: `jon-basement` (USERNAME=jon) and
+  # `steward-basement` (USERNAME=steward) both carry the same PRINCIPAL, so this
+  # answered the first while the session USING that login ran as the second. The
+  # credential seam then read the wrong home and reported a refresh deadline
+  # twenty hours from the session's real one. On another host the wrong home held
+  # no file at all, so the seam said `no-credential` - the words for "nothing to
+  # fix here" - about a hub running on a perfectly good login. Neither was
+  # visible from above: the doctor counts that a row VALIDATES, not that it is
+  # about the right file.
+  #
+  # The supervisor answers this question by joining on the SESSION'S OWNER,
+  # which is unambiguous. This function joins on the person, which is not - so
+  # where the person's answer is not unique it refuses and says which rows
+  # collided. A silent pick between two defensible answers is the same defect as
+  # reading an error as an answer: the caller cannot tell a question was asked.
+  if [ "$_n" -gt 1 ]; then
+    REGISTRY_LOGIN_UNIX_ACCOUNT_WHY="the principal '$principal' has more than one account on '$host' ($( printf '%s' "${_hits# }" )), so a login alone does not name a home - ask with an account"
+    echo "registry: $REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" >&2
+    return 1
+  fi
+  [ "$_n" -eq 1 ] && { printf '%s\n' "$_answer"; return 0; }
   return 1
 }
 

@@ -611,5 +611,59 @@ is  "13: shell sets the directory under a comma IFS too" "$out" "$FX4/home/.clau
 rm -f "$FX4/logins.d/badrow.conf"
 rm -rf "$FX4"
 
+echo "== 12. TWO ACCOUNTS, ONE PERSON, ONE HOST - the join has no single answer =="
+# A LOGIN HAS NO HOME DIRECTORY. The PAIR (login, account) has one. Until now
+# this function answered the question anyway, by taking the FIRST accounts.d row
+# whose PRINCIPAL and HOST matched - which means the answer was decided by glob
+# order, and glob order is alphabetical.
+#
+# Measured on a real host 2026-09-10: `jon-basement` (USERNAME=jon) and
+# `steward-basement` (USERNAME=steward) both carry PRINCIPAL=jon, so the lookup
+# answered `jon` while the session that USES that login runs as `steward`. The
+# credential seam then read the wrong home and reported a refresh deadline
+# TWENTY HOURS from the session's real one. On another host the wrong home had
+# no file at all, so the row said `no-credential` - the words for "nothing to
+# fix here" - about a hub running on a perfectly valid login.
+#
+# THE SUPERVISOR JOINS ON THE SESSION'S OWNER, which is unambiguous. This
+# function joined on the person, which is not. A silent pick between two
+# defensible answers is the same defect as reading an error as an answer: the
+# caller cannot tell that a question was even asked.
+FX5="$(mktemp -d)"
+mkdir -p "$FX5/estate" "$FX5/logins.d" "$FX5/accounts.d"
+chmod 700 "$FX5/logins.d"
+cp "$FX/estate/steward.conf" "$FX5/estate/steward.conf"
+cat > "$FX5/logins.d/two-homes.conf" <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="alice@example.invalid"
+PROVIDER="claude-max"
+CONFIG_DIR="~/.claude-logins/two-homes"
+LEGAL_OWNER="Acme"
+EOF
+chmod 600 "$FX5/logins.d/two-homes.conf"
+for pair in "alice-h1 alice" "zz-worker-h1 worker"; do
+  set -- $pair
+  printf 'PRINCIPAL="alice"
+HOST="h1"
+USERNAME="%s"
+' "$2" > "$FX5/accounts.d/$1.conf"
+  chmod 600 "$FX5/accounts.d/$1.conf"
+done
+out="$( STEWARD_ESTATE_ROOT="$FX5" STEWARD_SELF_HOST="h1" bash -c '
+  . '"$here"'/lib/registry.sh
+  registry_login_unix_account two-homes' 2>"$FX5/err" )"; rc=$?
+is  "12a an ambiguous join REFUSES rather than picking"  "$rc" "1"
+is  "12b and prints no account at all"                   "$out" ""
+has "12c the refusal names both candidates"              "$(cat "$FX5/err")" "alice-h1"
+has "12d ...both of them"                                "$(cat "$FX5/err")" "zz-worker-h1"
+# AND THE ORDINARY CASE IS UNCHANGED: one account, one answer, no refusal.
+rm -f "$FX5/accounts.d/zz-worker-h1.conf"
+out="$( STEWARD_ESTATE_ROOT="$FX5" STEWARD_SELF_HOST="h1" bash -c '
+  . '"$here"'/lib/registry.sh
+  registry_login_unix_account two-homes' 2>/dev/null )"; rc=$?
+is "12e one account still answers" "$out" "alice"
+is "12f and it is rc 0"            "$rc" "0"
+rm -rf "$FX5"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
