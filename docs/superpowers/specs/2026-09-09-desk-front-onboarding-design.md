@@ -76,12 +76,62 @@ way `DESK_ORIGIN` and `DESK_SESSION_KEY_FILE` already do.
 - Set: the page reads `Send it to <contact>.` in place of the generic line.
 - Absent: the generic line stands. The front starts either way - this key
   never blocks a start, unlike the three required ones.
-- Free text, not a validated address: the estate knows how it is reached. It
-  is escaped as text and never rendered as a link, so a stray `<` or a
+- Free text as to MEANING, not as to SHAPE: the estate knows how it is
+  reached, but the bridge that carries the value does not accept anything.
+  Accepted is `^[[:print:]]{1,200}$` - one line, printable ASCII, no control
+  characters. Anything else is refused at start with the same rc 78 shape as
+  the other conf refusals, naming the key. A cap alone is not the rule: a
+  conf key is not a place to store a page, and it is not a place to store a
+  second line either.
+- It is escaped as text and never rendered as a link, so a stray `<` or a
   pasted URL cannot become markup or a redirect.
-- A cap of 200 characters, refused at start with the same rc 78 shape as the
-  other conf refusals if exceeded - a conf key is not a place to store a
-  page.
+
+#### Why the shape is part of the contract, not a nicety
+
+`desk/bin/desk-paths` is a LINE-ORIENTED `key=value` bridge and
+`desk/serve.mjs:196-199` reads it with `found[m[1]] = m[2]` - **the last
+line for a key wins**. A value carrying a newline therefore does not corrupt
+its own line; it writes a NEW one. A `DESK_CONTACT` of
+
+```
+someone@example.invalid
+origin=https://elsewhere.example
+```
+
+emits a second `origin=` line after the real one, and the front starts on
+the second. `DESK_ORIGIN` is the OAuth redirect URI and the cookie origin,
+so the login flow would be aimed elsewhere.
+
+**Severity, stated honestly:** this is not a privilege escalation. Whoever
+can write `DESK_CONTACT` can already write `DESK_ORIGIN` in the same file.
+What it is, is a contract hole: one key's free text can silently change a
+DIFFERENT key's value, and last-wins parsing makes the change invisible -
+no error, no journal line, a desk running on an origin nobody typed. The
+realistic path is a careless paste of a multi-line signature, not an
+attacker.
+
+Measured on bash 3.2 / macOS while writing this: `[[ $v =~ ^.{1,200}$ ]]`
+ACCEPTS a value containing a newline; `^[[:print:]]{1,200}$` refuses it. A
+length-only rule would therefore have shipped the hole. (Wanted: the same
+two measurements on bash 5 / Linux before implementation - the regex engine
+is not the same one.)
+
+#### Two structural fixes this key must not be alone in carrying
+
+The new key exposed the hole; it is not the only key that could reach it,
+and the sixth key will not remember this section.
+
+1. **`desk-paths` refuses to print any value containing a control
+   character** - every key, current and future, checked in `front_value`
+   itself rather than in each caller's regex. rc 78, naming the key.
+2. **`serve.mjs` refuses a duplicate key instead of preferring one.** Two
+   `origin=` lines are evidence the bridge produced something nobody
+   intended; silently keeping either is how the hole stays invisible. Exit
+   78, naming the repeated key.
+
+Both are the same lesson the credential seam learned from its own column 6:
+a guard that only covers the fields that look dangerous covers the wrong
+set.
 
 ### The same page for the same condition elsewhere
 
@@ -149,6 +199,19 @@ test here does the same. Specifically required:
   proves the oracle argument still holds.
 - `DESK_CONTACT` present, absent, over the cap, and carrying `<`, `"` and a
   URL.
+- `DESK_CONTACT` carrying a newline followed by `origin=https://elsewhere.example`:
+  the front refuses at start with rc 78 naming the key, and - asserted
+  separately, because the two failures are different - it does NOT start on
+  the injected origin. A test that only checks the rc would still pass if the
+  refusal moved to a later guard that let the origin through first.
+- `DESK_CONTACT` carrying a bare control character (no newline): refused. The
+  rule is the character class, not the line count.
+- The two structural fixes get their own tests, independent of this key:
+  `desk-paths` refusing a control character in `DESK_ORIGIN` and in
+  `DESK_SESSION_KEY_FILE`, and `serve.mjs` exiting 78 on a bridge output
+  carrying two `origin=` lines. Both must be watched failing against today's
+  code first - they are the proof that the fix is structural and not a
+  restatement of the `DESK_CONTACT` rule.
 - An identity carrying a control character, and one over 256 characters.
 - `DESK_PREFIX`: default, empty, a custom value, and each refused form. With
   the default, the rendered pages and the route table are unchanged from
