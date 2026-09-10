@@ -289,6 +289,61 @@ done
 # "$ACCOUNT" ...` on one line, and the greedy form extracted `$DOMAIN` (the
 # last quoted name) instead of `$conf`. The same PATH_SED backs the proof
 # right after this loop.
+# -- EVERY LIBRARY IN THE REPO HAS A ROW, SOURCED OR NOT ------------------
+#
+# THE CHECK BELOW PROVES THE WRONG HALF ON ITS OWN, and this is what taught
+# us: lib/credential.sh was committed with no manifest row, the rollout
+# answered rc 0, and the file landed in ZERO homes. The sweep further down did
+# not fail, and it was RIGHT not to: it reads the files that SOURCE a library
+# and proves a row exists for what they name. Nothing sourced credential.sh
+# yet - it is a seam waiting for its caller - so there was nothing to find.
+#
+# "Everything that is sourced is deployed" and "everything in lib/ is
+# deployed" are different claims, and only the first was ever checked. A
+# library with no caller yet is exactly the file that slips through: it is
+# newest, it is the one somebody is still wiring up, and its absence shows up
+# later as a deployed host failing on a sourcing line at rc 78, in a journal
+# nobody reads.
+#
+# THE EXCLUSION IS A LIST, NOT A RULE. lib/deploy-core.sh is deliberately not
+# deployed - linux/deploy-self.sh sources it from the CHECKOUT, before any
+# rollout exists to have deployed anything. Naming it here means adding a
+# second such file is a deliberate edit to this list with a reason beside it,
+# rather than a hole that widens quietly.
+NOT_DEPLOYED="lib/deploy-core.sh"
+# EXACT MEMBERSHIP, IN A SUITE THAT DELIBERATELY DOES NOT LOAD THE PRODUCT.
+# `case " $NOT_DEPLOYED " in *" $rel "*` would be the substring form - the one
+# this repo spent a day removing - and writing it HERE, in the check whose
+# whole purpose is to catch a list widening quietly, would be the joke telling
+# itself. It is not a hole today: the list has ONE entry and a two-word value
+# needs two ADJACENT ones to span anything, and the needle is a basename from
+# this repo rather than free text from outside.
+#
+# But the list EXISTS IN ORDER TO GROW - the comment above says a second file
+# must be a deliberate edit with a reason beside it - and on the day it has
+# two entries the substring form is one filename-with-a-space away from
+# excluding something nobody excluded. So it is exact from the start.
+#
+# FOUR LINES RATHER THAN `_registry_word_in_list`, on purpose: this suite
+# reads the manifest as a text file and loads nothing from lib/, so that a
+# broken library cannot make the manifest check pass. A test that depends on
+# the thing it is checking is a coupling worth four lines to avoid.
+_excluded() {
+  local want="$1" e
+  for e in $NOT_DEPLOYED; do [ "$e" = "$want" ] && return 0; done
+  return 1
+}
+for libfile in "$here"/lib/*.sh; do
+  [ -f "$libfile" ] || continue
+  rel="lib/$(basename "$libfile")"
+  _excluded "$rel" && continue
+  if grep -qE "^${rel//./\\.}[[:space:]]" "$M"; then
+    ok "manifest row for $rel"
+  else
+    bad "manifest row for $rel" "the file is in the repo and in no home: a rollout will answer rc 0 and deploy nothing"
+  fi
+done
+
 PATH_SED='s/^[^"]*(\. |source )"([^"]*)".*/\2/'
 LIB_SOURCERS="$(grep -v '^#' "$M" | awk '{print $1}' | grep -E '^(desk/|runtime/|linux/hub/)')"
 for srcfile in $LIB_SOURCERS; do
