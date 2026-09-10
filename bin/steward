@@ -40,6 +40,7 @@
 #   steward registry session add --account <slug> ( --project <slug> | --entity <slug> ) --slug <slug> --repo /abs/path [--host <host>] [--json]
 #   steward registry session check <session> [--json]
 #   steward registry session realign <session> [--host <host>] [--json]
+#   steward registry session project <owner> [--plan] [--json]
 #   steward registry migrate-session <old-slug> --account <slug> ( --project <slug> | --entity <slug> ) --slug <slug> [--json]
 #   steward invite issue --name N --principal P --entity E --host H [--runtime R] [--provider V] [--days D] [--issued-by P] [--json]
 #   steward invite ls [--json]
@@ -1461,7 +1462,8 @@ cmd_registry() {
         add) shift; cmd_registry_session_add "$@" ;;
         check) shift; cmd_registry_session_check "$@" ;;
         realign) shift; cmd_registry_session_realign "$@" ;;
-        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check, realign)" 64 ;;
+        project) shift; cmd_registry_session_project "$@" ;;
+        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check, project, realign)" 64 ;;
       esac ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
     *) fel "steward registry: unknown noun '${1:-}' (allowed: team, client, account, login, principal, project, session, migrate-session)" 64 ;;
@@ -5487,6 +5489,170 @@ _realign_login_registered() { # <login>
 # migration nobody can audit: the verb prints the before and after of both
 # fields, and writes the same sentence into the conf as a comment line, so the
 # next reader of that file learns why OWNER changed without reading this code.
+# cmd_registry_session_project <owner> [--plan] [--json] - put an owner's
+# session rows into their home, and say what changed.
+#
+# WHY THIS IS A VERB AND NOT A DEPLOY ROW. Six registers travel to every home
+# through the estate's manifest as whole directories - entities, projects,
+# accounts, logins, principals, mcp. sessions.d does NOT, and it cannot: a
+# home may see only its OWNER's rows, and a manifest row copies a directory
+# whole. So session rows have always arrived as a SIDE EFFECT of enrolment -
+# written once, by whoever ran the enrol, and never reconciled again.
+#
+# MEASURED BEFORE BUILDING THIS, and the number is the point: five homes on
+# this estate, and all five already agree with the register, byte for byte.
+# There is no drift to repair. What there is, is no way to KNOW that without
+# comparing by hand - which is what this verb is for. A property nobody can
+# measure on demand is a property that is true until the day it is not.
+#
+# (The first pass of that measurement said jon had 12 extra rows and andreas
+# 14. It compared directory LISTINGS; the extras were `.bak-*` files from old
+# renames, which the register's own `*.conf` glob never sees. The verb counts
+# rows, not files, for the same reason.)
+#
+# THE PLAN IS THE FIRST-CLASS MODE. `--plan` changes nothing and prints what
+# would change, because this verb writes into somebody else's home: the person
+# whose home it is should be able to read the diff before it happens, and so
+# should whoever is about to run it.
+#
+# WHAT IT WILL AND WILL NOT REMOVE. A row the register no longer owns is
+# pruned - a session moved to another person, or deleted, must not keep
+# answering from the old home. But the prune is restricted to files matching
+# the session-id shape exactly: `s-` and sixteen hex digits. Everything else
+# in that directory is somebody's, and this verb does not know whose. That is
+# why the `.bak-*` files above survive it.
+cmd_registry_session_project() {
+  local want_json="" want_plan="" owner="" a
+  for a in "$@"; do
+    case "$a" in
+      --json) want_json=1 ;;
+      --plan) want_plan=1 ;;
+      -*) _reg_fail "$want_json" "steward registry session project: unknown flag '$a'" 64; return 64 ;;
+      *) [ -z "$owner" ] && owner="$a" || { _reg_fail "$want_json" "steward registry session project: one owner at a time, got '$owner' and '$a'" 64; return 64; } ;;
+    esac
+  done
+  [ -n "$owner" ] || { _reg_fail "$want_json" "steward registry session project: needs an owner (the principal whose rows to project)" 64; return 64; }
+  if ! [[ "$owner" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    _reg_fail "$want_json" "steward registry session project: invalid owner '$owner' (allowed: a-z, then a-z0-9-)" 64; return 64
+  fi
+
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+
+  local host; host="$(_registry_self_host)"
+  # THE UNIX ACCOUNT IS RESOLVED THROUGH accounts.d, BY PRINCIPAL AND HOST -
+  # never guessed from the owner name. A person can be `jon` in the register
+  # and `steward` on the machine, and this estate has exactly that.
+  local acctdir user f cand
+  acctdir="$(registry_account_dir)" || { _reg_fail "$want_json" "steward registry session project: the account register does not resolve" 78; return 78; }
+  for f in "$acctdir"/*.conf; do
+    [ -f "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    user="$( registry_account_load "$cand" >/dev/null 2>&1 \
+             && [ "$ACCOUNT_PRINCIPAL" = "$owner" ] \
+             && [ "$ACCOUNT_HOST" = "$host" ] \
+             && printf '%s' "$ACCOUNT_USERNAME" )"
+    [ -n "$user" ] && break
+  done
+  if [ -z "${user:-}" ]; then
+    _reg_fail "$want_json" "steward registry session project: no account on this host ($host) belongs to '$owner' - nothing to project into" 78
+    return 78
+  fi
+  local home; home="$(_registry_owner_home "$user")" || {
+    _reg_fail "$want_json" "steward registry session project: the system knows no home for '$user'" 78; return 78; }
+  local target="$home/scripts/sessions.d"
+
+  local srcdir; srcdir="$(registry_dir)" || { _reg_fail "$want_json" "steward registry session project: the session register does not resolve" 78; return 78; }
+
+  # THE READS AND THE WRITES BOTH HAPPEN AS THE OWNER. Homes are 0750, so the
+  # hub cannot look into one without elevation, and a comparison it could not
+  # make must never render as "unchanged". Same `_as` shape as the estate's
+  # credential reader: `sudo -n` so a host without the rule REFUSES rather
+  # than prompting, and no elevation at all when the home is our own.
+  local me; me="$(id -un)"
+  _proj_as() { if [ "$1" = "$me" ]; then shift; "$@"; else local u="$1"; shift; sudo -n -u "$u" -H "$@"; fi; }
+
+  if ! _proj_as "$user" test -d "$target" 2>/dev/null; then
+    if [ -n "$want_plan" ]; then
+      : # a plan against a home that has no register yet is still a plan
+    elif ! _proj_as "$user" mkdir -p "$target" 2>/dev/null; then
+      _reg_fail "$want_json" "steward registry session project: cannot reach or create $target as '$user' - sudo refused, or the home is not there" 78
+      return 78
+    fi
+  fi
+
+  local add=() upd=() del=() same=() id b
+  for f in "$srcdir"/*.conf; do
+    [ -f "$f" ] || continue
+    id="$(basename "$f" .conf)"
+    # THE LOADER IS `registry_load`, AND THE NAME MATTERS MORE THAN IT LOOKS.
+    # The first version of this called `registry_session_load`, which does not
+    # exist: bash returned 127, `|| continue` read that as "not a row I own",
+    # every estate row was skipped, and every row already in the home was
+    # therefore classed as no longer owned. The plan offered to delete all
+    # thirteen of one person's sessions and all seven of another's. A missing
+    # command read as an answer - the same shape as EACCES read as absence,
+    # and the reason --plan is the mode this verb is used in first.
+    registry_load "$id" >/dev/null 2>&1 || continue
+    [ "${OWNER:-}" = "$owner" ] || continue
+    [ "${HOST:-}" = "$host" ] || continue
+    if ! _proj_as "$user" test -e "$target/$id.conf" 2>/dev/null; then
+      add+=("$id")
+    elif _proj_as "$user" cat "$target/$id.conf" 2>/dev/null | diff -q - "$f" >/dev/null 2>&1; then
+      same+=("$id")
+    else
+      upd+=("$id")
+    fi
+  done
+
+  # THE PRUNE LIST, and the shape filter is the whole safety of it.
+  local inhome
+  inhome="$(_proj_as "$user" sh -c "cd \"$target\" 2>/dev/null && ls *.conf 2>/dev/null" || true)"
+  for b in $inhome; do
+    id="${b%.conf}"
+    [[ "$id" =~ ^s-[0-9a-f]{16}$ ]] || continue
+    if ! registry_load "$id" >/dev/null 2>&1 \
+       || [ "${OWNER:-}" != "$owner" ] || [ "${HOST:-}" != "$host" ]; then
+      del+=("$id")
+    fi
+  done
+
+  local changed=$(( ${#add[@]} + ${#upd[@]} + ${#del[@]} ))
+  if [ -z "$want_plan" ]; then
+    for id in ${add[@]+"${add[@]}"} ${upd[@]+"${upd[@]}"}; do
+      if ! _proj_as "$user" tee "$target/$id.conf" < "$srcdir/$id.conf" >/dev/null 2>&1 \
+         || ! _proj_as "$user" chmod 644 "$target/$id.conf" 2>/dev/null; then
+        _reg_fail "$want_json" "steward registry session project: failed writing $target/$id.conf as '$user'" 70
+        return 70
+      fi
+    done
+    for id in ${del[@]+"${del[@]}"}; do
+      _proj_as "$user" rm -f "$target/$id.conf" 2>/dev/null || {
+        _reg_fail "$want_json" "steward registry session project: failed removing $target/$id.conf as '$user'" 70; return 70; }
+    done
+  fi
+
+  # THE RECEIPT SAYS WHAT CHANGED, NOT THAT SOMETHING DID. A verb that printed
+  # "done" would be one an operator has to verify by hand, which is the state
+  # this verb exists to end.
+  if [ -n "$want_json" ]; then
+    printf '{"owner":"%s","host":"%s","account":"%s","target":"%s","plan":%s,"added":[' \
+      "$owner" "$host" "$user" "$target" "$( [ -n "$want_plan" ] && echo true || echo false )"
+    _proj_join ${add[@]+"${add[@]}"}; printf '],"updated":['
+    _proj_join ${upd[@]+"${upd[@]}"}; printf '],"removed":['
+    _proj_join ${del[@]+"${del[@]}"}; printf '],"unchanged":%s,"changed":%s}\n' "${#same[@]}" "$changed"
+  else
+    printf '%s %s -> %s (%s)\n' "$( [ -n "$want_plan" ] && echo PLAN || echo PROJECT )" "$owner" "$target" "$user"
+    for id in ${add[@]+"${add[@]}"}; do printf '  %s %s\n' "$( [ -n "$want_plan" ] && echo "would add   " || echo "added   " )" "$id"; done
+    for id in ${upd[@]+"${upd[@]}"}; do printf '  %s %s\n' "$( [ -n "$want_plan" ] && echo "would update" || echo "updated " )" "$id"; done
+    for id in ${del[@]+"${del[@]}"}; do printf '  %s %s\n' "$( [ -n "$want_plan" ] && echo "would remove" || echo "removed " )" "$id"; done
+    printf '  unchanged %s, changed %s\n' "${#same[@]}" "$changed"
+  fi
+  return 0
+}
+
+_proj_join() { local first=1 x; for x in "$@"; do [ -n "$first" ] && first="" || printf ','; printf '"%s"' "$x"; done; }
+
 cmd_registry_session_realign() {
   local want_json="" host_flag="" host_given="" args=()
   while [ $# -gt 0 ]; do
