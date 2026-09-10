@@ -485,6 +485,35 @@ for proof_kind in docs scripts; do
 done
 rm -f "$PROOF_FIXTURE"
 
+# 13. A SHIPPED .mjs CARRIES WHAT IT IMPORTS. The two checks above are about
+# shell: one asks whether every library a shipped file SOURCES has a row, the
+# other whether every lib/*.sh has one at all. Neither looks at JavaScript, and
+# the server is JavaScript. Measured 2026-09-10: desk/bridge.mjs was imported by
+# the shipped desk/serve.mjs and had no row, and this suite was GREEN - a
+# deployed home would have taken a serve.mjs that dies on its own import line.
+#
+# Same defect as lib/credential.sh that morning, one directory over, which is
+# the argument for writing it as a sweep rather than as a row: the next module
+# will not remember either.
+for srcfile in $(grep -v '^#' "$M" | awk 'NF>=4{print $1}' | grep '\.mjs$'); do
+  [ -f "$here/$srcfile" ] || continue
+  dir_of="$(dirname "$srcfile")"
+  # Relative imports only. A bare specifier is a node builtin or a dependency,
+  # and neither is this manifest's business.
+  wanted="$(grep -oE "from '\.[^']*\.mjs'" "$here/$srcfile" 2>/dev/null \
+            | sed -E "s|from '||; s|'$||" | sort -u)"
+  [ -z "$wanted" ] && continue
+  for want in $wanted; do
+    rel="$dir_of/${want#./}"
+    rel="$(printf '%s' "$rel" | sed 's|/\./|/|g')"
+    if grep -v '^#' "$M" | awk '{print $1}' | grep -qx "$rel"; then
+      ok
+    else
+      bad "$srcfile imports $want but the manifest has no row for $rel"
+    fi
+  done
+done
+
 [ "$unverified" -gt 0 ] && echo "NOTE: $unverified estate rows could not be verified (no estate checkout found)"
 [ -z "$ESTATE_MANIFEST" ] && echo "NOTE: estate manifest not found; product rows only checked"
 echo "pass=$pass fail=$fail"

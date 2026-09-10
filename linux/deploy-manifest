@@ -197,6 +197,7 @@ desk/snapshot.sh                 scripts/desk/snapshot.sh             755  scrip
 desk/filter.jq                   scripts/desk/filter.jq               644  scripts
 desk/serve.mjs                   scripts/desk/serve.mjs               644  scripts
 desk/render.mjs                  scripts/desk/render.mjs              644  scripts
+desk/bridge.mjs                  scripts/desk/bridge.mjs              644  scripts
 desk/SCHEMA.md                   scripts/desk/SCHEMA.md               644  scripts
 desk/bin/desk-paths              scripts/desk/bin/desk-paths          755  scripts
 desk/bin/principal-for-login     scripts/desk/bin/principal-for-login 755  scripts
