@@ -289,6 +289,39 @@ done
 # "$ACCOUNT" ...` on one line, and the greedy form extracted `$DOMAIN` (the
 # last quoted name) instead of `$conf`. The same PATH_SED backs the proof
 # right after this loop.
+# -- EVERY LIBRARY IN THE REPO HAS A ROW, SOURCED OR NOT ------------------
+#
+# THE CHECK BELOW PROVES THE WRONG HALF ON ITS OWN, and this is what taught
+# us: lib/credential.sh was committed with no manifest row, the rollout
+# answered rc 0, and the file landed in ZERO homes. The sweep further down did
+# not fail, and it was RIGHT not to: it reads the files that SOURCE a library
+# and proves a row exists for what they name. Nothing sourced credential.sh
+# yet - it is a seam waiting for its caller - so there was nothing to find.
+#
+# "Everything that is sourced is deployed" and "everything in lib/ is
+# deployed" are different claims, and only the first was ever checked. A
+# library with no caller yet is exactly the file that slips through: it is
+# newest, it is the one somebody is still wiring up, and its absence shows up
+# later as a deployed host failing on a sourcing line at rc 78, in a journal
+# nobody reads.
+#
+# THE EXCLUSION IS A LIST, NOT A RULE. lib/deploy-core.sh is deliberately not
+# deployed - linux/deploy-self.sh sources it from the CHECKOUT, before any
+# rollout exists to have deployed anything. Naming it here means adding a
+# second such file is a deliberate edit to this list with a reason beside it,
+# rather than a hole that widens quietly.
+NOT_DEPLOYED="lib/deploy-core.sh"
+for libfile in "$here"/lib/*.sh; do
+  [ -f "$libfile" ] || continue
+  rel="lib/$(basename "$libfile")"
+  case " $NOT_DEPLOYED " in *" $rel "*) continue ;; esac
+  if grep -qE "^${rel//./\\.}[[:space:]]" "$M"; then
+    ok "manifest row for $rel"
+  else
+    bad "manifest row for $rel" "the file is in the repo and in no home: a rollout will answer rc 0 and deploy nothing"
+  fi
+done
+
 PATH_SED='s/^[^"]*(\. |source )"([^"]*)".*/\2/'
 LIB_SOURCERS="$(grep -v '^#' "$M" | awk '{print $1}' | grep -E '^(desk/|runtime/|linux/hub/)')"
 for srcfile in $LIB_SOURCERS; do
