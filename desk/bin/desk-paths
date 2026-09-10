@@ -41,8 +41,24 @@ state="$(registry_state_dir_name)" || {
   exit 78
 }
 base="$HOME/.local/state/$state"
-printf 'dir=%s\n'  "$base/desk"
-printf 'sock=%s\n' "$base/desk.sock"
+# EVERY LINE GOES THROUGH `emit`, not only the ones a key's regex guards. The
+# two conf-derived values are checked in front_value, where the refusal can
+# name the ESTATE key an operator would edit; this is the backstop for the
+# three DERIVED lines, which pass through no key expression at all. The
+# distinction is deliberate and both are load-bearing: neither covers the
+# other's lines. (STATE_DIR_NAME is separately safe - the registry's own
+# anchored expression cannot be satisfied by a value carrying a newline - but
+# `providers=` is built from a path this script never validated.)
+emit() { # <output key> <value>
+  case "$2" in
+    *[[:cntrl:]]*)
+      echo "desk-paths: REFUSING - the value behind '$1=' contains a control character; this output is line-oriented and a value cannot span lines" >&2
+      exit 78 ;;
+  esac
+  printf '%s=%s\n' "$1" "$2"
+}
+emit dir  "$base/desk"
+emit sock "$base/desk.sock"
 
 # THE FRONT'S THREE LINES, printed only when the estate names them. A desk
 # with no front has no origin, no providers and no key, and must not be
@@ -62,6 +78,23 @@ front_value() { # <KEY> <regex> -> value on stdout, rc 1 when the line is absent
   local _key="$1" _form="$2" _v
   grep -q "^${_key}=" "$estate_file" 2>/dev/null || return 1
   _v="$( eval "$_key=''"; . "$estate_file" >/dev/null 2>&1; eval "printf '%s' \"\$$_key\"" )"
+  # A CONTROL CHARACTER IS REFUSED BEFORE THE KEY'S OWN FORM IS CONSIDERED, and
+  # for a reason no single key's expression can carry: THIS OUTPUT IS LINES, and
+  # the reader keeps the LAST line for a key. The estate file is sourced as
+  # shell, so a quoted value may legally span lines - and a newline inside one
+  # value therefore does not corrupt its own line, it writes a NEW one. Measured
+  # 2026-09-10 on the shipped bridge: a DESK_SESSION_KEY_FILE containing a
+  # newline followed by `origin=https://elsewhere.example` emitted a second
+  # `origin=` line after the real one, and the front would have started on it.
+  # `^/.+$` admitted it because `.` matches a newline here.
+  #
+  # The check belongs to this helper because every key passes through it. Put
+  # in each caller's regex instead, it protects the keys somebody remembered.
+  case "$_v" in
+    *[[:cntrl:]]*)
+      echo "desk-paths: REFUSING - $_key contains a control character (a newline or tab); this output is line-oriented and a value cannot span lines" >&2
+      return 78 ;;
+  esac
   if ! [[ "$_v" =~ $_form ]]; then
     echo "desk-paths: REFUSING - $_key is missing or invalid in $estate_file (got '$_v')" >&2
     return 78
@@ -73,11 +106,11 @@ front_value() { # <KEY> <regex> -> value on stdout, rc 1 when the line is absent
 # Secure, and a provider refuses a plaintext redirect URI. A desk that started
 # on one would present a login nobody can finish.
 if origin="$(front_value DESK_ORIGIN '^https://[A-Za-z0-9.-]+(:[0-9]+)?$')"; then
-  printf 'origin=%s\n' "$origin"
+  emit origin "$origin"
 elif [ $? -eq 78 ]; then exit 78; fi
 root="$(_registry_estate_root)" || exit 78
-[ -d "$root/desk/providers.d" ] && printf 'providers=%s\n' "$root/desk/providers.d"
+[ -d "$root/desk/providers.d" ] && emit providers "$root/desk/providers.d"
 if keyfile="$(front_value DESK_SESSION_KEY_FILE '^/.+$')"; then
-  printf 'session_key=%s\n' "$keyfile"
+  emit session_key "$keyfile"
 elif [ $? -eq 78 ]; then exit 78; fi
 exit 0

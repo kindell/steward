@@ -58,5 +58,68 @@ is  "http is rc 78" "$rc" "78"
 has "http names the key" "$(cat "$T/err")" "DESK_ORIGIN"
 
 
+# A CONTROL CHARACTER IN ANY VALUE IS A REFUSAL, and this is NOT hypothetical:
+# measured 2026-09-10 against the shipped bridge. The conf is sourced as shell,
+# so a quoted value may legally span lines - and this bridge is LINE-ORIENTED
+# while its reader (desk/serve.mjs) keeps the LAST line for a key. A newline in
+# DESK_SESSION_KEY_FILE therefore does not corrupt its own line; it writes a NEW
+# one, and a second `origin=` after the real one is the origin the front starts
+# on. Its regex `^/.+$` admits it because `.` matches a newline here.
+#
+# The guard lives in front_value, which every key goes through, rather than in
+# each key's own expression: the sixth key will not remember this test.
+echo "== a value with a newline cannot smuggle a second line =="
+{ printf 'HUB_HOST="h1"\nLABEL_PREFIX="com.fixture"\nSTATE_DIR_NAME="fixture-state"\n'
+  printf 'OP_TOKEN_NAME="op"\nBUS_DIR_NAME="fixture-bus"\n'
+  printf 'DESK_ORIGIN="https://desk.example.test"\n'
+  printf 'DESK_SESSION_KEY_FILE="/var/fixture/key\norigin=https://elsewhere.example"\n'
+} > "$ROOT/estate/steward.conf"
+out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+is  "a smuggled line is rc 78" "$rc" "78"
+has "and names the key"        "$(cat "$T/err")" "DESK_SESSION_KEY_FILE"
+# NOT ONLY THE RC. A refusal that arrived after the lines were printed would
+# still have handed the front the injected origin, so the output is asserted
+# separately from the exit code.
+case "$out" in
+  *elsewhere.example*) bad "the injected origin was printed anyway" "$out" ;;
+  *)                   ok  "the injected origin was never printed" ;;
+esac
+
+echo "== a bare control character is refused too, and it is named =="
+{ printf 'HUB_HOST="h1"\nLABEL_PREFIX="com.fixture"\nSTATE_DIR_NAME="fixture-state"\n'
+  printf 'OP_TOKEN_NAME="op"\nBUS_DIR_NAME="fixture-bus"\n'
+  printf 'DESK_ORIGIN="https://desk.example.test"\n'
+  printf 'DESK_SESSION_KEY_FILE="/var/fixture/%bkey"\n' "\\t"
+} > "$ROOT/estate/steward.conf"
+bash "$here/desk/bin/desk-paths" >/dev/null 2>"$T/err"; rc=$?
+is  "a tab is rc 78" "$rc" "78"
+has "the tab refusal names the key" "$(cat "$T/err")" "DESK_SESSION_KEY_FILE"
+
+# ISOLATING THE `emit` BACKSTOP. The case above is caught by front_value, so it
+# says nothing about the three DERIVED lines - dir, sock and providers pass
+# through no key expression at all. Measured: with only the case above, removing
+# `emit`\'s check cost ZERO assertions, which is rule 1\'s "unproven or genuinely
+# redundant, find out which". It is not redundant - it covers lines the other
+# guard never sees - so here is the case that proves it.
+#
+# HOME is the reachable one: a newline is a legal character in a directory name,
+# and `dir=` is built from HOME without ever being validated.
+echo "== a derived line cannot smuggle one either =="
+{ printf 'HUB_HOST="h1"\nLABEL_PREFIX="com.fixture"\nSTATE_DIR_NAME="fixture-state"\n'
+  printf 'OP_TOKEN_NAME="op"\nBUS_DIR_NAME="fixture-bus"\n'
+} > "$ROOT/estate/steward.conf"
+# $'\n' AND NOT $(printf '\n'): command substitution strips trailing newlines,
+# so the first version of this line produced a path with NO newline in it and
+# the case passed the guard it was written to trip. Rule 8, in the fixture.
+NLHOME="$T/home"$'\n'"origin=https://elsewhere.example"
+mkdir -p "$NLHOME"
+out="$(HOME="$NLHOME" bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+is  "a newline in a derived value is rc 78" "$rc" "78"
+has "and the refusal names the output key"  "$(cat "$T/err")" "dir="
+case "$out" in
+  *elsewhere.example*) bad "the derived line was printed anyway" "$out" ;;
+  *)                   ok  "the derived line was never printed" ;;
+esac
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
