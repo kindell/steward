@@ -311,10 +311,32 @@ done
 # second such file is a deliberate edit to this list with a reason beside it,
 # rather than a hole that widens quietly.
 NOT_DEPLOYED="lib/deploy-core.sh"
+# EXACT MEMBERSHIP, IN A SUITE THAT DELIBERATELY DOES NOT LOAD THE PRODUCT.
+# `case " $NOT_DEPLOYED " in *" $rel "*` would be the substring form - the one
+# this repo spent a day removing - and writing it HERE, in the check whose
+# whole purpose is to catch a list widening quietly, would be the joke telling
+# itself. It is not a hole today: the list has ONE entry and a two-word value
+# needs two ADJACENT ones to span anything, and the needle is a basename from
+# this repo rather than free text from outside.
+#
+# But the list EXISTS IN ORDER TO GROW - the comment above says a second file
+# must be a deliberate edit with a reason beside it - and on the day it has
+# two entries the substring form is one filename-with-a-space away from
+# excluding something nobody excluded. So it is exact from the start.
+#
+# FOUR LINES RATHER THAN `_registry_word_in_list`, on purpose: this suite
+# reads the manifest as a text file and loads nothing from lib/, so that a
+# broken library cannot make the manifest check pass. A test that depends on
+# the thing it is checking is a coupling worth four lines to avoid.
+_excluded() {
+  local want="$1" e
+  for e in $NOT_DEPLOYED; do [ "$e" = "$want" ] && return 0; done
+  return 1
+}
 for libfile in "$here"/lib/*.sh; do
   [ -f "$libfile" ] || continue
   rel="lib/$(basename "$libfile")"
-  case " $NOT_DEPLOYED " in *" $rel "*) continue ;; esac
+  _excluded "$rel" && continue
   if grep -qE "^${rel//./\\.}[[:space:]]" "$M"; then
     ok "manifest row for $rel"
   else
