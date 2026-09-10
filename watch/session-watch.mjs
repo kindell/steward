@@ -63,7 +63,23 @@ try {
   const est = await readEstate()
   const SOCK = join(homedir(), '.tmux', est.tmuxSocket)
   const STATE_DIR = join(homedir(), '.local', 'state', est.stateDirName)
-  const STATE_PATH = join(STATE_DIR, 'watch.json')
+  // TWO FILES, AND A DRY RUN NEVER TOUCHES THE ONE THAT MATTERS. Every alarm
+  // here de-duplicates against the previous cycle's state, so a dry run that
+  // wrote the real file would mark alerts as "already sent" WITHOUT sending
+  // them - and the next real cycle would stay silent about exactly what the dry
+  // run just found.
+  //
+  // MEASURED, not reasoned: a dry cycle at the estate's own threshold produced
+  // one credential alert and wrote its key; the real cycle immediately after,
+  // same threshold and same rows, produced ZERO. The alarm was silenced by the
+  // act of measuring it. This was never specific to credentials - the job, host
+  // and bus alarms in this file have de-duplicated the same way since they were
+  // written.
+  //
+  // A dry run READS its own file as well, so repeated dry runs still behave
+  // like consecutive cycles for anyone testing the de-duplication - they simply
+  // do it in a world of their own.
+  const STATE_PATH = join(STATE_DIR, DRY ? 'watch.dry.json' : 'watch.json')
   const PAUSED_DIR = join(homedir(), '.local', 'state', est.pausedDirName)
   const RESTART_DIR = join(STATE_DIR, 'restart')
   const PREFIX = `${est.hubSession} watch`

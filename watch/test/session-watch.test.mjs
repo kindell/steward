@@ -64,8 +64,15 @@ test('a healthy local session: checked, no alert, state written under the estate
   assert.match(r.stdout, /session-watch: 1 sessions checked, 0 alerts/)
   assert.match(r.stdout, /faraway: host-three is operated by hub-three, not host-one - skipped/)
   assert.doesNotMatch(r.stdout, /ALERT:/)
-  const statePath = join(f.home, '.local', 'state', 'hub-supervisor', 'watch.json')
-  assert.ok(existsSync(statePath), 'the state file is written under STATE_DIR_NAME')
+  // THE DRY FILE, NOT THE REAL ONE. run() is a dry cycle, and a dry cycle must
+  // not write the state the real one de-duplicates against: doing so marks
+  // alerts as already sent without sending them, and the next real cycle stays
+  // silent about what the dry run just found. Measured before this split - a
+  // dry credential alert silenced the real one that followed it.
+  const statePath = join(f.home, '.local', 'state', 'hub-supervisor', 'watch.dry.json')
+  const realPath = join(f.home, '.local', 'state', 'hub-supervisor', 'watch.json')
+  assert.ok(existsSync(statePath), 'the dry state file is written under STATE_DIR_NAME')
+  assert.ok(!existsSync(realPath), 'a dry cycle leaves no trace in the state the real one reads')
   const st = JSON.parse(readFileSync(statePath, 'utf-8'))
   assert.equal(st.alpha.startEpoch, Date.parse('Mon Aug 25 08:00:00 2026'))
   const log = readFileSync(f.log, 'utf-8')
@@ -81,6 +88,26 @@ test('a session without a process alarms once, with the estate prefix in the sub
   assert.match(r1.stdout, /1 sessions checked, 1 alerts/)
   const r2 = await run(f)
   assert.match(r2.stdout, /1 sessions checked, 0 alerts/, 'the same gap alarms once')
+})
+
+// THE PROPERTY THIS SPLIT EXISTS FOR, asserted end to end rather than by
+// reading the code: a dry cycle that FINDS something must not consume the
+// alarm that a real cycle would raise about the same thing.
+test('a dry cycle does not silence the real one that follows it', async () => {
+  const f = fixture({ withProcess: false })
+  const dry = await run(f)
+  assert.match(dry.stdout, /ALERT: hub-one watch: alpha has no process/, 'the dry cycle finds it')
+  // WHAT THIS CAN PROVE HERE, AND WHAT IT CANNOT. The real cycle mails rather
+  // than printing, and this fixture has no mail transport - so its alert
+  // COUNTER says nothing either way, which is what the first version of this
+  // test measured and mistook for a silenced alarm. What is provable here is
+  // the mechanism underneath: the dry cycle's memory is in its own file, and
+  // the real cycle starts from an empty one rather than from the dry run's.
+  const dryState = JSON.parse(readFileSync(
+    join(f.home, '.local', 'state', 'hub-supervisor', 'watch.dry.json'), 'utf-8'))
+  assert.ok(Object.keys(dryState).length > 0, 'the dry cycle remembered something')
+  assert.ok(!existsSync(join(f.home, '.local', 'state', 'hub-supervisor', 'watch.json')),
+            'and none of it reached the file the real cycle de-duplicates against')
 })
 
 test('a paused session is skipped, and a resumed one is checked again', async () => {
