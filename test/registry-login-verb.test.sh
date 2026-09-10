@@ -143,6 +143,23 @@ is "3: rc 64" "$rc" "64"
 absent "3: nothing written" "$LOGINS/badprovider.conf"
 is "3: logins.d unchanged" "$(dir_listing)" "$before"
 
+echo "== 3b. --provider SPANNING TWO entries is refused, and says which field =="
+# A COMMAND-LINE ARGUMENT IS FREE TEXT, and the closed-vocabulary check used
+# the substring form, which accepts a value that spans two entries. No bad row
+# reached disk even then - the staging re-read refuses it - so the real defect
+# was the DIAGNOSTIC: the person who mistyped a provider was told that a
+# temporary file would not parse. This case pins the message, not just the
+# refusal, because the comment above the gate says a verb that can only be
+# caught by the reader is a verb that writes rubbish and reports success.
+before="$(dir_listing)"
+out="$(run add spanprovider --principal alice --account acct-acme-team \
+  --provider 'claude-max claude-team' \
+  --config-dir '~/.claude-logins/spanprovider' --legal-owner 'Acme Corp' --json)"; rc=$?
+is  "3b: rc 64" "$rc" "64"
+has "3b: the refusal names --provider, not a staging file" "$out" "invalid --provider"
+absent "3b: nothing written" "$LOGINS/spanprovider.conf"
+is  "3b: logins.d unchanged" "$(dir_listing)" "$before"
+
 echo "== 4. empty --legal-owner refuses rc 64 =="
 before="$(dir_listing)"
 out="$(run add badlegal --principal alice --account acct-acme-team --provider claude-team \

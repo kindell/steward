@@ -433,6 +433,28 @@ is "a relative USAGE_CMD: rc 78" "$rc" "78"
 has "a relative USAGE_CMD: the refusal names the field" "$(cat "$FX/reg.err")" "USAGE_CMD"
 printf '%s\n' "$base" > "$FX/estate/steward.conf"
 
+echo "== A VALUE THAT SPANS TWO VOCABULARY ENTRIES IS NOT ONE OF THEM =="
+# THESE FIELDS ARE TAB SEPARATED, so a value may legally contain spaces, and
+# `case " $list " in *" $v "*` asks only whether the value sits between two
+# spaces somewhere in the list - which a value spanning two NEIGHBOURS
+# satisfies. Both rows below were PUBLISHED before the gates were changed to
+# exact membership: the first is a budget shown for an account the estate
+# never declared.
+#
+# WHY A GUARD REVIEW MISSED IT: removing either gate already cost three
+# assertions, so "is this guard tested?" answered yes. What no case fed them
+# was a two-word value. A guard is proved only against the inputs somebody
+# thought of.
+run_rows "$(stub spanlogin "printf 'alpha beta\tclaude-max\tfive-hour\t50\t\t\t\t\n'")"
+is  "a login spanning two register entries is not a login" "$ROWS" ""
+has "and it is dropped as an unknown login"                "$ERR" "unknown login (1)"
+# THE PAIR MUST BE ADJACENT AND IN LIST ORDER. `claude-max openai-api` is not
+# a substring of the vocabulary at all, so the old form refused it too and the
+# case would have passed while proving nothing - measured, first attempt.
+run_rows "$(stub spanprov "printf 'alpha\tclaude-max claude-team\tfive-hour\t50\t\t\t\t\n'")"
+is  "a provider spanning two entries is not a provider"    "$ROWS" ""
+has "and named as its own reason"                          "$ERR" "unknown provider (1)"
+
 echo "== the suite never names a real provider address =="
 # A guard on the fixture itself: the stubs above must stay stubs. The pattern is
 # assembled at runtime so it never appears whole in this file, which would make

@@ -239,14 +239,31 @@ usage_rows() {
     # A LOGIN THE REGISTER DOES NOT KNOW CANNOT BE SHOWN. The row names an
     # account nobody here can check, and a view that rendered it would be
     # reporting a budget the estate never declared.
-    case " $known " in
-      *" $login "*) ;;
-      *) d_login=$((d_login+1)); continue ;;
-    esac
-    case " $_REGISTRY_LOGIN_PROVIDERS $_USAGE_EXTRA_PROVIDERS " in
-      *" $provider "*) ;;
-      *) d_provider=$((d_provider+1)); continue ;;
-    esac
+    # EXACT MEMBERSHIP, NOT A SUBSTRING OVER A SPACE-RUN. These fields are TAB
+    # separated, so a value may legally contain SPACES - and `case " $list " in
+    # *" $v "*` asks only whether the value appears between two spaces
+    # somewhere in the list, which a value SPANNING TWO NEIGHBOURS satisfies.
+    # Measured through this seam with a real shim: with a register holding
+    # `alpha` and `beta`, the single login value `alpha beta` was PUBLISHED -
+    # one row, for an account the estate never declared, straight past the
+    # rule three lines above. The provider gate had the same shape.
+    #
+    # THE RULE THAT SEPARATES A SAFE USE OF THAT FORM FROM A HOLE: it is a hole
+    # when the needle is FREE TEXT FROM OUTSIDE, or when the list spans more
+    # rows than the needle's own origin. Both are true here - the needle is a
+    # raw field from a foreign shim, the list is the whole login register.
+    #
+    # AND THE LESSON ABOUT THE PROOF, which is why this survived a full guard
+    # review: both gates already COST assertions when removed (88/3 each), so
+    # a sweep that asks "is this guard tested" answered yes. What no test fed
+    # them was a two-word value. A guard is only proved against the inputs
+    # somebody thought of; the ones nobody thought of are where it fails.
+    if ! _registry_word_in_list "$login" "$known"; then
+      d_login=$((d_login+1)); continue
+    fi
+    if ! _registry_word_in_list "$provider" "$_REGISTRY_LOGIN_PROVIDERS $_USAGE_EXTRA_PROVIDERS"; then
+      d_provider=$((d_provider+1)); continue
+    fi
     # THE WINDOW IS A KEY, AND A KEY WITH A SPACE IN IT IS NOT A KEY. Free-form
     # after the known names, but it is what usage_for matches on and what a view
     # groups by.

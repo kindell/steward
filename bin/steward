@@ -2168,11 +2168,17 @@ cmd_registry_login_add() {
   # THE CLOSED VOCABULARY, CHECKED HERE TOO. The reader refuses an unknown
   # provider, but a verb that can only be caught by the reader is a verb that
   # writes rubbish and reports success.
-  case " $_REGISTRY_LOGIN_PROVIDERS " in
-    *" $provider "*) ;;
-    *) _reg_fail "$want_json" "steward registry login add: invalid --provider '$provider' (one of: $_REGISTRY_LOGIN_PROVIDERS)" 64
-       return 64 ;;
-  esac
+  # EXACT MEMBERSHIP: the needle is a COMMAND-LINE ARGUMENT - free text from
+  # outside - and the list is the whole vocabulary, so the substring form let
+  # `--provider "claude-max claude-team"` through this gate. No bad row reached
+  # disk (the staging re-read refuses it), which is why the damage is small and
+  # the DIAGNOSTIC is the real defect: the person who mistyped a provider was
+  # told that a temporary file would not parse. The comment two lines up says
+  # exactly why that is not good enough.
+  if ! _registry_word_in_list "$provider" "$_REGISTRY_LOGIN_PROVIDERS"; then
+    _reg_fail "$want_json" "steward registry login add: invalid --provider '$provider' (one of: $_REGISTRY_LOGIN_PROVIDERS)" 64
+    return 64
+  fi
 
   # THE GRAMMAR, CHECKED BEFORE THE WRITE. Same two forms, same reasons — see
   # registry_login_config_dir. The legacy form additionally has to BE the estate's
@@ -3265,10 +3271,12 @@ cmd_invite_issue() {
     claude-code|opencode|codex) ;;
     *) _reg_fail "$want_json" "steward invite issue: invalid --runtime '$runtime' (one of: claude-code opencode codex)"; return 64 ;;
   esac
-  case " $_REGISTRY_LOGIN_PROVIDERS " in
-    *" $provider "*) ;;
-    *) _reg_fail "$want_json" "steward invite issue: invalid --provider '$provider' (one of: $_REGISTRY_LOGIN_PROVIDERS)"; return 64 ;;
-  esac
+  # EXACT MEMBERSHIP, same reason as `registry login add`: a command-line
+  # argument is free text, and the substring form accepted a value spanning
+  # two entries.
+  if ! _registry_word_in_list "$provider" "$_REGISTRY_LOGIN_PROVIDERS"; then
+    _reg_fail "$want_json" "steward invite issue: invalid --provider '$provider' (one of: $_REGISTRY_LOGIN_PROVIDERS)"; return 64
+  fi
   if ! [[ "$days" =~ ^[0-9]+$ ]] || [ "$days" -lt 1 ] || [ "$days" -gt 365 ]; then
     _reg_fail "$want_json" "steward invite issue: --days must be a whole number of days between 1 and 365"; return 64
   fi
