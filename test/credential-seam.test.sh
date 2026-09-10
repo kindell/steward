@@ -198,5 +198,39 @@ run_rows "$(stub napp "printf 'beta\tclaude-max\t\t\t2026-09-10T06:32:25Z\tnot-a
 is    "12d and the twin's word is not in this vocabulary"      "$(field "$ROWS" 6)" "unknown"
 has   "12e it is refused like any other foreign word"          "$(field "$ROWS" 7)" "state:not-in-vocabulary"
 
+echo "== 13. a value that SPANS two vocabulary entries is not one of them =="
+# THESE FIELDS ARE TAB SEPARATED, so a value may legally contain spaces, and
+# the substring form `case " $list " in *" $v "*` asks only whether the value
+# sits between two spaces somewhere in the list. A value spanning two
+# NEIGHBOURS satisfies that. Every case here passed before the gates were
+# changed to exact membership - the seam published all three.
+run_rows "$(stub twologin "printf 'alpha beta\tclaude-max\t2026-09-10T13:30:08Z\t\t\tmeasured\n'")"
+is  "13a a login spanning two register entries is not a login" "$ROWS" ""
+has "13b it is dropped as an unknown login"  "$ERR" "unknown login (1)"
+run_rows "$(stub twoprov "printf 'alpha\tclaude-max claude-team\t2026-09-10T13:30:08Z\t\t\tmeasured\n'")"
+is  "13c a provider spanning two entries is not a provider" "$ROWS" ""
+has "13d and named as its own reason"        "$ERR" "unknown provider (1)"
+run_rows "$(stub twostate "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\tmeasured no-credential\n'")"
+is  "13e a state spanning two entries is not a fifth word"  "$(field "$ROWS" 6)" "unknown"
+has "13f and it is named as foreign"         "$(field "$ROWS" 7)" "state:not-in-vocabulary"
+# AND THE EMPTY VALUE, which the substring form also accepts: " " appears in
+# any list of two or more words.
+run_rows "$(stub emptystate "printf 'alpha\tclaude-max\t2026-09-10T13:30:08Z\t\t\t\n'")"
+is  "13g an empty state is not a member either" "$(field "$ROWS" 6)" "unknown"
+
+echo "== 14. the vocabulary is a fact, not a habit =="
+# WHY THIS EXISTS: removing the state gate costs four assertions, but ADDING a
+# word to _CREDENTIAL_STATES costs none - no test enumerates the list, so a
+# fifth colour could be introduced silently. This pins the list itself, and
+# pins the two words most likely to be added by someone who has not read the
+# file: `expired`, which is the derived status this seam refuses to store, and
+# `not-applicable`, the twin's word for a permanent absence.
+is "14a the state vocabulary is exactly these four" \
+   "$_CREDENTIAL_STATES" "measured no-credential unreadable unknown"
+is "14b and the word expired is not one of them" \
+   "$(_registry_word_in_list expired "$_CREDENTIAL_STATES" && echo IN || echo out)" "out"
+is "14c nor the twins word for a permanent absence" \
+   "$(_registry_word_in_list not-applicable "$_CREDENTIAL_STATES" && echo IN || echo out)" "out"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

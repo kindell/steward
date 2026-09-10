@@ -276,14 +276,28 @@ credential_rows() {
     # A LOGIN THE REGISTER DOES NOT KNOW CANNOT BE SHOWN. The row names an
     # account nobody here can check, and a view that rendered it would be
     # reporting a deadline the estate never declared.
-    case " $known " in
-      *" $login "*) ;;
-      *) d_login=$((d_login+1)); continue ;;
-    esac
-    case " $_REGISTRY_LOGIN_PROVIDERS " in
-      *" $provider "*) ;;
-      *) d_provider=$((d_provider+1)); continue ;;
-    esac
+    # EXACT MEMBERSHIP, NOT A SUBSTRING OVER A SPACE-RUN. These fields are
+    # TAB separated, so a value may legally contain SPACES - and the old
+    # `case " $known " in *" $login "*` form asks whether the value appears
+    # between two spaces anywhere in the list, which a value SPANNING TWO
+    # NEIGHBOURS satisfies. Measured on this file 2026-09-10: with a register
+    # holding `alpha` and `beta`, a shim writing the single login value
+    # `alpha beta` was published - a deadline shown for an account the estate
+    # never declared, straight through the rule three lines above. The same
+    # hole was closed across the register the day before; this seam was
+    # written from the old shape.
+    #
+    # THE RULE THAT SEPARATES A SAFE USE FROM A HOLE (butler, from a sweep of
+    # all 17 occurrences): it is a hole when the needle is FREE TEXT FROM
+    # OUTSIDE, or when the list spans more rows than the needle's own origin.
+    # Both are true here - the needle is a raw field from a foreign shim and
+    # the list is the whole login register.
+    if ! _registry_word_in_list "$login" "$known"; then
+      d_login=$((d_login+1)); continue
+    fi
+    if ! _registry_word_in_list "$provider" "$_REGISTRY_LOGIN_PROVIDERS"; then
+      d_provider=$((d_provider+1)); continue
+    fi
 
     # A BAD TIME IS EMPTIED AND KEPT, NOT DROPPED - the row is still evidence
     # that the login was looked at, and the raw text goes in the note because
@@ -302,10 +316,13 @@ credential_rows() {
     # a percentage it cannot read: the vocabulary is closed because a view
     # colours by it, and a shim that writes `expired` or `ok` is not given a
     # fifth colour by accident.
-    case " $_CREDENTIAL_STATES " in
-      *" $state "*) ;;
-      *) note="$(_credential_note "$note" "state" "not-in-vocabulary")"; state="unknown" ;;
-    esac
+    # EXACT MEMBERSHIP HERE TOO, and the failure it prevents is a FIFTH WORD:
+    # the value `measured no-credential` spans two entries and would be
+    # published verbatim as a state, giving every view that colours by this
+    # column a word its palette does not have.
+    if ! _registry_word_in_list "$state" "$_CREDENTIAL_STATES"; then
+      note="$(_credential_note "$note" "state" "not-in-vocabulary")"; state="unknown"
+    fi
 
     # A ROW THAT CLAIMS A MEASUREMENT AND CARRIES NONE IS NOT A MEASUREMENT.
     # This is a SHAPE check and not the clock comparison this file refuses to
