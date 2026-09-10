@@ -6800,7 +6800,7 @@ _resolve_socket() {
 # else could need it) and hub-local blocks nothing further (nothing runs
 # after it today). Every SKIP names the probe that blocked it, never a bare
 # "skipped".
-_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry mandates hub-local liveness socket cockpit-binary dependencies"
+_DOCTOR_PROBE_IDS="self-path operator-config estate-root registry mandates hub-local liveness credential socket cockpit-binary dependencies"
 
 # _doctor_oneline <text> — flattens a possibly multi-line diagnostic (reused
 # lib/registry.sh error text — e.g. registry_schema_check's schema-too-new
@@ -7162,6 +7162,93 @@ _doctor_probe_hub-local() {
 # is quietly pointed at the wrong estate — so it is a WARN, never a PASS.
 # The same is true in reverse: a session name the shim mentions that the
 # registry does not know is worth a WARN, not silent acceptance.
+
+# _doctor_probe_credential - the credential seam, reported as a MEASUREMENT.
+#
+# THE TWIN IS _doctor_probe_liveness and the shape is deliberately the same:
+# an unconfigured seam is a WARN and not a failure, a non-absolute path is a
+# FAIL naming doctor's own remedy, --static skips rather than running estate
+# code, and the operator is told BEFORE the shim runs that estate-owned code
+# is about to execute.
+#
+# WHAT IT DOES NOT DO IS COMPARE AGAINST A CLOCK. The line says what the seam
+# measured and when; whether a deadline has passed is the watch's alarm to
+# raise. Two consumers of one measurement, and only one of them owns a clock -
+# so a doctor line that said "expired" would be a second opinion formed
+# against a different machine's time, and two opinions is exactly what the
+# seam was built to avoid.
+_doctor_probe_credential() {
+  local cmd="${STEWARD_CREDENTIAL_CMD:-}"
+  if [ -z "$cmd" ]; then
+    local _from_estate
+    _from_estate="$(registry_credential_cmd 2>/dev/null)" || {
+      printf 'FAIL CREDENTIAL_CMD in the estate file is invalid -- run: steward config set STEWARD_CREDENTIAL_CMD /abs/path\n'
+      return 78
+    }
+    cmd="$_from_estate"
+  fi
+
+  if [ -z "$cmd" ]; then
+    printf 'WARN no credential command configured (seam-not-configured) -- run: steward config set STEWARD_CREDENTIAL_CMD /abs/path\n'
+    return 0
+  fi
+  case "$cmd" in
+    /*) ;;
+    *)
+      printf 'FAIL STEWARD_CREDENTIAL_CMD is not an absolute path (seam-not-absolute): %s -- run: steward config set STEWARD_CREDENTIAL_CMD /abs/path\n' "$(_doctor_oneline "$cmd")"
+      return 78 ;;
+  esac
+
+  if [ -n "${_DOCTOR_STATIC:-}" ]; then
+    printf 'SKIP static -- shim not invoked under --static (cmd=%s)\n' "$cmd"
+    return 0
+  fi
+
+  # ON STDERR, LIKE ITS TWIN. The runner reads a probe's whole stdout as one
+  # `STATUS text` line, so a second stdout line here would become the status.
+  echo "steward: about to run the estate's credential code to measure it -- invoking the configured shim ($cmd)" >&2
+
+  local _rows _err
+  _rows="$(mktemp 2>/dev/null)" && _err="$(mktemp 2>/dev/null)" || {
+    rm -f "$_rows"; printf 'FAIL could not create a temporary file\n'; return 70
+  }
+  # THE FUNCTION IS PROVEN TO EXIST BEFORE IT IS TRUSTED. Without this, a
+  # doctor that had not sourced lib/credential.sh called a missing function,
+  # bash returned 127, and this probe reported PASS with "0 login(s)
+  # measured" - a missing command read as an answer, which is the same defect
+  # that nearly emptied two registers this morning. Measured here, in this
+  # probe, before it shipped.
+  if ! declare -F credential_rows >/dev/null 2>&1; then
+    printf 'FAIL the credential seam library is not loaded (credential_rows is not defined)\n'
+    rm -f "$_rows" "$_err"; return 70
+  fi
+  STEWARD_CREDENTIAL_CMD="$cmd" credential_rows >"$_rows" 2>"$_err"
+  local reason="${CREDENTIAL_SEAM_REASON:-}" dropped="${CREDENTIAL_DROPPED:-0}"
+  local n; n="$(grep -c . "$_rows" 2>/dev/null)"; [ -n "$n" ] || n=0
+
+  case "$reason" in
+    ""|seam-ok) ;;
+    *)
+      printf 'FAIL the credential seam did not answer (%s): %s\n' "$reason" "$(_doctor_oneline "$(head -c 200 "$_err")")"
+      rm -f "$_rows" "$_err"; return 78 ;;
+  esac
+
+  # ONE LINE PER PROBE, AND THE DETAIL LIVES IN THE VERB. The first version of
+  # this probe printed one line per login - `credentials: <login> refresh=<iso>`
+  # - which is what the order asked for and what doctor cannot carry: this
+  # runner's contract is exactly one `ID  STATUS  text` line per probe, and its
+  # own suite enforces that on FAIL paths because --json is built from the line
+  # shape. A probe that printed five lines would produce json with four
+  # unparseable ones.
+  #
+  # So the deadlines are not lost, they are addressed: `steward registry
+  # credentials` prints them, one row per login, and this line says how many
+  # there were and that none of them was judged here.
+  rm -f "$_rows" "$_err"
+  printf 'PASS %s login(s) measured, %s row(s) dropped -- deadlines are reported, never judged here\n' "$n" "$dropped"
+  return 0
+}
+
 _doctor_probe_liveness() {
   if [ -n "${_DOCTOR_LIVENESS_RC:-}" ] && [ "$_DOCTOR_LIVENESS_RC" -ne 0 ]; then
     if [ "$_DOCTOR_LIVENESS_RC" -eq 70 ]; then
@@ -7397,6 +7484,8 @@ cmd_doctor() {
 
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh" || { echo "steward: could not load lib/registry.sh" >&2; return 70; }
+  # shellcheck source=lib/credential.sh
+  . "$HERE/lib/credential.sh" || { echo "steward: could not load lib/credential.sh" >&2; return 70; }
   # shellcheck source=lib/liveness.sh
   . "$HERE/lib/liveness.sh" || { echo "steward: could not load lib/liveness.sh" >&2; return 70; }
 

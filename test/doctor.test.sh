@@ -127,7 +127,7 @@ line_for() { # <output> <probe-id> — the one line for that probe, or empty
 # only the green fixture.
 assert_all_lines_shaped() {
   local offenders
-  offenders="$(printf '%s\n' "$2" | grep -Ev '^(self-path|operator-config|estate-root|registry|mandates|hub-local|liveness|socket|cockpit-binary|dependencies)  (PASS|WARN|FAIL|SKIP)  ')"
+  offenders="$(printf '%s\n' "$2" | grep -Ev '^(self-path|operator-config|estate-root|registry|mandates|hub-local|liveness|credential|socket|cockpit-binary|dependencies)  (PASS|WARN|FAIL|SKIP)  ')"
   if [ -z "$offenders" ]; then ok "$1"; else bad "$1" "offending line(s): $offenders"; fi
 }
 
@@ -136,8 +136,8 @@ mkfx "$FX/green"
 out="$(run "$FX/green" "$FX/green/hostcmd")"; rc=$?
 is "a fully green fixture: rc 0" "$rc" "0"
 n="$(printf '%s\n' "$out" | grep -c '^')"
-is "exactly ten probe lines" "$n" "10"
-for id in self-path operator-config estate-root registry mandates hub-local liveness socket cockpit-binary dependencies; do
+is "exactly eleven probe lines" "$n" "11"
+for id in self-path operator-config estate-root registry mandates hub-local liveness credential socket cockpit-binary dependencies; do
   l="$(line_for "$out" "$id")"
   has "probe '$id' is present" "$out" "$id  "
   st="$(field "$l" 2)"
@@ -542,8 +542,8 @@ is "--json output parses with jq ." "$?" "0"
 hasnt "--json output has no leaked human-readable lines" "$json" "cockpit-binary  PASS"
 is "--json .rc matches the process exit code" "$(printf '%s' "$json" | jq -r '.rc')" "$json_rc"
 is "--json .ok reflects rc==0" "$(printf '%s' "$json" | jq -r '.ok')" "$([ "$json_rc" -eq 0 ] && echo true || echo false)"
-is "--json carries all ten probes" "$(printf '%s' "$json" | jq '.probes | length')" "10"
-for id in self-path operator-config estate-root registry mandates hub-local liveness socket cockpit-binary dependencies; do
+is "--json carries all eleven probes" "$(printf '%s' "$json" | jq '.probes | length')" "11"
+for id in self-path operator-config estate-root registry mandates hub-local liveness credential socket cockpit-binary dependencies; do
   has "--json includes probe '$id'" "$(printf '%s' "$json" | jq -r '.probes[].id')" "$id"
 done
 is "--json probes carry id/status/text" \
@@ -621,10 +621,10 @@ json="$(env -i PATH="$PATH" HOME="$FX/injectjson/home" STEWARD_ESTATE_ROOT="$inj
   bash "$STEWARD" doctor --json 2>/dev/null)"
 printf '%s' "$json" | jq . >/dev/null 2>&1
 is "19: --json still parses with a newline+tab in the estate root" "$?" "0"
-is "19: --json still carries exactly ten probes" "$(printf '%s' "$json" | jq '.probes | length')" "10"
+is "19: --json still carries exactly eleven probes" "$(printf '%s' "$json" | jq '.probes | length')" "11"
 ids_sorted="$(printf '%s' "$json" | jq -Sc '[.probes[].id] | sort')"
-want_sorted='["cockpit-binary","dependencies","estate-root","hub-local","liveness","mandates","operator-config","registry","self-path","socket"]'
-is "19: probe id set is exactly the real ten, nothing injected" "$ids_sorted" "$want_sorted"
+want_sorted='["cockpit-binary","credential","dependencies","estate-root","hub-local","liveness","mandates","operator-config","registry","self-path","socket"]'
+is "19: probe id set is exactly the real eleven, nothing injected" "$ids_sorted" "$want_sorted"
 is "19: exactly one 'socket' probe row" "$(printf '%s' "$json" | jq '[.probes[] | select(.id=="socket")] | length')" "1"
 sockstatus="$(printf '%s' "$json" | jq -r '.probes[] | select(.id=="socket") | .status')"
 case "$sockstatus" in PASS|WARN|FAIL|SKIP) ok "19: the one socket row carries a real status ($sockstatus)" ;;
@@ -704,6 +704,66 @@ chmod 770 "$d/mandates.d"
 out="$(run "$d" "$d/hostcmd")"
 has "20: a loose register is FAIL with the remedy" "$(line_for "$out" mandates)" "chmod g-w,o-w"
 chmod 700 "$d/mandates.d"
+
+
+echo "== 21. the credential probe: measured, never judged =="
+# THE SEAM IS STUBBED, NEVER THE REAL ONE. A doctor suite that ran an estate's
+# real credential reader would be reading somebody's credentials to test a
+# print statement.
+# A FRESH FIXTURE, NOT $FX/green. This block runs last, and by now earlier
+# blocks have deliberately damaged that tree - a probe reading it comes back
+# SKIP ("blocked by ...") and every assertion below would then be measuring
+# somebody else's chmod rather than this probe.
+mkfx "$FX/cred"
+# AND A LOGIN THE REGISTER KNOWS. The seam drops a row naming a login no
+# register row declares - correctly, and that is its own test elsewhere - so a
+# fixture without this line measures the DROP path while claiming to measure
+# the happy one. The first version of this block did exactly that and reported
+# "0 login(s) measured" as a pass.
+mkdir -p "$FX/cred/logins.d"; chmod 700 "$FX/cred/logins.d"
+{ printf 'PRINCIPAL="a"\nACCOUNT="alpha@fixture.invalid"\n'
+  printf 'PROVIDER="claude-max"\nCONFIG_DIR="cfg-alpha"\nLEGAL_OWNER="a"\n'
+} > "$FX/cred/logins.d/alpha.conf"
+chmod 600 "$FX/cred/logins.d/alpha.conf"
+credshim="$FX/credshim"
+# THE TABS ARE IN THE FORMAT STRING, NOT THE ARGUMENT. `printf '%s\n' "a\tb"`
+# prints a literal backslash-t: printf interprets escapes in the FORMAT, and
+# the seam then sees one field instead of six and drops the row. The first
+# version of this shim did that and the probe reported "0 login(s) measured",
+# which read as a pass of the wrong thing.
+{ echo '#!/bin/bash'
+  echo 'printf "alpha\tclaude-max\t2026-10-01T00:00:00Z\t2026-10-09T20:54:20Z\t2026-09-10T07:00:00Z\tmeasured\n"'
+} > "$credshim"; chmod +x "$credshim"
+# THE SHIM IS PROVEN TO PRODUCE SIX FIELDS before anything is asserted about
+# what the probe made of it - a fixture nobody checked is a measurement of the
+# fixture.
+is "21z the shim emits six tab-separated fields" \
+   "$(bash "$credshim" | awk -F'\t' '{print NF}')" "6"
+
+out="$(run "$FX/cred" "$FX/cred/hostcmd" STEWARD_CREDENTIAL_CMD="$credshim")"
+l="$(line_for "$out" credential)"
+is  "21a a working shim is PASS"        "$(field "$l" 2)" "PASS"
+has "21b and says how many it measured" "$l" "1 login(s) measured"
+# THE RULE, PINNED HERE TOO: a probe that judged would be a second opinion
+# formed against a different machine's clock than the alarm's.
+for verdict in expired expiring overdue urgent valid; do
+  case "$l" in *"$verdict"*) bad "21c no verdict word '$verdict' in the probe line" "$l" ;;
+    *) ok "21c no verdict word '$verdict' in the probe line" ;; esac
+done
+
+out="$(run "$FX/cred" "$FX/cred/hostcmd" STEWARD_CREDENTIAL_CMD="")"
+l="$(line_for "$out" credential)"
+is  "21d an unconfigured seam is WARN, not a failure" "$(field "$l" 2)" "WARN"
+has "21e and names the reason"                        "$l" "seam-not-configured"
+
+out="$(run "$FX/cred" "$FX/cred/hostcmd" STEWARD_CREDENTIAL_CMD="credshim")"
+l="$(line_for "$out" credential)"
+is  "21f a bare name is FAIL"      "$(field "$l" 2)" "FAIL"
+has "21g and names the remedy"     "$l" "steward config set"
+
+out="$(rundoc "$FX/cred" "$FX/cred/hostcmd" "--static" STEWARD_CREDENTIAL_CMD="$credshim")"
+l="$(line_for "$out" credential)"
+is  "21h --static does not invoke the estate's code" "$(field "$l" 2)" "SKIP"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
