@@ -5555,7 +5555,19 @@ cmd_registry_session_project() {
     [ -n "$user" ] && break
   done
   if [ -z "${user:-}" ]; then
-    _reg_fail "$want_json" "steward registry session project: no account on this host ($host) belongs to '$owner' - nothing to project into" 78
+    # THE REFUSAL NAMES THE MISSING ROW, NOT THE VERB'S LIMIT. The first
+    # version said "no account on this host belongs to X - nothing to project
+    # into", which is true and sends the reader into this function looking for
+    # the case it forgot. What is actually missing is a REGISTER ROW, and the
+    # operator who is told that knows what to do.
+    #
+    # WHY NO BYPASS IS ADDED HERE (butler, 2026-09-10): inventing a principal
+    # for an account the register does not bind is precisely what this verb
+    # exists not to do. A machine account - a steward, a role - is still owned
+    # by a person, and the row that says so belongs in accounts.d. With that
+    # row the verb needs no special case at all.
+    _reg_fail "$want_json" "steward registry session project: no accounts.d row on '$host' names '$owner' as its PRINCIPAL, so nothing binds those session rows to an account or a home" 78
+    echo "steward: the fix is a register row, not a flag: add the accounts.d row that names the owner of that account - a role account is still owned by a person" >&2
     return 78
   fi
   local home; home="$(_registry_owner_home "$user")" || {

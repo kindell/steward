@@ -123,9 +123,15 @@ has   "7c and the receipt still accounts for the rest"   "$out" "unchanged 2"
 echo "== 8. an owner with no account on this host is refused, not guessed =="
 out="$(proj nobody --plan)"; rc=$?
 is  "8a rc 78"                       "$rc" "78"
-has "8b and the refusal names the host" "$out" "no account on this host"
+# THE REFUSAL MUST NAME THE MISSING ROW. "no account on this host" is true and
+# sends the reader into the verb's source looking for a forgotten case; what is
+# missing is a REGISTER ROW, and an operator told that knows what to do. This
+# case pins the wording, not just the refusal.
+has "8b it names the register that lacks the row" "$out" "no accounts.d row on 'host-a'"
+has "8c and the owner it looked for"              "$out" "names 'nobody'"
+has "8d and says the fix is a row, not a flag"    "$out" "the fix is a register row, not a flag"
 out="$(proj 'Bad Owner' --plan)"; rc=$?
-is  "8c an invalid owner is rc 64"   "$rc" "64"
+is  "8e an invalid owner is rc 64"   "$rc" "64"
 
 echo "== 9. the json receipt carries the same three lists =="
 row "$C" ann host-a
