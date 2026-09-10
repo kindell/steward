@@ -360,6 +360,60 @@ REPO="${2:-${REPO_PATH:-$HOME/Projects/$NAME}}"
 CFG_ROOT="$HOME/.claude"
 if [ -n "${LOGIN:-}" ]; then
   CFG_ROOT="$(registry_login_config_dir "$LOGIN" "$(id -un)")" || exit 78
+
+  # THE DIRECTORY IS MADE 0700 HERE, BY US, BEFORE ANYTHING ELSE CAN MAKE IT.
+  # The resolver above deliberately ALLOWS a config directory that does not
+  # exist - a missing one is the normal state before a cutover, and refusing it
+  # would make the gate something an operator turns off in order to migrate.
+  # That permission has a trap in it, and the trap went off on this estate:
+  #
+  #   round 1  the directory is missing. The resolver allows it, the session
+  #            starts, and the CLI creates the directory itself - THROUGH THE
+  #            UMASK. Under the Debian default of 002 that is 0775.
+  #   round 2  the resolver measures a group-writable credential directory and
+  #            refuses, correctly. The session dies.
+  #
+  # So the session works once and then never again, and the refusal names a
+  # mode nobody chose. MEASURED 2026-09-09: six sessions on a freshly created
+  # login directory, all of them dead by the next round, and the only trace was
+  # this unit's own journal.
+  #
+  # `mkdir -m` IS NOT ENOUGH ON ITS OWN: -m applies to the directory mkdir
+  # creates, and with -p it does NOT apply to the parents it makes on the way.
+  # The parent here is `~/.claude-logins`, and a 0775 parent is refused by the
+  # same gate on the next round - the trap one level up. So each level is
+  # created and then chmod'ed explicitly, and the umask is never asked.
+  if [ ! -e "$CFG_ROOT" ]; then
+    _cfg_parent="$(dirname "$CFG_ROOT")"
+    if [ ! -d "$_cfg_parent" ]; then
+      mkdir -p "$_cfg_parent" 2>/dev/null && chmod 700 "$_cfg_parent" 2>/dev/null
+    fi
+    if mkdir "$CFG_ROOT" 2>/dev/null; then
+      chmod 700 "$CFG_ROOT" 2>/dev/null
+      echo "session-supervisor: $NAME — created the credential directory 0700: $CFG_ROOT" >&2
+      echo "session-supervisor: $NAME — (created here, and not left to the CLI, because a directory made through a 002 umask is 0775 and the next round refuses it)" >&2
+    fi
+    # A FAILED CREATE IS NOT FATAL HERE. The resolver already ran and allowed a
+    # missing directory; if we cannot make it, the CLI may still succeed and
+    # the next round's gate is what judges the result. Refusing now would turn
+    # a permission problem into a session that never starts, with less
+    # information than the gate would have given.
+  fi
+
+  # THE GATE IS NOT ASKED AGAIN HERE, AND THAT WAS MEASURED RATHER THAN
+  # ASSUMED. A second call looked obviously right - the first judged a
+  # directory that was ABSENT, and something has been created since - so it
+  # was written, and then it cost ZERO assertions. The reason is not a missing
+  # test: registry_login_exec_prefix re-resolves this login further down and
+  # REFUSES TO START on the same grounds ("LOGIN does not resolve", ~line 886),
+  # before any pane is touched. A chmod that silently fails is caught there,
+  # in the same round, with the same refusal naming the same mode.
+  #
+  # So the second call was deleted instead of kept and explained. A guard that
+  # duplicates one twenty lines away is not defence in depth; it is a second
+  # place to edit when the rule changes, and the cheapest way to end up with
+  # two rules. The test for the failing chmod stays - it now proves the
+  # EXISTING check does the work.
 fi
 HIST="$CFG_ROOT/projects/$(printf '%s' "$REPO" | sed 's|[^a-zA-Z0-9]|-|g')"
 # STATE_DIR/SUSPECT/RESUME_TRY are set at the top, at the pause check — they
