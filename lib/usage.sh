@@ -315,6 +315,28 @@ usage_rows() {
 #
 # THE LENGTH BOUND RUNS FIRST so a pathological input is refused before the
 # regular expression engine ever sees it.
+#
+# AND IT IS THE ONE GUARD IN THIS FILE THAT COSTS NOTHING WHEN REMOVED - said
+# here rather than left for the next person to rediscover. A sweep of all 21
+# guards in this file (2026-09-10, one removed at a time, each mutation
+# verified to have applied) cost between 1 and 22 assertions each. This one
+# cost 0, and the reason is not a missing test:
+#
+#   IT IS REDUNDANT FOR CORRECTNESS. `0*` admits unlimited leading zeros, so
+#   1000 zeros followed by `100` DOES match the expression below - and with
+#   the bound removed the caller's `10#` still returns exactly 100. Measured.
+#   There is no value that gets past the expression and produces a wrong
+#   number, which is what the paragraph above already argues.
+#
+#   IT IS LOAD-BEARING FOR WORK. Measured on the same day: a 200 003-character
+#   string costs 90 ms in the expression and 4 ms in `10#`; this line refuses
+#   it in about 1 ms. A shim emitting a page of such rows turns a measurement
+#   into a stall - and this seam runs on a timer, where a stall is silence.
+#
+# So it stays, and no test is written to make the number look better. A guard
+# that bounds WORK cannot be proved by a suite that measures MEANING, and
+# inventing an assertion to hide that would make the suite lie about what it
+# checks.
 _usage_percent_ok() {
   local v="${1:-}"
   [ "${#v}" -le 12 ] || return 1
