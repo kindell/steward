@@ -77,6 +77,12 @@ list spanning the whole register or the whole vocabulary.
 `_registry_word_in_list` (lib/registry.sh) is exact membership and refuses
 whitespace. Use it.
 
+**Where a regular expression anchored at both ends does the job, this hole
+cannot open**: two values joined by a space cannot satisfy `^...$`.
+Membership is where it CAN open, so membership is where the exactness has to
+be spelled out. One registry loader validates five fields by SHAPE and
+exactly one by membership - and the membership one is the field that leaked.
+
 **When sweeping for this pattern, do not require `case` and the pattern on
 the same line.** A line-bound grep found 17 of the 38 sites; every
 multi-line `case` was invisible to it, including all four holes' siblings.
@@ -102,6 +108,12 @@ on the day it lands, so each one is invisible to that guard exactly once.
 When a guard misses something, ask which question it answers before widening
 its sweep. Often the answer is a second guard asking the inverse question,
 not a bigger version of the first.
+
+The shape of what slips through is worth naming: **the library with no
+caller yet**. It is the newest file, the one somebody is still wiring in,
+and nothing sources it - so a guard that starts from callers has nothing to
+find. Its absence surfaces later as a deployed host dying on a source line,
+rc 78, in a journal nobody reads.
 
 ## 8. A test double carries the bug it simulates, or it proves nothing.
 
