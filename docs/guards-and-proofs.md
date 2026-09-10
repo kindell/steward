@@ -38,6 +38,14 @@ stays because it bounds WORK rather than meaning: 200 003 characters cost
 90 ms in the expression and 4 ms in the canonicalisation, against about 1 ms
 at the bound - so the expression IS the work - and the seam runs on a timer.
 
+A third answer turned up later the same day: **dormant**. A guard that refuses
+when a library is missing costs nothing while the library is loaded - its
+value shows only in the combination where something ELSE is removed. Measured
+in three combinations rather than one: without the source line and without the
+guard, the probe reported PASS while measuring nothing; without the source but
+with the guard, it failed honestly; with both, it measured the row. A zero in
+the third row of that table is not the same claim as a zero in the first.
+
 Write BOTH numbers next to the guard when you settle one, so the next sweep
 does not have to rediscover it. Do **not** write a test to make a zero look
 better: a guard that bounds work cannot be proven by a suite that measures
