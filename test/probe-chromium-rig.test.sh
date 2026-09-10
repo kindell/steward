@@ -27,7 +27,20 @@ det() { printf '%s' "$1" | awk '{$1=""; sub(/^ /,""); print}'; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
-mkdir -p "$FX/sessions.d" "$FX/bin"
+mkdir -p "$FX/sessions.d" "$FX/bin" "$FX/estate"
+
+# THE ESTATE IS PART OF THE FIXTURE, PINNED - never inherited. Without these
+# two lines this suite answered `unknown unloadable-session` for every case:
+# the registry looks for an estate file relative to the checkout, the product
+# repo has none, and `registry_load` refuses. Measured 2026-09-10, the same
+# numbers on both platforms: 18/18 with the variable unset, 36/0 with an
+# estate root that happened to be in the environment. A suite that green
+# depends on the operator's shell measures the HOST, not the code - and it
+# does so in BOTH directions, since a suite that pins nothing also breaks on
+# a machine where the variable points somewhere real.
+STEWARD_ESTATE_ROOT="$FX"; export STEWARD_ESTATE_ROOT
+printf 'LABEL_PREFIX="com.fixture.claude"\nHUB_HOST="h1"\nOP_TOKEN_FILE_NAME="fixture-token"\n' \
+  > "$FX/estate/steward.conf"
 
 rig() { # <name> <cdp> <vnc> [profile]
   printf 'HOST="h1"\nOWNER="a"\nDOMAIN="d"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nID="%s"\nBROWSER_RIG="yes"\nBROWSER_DISPLAY="9"\nBROWSER_CDP="%s"\nBROWSER_VNC="%s"\nBROWSER_PROFILE="%s"\n' \
