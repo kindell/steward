@@ -149,3 +149,32 @@ A suite at `162/2` and the same suite at `163/1` can hide a new failure
 behind a fixed one. Read WHICH assertion fails, and compare it against the
 same suite on the base branch, before calling a red known. Six name leaks
 reached the main branch behind an unchanged-looking count.
+
+## 10. A double must be able to say both things.
+
+A test double that cannot produce the evidence its assertion looks for makes
+that assertion true no matter what the code does.
+
+Measured, in a suite written the same day: `tmux` was stubbed as `#!/bin/sh`
++ `exit 1` and nothing else. The assertion "and the session never started"
+counted occurrences of the string `new-session` in the round's output - a
+string a stub that writes nothing can never produce. With the entire creation
+guard removed (`if mkdir ...` -> `if false`), that assertion stayed green:
+`17/0` both with and without the guard.
+
+The fix has two halves and the second is the one that is easy to miss.
+Making the stub log its argv and reading the log is not enough: **a log
+nothing ever writes to is as silent as no log at all**, and asserting merely
+that the log FILE EXISTS repeats the mistake one layer up. The suite now
+pins that the log DISCRIMINATES - a separate assertion requires the happy
+path to reach `new-session` in that same log. Only then is its absence in
+the failure case a measurement.
+
+> A double must be able to say BOTH things. That it can say one is proven by
+> a case in which it says the other - otherwise a silent stub has been traded
+> for a silent log.
+
+The suite totals were `17/0` before and after this fix. Nothing in the sum
+changed; what changed is that the mutation can now fail. Which is rule 1
+from the other side: a fix that moves no number can still be the one that
+makes the suite true.
