@@ -193,10 +193,24 @@ _bridge_hist_ps()    { local r="${1#*:}"; printf '%s' "${r%%:*}"; }
 _bridge_hist_birth() { local r="${1#*:}"; printf '%s' "${r#*:}"; }
 # AN EMPTY KEY NEVER MATCHES. "$(bridge_os_birth $gone)" is empty and so is a birth that was
 # never recorded; two empties compared equal and a dead process read as alive (third pass 3).
-bridge_gen_matches_live() { # sd id pid birth
+# bridge_gen_matches_live <sd> <id> <pid> <birth> [procStart] - the generation knows this LIVE process.
+# THE VENDOR'S procStart IS IDENTITY EVIDENCE TOO (spec §1 "persisted launch generation"; advisor K4):
+# when the generation recorded a procStart for this pid+birth and the caller supplies one, the two must
+# agree - a contradiction is NOT a match, so the candidate reads unclassifiable and the row unknown,
+# never latest-wins. A generation without a procStart (the first bind, a bootstrap) still matches.
+bridge_gen_matches_live() { # sd id pid birth [procStart]
   [ -n "${3:-}" ] && [ -n "${4:-}" ] || return 1
-  [ "$(bridge_gen_get "$1" "$2" pid 2>/dev/null)" = "$3" ] && [ "$(bridge_gen_get "$1" "$2" birth 2>/dev/null)" = "$4" ] && return 0
-  local h; for h in $(_bridge_gen_hist "$1" "$2"); do [ "$(_bridge_hist_pid "$h")" = "$3" ] && [ "$(_bridge_hist_birth "$h")" = "$4" ] && return 0; done
+  local gps; gps="$(bridge_gen_get "$1" "$2" procStart 2>/dev/null)"
+  if [ "$(bridge_gen_get "$1" "$2" pid 2>/dev/null)" = "$3" ] && [ "$(bridge_gen_get "$1" "$2" birth 2>/dev/null)" = "$4" ]; then
+    [ -z "$gps" ] || [ -z "${5:-}" ] || [ "$gps" = "$5" ] || return 1
+    return 0
+  fi
+  local h hps; for h in $(_bridge_gen_hist "$1" "$2"); do
+    [ "$(_bridge_hist_pid "$h")" = "$3" ] && [ "$(_bridge_hist_birth "$h")" = "$4" ] || continue
+    hps="$(_bridge_hist_ps "$h")"; [ "$hps" = - ] && hps=""
+    [ -z "$hps" ] || [ -z "${5:-}" ] || [ "$hps" = "$5" ] || return 1
+    return 0
+  done
   return 1
 }
 bridge_gen_matches_dead() { # sd id pid procStart

@@ -53,6 +53,14 @@ bridge_gen_matches_live "$T" "$ID" 100 boot-x:2;  is "2d wrong ticks no" "$?" "1
 bridge_gen_matches_dead "$T" "$ID" 100 500;       is "2e old DEAD pair by procStart" "$?" "0"
 bridge_gen_matches_dead "$T" "$ID" 100 999;       is "2f wrong procStart no" "$?" "1"
 bridge_gen_matches_dead "$T" "$ID" 101 501;       is "2g current dead pair" "$?" "0"
+# K4: the vendor's procStart is identity evidence - a contradiction is not a match
+bridge_gen_matches_live "$T" "$ID" 101 boot-x:2 501; is "2h live match WITH the recorded procStart" "$?" "0"
+bridge_gen_matches_live "$T" "$ID" 101 boot-x:2 999; is "2i same pid+birth, DIFFERENT procStart -> no match (contradiction)" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" 101 boot-x:2;     is "2j no procStart supplied -> the pid+birth match stands" "$?" "0"
+bridge_gen_matches_live "$T" "$ID" 100 boot-x:1 999; is "2k a history entry with a different procStart -> no match" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" 100 boot-x:1 500; is "2l a history entry with the same procStart -> match" "$?" "0"
+bridge_gen_write "$T" "$ID" pid=102 birth=boot-x:3 procStart=
+bridge_gen_matches_live "$T" "$ID" 102 boot-x:3 777; is "2m a generation WITHOUT a procStart (first bind) matches any" "$?" "0"
 
 echo "== 3. an empty key never matches (third pass 3) =="
 bridge_gen_write "$T" "$ID" pid=200 birth= procStart=
