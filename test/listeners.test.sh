@@ -69,9 +69,20 @@ has "2e the rows carry their pids"   "$LISTENERS_ROWS" "pid=111"
 
 echo "== 3. lsof present and ss absent (the darwin path) =="
 rm -f "$FX/bin/ss"
+# THE STUB MODELS lsof's REAL SELECTION SEMANTICS, not the ones I assumed. lsof
+# ORs its selections unless -a is given, so `-u <uid>` WITHOUT `-a` means
+# "(TCP listeners) OR (that uid's files)" - every account's listener comes back.
+# The first version of this stub answered `-u` as though it narrowed, which
+# modelled the AND I had written in my head; a missing -a could therefore never
+# change a number here, whatever it did on a real host. A stub that cannot
+# disagree with its author is not a measurement.
 mk lsof 'case "$*" in
-  *-u*) printf "python  111 someone  3u  IPv4 0x1  0t0  TCP 127.0.0.1:8787 (LISTEN)\n"
+  *-a*-u*|*-u*-a*)
+        printf "python  111 someone  3u  IPv4 0x1  0t0  TCP 127.0.0.1:8787 (LISTEN)\n"
         printf "node    222 someone  7u  IPv6 0x2  0t0  TCP [::1]:8791 (LISTEN)\n" ;;
+  *-u*) printf "python  111 someone  3u  IPv4 0x1  0t0  TCP 127.0.0.1:8787 (LISTEN)\n"
+        printf "node    222 someone  7u  IPv6 0x2  0t0  TCP [::1]:8791 (LISTEN)\n"
+        printf "Chrome  333 other    9u  IPv4 0x3  0t0  TCP 127.0.0.1:9222 (LISTEN)\n" ;;
   *)    printf "python  111 someone  3u  IPv4 0x1  0t0  TCP 127.0.0.1:8787 (LISTEN)\n"
         printf "node    222 someone  7u  IPv6 0x2  0t0  TCP [::1]:8791 (LISTEN)\n"
         printf "Chrome  333 other    9u  IPv4 0x3  0t0  TCP 127.0.0.1:9222 (LISTEN)\n" ;;
@@ -81,6 +92,10 @@ is "3a rc 0"                        "$rc" "0"
 is "3b the tool is named"           "$LISTENERS_TOOL" "lsof"
 is "3c N counts the whole surface"  "$LISTENERS_N" "3"
 is "3d the account's are fewer"     "$LISTENERS_ACCOUNT" "2"
+# AND THAT IS WHAT -a BUYS: without it the third listener - another account's -
+# would be counted as this one's, and the report would name somebody else's
+# port under "THE ACCOUNT'S". On a single-account host the two are identical,
+# which is why a live measurement there could not tell them apart.
 has "3e the rows carry their pids"  "$LISTENERS_ROWS" "pid=111"
 # NON-LOOPBACK IS NOT THIS PROBE'S QUESTION and must not inflate the count: a
 # listener bound outward is a different conversation with a different remedy.

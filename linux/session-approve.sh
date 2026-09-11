@@ -159,8 +159,28 @@ fi
 # The library measures with whichever tool the host has and REFUSES when it has
 # neither, rather than answering zero. Zero is an answer; "I could not look" is
 # not, and the two must not be spelled the same way.
-# shellcheck source=../lib/listeners.sh
-. "$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/listeners.sh"
+# TAKEN FROM THE DIRECTORY registry.sh WAS FOUND IN, which is this estate's
+# stated convention for every seam (deploy-manifest says so three times;
+# desk/snapshot.sh implements it for liveness.sh and visibility.sh). The first
+# version of this line used a single hardcoded ../lib path, which is correct in
+# a CHECKOUT - linux/.. is the root - and wrong in every DEPLOYED home, where
+# the script sits at scripts/session-approve.sh and the library at
+# scripts/lib/listeners.sh, so ../lib resolves to <HOME>/lib and finds nothing.
+#
+# Measured 2026-09-11 by the session running the deployed path the enroll letter
+# tells it to run: the source failed, the script continued (set -u without -e),
+# listeners_probe was then not a command, and criterion (e) failed with
+# "neither ss nor lsof is present" ON A HOST WITH lsof. Loud, which is the
+# design holding - but pointing at a cause that is false and a remedy (install
+# ss on a Mac) that is wrong.
+_lyss_lib="$(dirname "$REG_LIB")/listeners.sh"
+if [ -f "$_lyss_lib" ]; then
+  # shellcheck source=../lib/listeners.sh
+  . "$_lyss_lib" || { echo "session-approve: REFUSING — the listener library could not be read: $_lyss_lib" >&2; exit 78; }
+else
+  echo "session-approve: REFUSING — the listener library is not beside the registry library in $(dirname "$REG_LIB")" >&2
+  exit 78
+fi
 lyss_omatt=""
 if listeners_probe; then
   loop_n="$LISTENERS_N"; lyss_konto="$LISTENERS_ROWS"; loop_m="$LISTENERS_ACCOUNT"

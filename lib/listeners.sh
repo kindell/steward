@@ -52,7 +52,15 @@ listeners_probe() {
     # field before "(LISTEN)" and the pid is column 2. A caller walking a
     # process tree reads `pid=<n>` either way and never learns which host it is
     # running on - which is the point of the shared spelling.
-    LISTENERS_ROWS="$(lsof -nP -iTCP -sTCP:LISTEN -u "$(id -u)" 2>/dev/null \
+    # -a IS LOAD-BEARING: lsof ORs its selections by default, so without it this
+    # asks for "(TCP listeners) OR (this uid's open files)" - which on a host
+    # with one account looks identical to the intended AND, and on a SHARED host
+    # silently attributes every other account's loopback listener to this one.
+    # The report then prints them under "THE ACCOUNT'S, NOT THE SESSION'S",
+    # naming somebody else's ports as this account's. The session verdict itself
+    # survives (S filters through the pane's process tree, and another uid's pid
+    # is not in it) - it is the attribution that lies.
+    LISTENERS_ROWS="$(lsof -nP -a -iTCP -sTCP:LISTEN -u "$(id -u)" 2>/dev/null \
                       | _listeners_loopback_only \
                       | awk '{ for (i = NF; i > 1; i--) if ($i ~ /:[0-9]+$/) { addr = $i; break }
                                if (addr != "") print "    " addr "  pid=" $2; addr = "" }')"
