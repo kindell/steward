@@ -1,7 +1,7 @@
 # Session identity and display
 
 **Date:** 2026-09-11
-**Status:** approved in dialogue (Jon), spec awaiting review
+**Status:** revised after the advisor's review of a30cca7; awaiting Jon
 **Scope:** spec A of two. The entity/project graph (Nav/Steward as real
 projects under estate entities, MANAGED_BY hygiene, infra semantics) is
 spec B and is deliberately not here.
@@ -9,210 +9,251 @@ spec B and is deliberately not here.
 ## The problem
 
 One field, `RC_LABEL`, does two jobs today: it is what a human reads in
-Remote Control, and it is how the Linux supervisor finds the process
-(`CLAUDE_PAT` is built from it, `linux/session-supervisor-linux.sh:951-968`).
-The library already forbids this:
+Remote Control, and it is how supervision finds the process. The library
+already forbids the second:
 
 > DISPLAY IS PRESENTATION, NEVER IDENTITY. Nothing may match a process, a
 > pane or a bus address against this string — supervision keys on ID +
 > ACCOUNT (+ tmux/pid). (`lib/registry.sh:3917`)
 
-The supervisor breaks a law the registry already wrote. Consequences,
-measured 2026-09-11:
+Consumers that break it (census 2026-09-11):
 
-- A hand-typed label rots: `RC_LABEL="Point→WordPress"` against a project
-  whose `NAME` is `WWW`.
-- A renamed project changes the label, the label misses pgrep, and the
-  supervisor sees an unidentified process every round. It does not kill it
-  (`runtime_alive_in_session` refuses) but it can never reach a safe state.
-  A safe wedge, not a working rename.
-- Two identical labels in one login are undetectable across registers, and
-  the estate's own rule says pairing is addressed by label.
-- The company form leaked into a label (`Varvet AB→steward`) because the
-  label is free text.
+| consumer | how |
+|---|---|
+| `linux/session-supervisor-linux.sh` `matching_claude_pids` (:951-968) | pgrep on `--remote-control <label>`; decides "healthy" |
+| same, `reap_orphan_claude` (:1075-1134) | uses `matching_claude_pids` to find the old runtime once tmux is gone |
+| `watch/lib.mjs` `findProcess` (:82-96) | matches `--remote-control <label>` in ps text |
+| `watch/session-watch.mjs` (:143-154) | label path for every non-RC-free row → central false-dead on rename |
+| `watch/restart-session.mjs` (:25-40) | same lookup before a real restart |
+
+`linux/liveness-host.sh` is already pane+descendant bound and is the model.
+
+Consequences, measured: a hand-typed label rots (`Point→WordPress` against
+`NAME="WWW"`); a renamed project makes the supervisor see an unidentified
+process every round — it does not kill (`runtime_alive_in_session` vetoes) but
+never reaches a safe state; the company form leaked into a label
+(`Varvet AB→steward`) because the label is free text.
 
 ## Facts the design rests on
 
 - **Remote Control shows `--remote-control [name]`, not `--name`.** Probed
-  2026-09-11 with a throwaway session (`--remote-control probe-adress
-  --name probe-namn`); the claude.ai list read `probe-adress`, the prompt box
-  read `probe-namn`. Display and the RC name are the same vendor field. The
-  separation therefore happens on our side, or not at all.
+  2026-09-11 on a FRESH session: claude.ai read `probe-adress`, the prompt box
+  `probe-namn`. Display and the RC name are one vendor field.
+- **The tile's name is FROZEN at registration.** Measured 2026-08-31 and
+  written at `session-supervisor-linux.sh:140-147`: `--name`/`--remote-control`
+  at start never renames an existing entity; a restart of the same thread
+  reattaches under the stale name; the only rename is `/rename` typed into the
+  live session, verified by the pane receipt `Session renamed to: <name>`. The
+  supervisor already runs this cycle (`RENAME_PENDING`, `:1369-1403`,
+  `type_line "/rename $RC_LABEL"`, receipt check at `:1266`). **Restart is not
+  rename.** The fresh-session probe above does not contradict this: it never
+  resumed a thread.
+- **The vendor writes a local bridge file per interactive process:**
+  `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`. Measured on this session
+  (values of `bridgeSessionId` and `messagingSocketPath` never read or
+  logged): it carries `pid`, `procStart`, `tmux` (= `<register ID>:@win.%pane`),
+  `sessionId` (the thread), `name`, `nameSource`, `nameSince`, `status`,
+  `statusUpdatedAt`, `startedAt`, `kind`. On this machine every file's pid is
+  alive; the file of the process killed at 09:5x today is gone. Its lifecycle
+  on SIGKILL is **not yet measured**; the design tolerates a stale file.
 - The renderer exists: `registry_display_for` walks `parent→name`
-  recursively and **refuses** when the chain does not resolve — a display is
-  never invented. `registry_session_display` applies the precedence: non-empty
-  `RC_LABEL` → derived from project → derived from entity → `prefix+slug`.
-- The tmux session is already named by the session ID. `session_pane_pids`
-  already reads its panes. The ID-bound path exists beside the label-bound one.
-- `identity-schema.test.sh` already asserts "ID is the immutable key, separate
-  from the display name" and "a display name is required and free-form".
-- The macOS twin (`session-supervisor.sh`) lives in the butler estate, not
-  in this repo.
-- `ps eww` shows no environment on macOS, so an env-var identity channel is
-  unavailable on one of two platforms.
+  root-to-leaf (up to 64 levels) and **refuses** when the chain does not
+  resolve. `registry_session_display` applies the precedence: non-empty
+  `RC_LABEL` → project → entity → `prefix+slug`.
+- The pause marker does not stop a process: the supervisor reads it and
+  exits (`:160-163`). A paused row can still hold a live process and a tile.
+- `runtime_alive_in_session` is deliberately loose (`:998-1012`): it vetoes
+  destruction only. It is not a proof of identity and must not become one.
+- The macOS twin lives in the butler estate. `ps eww` shows no environment
+  on macOS; an env-var identity channel is unavailable there.
+- Bus addressing is slug-addressed, ID-keyed (`bus_resolve_recipient` maps
+  the handle to the ID-keyed queue). Display is uninvolved.
 
 ## Decisions (Jon, 2026-09-11)
 
-- Display is `Team→Kund→Projekt`: `MANAGED_BY→ENTITY.NAME→PROJECT.NAME`,
-  arrow as the only separator, **no account and no machine in the name**. The
-  account is the login the row appears in; the machine is invisible to
-  colleagues.
-- A root entity (no `MANAGED_BY`) is the team. `Point→Nudge` falls out of the
-  walk; no collapse rule, never collapse on `NAME` equality, no `IS_TEAM`.
+- Display is the root-to-leaf ancestry `MANAGED_BY→…→ENTITY.NAME→PROJECT.NAME`
+  ("Team→Kund→Projekt" in the common case), arrow as the only separator,
+  **no account and no machine in the name**.
+- A root entity (no `MANAGED_BY`) is the team. No collapse rule, never
+  collapse on `NAME` equality, no `IS_TEAM`.
 - The company is `Varvet`, never `Varvet AB`, in any register value or label.
-- At most one **active** `claude-code` session per **(login, project)**. A
-  habit becomes a rule.
-- Identity binds to tmux name (= ID) and pane pids. Approach 1 below.
+- Work rule: at most one active `claude-code` session per **(login, project)**.
+- Identity binds to ID, never to the string. Approach 1, amended below.
 
 ## Approaches considered
 
-1. **The supervisor obeys the registry.** Liveness = tmux session `=$ID`
-   exists, its panes have pids, `runtime_alive_in_session` finds the runtime
-   beneath them. The label pgrep is removed as a decision input. Nothing new
-   is added. — **Chosen.** It is what `registry.sh:3917` prescribes and it
-   removes code.
-2. A machine-readable marker in argv/env. Rejected: the vendor has no such
-   flag, an env var is invisible to `ps` on macOS, and it is a second
-   identity field — the thing being removed.
-3. A pid file per ID. Deferred: pid reuse after a crash, and state that must
-   be kept in step. May return as a secondary check if pane pids are measured
-   to be unreliable. Not before.
+1. **The supervisor obeys the registry** — identity on ID via tmux and pids.
+   **Chosen, amended:** the ID→process relation is the vendor's own bridge
+   file, not the tmux pane list alone. The pane list stays as corroboration;
+   `runtime_alive_in_session` stays as a kill veto. Reasons for the amendment:
+   a second Claude opened by a human in another pane of the same tmux session
+   would otherwise keep a dead managed runtime "healthy"; a renamed tmux
+   session would otherwise drop the binding and allow a duplicate spawn;
+   orphan reap would otherwise have no ID→pid relation once tmux is gone.
+2. A marker in argv/env. Rejected: no vendor flag; env invisible to `ps` on
+   macOS; a second identity field.
+3. A pid file per ID written by us. **Superseded**: the vendor already writes
+   one, with `procStart`, and it is the authority on what is bridged.
 
 ## Design
 
-### 1. Identity and display
+### 1. Identity
 
-In `linux/session-supervisor-linux.sh`:
+The managed process of row `$ID` is the one whose bridge file
+`<login config dir>/sessions/<pid>.json` has `tmux` beginning `$ID:` **and**
+whose `pid`+`procStart` name a live process. Everything that decides,
+writes, or reports keys on that:
 
-- `matching_claude_pids` / `CLAUDE_PAT` (`:951-968`) is no longer a decision
-  input. A session is alive when the tmux session named `$ID` exists, its
-  panes have pids, and `runtime_alive_in_session` finds the runtime beneath
-  them — a claude descendant for claude rows, the port for OpenCode. Every
-  action that WRITES — kill, restart, keystroke — targets those pids and no
-  others. The two-consecutive-rounds suspect marker stays.
-- At spawn, `--remote-control` and `--name` both receive
-  `registry_session_display "$ID"`. The supervisor stops reading `RC_LABEL`
-  directly and asks the registry.
-- An RC-free row (`RC_LABEL=""`) stays RC-free: no `--remote-control`, but
-  `--name` still carries the display so it has a name in `/resume`.
+- **Liveness (supervisor and watch):** bridge file present for `$ID` with a
+  live `pid`+`procStart`, and the tmux session `$ID` present. A missing file,
+  a dead pid, a stale `procStart`, or a missing tmux session is *not alive*.
+  Two consecutive rounds before any write, as today.
+- **Kill veto:** `runtime_alive_in_session` stays exactly as it is — a broad
+  veto that any interactive runtime under the panes postpones destruction.
+  It never asserts health.
+- **Orphan reap:** a bridge file whose `tmux` names `$ID` while the tmux
+  session is gone identifies the orphan by `pid`+`procStart`. No label. If no
+  such file exists, the orphan cannot be identified and **no reap happens**;
+  the round warns and refuses a new spawn until an operator decides.
+- **Duplicate guard at spawn:** a live bridge file for `$ID` refuses a
+  second spawn, whatever tmux says.
+- **`matching_claude_pids` and every argv/label match** are removed from
+  decisions in the supervisor, `watch/lib.mjs`, `session-watch.mjs`,
+  `restart-session.mjs`. `liveness-host.sh` corroborates with the bridge file.
+- `pid` alone is never trusted; `pid`+`procStart` always.
 
-Unchanged: tmux naming, bus addressing (already ID), `registry_session_display`
-and its precedence.
+### 2. Display
 
-**macOS.** The butler estate's `session-supervisor.sh` must satisfy the same
-contract: identity on tmux name and pids, never on the string. This spec
-states the requirement and ships the acceptance tests in portable form; the
-butler estate implements. We do not measure its veto for it.
+At spawn, `--remote-control` and `--name` both receive
+`registry_session_display "$ID"`. The supervisor stops reading `RC_LABEL`
+directly. An RC-free row (`RC_LABEL=""`) stays RC-free: no
+`--remote-control`, but `--name` carries the display.
 
-### 2. Rules
+**Rename reuses the existing cycle.** Desired display =
+`registry_session_display`. Applied display = bridge file `name`. When they
+differ, the row is *rename pending*: the supervisor types `/rename <desired>`
+through the existing `type_line`, and the rename is **confirmed** only when
+the pane shows `Session renamed to: <desired>` **and** the bridge file's
+`name` equals it with `nameSince` advanced. Both names are reserved while
+pending (see 3). This is the mechanism the supervisor already runs after
+every spawn (`:1677`); nothing new is typed into a session that is not
+already typed today.
 
-**Uniqueness.** At most one *active* `claude-code` session per (login, project) — active
-meaning no pause marker in `PAUSED_DIR_NAME` for that ID. Enforced where rows are written — `registry session add`
-and the hub's enroll — as one shared gate, the shape of
-`registry_login_principal_gate`. The supervisor checks the same rule at
-spawn so a row that slipped the write gate still does not start.
+**Name-only rename is applied by the cycle.** It costs a slash command, not
+a restart, and a stale name makes a human pick the wrong tile. *(This
+changes the dialogue design, which assumed rename meant restart.)*
 
-The rule reads `RUNTIME` first: only `claude-code` rows are subject.
-OpenCode and Codex have no RC tile and are exempt by construction. Their
-vestigial `LOGIN="jon-varvet"` is removed in the same migration so the rule
-never sees a false collision.
+**Retarget is not rename.** A change to `TARGET_PROJECT`, `PARENT` or
+`MANAGED_BY` on an active row changes capabilities, visibility and mates
+while the old process runs with the old MCP/config. It is **refused on an
+active row**; the row must be stopped, re-rendered and restarted as its own
+migration.
 
-**Known gap, stated:** the gate sees the whole estate register, every host.
-Two estates do not see each other. `jon-point` with `Chalmers→Innovation` on
-basement *and* on skeppsbron is not caught until a federated check exists.
+**Three levels of receipt, named honestly:** *launched* (argv), *bridge-
+registered* (bridge file `name`/`status`), *vendor-visible* (the claude.ai
+tile — human eyes until there is an API). The spec promises the first two.
 
-**Refusal is asymmetric.**
+**Last-applied state** is seeded from the bridge file, never from the
+register (a live process may carry a legacy name). No file → *unknown*,
+degraded, operator decision. State loss is recoverable the same way.
 
-- *New spawn:* if `registry_session_display` refuses — project without parent,
-  renamed-away entity, forged name — the supervisor does not start. rc 78,
-  message names the missing link. No slug fallback: an invented name looks
-  healthy and hides the register fault. Exception: a row with a non-empty
-  `RC_LABEL` starts with it — dual-read during migration.
-- *Running session:* if derivation starts failing while the session lives,
-  it is kept alive on ID, keeps its last applied name, is marked degraded,
-  and alarms — journal and a `DRIFT` on the bus. A name fault never
-  authorises a kill.
+### 3. Rules
 
-### 3. Rename and migration
+**Work rule (write gate).** At most one active `claude-code` row per
+(login, project), enforced in `registry session add` and the hub's enroll as
+one shared gate. RUNTIME first: OpenCode and Codex are exempt (no tile), and
+their vestigial `LOGIN` is removed in the same migration.
 
-**Rename is a state transition.** The supervisor records *last applied
-display* per ID in its state directory (`STATE_DIR_NAME`, today
-`steward-supervisor`). Each round compares it with
-`registry_session_display`. A difference marks the session *rename pending*
-— visible in journal and status — and **nothing happens on its own**: a
-rename is a restart, and a restart mid-conversation is an intervention. It is
-applied at the next natural restart or on an explicit operator verb (its name
-is decided in the plan, not here). Application is
-the ordinary restart path: stop the ID's pids, spawn with the new display,
-resume the thread. **The receipt is local:** the new process alive under the
-ID with the new argv, the old pids gone. On failure the old name stands, the
-session is marked degraded, and a second session under the new name is never
-started.
+**Uniqueness proof (spawn/rename gate).** For all RC-enabled `claude-code`
+rows under one login, the **applied rendered string** is unique among live
+bridge files, and during pending both old and new are reserved. "Active"
+means *a live bridge file exists*, not "unpaused": pause does not stop a
+process. A row is retired only by a stop transaction that ends with no
+bridge file. Two project slugs that render identically are a refusal at the
+write gate. The work rule is a habit made rule; the string reservation is the
+proof.
 
-What the receipt cannot carry: the tile on claude.ai. The vendor's list is
-not observable from the machine. Until there is an API, the old tile's
-disappearance is a human's eyes; the spec states this as a limit.
+**Known gap, stated.** Both gates see one estate. Two estates do not see each
+other, and `peers.d` transports signed letters for a principal — it exposes
+no register and cannot be a write gate. Rule for A: **before the first
+migration of any login used in more than one estate, a manual fleet census
+must show its applied and desired displays unique across estates.** A
+permanent invariant needs global project identity or a stable tiebreak; that
+is out of scope.
 
-**Migration, one row at a time.**
+**Refusal is asymmetric.** *New spawn:* `registry_session_display` refuses
+→ no start, rc 78, message names the missing link; no slug fallback.
+Exception: a non-empty `RC_LABEL` starts with it (dual-read). *Running row:*
+derivation failing → kept alive on identity, keeps applied name, degraded,
+alarms once per transition (journal + bus `DRIFT`). A name fault never
+authorises a kill.
 
-1. The row's target must resolve. Work rows already do — the renderer yields
-   `Point→Nudge`, `Varvet→Intrum→Hero` unaided. **Hub rows wait for spec B**:
-   they would render bare `Basement`, so they keep `RC_LABEL` until the `Nav`
-   project exists.
-2. The `RC_LABEL` line is **deleted**, not emptied.
-3. Restart goes through the rename transition — it *is* a rename, from legacy
-   to rendered.
-4. Receipt. Then the next row.
+### 4. Migration
 
-**The empty-label trap is closed by aligning the readers**, not by a new
-field. `RC_LABEL=""` means *RC-free*: the supervisor already reads it so
-(`:677-681`); `registry_session_display` must read it the same way and feed
-only `--name`. An absent line means *rendered*. Two states, two spellings,
-one reading everywhere. Legacy precedence is removed only when no row carries
-a non-empty `RC_LABEL`. Last step, not an early one.
+One row at a time.
 
-### 4. Tests and platforms
+1. Target resolves. Work rows already do. **Hub rows wait for spec B.**
+2. `RC_LABEL` line is **deleted**, not emptied. `RC_LABEL=""` means RC-free
+   in both readers (`registry_session_display` must read it so and feed only
+   `--name`); an absent line means rendered.
+3. The row's next round sees desired ≠ applied → the rename cycle runs →
+   bridge-registered receipt.
+4. Then the next row.
 
-TDD throughout: a failing test before each change, the suite green after,
-and every guard proven by a mutation that makes it fire.
+Legacy precedence is removed only when no row carries a non-empty
+`RC_LABEL`. Last step.
 
-Suites that change:
+### 5. Tests and platforms
 
-- `test/identity-schema.test.sh` — the contract gains: supervision never
-  matches on display; display may change while ID stands.
-- `test/session-rc-label-unique.test.sh` — becomes the (login, project)
-  uniqueness suite; RUNTIME-first; OpenCode/Codex exempt.
-- `test/supervisor-*.test.sh` — liveness fixtures: a session whose display
-  changed between rounds is still found; a stub pgrep that would have matched
-  the old label proves the label is no longer consulted.
+TDD throughout; every guard proven by a mutation that makes it fire.
+Required fixtures, all before the first live row:
 
-New tests:
+- Display changes while the same managed `pid`+`procStart` lives → still
+  found, still healthy; every label-based pgrep stub is a hard failure.
+- Two tmux sessions with identical rendered names, A dies, B lives → B must
+  not keep A healthy, must not receive A's kill or keystrokes.
+- A second Claude in another pane of `$ID` while the managed runtime dies →
+  row is *not alive*; the veto still blocks destruction.
+- tmux session renamed while the runtime lives → no duplicate spawn.
+- tmux gone, orphan with OLD display, register says NEW → orphan identified
+  by bridge file, reaped by `pid`+`procStart`; with no bridge file → no reap,
+  no spawn, warning.
+- Paused but live row → uniqueness NOT released.
+- Two project slugs rendering the same string → refused at write.
+- Same thread resumed with changed flags → tile name unchanged (frozen);
+  rename cycle then applies; receipt in pane and bridge file.
+- `watch/session-watch.mjs` and `restart-session.mjs` with a display change
+  → no decision changes.
+- Missing last-applied state on a live legacy process → seeded from bridge
+  file, never from the register.
+- Retarget on an active row → refused.
+- Dual-read: non-empty `RC_LABEL` starts byte-identical to today.
 
-- *Rename pending:* display drift is detected, nothing restarts, status says
-  pending; explicit apply restarts once, receipt recorded; a failed apply
-  leaves the old name and never spawns a second.
-- *Refusal:* an unresolvable target refuses a new spawn (rc 78, names the
-  link); the same fault on a running row keeps it alive and alarms.
-- *Dual-read:* a row with non-empty `RC_LABEL` starts byte-identical to
-  today; `RC_LABEL=""` is RC-free in both readers; an absent line renders.
-- *Migration step:* deleting `RC_LABEL` on one row and applying yields the
-  rendered name under the same ID; every other row untouched.
-- *Portable acceptance for the macOS twin:* the fixtures above expressed
-  without Linux-only tools, handed to the butler estate.
+**Platforms.** Fixtures are portable for the contract. **Actual macOS
+execution is acceptance before the first live row**: the twin's process
+model, its `runtime_alive_in_session` veto, and the bridge file's lifecycle
+on macOS are unmeasured. The butler estate implements and measures its own.
+
+## Measurements still owed
+
+- Bridge file lifecycle on SIGKILL and on clean exit (create/update/delete,
+  `status` values). The design tolerates a stale file; the plan must confirm.
+- The macOS twin, as above.
+- Cross-estate duplicate behaviour (manual census procedure).
 
 ## Order of work
 
-1. Identity: supervisor liveness on ID; label pgrep out of decisions.
-2. Display: `--remote-control`/`--name` from the registry; RC-free alignment.
-3. Rules: uniqueness gate (write + spawn); vestigial LOGIN off non-claude rows.
-4. Rename transition + receipt.
-5. Migration tooling; migrate one work row; measure; then the rest.
-6. Legacy precedence removed when no non-empty `RC_LABEL` remains.
-
-Hub rows and the graph: spec B.
+1. Identity on the bridge file: supervisor liveness, duplicate guard,
+   orphan reap; `matching_claude_pids` out of decisions.
+2. Watch: `findProcess` and its callers on the bridge file.
+3. Display from the registry; RC-free alignment in both readers.
+4. Rename cycle driven by desired ≠ applied; two-level receipt; last-applied
+   seeded from the bridge file; retarget refused.
+5. Gates: work rule at write; string reservation at spawn/rename; vestigial
+   LOGIN off non-claude rows.
+6. Migration of one work row; measure; then the rest.
+7. Legacy precedence removed when no non-empty `RC_LABEL` remains.
 
 ## Out of scope
 
-Spec B (graph, Nav/Steward projects, MANAGED_BY hygiene, infra semantics).
-Seat rotation for hubs. Federated uniqueness across estates. A vendor API for
-reconciling RC tiles.
+Spec B. Seat rotation. Federated uniqueness. A vendor API for tiles.
