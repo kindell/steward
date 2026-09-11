@@ -107,7 +107,7 @@ OP_TOKEN_FILE_NAME="fixture-token"
 PING_MSG="you have unread mail"
 EOF
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
-cp "$here/lib/registry.sh" "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
+cp "$here/lib/registry.sh" "$here/lib/bridge.sh" "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
 printf '#!/bin/sh\nexit 0\n' > "$HOMEDIR/.local/bin/claude"; chmod 755 "$HOMEDIR/.local/bin/claude"
 
 NAME="s-0000000000000001"
@@ -181,6 +181,9 @@ case "${argv[0]:-}" in
     done < "$CLIENTS"
     exit 0 ;;
   capture-pane) exit 0 ;;
+  display-message) case "${argv[${#argv[@]}-1]}" in *session_id*) [ -f "$T_HAS_SESSION" ] && echo '$7:1789000000' ;; esac; exit 0 ;;
+  kill-session) rm -f "$T_HAS_SESSION"; exit 0 ;;
+  new-session)  for a in "${argv[@]}"; do [ "$a" = "-P" ] && echo 4242; done; touch "$T_HAS_SESSION"; exit 0 ;;
   *)            exit 0 ;;
 esac
 EOF
@@ -223,6 +226,29 @@ T_EMPTY_FORMAT=""; export T_EMPTY_FORMAT
 
 STATE="$HOMEDIR/.local/state/fixture-supervisor"
 SUSPECT="$STATE/$NAME.suspect"
+cat > "$BIN/observe" <<'EOF'
+#!/bin/bash
+# THE OBSERVER SHIM: its measuring is proven in test/bridge-observe.test.sh; here it answers from
+# the fixture's two control files so this suite keeps testing what the supervisor DOES.
+printf '%s\n' "$*" >> "${OBS_LOG:-/dev/null}"; id="${1:-}"; [ "$id" = --bootstrap ] && id="${2:-}"
+if [ -f "${T_CLAUDE_ALIVE:-/nonexistent}" ] && [ -f "$T_HAS_SESSION" ]; then
+  printf '%s\037identified:managed\0374243\037boot-m:111\037%s:@0.%%0\037L\0371\037alive\037live:managed\037\0374243\037t\0371\037$7:1789000000\037777\n' "$id" "$id"
+elif [ -f "$T_HAS_SESSION" ]; then
+  printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037$7:1789000000\037\n' "$id"
+else
+  printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037\037\n' "$id"
+fi
+EOF
+cat > "$BIN/nonce" <<'EOF'
+#!/bin/bash
+echo 0123456789abcdef0123456789abcdef
+EOF
+chmod 755 "$BIN/observe" "$BIN/nonce"
+PROC="$T/proc"; mkdir -p "$PROC/sys/kernel/random" "$PROC/4242"
+printf 'boot-m\n' > "$PROC/sys/kernel/random/boot_id"; printf '500.00 400.00\n' > "$PROC/uptime"
+printf '4242 (bash) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0 0\n' > "$PROC/4242/stat"
+export OBS_LOG="$T/obs.log"
+BRIDGE_ENV=( STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_NONCE_CMD="$BIN/nonce" BRIDGE_PROC_ROOT="$PROC" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" )
 
 # THE GRACE THIS SUITE MEASURES AGAINST. It is a constant in the supervisor on
 # purpose - there is no environment knob to turn, so the suite states the same
@@ -258,7 +284,10 @@ arm() {
   mkdir -p "$STATE"
   touch "$T_HAS_SESSION"
   : > "$CLIENTS"
-  touch "$SUSPECT"
+  # THE MARKER CARRIES THE KEY since the bridge adapter (plan v6 Task 5): round one recorded
+  # `close <session_id>:<created>`, so this round is the confirming one. Its mtime is still the
+  # gate's "first suspected dead" log text - a confirmed key does not rewrite the file.
+  printf 'close $7:1789000000\n' > "$SUSPECT"
   NOW="$(date +%s)"
   if [ -n "${1:-}" ]; then
     set_mtime "$SUSPECT" "$(( NOW - $1 ))" || { bad "fixture: cannot backdate the suspect marker" "set_mtime failed"; return 1; }
@@ -277,7 +306,7 @@ run() {
   STEWARD_KILL="$BIN/killrec" \
   STEWARD_KEY_SETTLE_SEC=0 \
   PATH="$BIN:$PATH" \
-  bash "$SUP" "$NAME" >"$T/out" 2>&1
+  env "${BRIDGE_ENV[@]}" bash "$SUP" "$NAME" >"$T/out" 2>&1
 }
 repaired() { grep -q 'kill-session' "$TMUX_LOG" && grep -q 'new-session' "$TMUX_LOG"; }
 untouched() { ! grep -q 'kill-session' "$TMUX_LOG" && ! grep -q 'new-session' "$TMUX_LOG"; }
@@ -384,7 +413,7 @@ arm
 run
 out7="$(cat "$T/out")"
 if repaired; then ok "7a the repair proceeds with no client attached"; else bad "7a the repair proceeds with no client attached" "tmux log: $(cat "$TMUX_LOG")"; fi
-has   "7b the zombie verdict is unchanged" "$out7" "ZOMBIE PANE"
+has   "7b the verdict is the bridge path's: no process, confirmed twice, closed by \$N" "$out7" "NO PROCESS confirmed twice"
 # WAS: hasnt "nothing is said about clients" ... "attached tmux client". That
 # string is only ever built per-client inside `if [ -n "$_clients" ]`, which by
 # construction does not run when no client is attached - seven mutations failed

@@ -80,6 +80,15 @@ if [ -f "$REG_LIB" ]; then
   # shellcheck source=/dev/null
   . "$REG_LIB" 2>/dev/null && _reg_ok=1
 fi
+# THE BRIDGE LIBRARY SITS BESIDE THE REGISTRY LIBRARY, found the same way. It is loaded
+# here and REFUSED later, for claude rows only (see IS_CLAUDE below): a paused session must
+# reach its guard without being asked anything, and an OpenCode row never reads it.
+BRIDGE_LIB="${STEWARD_BRIDGE_LIB:-$(dirname "$REG_LIB")/bridge.sh}"
+_bridge_ok=""
+if [ -f "$BRIDGE_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$BRIDGE_LIB" 2>/dev/null && declare -F bridge_answer >/dev/null 2>&1 && _bridge_ok=1
+fi
 # THE SPAWN LIBRARIES SIT NEXT TO THE REGISTRY LIBRARY, and are found the same
 # way: whatever directory REG_LIB actually resolved to, deployed or in a
 # checkout. Deriving them separately would let a host load its registry from
@@ -289,6 +298,11 @@ else
   echo "session-supervisor: $NAME — register the session first (bash ~/scripts/session-new.sh)." >&2
   exit 78
 fi
+# THE ONE DISPATCH WORD (E1). A claude-code row is supervised through the bridge adapter's
+# answer; every other runtime keeps today's path, verbatim. Set here, right after the conf,
+# so no branch below can read RUNTIME two different ways.
+case "${RUNTIME:-claude-code}" in claude-code) IS_CLAUDE=1 ;; *) IS_CLAUDE="" ;; esac
+NO_PROCESS_CONFIRMED=""; NP_TUPLE=""
 
 # THE LIBRARY VALIDATES WHAT THE RAW SOURCE ABOVE ONLY READS.
 #
@@ -361,6 +375,84 @@ CFG_ROOT="$HOME/.claude"
 if [ -n "${LOGIN:-}" ]; then
   CFG_ROOT="$(registry_login_config_dir "$LOGIN" "$(id -un)")" || exit 78
 fi
+# ---- the bridge path: one adapter that measures, one pin that signals, one claim per spawn ----
+# THE ADAPTER IS READ-ONLY AND THIS FILE OWNS EVERY WRITE (spec §1). linux/bridge-observe.sh
+# prints one fifteen-field line; observe_row reads it by position into B_*. bridge-kill.py pins
+# the process before it signals. Both sit beside this script, deployed or in a checkout.
+OBSERVE="${STEWARD_BRIDGE_OBSERVE:-$(dirname "$0")/bridge-observe.sh}"
+BKILL="${STEWARD_BRIDGE_KILL:-$(dirname "$0")/bridge-kill.py}"
+PROCR="${BRIDGE_PROC_ROOT:-/proc}"
+if [ "$IS_CLAUDE" = 1 ]; then
+  if [ "$_bridge_ok" != 1 ]; then
+    echo "session-supervisor: $NAME — REFUSING: $BRIDGE_LIB does not define bridge_answer; a claude row cannot be identified without it." >&2
+    echo "session-supervisor: $NAME — deploy the product's lib/ to $(dirname "$REG_LIB"). Nothing is started, nothing is closed." >&2
+    exit 78
+  fi
+  if [ ! -f "$OBSERVE" ]; then
+    echo "session-supervisor: $NAME — REFUSING: the bridge observer is missing: $OBSERVE" >&2
+    exit 78
+  fi
+fi
+B_ANS=""; B_PID=""; B_BIRTH=""; B_PANE=""; B_NAME=""; B_SINCE=""; B_GEN=""; B_CLASSES=""; B_CHILD=""; B_PS=""; B_SID=""; B_MTIME=""; B_TUPLE=""; B_INODE=""
+observe_row() {
+  local _l _id=""
+  _l="$(STEWARD_STATE_DIR="$STATE_DIR" STEWARD_TMUX_SOCKET="$SOCK" STEWARD_REGISTRY_LIB="$REG_LIB" STEWARD_BRIDGE_LIB="$BRIDGE_LIB" bash "$OBSERVE" "$NAME")" || _l=""
+  IFS="$US" read -r _id B_ANS B_PID B_BIRTH B_PANE B_NAME B_SINCE B_GEN B_CLASSES B_CHILD B_PS B_SID B_MTIME B_TUPLE B_INODE <<EOF
+$_l
+EOF
+  if [ "$_id" != "$NAME" ]; then
+    # AN UNREADABLE ANSWER IS unknown, NEVER no-process: nothing below may act on it.
+    B_ANS="unknown"; B_GEN="none"; B_CLASSES="observer-unreadable"; B_PID=""; B_BIRTH=""; B_PANE=""; B_NAME=""; B_SINCE=""; B_CHILD=""; B_PS=""; B_SID=""; B_MTIME=""; B_TUPLE=""; B_INODE=""
+  fi
+}
+# runtime_identified: the alive question, asked the runtime's own way (E2).
+runtime_identified() {
+  if [ "$IS_CLAUDE" = 1 ]; then observe_row; [ "$B_ANS" = identified:managed ]; else claude_alive_in_session; fi
+}
+# bind_generation: a verified-live bridge record becomes the generation's current fact, so a
+# file left behind by KILL -9 is later recognised by pid:procStart. Written only on change.
+bind_generation() {
+  rm -f "$STATE_DIR/$NAME.identity-degraded"
+  if [ "$(bridge_gen_get "$STATE_DIR" "$NAME" pid 2>/dev/null)" != "$B_PID" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" birth 2>/dev/null)" != "$B_BIRTH" ] \
+     || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_name 2>/dev/null)" != "$B_NAME" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_mtime 2>/dev/null)" != "$B_MTIME" ] \
+     || [ -n "$(bridge_gen_get "$STATE_DIR" "$NAME" spawn_state 2>/dev/null)" ]; then
+    bridge_gen_write "$STATE_DIR" "$NAME" pid="$B_PID" birth="$B_BIRTH" procStart="$B_PS" sessionId="$B_SID" bridge_mtime="$B_MTIME" bridge_inode="$B_INODE" \
+      bridge_name="$B_NAME" bridge_nameSince="$B_SINCE" uid="$(id -u)" spawn_state=
+  fi
+}
+_steward_nonce() { od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
+# spawn_claude_claimed (D7): the claim is written BEFORE new-session and closed AFTER, and every
+# input is validated before a byte is written - a claim that cannot be written is a failed spawn,
+# never a launch with a hole in its proof.
+spawn_claude_claimed() {
+  local nonce wall up boot inodes f pane_pid pbirth="" rc
+  nonce="$(${STEWARD_NONCE_CMD:-_steward_nonce} 2>/dev/null)"
+  [ "${#nonce}" -eq 32 ] || nonce=""; case "$nonce" in *[!0-9a-f]*) nonce="" ;; esac
+  wall=$(( $(date +%s) * 1000 ))
+  up="$(awk '{printf "%d", $1*1000}' "$PROCR/uptime" 2>/dev/null)"; case "$up" in ''|*[!0-9]*) up="" ;; esac
+  boot="$(cat "$PROCR/sys/kernel/random/boot_id" 2>/dev/null)"; case "$boot" in ''|*[!0-9A-Za-z-]*) boot="" ;; esac   # compared for equality only; one token, no spaces
+  if [ -z "$nonce" ] || [ -z "$up" ] || [ -z "$boot" ]; then
+    bridge_gen_write "$STATE_DIR" "$NAME" spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes=
+    echo "session-supervisor: $NAME — REFUSING to spawn: the launch claim cannot be written (nonce ${nonce:-invalid}, uptime ${up:-unreadable}, boot id ${boot:-unreadable}). DEGRADED: nothing started." >&2
+    return 1
+  fi
+  inodes=""
+  for f in "$CFG_ROOT"/sessions/*.json; do [ -e "$f" ] || continue; inodes="$inodes $(stat -c %i "$f" 2>/dev/null || stat -f %i "$f" 2>/dev/null)"; done
+  inodes="${inodes# }"
+  bridge_gen_write "$STATE_DIR" "$NAME" launch_ms="$wall" launch_uptime_ms="$up" launch_boot_id="$boot" launch_nonce="$nonce" launch_inodes="$inodes" spawn_state=pending pid= birth= procStart= stop_receipt=
+  # THE NONCE RIDES IN FRONT OF claude AS AN ENVIRONMENT ASSIGNMENT, never behind the ';' -
+  # the fallback shell must not inherit it (measured P1: it does not).
+  pane_pid="$(tmuxc new-session -d -P -F '#{pane_pid}' -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
+      "STEWARD_LAUNCH_NONCE=$nonce ${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash")"; rc=$?
+  case "$pane_pid" in ''|*[!0-9]*) pane_pid="" ;; esac
+  if [ "$rc" -eq 0 ] && [ -n "$pane_pid" ] && pbirth="$(bridge_os_birth "$pane_pid")" && [ -n "$pbirth" ]; then
+    bridge_gen_write "$STATE_DIR" "$NAME" launch_pane_pid="$pane_pid" launch_pane_birth="$pbirth" spawn_state=started
+    return 0
+  fi
+  bridge_gen_write "$STATE_DIR" "$NAME" spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes=
+  echo "session-supervisor: $NAME — new-session did not verifiably start (rc $rc, pane pid ${pane_pid:-none}); the claim is closed. DEGRADED." >&2
+  return 1
+}
 HIST="$CFG_ROOT/projects/$(printf '%s' "$REPO" | sed 's|[^a-zA-Z0-9]|-|g')"
 # STATE_DIR/SUSPECT/RESUME_TRY are set at the top, at the pause check — they
 # derive from $HOME and $NAME and had to move there together with it.
@@ -948,10 +1040,10 @@ fi
 # "opencode <repo> --session ... --port N".
 if [ "${RUNTIME:-claude-code}" = "opencode" ]; then
   CLAUDE_PAT="^[^ ]*opencode .*[-]-port $OPENCODE_PORT( |\$)"
-elif [ -n "$RC_LABEL" ]; then
-  RC_LBL_PAT="$(printf '%s' "$RC_LABEL" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
-  CLAUDE_PAT="^[^ ]*claude .*[-]-remote-control .?$RC_LBL_PAT\"?\$"
 else
+  # NO LABEL BRANCH ANY MORE: a claude row is identified through the bridge adapter (IS_CLAUDE),
+  # and this pattern is never consulted for it. The RC-free form is kept for the functions the
+  # OpenCode path still calls.
   CLAUDE_PAT="^[^ ]*claude( |\$)"
 fi
 
@@ -978,6 +1070,7 @@ session_pane_pids()    { tmuxc list-panes -s -t "=$NAME" -F '#{pane_pid}' 2>/dev
 # (1) or a ceiling is reached — the ceiling protects against a broken ps that
 # cycles.
 is_descendant() {
+  if [ "${_bridge_ok:-}" = 1 ]; then bridge_is_descendant "$@"; return $?; fi   # the same walk the adapter uses (E2)
   local pid="$1" target="$2" n=0
   while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$n" -lt 40 ]; do
     [ "$pid" = "$target" ] && return 0
@@ -1334,7 +1427,8 @@ bus_signalera() { # <what> <text>
   return "$rc"
 }
 
-if claude_alive_in_session; then
+if runtime_identified; then
+  [ "$IS_CLAUDE" = 1 ] && bind_generation
   rm -f "$SUSPECT" "$RESUME_TRY"   # live session = the resume took, reset the counter
   # SURVIVAL TURNS THE LAUNCH MARK INTO last-sid (the macOS twin's hold-loop
   # round two, translated to the one-shot model: a full timer interval alive
@@ -1387,7 +1481,7 @@ if claude_alive_in_session; then
         elif [ "$_rn_tries" -ge 5 ]; then
           echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no receipt 'Session renamed to: $RC_LABEL' in the pane." >&2
           echo "session-supervisor: $NAME — the tile may carry a stale name. $RENAME_PENDING remains as the trace; later rounds keep watching for the receipt." >&2
-        elif ! claude_alive_in_session; then
+        elif ! runtime_identified; then
           # RE-ASSERT CLAUDE-IN-PANE IMMEDIATELY BEFORE TYPING. The alive-check
           # far above ran before warn_if_untrusted_while_running spawned jq
           # (tens of ms); the launch string ends "; exec bash", so if claude
@@ -1658,7 +1752,9 @@ fi
 # whichever branch a test did not exercise.
 spawn_session() {
   ensure_workspace_trusted
-  reap_orphan_claude   # a killed tmux session may have left an orphaned claude
+  # THE ADAPTER OWNS ORPHANS FOR CLAUDE ROWS (identified:orphan, keyed, killed on the pin);
+  # the pattern reap is the OpenCode path's, which finds its process by port.
+  [ "$IS_CLAUDE" = 1 ] || reap_orphan_claude   # a killed tmux session may have left an orphaned adapter
   rm -f "$SUSPECT"
   # The attempt is counted BEFORE the launch, so a resume that is refused can
   # never count itself; the loop protection above reads this file.
@@ -1680,8 +1776,7 @@ spawn_session() {
     tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
       "exec \"$ADAPTER\" \"$NAME\""
   else
-    tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
-      "${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash"
+    spawn_claude_claimed || return 0    # a failed claim is a failed spawn: nothing started, nothing to alarm about below
   fi
   # THE ALARM IS ON THE SPAWN PATH, AND ONLY THERE. A degraded or refused set
   # is a property of the session that was just STARTED, so it is signalled once
@@ -1729,35 +1824,75 @@ $(sed 's/^/  /' "$MCP_ERR" 2>/dev/null)"
   fi
 }
 
-# No tmux at all (e.g. after boot): creating anew is risk-free — there is no
-# live session to write into. No two-round rule here.
-if ! tmuxc has-session -t "=$NAME" 2>/dev/null; then
-  spawn_session
-  exit 0
-fi
+if [ "$IS_CLAUDE" = 1 ]; then
+  # THE ADAPTER ANSWERED (observe_row ran in runtime_identified above). Every destructive step
+  # is a KEYED two-round suspect: the key carries the action and its exact target, and any
+  # other answer in between resets it (B6, D5).
+  case "$B_ANS" in
+    identified:managed) : ;;
+    identified:moved) rm -f "$SUSPECT"; echo "session-supervisor: $NAME — identified but MOVED (pid $B_PID, not under $B_PANE). Nothing written." >&2; exit 0 ;;
+    unknown)
+      rm -f "$SUSPECT"
+      if [ "$B_GEN" = alive ] && [ ! -f "$STATE_DIR/$NAME.identity-degraded" ]; then
+        touch "$STATE_DIR/$NAME.identity-degraded"
+        echo "session-supervisor: $NAME — DEGRADED: our process lives but nothing attests it." >&2
+      fi
+      echo "session-supervisor: $NAME — identity-unknown ($B_CLASSES). Nothing written." >&2; exit 0 ;;
+    grace|wait-veto) rm -f "$SUSPECT"; exit 0 ;;
+    identified:orphan)
+      bridge_suspect_confirmed "$SUSPECT" "$(bridge_suspect_key reap "$B_PID" "$B_BIRTH")" || exit 0
+      echo "session-supervisor: $NAME — ORPHAN confirmed twice (pid $B_PID, birth $B_BIRTH): signalling TERM on the pin." >&2
+      bash "$BKILL" "$B_PID" "$B_BIRTH" TERM >&2; rm -f "$SUSPECT"; exit 0 ;;
+    no-process)
+      [ -z "${DISPLAY_ERR:-}" ] || { echo "session-supervisor: $NAME — REFUSING to spawn: the display does not derive: $DISPLAY_ERR" >&2; exit 78; }
+      if [ -n "$B_TUPLE" ]; then _np_key="$(bridge_suspect_key close "$B_TUPLE")"; else _np_key="$(bridge_suspect_key spawn absent)"; fi
+      bridge_suspect_confirmed "$SUSPECT" "$_np_key" || exit 0
+      # THE MARKER STAYS while the debris gate below runs: its mtime is the gate's "first suspected
+      # dead" log text, and the gate removes it itself before the close. The spawn-absent path
+      # needs no gate and clears it here.
+      NO_PROCESS_CONFIRMED=1; NP_TUPLE="$B_TUPLE"; [ -n "$NP_TUPLE" ] || rm -f "$SUSPECT" ;;
+    *) echo "session-supervisor: $NAME — adapter answered '$B_ANS', unknown here. Nothing written." >&2; exit 0 ;;
+  esac
+  if [ -n "$NO_PROCESS_CONFIRMED" ]; then
+    if [ -z "$NP_TUPLE" ]; then
+      tmuxc has-session -t "=$NAME" 2>/dev/null && { echo "session-supervisor: $NAME — a tmux session appeared after 'spawn absent' was confirmed; resetting." >&2; exit 0; }
+      spawn_session; exit 0
+    fi
+    : # tmux present: fall into the EXISTING activity/debris gate below, then the close by $N
+  else
+    exit 0    # a managed row that reached here has nothing more to do this round
+  fi
+else
+  # No tmux at all (e.g. after boot): creating anew is risk-free — there is no
+  # live session to write into. No two-round rule here.
+  if ! tmuxc has-session -t "=$NAME" 2>/dev/null; then
+    spawn_session
+    exit 0
+  fi
 
-# tmux exists but no claude matching the label. Before anything destructive:
-# does ANY runtime live in the pane? A claude under a drifted label, or an
-# opencode adapter, is a living conversation this supervisor cannot identify —
-# it must be neither killed nor typed into. Warn every round (the same posture
-# as warn_if_untrusted_while_running: an anomaly a human should fix, never a
-# silent one), and clear the suspect mark so the zombie verdict below always
-# rests on two CONSECUTIVE runtime-free rounds.
-if runtime_alive_in_session; then
-  rm -f "$SUSPECT"
-  echo "session-supervisor: $NAME — WARNING: a claude/opencode process lives in the session's pane but does not match this session's pattern." >&2
-  echo "session-supervisor: $NAME — leaving it alone (no kill, no keystrokes). If the label changed, fix the conf; supervision cannot repair what it cannot identify." >&2
-  exit 0
-fi
+  # tmux exists but no claude matching the label. Before anything destructive:
+  # does ANY runtime live in the pane? A claude under a drifted label, or an
+  # opencode adapter, is a living conversation this supervisor cannot identify —
+  # it must be neither killed nor typed into. Warn every round (the same posture
+  # as warn_if_untrusted_while_running: an anomaly a human should fix, never a
+  # silent one), and clear the suspect mark so the zombie verdict below always
+  # rests on two CONSECUTIVE runtime-free rounds.
+  if runtime_alive_in_session; then
+    rm -f "$SUSPECT"
+    echo "session-supervisor: $NAME — WARNING: a claude/opencode process lives in the session's pane but does not match this session's pattern." >&2
+    echo "session-supervisor: $NAME — leaving it alone (no kill, no keystrokes). If the label changed, fix the conf; supervision cannot repair what it cannot identify." >&2
+    exit 0
+  fi
 
-# No runtime at all in a session that exists: suspect — but do NOTHING until
-# the next round says the same. The launch string ends '; exec bash', so a
-# session mid-boot and a session whose claude just died look identical for one
-# measurement; three extra minutes of downtime are cheaper than killing a
-# session that was about to come up.
-if [ ! -f "$SUSPECT" ]; then
-  touch "$SUSPECT"
-  exit 0
+  # No runtime at all in a session that exists: suspect — but do NOTHING until
+  # the next round says the same. The launch string ends '; exec bash', so a
+  # session mid-boot and a session whose claude just died look identical for one
+  # measurement; three extra minutes of downtime are cheaper than killing a
+  # session that was about to come up.
+  if [ ! -f "$SUSPECT" ]; then
+    touch "$SUSPECT"
+    exit 0
+  fi
 fi
 # A WORKING HUMAN DEFERS THE KILL - AND A CLIENT IS NOT A HUMAN. A human
 # working in vi or bash in the pane where claude crashed must never lose their
@@ -1999,6 +2134,24 @@ rm -f "$SUSPECT"
 # same lossy keystroke path. Kill the zombie LOUDLY, by name, and respawn
 # through the one start path (which resumes the thread exactly like any other
 # restart).
+if [ "$IS_CLAUDE" = 1 ]; then
+  [ -n "$NO_PROCESS_CONFIRMED" ] || { echo "session-supervisor: $NAME — reached the close without a confirmed no-process; not closing." >&2; exit 0; }
+  # THE TARGET IS THE PARSED $N, NEVER THE NAME (E4): a session created under this name after
+  # the tuple was confirmed is a stranger, and `-t "=$NAME"` would have killed it. The tuple is
+  # re-read HERE, immediately before the close (D5); a receipt is written only after kill-session
+  # returned 0 AND the id is gone (E3, D12) - and a spawn follows only a receipt.
+  NP_N="${NP_TUPLE%%:*}"; case "$NP_N" in \$*) : ;; *) NP_N="" ;; esac
+  case "${NP_N#\$}" in ''|*[!0-9]*) rm -f "$SUSPECT"; echo "session-supervisor: $NAME — tuple has no usable session id; not closing." >&2; exit 0 ;; esac
+  _now="$(tmuxc display-message -p -t "=$NAME" '#{session_id}:#{session_created}' 2>/dev/null)"
+  [ "$_now" = "$NP_TUPLE" ] || { rm -f "$SUSPECT"; echo "session-supervisor: $NAME — tmux tuple changed before close ($NP_TUPLE is now ${_now:-gone}); resetting." >&2; exit 0; }
+  echo "session-supervisor: $NAME — NO PROCESS confirmed twice under $NP_TUPLE: closing $NP_N and respawning." >&2
+  bridge_gen_write "$STATE_DIR" "$NAME" stop_intent="zombie-$(date +%s)"
+  if tmuxc kill-session -t "$NP_N" 2>/dev/null && ! tmuxc has-session -t "$NP_N" 2>/dev/null; then
+    bridge_gen_write "$STATE_DIR" "$NAME" stop_receipt="zombie-$(date +%s)"
+    spawn_session; exit 0
+  fi
+  echo "session-supervisor: $NAME — close of $NP_N did not verifiably succeed; no receipt, no spawn." >&2; exit 0
+fi
 echo "session-supervisor: $NAME — ZOMBIE PANE: tmux session '$NAME' exists but no claude/opencode process descends from its pane, two rounds in a row." >&2
 echo "session-supervisor: $NAME — killing the zombie session and respawning." >&2
 tmuxc kill-session -t "=$NAME" 2>/dev/null

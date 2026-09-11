@@ -30,7 +30,7 @@
 # fixture process table, and the kill goes through STEWARD_KILL.
 set -u
 here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SUP="$here/linux/session-supervisor-linux.sh"
+SUP="${SUP_OVERRIDE:-$here/linux/session-supervisor-linux.sh}"   # SUP_OVERRIDE: a mutated copy, for the mutation runs
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
@@ -58,7 +58,8 @@ OP_TOKEN_FILE_NAME="fixture-token"
 PING_MSG="you have unread mail"
 EOF
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
-cp "$here/lib/registry.sh" "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
+cp "$here/lib/registry.sh" "$here/lib/bridge.sh" "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
+mkdir -p "$HOMEDIR/scripts/runtime"; printf '#!/bin/sh\nexit 0\n' > "$HOMEDIR/scripts/runtime/opencode-session.sh"; chmod 755 "$HOMEDIR/scripts/runtime/opencode-session.sh"
 printf '#!/bin/sh\nexit 0\n' > "$HOMEDIR/.local/bin/claude"; chmod 755 "$HOMEDIR/.local/bin/claude"
 
 # THE SHARED LABEL: the exact shape of the live collision - two rows, one home,
@@ -102,6 +103,7 @@ case "${argv[0]:-}" in
     for a in "${argv[@]}"; do [ "$a" = "-a" ] && { cat "$PANES"; exit 0; }; done
     exit 0 ;;
   list-clients) exit 0 ;;
+  new-session)  for a in "${argv[@]}"; do [ "$a" = "-P" ] && echo 4242; done; exit 0 ;;
   *)            exit 0 ;;
 esac
 EOF
@@ -142,8 +144,51 @@ chmod 755 "$BIN/tmux" "$BIN/pgrep" "$BIN/ps" "$BIN/killrec"
 export TMUX_LOG="$T/tmux.log" PGREP_LOG="$T/pgrep.log" KILL_LOG="$T/kill.log"
 
 CLAUDE="$HOMEDIR/.local/bin/claude"
-run() { # <session-id>
+export T_HAS_SESSION="$T/never-has-session"
+cat > "$BIN/observe" <<'EOF'
+#!/bin/bash
+# THE OBSERVER SHIM: its measuring is proven in test/bridge-observe.test.sh; here it answers from
+# the fixture's two control files so this suite keeps testing what the supervisor DOES.
+printf '%s\n' "$*" >> "${OBS_LOG:-/dev/null}"; id="${1:-}"; [ "$id" = --bootstrap ] && id="${2:-}"
+if [ -f "${T_CLAUDE_ALIVE:-/nonexistent}" ] && [ -f "$T_HAS_SESSION" ]; then
+  printf '%s\037identified:managed\0374243\037boot-m:111\037%s:@0.%%0\037L\0371\037alive\037live:managed\037\0374243\037t\0371\037$7:1789000000\037777\n' "$id" "$id"
+elif [ -f "$T_HAS_SESSION" ]; then
+  printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037$7:1789000000\037\n' "$id"
+else
+  printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037\037\n' "$id"
+fi
+EOF
+cat > "$BIN/nonce" <<'EOF'
+#!/bin/bash
+echo 0123456789abcdef0123456789abcdef
+EOF
+chmod 755 "$BIN/observe" "$BIN/nonce"
+PROC="$T/proc"; mkdir -p "$PROC/sys/kernel/random" "$PROC/4242"
+printf 'boot-m\n' > "$PROC/sys/kernel/random/boot_id"; printf '500.00 400.00\n' > "$PROC/uptime"
+printf '4242 (bash) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0 0\n' > "$PROC/4242/stat"
+export OBS_LOG="$T/obs.log"
+BRIDGE_ENV=( STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_NONCE_CMD="$BIN/nonce" BRIDGE_PROC_ROOT="$PROC" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" )
+
+OCROW="s-0000000000000004"; PORT=4097
+cat > "$ROOT/sessions.d/$OCROW.conf" <<EOF
+OWNER="a"
+HOST="h1"
+DOMAIN="alpha"
+REPO_PATH="$HOMEDIR/Projects/repo"
+ID="$OCROW"
+RC_LABEL=""
+KIND="advisor"
+RUNTIME="opencode"
+MODEL="openai/example-model"
+OPENCODE_VERSION="1.18.14"
+OPENCODE_PORT="$PORT"
+AUTO_APPROVE="true"
+CLAUDE_MEMORY_ROOT="$T/memory"
+EOF
+run() { # <session-id> - TWO rounds: a claude row's spawn is a keyed two-round suspect since the
+        # bridge adapter (plan v6 Task 5), and the claim here is what the SPAWN does not do.
   : > "$TMUX_LOG"; : > "$PGREP_LOG"; : > "$KILL_LOG"
+  local i; for i in 1 2; do
   HOME="$HOMEDIR" \
   STEWARD_ESTATE_ROOT="$ROOT" \
   STEWARD_CONFIG_FILE="$T/no-such-config" \
@@ -151,14 +196,19 @@ run() { # <session-id>
   STEWARD_TMUX_SOCKET="$T/fixture.sock" \
   STEWARD_KILL="$BIN/killrec" \
   PATH="$BIN:$PATH" \
-  bash "$SUP" "$1" >"$T/out" 2>&1
+  env "${BRIDGE_ENV[@]}" bash "$SUP" "$1" >"$T/out" 2>&1
+  done
 }
 killed() { grep -qx "$1" "$KILL_LOG"; }
 
-echo "== 1. a sibling's live claude, same label, same home - survives =="
-# 4242 is the SIBLING's pane, alive on the socket. 4243 is its claude, wearing
-# the very label this row is about to hunt for. 5000 is a genuine orphan:
-# same label, reparented to init, no pane anywhere.
+# SINCE THE BRIDGE ADAPTER (plan v6 Task 5) A CLAUDE ROW NEVER RUNS THE PATTERN REAP. Its orphans
+# are the adapter's: identified:orphan, keyed over two rounds, signalled on a pidfd pin
+# (test/supervisor-bridge.test.sh claim 6). The direction that must not regress is now the
+# OPPOSITE of the one this file was written for: NOTHING in a claude row's home is killed by an
+# argv pattern - not the sibling, not the stranger, not even a genuine orphan. The pattern reap
+# survives for the OpenCode path, which finds its process by port (claim 5).
+
+echo "== 1. a claude row: a sibling's live claude AND a genuine orphan both survive the spawn =="
 cat > "$PROCTAB" <<EOF
 4242 1 -bash
 4243 4242 $CLAUDE --permission-mode bypassPermissions --remote-control "$LABEL"
@@ -167,29 +217,18 @@ EOF
 printf '4242\n' > "$PANES"
 run "$MINE"
 klog="$(cat "$KILL_LOG")"; out="$(cat "$T/out")"
-if killed 4243; then bad "1a the sibling's LIVE claude is not killed" "kill log: $klog"
-else ok "1a the sibling's LIVE claude is not killed"; fi
-if killed 5000; then ok "1b the genuine orphan IS still reaped"
-else bad "1b the genuine orphan IS still reaped" "kill log: $klog"; fi
-has   "1c the reap says which pid it took" "$out" "killed orphan claude 5000"
-hasnt "1d and never claims the sibling's pid" "$out" "killed orphan claude 4243"
-has   "1e the veto asked for EVERY pane on the socket" "$(cat "$TMUX_LOG")" "list-panes -a"
+if killed 4243; then bad "1a the sibling's LIVE claude is not killed" "kill log: $klog"; else ok "1a the sibling's LIVE claude is not killed"; fi
+if killed 5000; then bad "1b the orphan is NOT reaped by pattern (it is the adapter's, on the pin)" "kill log: $klog"; else ok "1b the orphan is NOT reaped by pattern (it is the adapter's, on the pin)"; fi
+has   "1c the spawn itself happened (so the reap had its chance and did not take it)" "$(cat "$TMUX_LOG")" "new-session"
+hasnt "1d no pattern reap message" "$out" "killed orphan claude"
+is    "1e no claude argv pattern was ever asked of pgrep" "$(grep -c 'claude' "$PGREP_LOG")" "0"
 
-echo "== 2. no pane on the socket at all - the orphan is still reaped =="
-# The "never kill anything" control: with an empty pane set the fix must not
-# turn into a no-op. Both matching pids are orphans here.
+echo "== 2. no pane on the socket at all - still nothing killed by pattern =="
 : > "$PANES"
 run "$MINE"
-klog2="$(cat "$KILL_LOG")"
-if killed 5000; then ok "2a an orphan is reaped when no pane exists anywhere"
-else bad "2a an orphan is reaped when no pane exists anywhere" "kill log: $klog2"; fi
-if killed 4243; then ok "2b and so is the now-paneless 4243"
-else bad "2b and so is the now-paneless 4243" "kill log: $klog2"; fi
+is "2a kill log empty" "$(cat "$KILL_LOG")" ""
 
-echo "== 3. an RC-FREE row's broad pattern kills only what has no pane =="
-# RC_LABEL="" widens CLAUDE_PAT to "any claude in this home". The pane binding
-# is then the ONLY thing standing between one respawn and every conversation
-# in the home. 4243 here carries a DIFFERENT label - the pattern still matches it.
+echo "== 3. an RC-FREE claude row: the broad pattern is never consulted either =="
 cat > "$PROCTAB" <<EOF
 4242 1 -bash
 4243 4242 $CLAUDE --permission-mode bypassPermissions --remote-control "Someone Else"
@@ -197,16 +236,10 @@ cat > "$PROCTAB" <<EOF
 EOF
 printf '4242\n' > "$PANES"
 run "$FREE"
-klog3="$(cat "$KILL_LOG")"
-has "3a the RC-free pattern really is the broad one" "$(cat "$PGREP_LOG")" '^[^ ]*claude( |$)'
-if killed 4243; then bad "3b another session's live claude survives the broad pattern" "kill log: $klog3"
-else ok "3b another session's live claude survives the broad pattern"; fi
-if killed 5000; then ok "3c while the paneless one is reaped"
-else bad "3c while the paneless one is reaped" "kill log: $klog3"; fi
+is    "3a kill log empty" "$(cat "$KILL_LOG")" ""
+hasnt "3b the broad pattern was not asked" "$(cat "$PGREP_LOG")" '^[^ ]*claude( |$)'
 
-echo "== 4. a deep descendant of a live pane is not an orphan =="
-# The runtime is usually one hop from the pane, but not always: a login prefix
-# or a wrapper puts a shell in between. The veto climbs, it does not compare.
+echo "== 4. a deep descendant of a live pane: same answer, nothing =="
 cat > "$PROCTAB" <<EOF
 4242 1 -bash
 4300 4242 sh -c wrapper
@@ -215,11 +248,23 @@ cat > "$PROCTAB" <<EOF
 EOF
 printf '4242\n' > "$PANES"
 run "$MINE"
-klog4="$(cat "$KILL_LOG")"
-if killed 4243; then bad "4a a grandchild of a live pane survives" "kill log: $klog4"
-else ok "4a a grandchild of a live pane survives"; fi
-if killed 5000; then ok "4b the orphan beside it is still reaped"
-else bad "4b the orphan beside it is still reaped" "kill log: $klog4"; fi
+is "4a kill log empty" "$(cat "$KILL_LOG")" ""
+
+echo "== 5. the OpenCode path keeps the pattern reap, by port, bound to the pane set =="
+cat > "$PROCTAB" <<EOF
+4242 1 -bash
+4243 4242 /x/opencode $HOMEDIR/Projects/repo --session s --port $PORT
+5000 1 /x/opencode $HOMEDIR/Projects/repo --session s --port $PORT
+6000 1 /x/opencode $HOMEDIR/Projects/repo --session s --port 9999
+EOF
+printf '4242\n' > "$PANES"
+run "$OCROW"
+klog5="$(cat "$KILL_LOG")"
+if killed 5000; then ok "5a the paneless adapter on THIS row's port is reaped"; else bad "5a the paneless adapter on THIS row's port is reaped" "kill log: $klog5"; fi
+if killed 4243; then bad "5b the one under a live pane survives" "kill log: $klog5"; else ok "5b the one under a live pane survives"; fi
+if killed 6000; then bad "5c another row's port is not this row's business" "kill log: $klog5"; else ok "5c another row's port is not this row's business"; fi
+has "5d the veto asked for EVERY pane on the socket" "$(cat "$TMUX_LOG")" "list-panes -a"
+has "5e the pattern names the port" "$(cat "$PGREP_LOG")" "port $PORT"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
