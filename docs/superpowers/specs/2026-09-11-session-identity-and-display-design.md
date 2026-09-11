@@ -1,9 +1,11 @@
 # Session identity and display
 
 **Date:** 2026-09-11
-**Status:** fifth revision. §1 rewritten as a state machine after the
-advisor's fifth pass: identity apart from health, a crash path, stale as its
-own class, a bootstrap census. Awaiting Jon.
+**Status:** sixth revision, plan-ready per the advisor's sixth pass once
+these were folded in: *moved* is not *orphan*; applied display is the last
+receipted `/rename`, not the bridge's reported name; OS birth token and
+bounded history in the generation; the pre-spawn-tmux row. Jon has delegated
+execution.
 **Scope:** spec A of two. The entity/project graph (Nav/Steward as real
 projects under estate entities, MANAGED_BY hygiene, infra semantics) is
 spec B and is deliberately not here.
@@ -112,10 +114,15 @@ session — the glob-order fault, reproduced by the probe itself):
   matches (Linux: `/proc/<pid>/stat` starttime plus boot id; macOS: P2), whose
   uid is the row's account, and whose file is not older than the current
   spawn generation's launch (during grace a file that predates the launch is
-  never the new registration). *Attachment* is then **managed-pane** when the
-  pid is a descendant of the file's exact tmux pane, or **orphan** when that
-  pane or session is gone (P1: the `tmux` field does not follow a rename, so a
-  renamed session reads as orphan — see the table).
+  never the new registration). *Attachment* is then one of three: **managed-pane** when the pid is a
+  descendant of the file's exact tmux pane; **orphan** when the pid is a
+  descendant of **no pane on the whole intended tmux socket**; **moved** when
+  the stored pane is gone or does not contain the pid, but the pid is found
+  under some other pane or session on the socket (P1: `tmux rename-session`
+  leaves the `tmux` field at the old name — the conversation is alive under a
+  new name, not abandoned). A live pid whose stored pane exists but does not
+  contain it is never managed: it is *moved* or a pid reuse, and either way
+  unknown for writes.
 - **stale** — well-formed, matches a known generation's `pid`+`procStart`,
   and that exact OS process is provably gone. Stale is evidence of a past
   process, not an unknown. It is ignored after two stable observations and
@@ -129,7 +136,8 @@ session — the glob-order fault, reproduced by the probe itself):
 | answer | when | writes allowed |
 |---|---|---|
 | **identified / managed-pane** | exactly one verified-live, attached | health, rename cycle to that exact pane, receipt |
-| **identified / orphan** | exactly one verified-live, detached | reap that `pid`+`procStart` (existing two-round rule and human veto), then → no-process |
+| **identified / orphan** | exactly one verified-live, under no pane on the socket | reap that process by its OS birth token (existing two-round rule; human veto is an action gate) — then → no-process |
+| **identified / moved** | exactly one verified-live, under a pane that is not the stored one | **nothing** written: no reap, no spawn, no rename; alarm; the operator restores the ID name or stops it deliberately |
 | **no-process** (after two rounds) | zero verified-live; every candidate stale or absent; no broad-veto runtime under the managed pane/session | close zombie tmux per existing veto; **exactly one respawn**; receipt classifies the exit *planned* (stop receipt) or *unplanned* (none) |
 | **identity-unknown** | ≥2 verified-live (split-brain); any unclassifiable candidate; the generation's process alive but no candidate names it | **nothing** written; degraded; alarm once (pid/procStart only) |
 
@@ -155,9 +163,15 @@ schema*, stops all writes, and **never** falls back to an argv or label
 match. The doctor feature-probes the format; a green probe does not turn a
 later parse failure into dead.
 
-**Persisted launch generation**, per `$ID`: `pid`, `procStart`, uid,
+**Persisted launch generation**, per `$ID`: `pid`, the **exact OS birth
+token** (Linux: boot id + `/proc/<pid>/stat` start ticks; macOS: what P2
+finds), the vendor's `procStart` as an observation beside it, uid,
 `sessionId`, our launch time, last observed bridge (`name`, `nameSince`,
-mtime), stop receipt if any, stale files seen. History and bootstrap, not a
+mtime, inode), the **last confirmed applied display** with its receipt time,
+stop receipt if any, and a **bounded history of earlier (pid, birth token)**
+pairs so a second or third KILL-stale file is still classifiable. During
+grace a file whose mtime, inode or `startedAt` predates the launch is never
+the new registration, even with a reused pid. History and bootstrap, not a
 second truth: a verified-live file's fields win; a contradiction is
 identity-unknown, never latest-wins.
 
@@ -171,17 +185,23 @@ holds:
 | bridge | generation | tmux `$ID` | reading | action |
 |---|---|---|---|---|
 | none | none (post-census) | absent | first-ever | spawn exactly one |
+| none | none (post-census) | **present** | manual or zombie tmux before first spawn | no-process only if the pane/runtime veto is empty; otherwise identity-unknown |
 | none | process gone, stop receipt | absent | planned stop | respawn if the row is active |
 | none | process gone, no receipt | absent | **unplanned exit** | two rounds → no-process → respawn |
 | none | process gone | present | zombie tmux | existing veto → close → respawn |
 | none | process **alive** | any | live process, no attestation | identity-unknown (grace after our own spawn) |
 | one live, attached | — | present | managed | identified / managed-pane |
-| one live, detached | — | absent or renamed | orphan | identified / orphan → reap |
+| one live, under no pane | — | any | orphan | identified / orphan → reap |
+| one live, under another pane | — | absent or renamed | **moved** | identified / moved → nothing, alarm |
+| one live, stored pane exists but lacks it | — | present | pid reuse or moved | identity-unknown |
 | stale only | matches | any | past process | as "none" for that row |
 | ≥2 live | — | — | split-brain | identity-unknown |
 
 `runtime_alive_in_session` stays exactly as it is: a broad veto that
-postpones destruction. It never asserts identity or health.
+postpones destruction. It never asserts identity or health — **it is an
+action gate on close and respawn, not a fifth adapter answer**: the adapter
+may say *no-process* while the veto still holds; close and respawn simply
+wait until it clears.
 
 ### 2. Display and rename — gated on P1
 
@@ -190,9 +210,15 @@ At spawn, `--remote-control` and `--name` both receive
 RC-free — no `--remote-control` — but `--name` carries the display.
 
 **Rename reuses the existing cycle, bound to the managed pane.** Desired =
-`registry_session_display`. Applied = bridge file `name`. When they differ
-the row is *rename pending*, both names are reserved (§3), and the cycle
-runs — with **every step addressed to the bridge file's exact `tmux` pane**,
+`registry_session_display`. **Applied = the last display confirmed by a
+`/rename` receipt**, persisted in the generation — *not* the bridge file's
+`name`. P1 showed the bridge `name` follows argv on a resume while the
+2026-08-31 measurement says the vendor tile can keep the old one; the bridge
+field is therefore the **locally reported name**, and equality between it and
+desired proves nothing about the tile. When desired ≠ applied the row is
+*rename pending* — persistent across restarts — both names are reserved
+(§3), and the cycle runs **even when the new bridge file already reports
+desired** — with **every step addressed to the bridge file's exact `tmux` pane**,
 never to `$NAME`: the immediate pid+procStart recheck, `capture-pane`,
 `send-keys`, and the receipt read. A pane whose foreground is not the
 managed runtime gets nothing typed into it. The TOCTOU between the last
@@ -208,9 +234,10 @@ pane.
 
 **Receipt, two levels promised, one named as beyond us:**
 1. *launched* — argv carries the desired string;
-2. *bridge-registered* — the bridge file's `name` equals desired **and**
-   `nameSince` advanced past the previous observation **and** `procStart`
-   matches the OS process; the pane shows `Session renamed to: <desired>`;
+2. *receipted* — the pane shows `Session renamed to: <desired>` **and** the
+   bridge file's reported `name` equals desired with `nameSince` advanced past
+   the previous observation, on the process with the matching birth token;
+   this, not the bridge field alone, becomes *applied*;
 3. *vendor-visible* — the claude.ai tile: human eyes until there is an API.
 
 Level 2 is **measured** (P1): `/rename` to the exact pane updated the bridge
@@ -285,14 +312,20 @@ changes while the same managed pid+procStart lives → still alive; every
 label pgrep stub a hard failure. Two tmux IDs, identical rendered names, A
 dies → B untouched, no kill or keystroke reaches B. A second Claude in
 another pane of `$ID` while the managed one dies → not alive; veto still
-blocks destruction. tmux renamed while runtime lives → no duplicate. Two
+blocks destruction. tmux renamed while runtime lives → classified *moved*: **zero kill, zero
+reap**, process continues, no duplicate, alarm. Live pid under a pane that is
+not the stored one → unknown, never managed. Live pid under no pane on the
+socket → orphan → reaped by birth token. Two
 login slugs with the same `CONFIG_DIR` under two accounts → each resolved to
 its own home (LOGIN+ACCOUNT+OWNER).
 
 *Rename.* Claude in window 0, a shell canary current → `/rename` reaches
-only the bridge file's pane; the canary never moves. Same thread resumed
-with changed flags → name unchanged (frozen); cycle then applies; receipt at
-level 2 (or level 1 + pane, per P1). Missing generation on a live legacy
+only the bridge file's pane; the canary never moves. Claude in the target
+pane but a shell or subprocess **foreground** there → nothing typed
+(descendant-of-pane is not foreground; the plan defines the foreground test). Same thread resumed
+with changed flags → **per level**: bridge reported name = new argv (P1,
+deterministic); tile behaviour is P1b case B, not a fixture; rename pending
+stays set from the last confirmed apply and the cycle runs. Missing generation on a live legacy
 process → seeded from the bridge file, never the register; bridge ≠
 generation → unknown.
 
@@ -321,12 +354,18 @@ measures its own.
 **P1 — done** (see Facts). Open from it: vendor GC of stale files (seen
 once, not measured), and the level-3 tile on resume (needs eyes).
 
-**P1b — one human acceptance of level 3**, before the first live NAME-drift
-rename: a live probe, `/rename` through the *real* supervisor cycle to the
-exact pane with a shell canary current, and a human sees the old tile become
-the new one with no duplicate and no stale tile. After P1b the level-2
-receipt drives name-only renames automatically. Until then, resume with new
-argv is not a rename proof.
+**P1b — human acceptance of level 3, two cases**, before the first live
+NAME-drift rename. **A:** a live `/rename` through the *real* supervisor
+cycle to the exact pane, a shell canary current in another window and a
+subprocess foreground in the target pane at least once — a human sees the
+old tile become the new one, no duplicate, no stale tile, nothing typed
+anywhere else. **B:** clean exit, then the same thread resumed with a new
+`--remote-control` — a human observes whether the old tile changes, stays,
+or doubles. If B updates the tile, the bridge's reported name may be trusted
+after registration; if B leaves a stale tile, *rename pending* stays
+persistent from the last confirmed apply and the cycle runs regardless of
+what the new bridge file reports (the default this spec assumes). Until P1b,
+resume with new argv is not a rename proof.
 
 **P0 — bootstrap census** before the adapter is activated on any existing
 row: snapshot processes, bridge files and tmux per row; seed generations;
