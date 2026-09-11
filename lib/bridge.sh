@@ -14,7 +14,8 @@
 #
 # FIELDS TRAVEL WITH THE UNIT SEPARATOR (byte 31). Tab is IFS whitespace, and `read`
 # collapses a run of whitespace, so a row with an EMPTY name shifted every later field
-# one to the left. US is not whitespace; an empty value is emitted as "-" (B8).
+# one to the left. US is not whitespace, so an empty value travels EMPTY and a name that
+# really is "-" stays distinguishable from one that is missing (B8, third pass 10).
 #
 # SCHEMA FIRST, MEMBERSHIP SECOND. A record is validated COMPLETELY before its tmux is
 # compared with the id. A file missing `tmux` is unsupported schema and is poison -
@@ -74,9 +75,9 @@ bridge_candidates() {
       elif ((.pid|tostring) != $base) then "!filename-pid"
       elif (.tmux | test("^" + ($id|esc) + ":@[0-9]+[.]%[0-9]+$")) | not then "!foreign"
       else [(.pid|tostring), (.procStart|tostring), .tmux,
-            (if .name == "" then "-" else .name end),
+            .name,
             (.nameSince|tostring),
-            (if .sessionId == "" then "-" else .sessionId end),
+            .sessionId,
             (.startedAt|tostring)] | join(us) end
     ' "$f" 2>/dev/null)" || row="!json"
     case "$row" in

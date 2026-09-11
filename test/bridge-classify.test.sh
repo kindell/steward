@@ -9,7 +9,8 @@
 #
 # WHY US AND NOT TAB (B8): tab is IFS whitespace, and `read` collapses a run of
 # whitespace, so a row with an EMPTY name shifted every later field one to the left.
-# The unit separator (byte 31) is not whitespace; an empty field survives as "-".
+# The unit separator (byte 31) is not whitespace; an empty field survives EMPTY, and a
+# literal "-" stays a literal "-" (a sentinel would have made the two collide).
 #
 # WHY SCHEMA BEFORE MEMBERSHIP (A3): a file missing `tmux` used to be "foreign" and
 # silently skipped. A vendor rename of that field would then have turned every row
@@ -63,15 +64,21 @@ has "3d filename-pid reason" "$out" "filename-pid"
 is "3e 109 reason is types (schema), not json" "$(printf '%s\n' "$out" | grep 109.json | cut -d "$US" -f 3)" "types"
 is "3f 110 reason is control-char" "$(printf '%s\n' "$out" | grep 110.json | cut -d "$US" -f 3)" "control-char"
 
-echo "== 4. an EMPTY name survives framing as '-' (a tab-framed read would have collapsed it) =="
+echo "== 4. an EMPTY name survives framing as EMPTY; a literal dash stays a dash =="
 rm -f "$D"/10[1-9].json "$D"/11?.json
 printf '{"pid":112,"procStart":1,"tmux":"%s","name":"","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@5.%5" > "$D/112.json"
-out="$(bridge_candidates "$ID" "$D" | grep "${US}112${US}")"; is "4a name is -" "$(printf '%s\n' "$out" | cut -d "$US" -f 6)" "-"
+out="$(bridge_candidates "$ID" "$D" | grep "${US}112${US}")"; is "4a name is empty" "$(printf '%s\n' "$out" | cut -d "$US" -f 6)" ""
 is "4b sessionId still in place" "$(printf '%s\n' "$out" | cut -d "$US" -f 8)" "s"
+mk 113 "$ID:@6.%6" "-"
+out="$(bridge_candidates "$ID" "$D" | grep "${US}113${US}")"; is "4c a literal dash is a dash" "$(printf '%s\n' "$out" | cut -d "$US" -f 6)" "-"
+IFS="$US" read -r _tag _path _pid _ps _tmux _name _since _sid _rest <<EOF
+$(bridge_candidates "$ID" "$D" | grep "${US}112${US}")
+EOF
+is "4d read with IFS=US keeps the empty field in place" "$_sid" "s"
 
 echo "== 5. two complete files for one id are two ok lines =="
 mk 107 "$ID:@3.%3" "Second"
-out="$(bridge_candidates "$ID" "$D")"; is "5a three ok (100,112,107)" "$(oks "$out")" "3"
+out="$(bridge_candidates "$ID" "$D")"; is "5a four ok (100,112,113,107)" "$(oks "$out")" "4"
 
 echo "== 6. birth token; odd comm does not shift the field =="
 P="$T/proc"; mkdir -p "$P/sys/kernel/random" "$P/4242" "$P/4243"; printf 'boot-1111\n' > "$P/sys/kernel/random/boot_id"
