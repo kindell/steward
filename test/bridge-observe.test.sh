@@ -59,7 +59,9 @@ printf '%s\n' "$*" >> "$TMUX_LOG"
 argv=("$@"); [ "${argv[0]:-}" = "-S" ] && argv=("${argv[@]:2}")
 case "${argv[0]:-}" in
   has-session) [ -f "$HAS_SESSION" ] ;;
-  list-panes) for a in "${argv[@]}"; do [ "$a" = "-a" ] && { cat "$PANES_ALL"; exit 0; }; done; [ -f "$HAS_SESSION" ] && cat "$PANES_SESS"; exit 0 ;;
+  list-panes) [ -n "${T_NO_SERVER:-}" ] && { echo "no server running on $2" >&2; exit 1; }
+              for a in "${argv[@]}"; do [ "$a" = "-a" ] && { [ -n "${T_PANES_ALL_FAIL:-}" ] && { echo "lost server" >&2; exit 1; }; cat "$PANES_ALL"; exit 0; }; done
+              [ -n "${T_PANES_SESS_FAIL:-}" ] && { echo "lost server" >&2; exit 1; }; [ -f "$HAS_SESSION" ] && cat "$PANES_SESS"; exit 0 ;;
   display-message)
     tgt=""; prev=""; fmt=""; for a in "${argv[@]}"; do [ "$prev" = "-t" ] && tgt="$a"; prev="$a"; fmt="$a"; done
     case "$fmt" in
@@ -72,7 +74,7 @@ EOF
 cat > "$BIN/pgrep" <<'EOF'
 #!/bin/bash
 pat=""; prev=""; for a in "$@"; do [ "$prev" = "-f" ] && pat="$a"; prev="$a"; done
-printf '%s\n' "$pat" >> "$PGREP_LOG"; case "$pat" in *remote-control*) echo LABEL >> "$LABEL_LOG";; esac
+printf '%s\n' "$pat" >> "$PGREP_LOG"; case "$pat" in *remote-control*) echo LABEL >> "$LABEL_LOG";; esac; [ -n "${T_PGREP_FAIL:-}" ] && exit 2
 found=0; while read -r pid ppid uid argv; do case "$pid" in ""|\#*) continue;; esac
   printf '%s' "$argv" | grep -Eq -- "$pat" && { printf '%s\n' "$pid"; found=1; }; done < "$PROCTAB"; [ "$found" = 1 ]
 EOF
@@ -98,19 +100,20 @@ bridge() { # <pid> <pane> <name> [startedAt] [procStart]
     "$1" "${5:-$1}" "$2" "$3" "$1" "${4:-1789000000000}" > "$HOMEDIR/.claude/sessions/$1.json"
 }
 gen() { bash -c ". '$LIBS/bridge.sh'; bridge_gen_write '$SD' '$ID' $*"; }
-LINE=""
+LINE=""; OBS_RC=0
 obs() { # [--bootstrap|--all] <id>  -> LINE
   : > "$LABEL_LOG"; : > "$PGREP_LOG"
-  LINE="$(HOME="$HOMEDIR" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" \
+  LINE="$(env HOME="$HOMEDIR" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" \
     STEWARD_STATE_DIR="$SD" STEWARD_TMUX_SOCKET="$T/fixture.sock" BRIDGE_PROC_ROOT="$PROC" STEWARD_SELF_HOST=h1 \
-    STEWARD_NOW_MS="${NOW_MS:-1789000100000}" STEWARD_NOW_UPTIME_MS="${NOW_UP:-500000}" STEWARD_BRIDGE_GRACE_MS=600000 \
-    PATH="$BIN:$PATH" bash "$OBS" "$@" 2>"$T/obs.err")"
+    ${NOW_MS:+STEWARD_NOW_MS=$NOW_MS} ${NOW_UP:+STEWARD_NOW_UPTIME_MS=$NOW_UP} STEWARD_BRIDGE_GRACE_MS=600000 \
+    T_NO_SERVER="${T_NO_SERVER:-}" T_PANES_ALL_FAIL="${T_PANES_ALL_FAIL:-}" T_PANES_SESS_FAIL="${T_PANES_SESS_FAIL:-}" T_PGREP_FAIL="${T_PGREP_FAIL:-}" \
+    PATH="$BIN:$PATH" ${OBS_TIMEOUT:+timeout $OBS_TIMEOUT} bash "$OBS" "$@" 2>"$T/obs.err")"; OBS_RC=$?   # NOW_MS/NOW_UP empty = the observer reads the clock itself
 }
 f() { printf '%s\n' "$LINE" | head -1 | cut -d "$US" -f "$1"; }
 nf() { printf '%s\n' "$LINE" | head -1 | awk -F "$US" '{print NF}'; }
 reset() {
   rm -rf "$PROC"/[0-9]* "$HOMEDIR/.claude/sessions"/* "$SD"/* "$ROOT/sessions.d"/*; : > "$PROCTAB"; : > "$PANES_ALL"; : > "$PANES_SESS"; : > "$PANEMAP"; : > "$TUPLE"; rm -f "$HAS_SESSION"
-  NOW_MS=1789000100000; NOW_UP=500000; unset FIX_UID_A FIX_OBS_UID; row_full "$ID"
+  NOW_MS=1789000100000; NOW_UP=500000; unset FIX_UID_A FIX_OBS_UID T_NO_SERVER T_PANES_ALL_FAIL T_PANES_SESS_FAIL T_PGREP_FAIL; row_full "$ID"
   printf '500000.00 400.00\n' > "$PROC/uptime"
 }
 live_managed() { # standard managed setup: pane 4242 (shell) -> 4243 (claude), bridge for 4243, generation knows birth
@@ -219,6 +222,39 @@ reset; obs "$ID"; is "26b tuple empty when tmux absent" "$(f 14)" ""
 echo "== 27. runtimes =="
 reset; row_full "$ID" 'RUNTIME="opencode"' 'MODEL="openai/gpt-5"' 'OPENCODE_VERSION="1.0.0"' 'OPENCODE_PORT="4096"' 'AUTO_APPROVE="false"' "CLAUDE_MEMORY_ROOT=\"$T/memory\""; obs "$ID"; is "27a opencode -> not-applicable" "$(f 2)" "not-applicable"; is "27b no pgrep at all" "$(grep -c . "$PGREP_LOG")" "0"
 reset; live_managed; proc 4243 111 Z; obs "$ID"; is "27c a zombie candidate is not live -> stale (in history) -> no-process/wait" "$(f 9)" "stale"
+
+echo "== 29. G1: not-applicable reads NO clock and NO /proc - the refusal comes before them =="
+# A FIFO WITH NO WRITER IS THE RECORDER: a read of it blocks. If the observer read uptime or the boot id
+# before the runtime gate, this claim would hang and the timeout would report rc 124.
+reset; row_full "$ID" 'RUNTIME="opencode"' 'MODEL="openai/gpt-5"' 'OPENCODE_VERSION="1.0.0"' 'OPENCODE_PORT="4096"' 'AUTO_APPROVE="false"' "CLAUDE_MEMORY_ROOT=\"$T/memory\""
+rm -f "$PROC/uptime" "$PROC/sys/kernel/random/boot_id"; mkfifo "$PROC/uptime" "$PROC/sys/kernel/random/boot_id"
+OBS_TIMEOUT=3 obs "$ID"; is "29a not-applicable answered without touching the FIFOs (no timeout)" "$OBS_RC" "0"; is "29b answer" "$(f 2)" "not-applicable"
+rm -f "$PROC/uptime" "$PROC/sys/kernel/random/boot_id"; printf 'boot-1\n' > "$PROC/sys/kernel/random/boot_id"; printf '500000.00 400.00\n' > "$PROC/uptime"
+
+echo "== 30-32. G2: a census that cannot be read is unknown WITH its reason, never an empty set =="
+reset; live_managed; T_PANES_ALL_FAIL=1 obs "$ID"; is "30a list-panes -a fails with a known managed process -> unknown (never orphan)" "$(f 2)" "unknown"; has "30b reason" "$(f 9)" "tmux-panes-unreadable"
+reset; live_managed; T_PANES_SESS_FAIL=1 obs "$ID"; is "31a has-session yes but the session's panes unreadable -> unknown (never no-process)" "$(f 2)" "unknown"; has "31b reason" "$(f 9)" "tmux-session-panes-unreadable"
+reset; live_managed; rm -f "$PROC/4243/stat" "$HOMEDIR/.claude/sessions/4243.json"; gen pid=4243 birth=boot-1:111 stop_receipt=; printf '4242 1 1001 -bash\n4243 4242 1001 claude\n' > "$PROCTAB"
+T_PGREP_FAIL=1 obs "$ID"; is "32a pgrep rc 2 with a live veto -> unknown (never no-process)" "$(f 2)" "unknown"; has "32b reason" "$(f 9)" "pgrep-failed"
+reset; gen pid=4600 birth=boot-1:444 procStart=4600 census=1; gen pid= birth= procStart=; bridge 4600 "$ID:@0.%0" "Dead" 1789000000000 4600
+T_NO_SERVER=1 obs "$ID"; is "32c tmux's own 'no server running' is an ABSENCE: the stale row is still no-process" "$(f 2)" "no-process"
+
+echo "== 33-34. G3: a launch is whole, and the launch child descends from the pane INCARNATION =="
+claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; gen launch_boot_id=; obs "$ID"; is "33a empty launch_boot_id -> unknown" "$(f 2)" "unknown"; has "33b reason discontinuity" "$(f 9)" "launch-clock-discontinuity"
+reset; touch "$HAS_SESSION"; printf '$7:1\n' > "$TUPLE"; printf '4242 1 1001 -bash\n4243 4242 1001 claude\n' > "$PROCTAB"; printf '4242\n' > "$PANES_SESS"; printf '4242\n' > "$PANES_ALL"
+proc 4242 100; proc 4243 111 S "STEWARD_LAUNCH_NONCE=abc123"
+gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=abc123 launch_pane_pid=4242 launch_pane_birth=boot-1:999 census=1
+NOW_UP=1100000; obs "$ID"; is "34a past window, nonce child under a REUSED pane pid (birth differs) -> child 0" "$(f 10)" "0"; is "34b gen_state gone-noreceipt, not alive" "$(f 8)" "gone-noreceipt"
+gen launch_pane_birth=boot-1:100; obs "$ID"; is "34c same setup with the recorded incarnation -> child 1" "$(f 10)" "1"
+
+echo "== 35. G4: state text is validated before arithmetic =="
+reset; live_managed; gen launch_ms=abc launch_uptime_ms=400000 launch_boot_id=boot-1; obs "$ID"; is "35a launch_ms=abc -> unknown" "$(f 2)" "unknown"; has "35b reason generation-invalid" "$(f 9)" "generation-invalid"
+reset; live_managed; gen pid=abc; obs "$ID"; has "35c pid=abc -> generation-invalid" "$(f 9)" "generation-invalid"
+reset; live_managed; NOW_MS=abc obs "$ID"; has "35d STEWARD_NOW_MS=abc -> clock-invalid" "$(f 9)" "clock-invalid"; is "35e and unknown" "$(f 2)" "unknown"
+reset; live_managed; rm -f "$PROC/uptime"; NOW_UP="" obs "$ID"; has "35f unreadable uptime -> clock-invalid" "$(f 9)" "clock-invalid"; printf '500000.00 400.00\n' > "$PROC/uptime"
+reset; live_managed; gen launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_pane_pid=4242 launch_pane_birth=boot-1:100; obs "$ID"
+is "35g a WHOLE launch beside a managed process still reads managed (validation does not refuse valid state)" "$(f 2)" "identified:managed"
+is "35h no diagnostics on stderr across the invalid-state claims" "$(grep -c 'syntax error\|integer expression\|unbound variable' "$T/obs.err")" "0"
 
 echo "== 28. never a label =="
 is "28 LABEL_LOG empty across the suite" "$(cat "$T/label.log" 2>/dev/null | wc -l | tr -d ' ')" "0"
