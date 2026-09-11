@@ -7218,7 +7218,7 @@ _doctor_probe_credential() {
   # measured" - a missing command read as an answer, which is the same defect
   # that nearly emptied two registers this morning. Measured here, in this
   # probe, before it shipped.
-  if ! command -v credential_rows >/dev/null 2>&1; then
+  if ! typeset -f credential_rows >/dev/null 2>&1; then
     printf 'FAIL the credential seam library is not loaded (credential_rows is not defined)\n'
     rm -f "$_rows" "$_err"; return 70
   fi

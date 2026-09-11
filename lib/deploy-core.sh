@@ -259,12 +259,12 @@ deploy_home_list() {
   # live defect - but a reader sourcing this library from an interactive zsh
   # prompt meets it, and one did. A guard that READS like a test and is not one
   # is the shape this file spent the day removing.
-  if ! command -v _registry_owner_home >/dev/null 2>&1; then
+  if ! typeset -f _registry_owner_home >/dev/null 2>&1; then
     _dc_lib="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/registry.sh"
     # shellcheck source=registry.sh
     [ -f "$_dc_lib" ] && . "$_dc_lib" 2>/dev/null
   fi
-  if ! command -v _registry_owner_home >/dev/null 2>&1; then
+  if ! typeset -f _registry_owner_home >/dev/null 2>&1; then
     echo "deploy-core: REFUSING - the registry library is not beside this one, so a home cannot be looked up" >&2
     return 78
   fi

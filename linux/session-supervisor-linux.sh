@@ -115,7 +115,7 @@ done
 # contract this file has with lib/mcprender.sh and lib/mcpspawn.sh.
 if [ -z "$_mcp_lib_missing" ]; then
   for _c in mcp_spawn_prepare mcp_claude_cmd_fragment mcp_render_document; do
-    command -v "$_c" >/dev/null 2>&1 || \
+    typeset -f "$_c" >/dev/null 2>&1 || \
       _mcp_lib_missing="$_MCP_LIB_DIR -- what is deployed there does not define $_c"
   done
 fi
@@ -826,7 +826,7 @@ fi
 # not resolve") and send the person debugging it into logins.d looking for a
 # line that was never there. So the library is measured by what it DEFINES, and
 # the refusal names the library.
-if ! command -v registry_login_exec_prefix >/dev/null 2>&1; then
+if ! typeset -f registry_login_exec_prefix >/dev/null 2>&1; then
   echo "session-supervisor: $NAME — REFUSING to start: $REG_LIB does not define registry_login_exec_prefix — deploy the product first." >&2
   exit 78
 fi
@@ -1188,7 +1188,7 @@ reap_orphan_claude() {
 # together, and this way they cannot disagree.
 CLAUDE_JSON="$HOME/.claude.json"
 if [ -n "${LOGIN:-}" ]; then
-  if command -v _registry_login_is_unnamed_default >/dev/null 2>&1 \
+  if typeset -f _registry_login_is_unnamed_default >/dev/null 2>&1 \
      && _registry_login_is_unnamed_default "$CFG_ROOT"; then
     :   # legacy row: the file beside the directory, as with no LOGIN
   else

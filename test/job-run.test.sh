@@ -603,7 +603,7 @@ rc=$?
 grep -qF "$lg4_badlib" "$T/lgout" && ok "LOGIN 4: the refusal names the missing path" \
   || bad "LOGIN 4: refusal text" "$(cat "$T/lgout")"
 
-echo "== LOGIN 4b: the library is PRESENT but OLD -- command -v, not [ -f ] =="
+echo "== LOGIN 4b: the library is PRESENT but OLD -- typeset -f, not [ -f ] =="
 id_lg4b="j-00000000000000a4"
 jobstate_create "$id_lg4b" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR="$T/work" \
   BRIEF_OBJECTIVE=o BRIEF_DELIVERY=d BRIEF_TOOLS=t BRIEF_BOUNDS=b RUNTIME=claude-code \
@@ -611,7 +611,7 @@ jobstate_create "$id_lg4b" GOAL=g OWNER=alice DESIRED=run PROCESS=queued WORKDIR
 lg4b_stalelib="$T/stale-registry.sh"
 # Defines the schema gate (so LOGIN 4b's refusal is not just the schema gate's
 # rc 127-as-refusal accident) but NOT registry_login_apply -- only the
-# command -v guard can refuse this fixture, which is the half this case exists
+# typeset -f guard can refuse this fixture, which is the half this case exists
 # to measure.
 printf 'registry_schema_check() { return 0; }\n' > "$lg4b_stalelib"
 : > "$T/lg4blog"
