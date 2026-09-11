@@ -19,7 +19,7 @@ session_assets() {
   [ -n "$s" ] || { echo "assets: session name required" >&2; return 1; }
   # The registry library may already be sourced by the caller; source it only if
   # its loader is absent, so a caller's own estate settings are not disturbed.
-  if ! command -v registry_load >/dev/null 2>&1; then
+  if ! typeset -f registry_load >/dev/null 2>&1; then
     local _here; _here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || { echo "assets: could not load the registry" >&2; return 1; }

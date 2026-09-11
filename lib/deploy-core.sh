@@ -251,14 +251,25 @@ deploy_home_list() {
   # missing command is not an answer; it is the defect this whole change is
   # about, one library over.
   #
-  # `command -v`, NOT `declare -F`. Measured 2026-09-11: in zsh, `declare -F
-  # name` is not an existence test - it DECLARES a float and returns 0, so the
-  # guard passes for a function that does not exist, the lazy load is skipped,
-  # and you land in exactly the `command not found` the guard exists to prevent.
-  # Every consumer here is bash and the shebang says so, so this was never a
-  # live defect - but a reader sourcing this library from an interactive zsh
-  # prompt meets it, and one did. A guard that READS like a test and is not one
-  # is the shape this file spent the day removing.
+  # `typeset -f`, AND NEITHER OF THE TWO IT REPLACED. Measured 2026-09-11.
+  #
+  # Not `declare -F`: in zsh that is not an existence test at all - it DECLARES
+  # a float and returns 0 - so the guard passes for a function that does not
+  # exist, the lazy load is skipped, and you land in exactly the `command not
+  # found` it exists to prevent. Every consumer here is bash, so it was never
+  # live; a reader sourcing this library from an interactive prompt meets it,
+  # and one did.
+  #
+  # And not `command -v`, which is this repo's idiom for BINARIES (jq, uuidgen,
+  # ss) and answers "can this name be called" - true of any PATH executable.
+  # What this asks is "did the library define it". `typeset -f ls` is rc 1
+  # where `command -v ls` is rc 0, and both are rc 1 for an absent name in both
+  # shells and in bash 3.2.
+  #
+  # This comment argued for command -v for six lines after the code had already
+  # moved to typeset -f - the mirror of a test whose heading was updated and
+  # whose subject was not, in the file whose own comment calls that shape the
+  # one it spent the day removing.
   if ! typeset -f _registry_owner_home >/dev/null 2>&1; then
     _dc_lib="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/registry.sh"
     # shellcheck source=registry.sh

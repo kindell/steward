@@ -175,12 +175,12 @@ _sessions_estate_readable() (
 
 session_identity_rows() {
   SESSIONS_UNREADABLE=""
-  if ! command -v registry_load >/dev/null 2>&1; then
+  if ! typeset -f registry_load >/dev/null 2>&1; then
     local _here; _here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || { echo "sessions: could not load the registry" >&2; return 1; }
   fi
-  if ! command -v session_visible_to >/dev/null 2>&1; then
+  if ! typeset -f session_visible_to >/dev/null 2>&1; then
     local _here2; _here2="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=visibility.sh
     . "$_here2/visibility.sh" || { echo "sessions: could not load the visibility rule" >&2; return 1; }

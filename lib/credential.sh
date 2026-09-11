@@ -224,7 +224,7 @@ credential_rows() {
   # THE LOGIN REGISTER IS ASKED ONCE, NOT ONCE PER ROW. A register that refuses
   # leaves the known set empty and every row is then dropped as an unknown
   # login - loudly, with the register's own refusal already on stderr above it.
-  if ! command -v registry_login_list >/dev/null 2>&1; then
+  if ! typeset -f registry_login_list >/dev/null 2>&1; then
     local _here; _here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || {
