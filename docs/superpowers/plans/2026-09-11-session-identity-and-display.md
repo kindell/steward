@@ -53,7 +53,9 @@
 
 ---
 
-### Task 4: `linux/bridge-observe.sh` — read-only, fifteen fields, `--bootstrap`, `not-applicable`
+### Task 4: `linux/bridge-observe.sh` — read-only, fifteen fields, `--bootstrap`, `not-applicable` — BUILT
+
+**Built** (60 claims green, 18 mutations bite). Two things the build taught: `--all` REPORTS a row that does not load (`unknown row-does-not-load`) instead of skipping it — a census that drops a row silently is a gate with a hole; and claim 7a had to move INTO the one-second mtime slack (`launch - 1000 <= mtime < launch`), because a 2020 mtime is refused by the mtime rule alone and a mutation dropping the inode clause survived. `linux/deploy-manifest` carries `lib/bridge.sh` and `linux/bridge-observe.sh`.
 
 Spec §1; D1, D3, D4, D5, D8, D9, D10.
 
@@ -69,13 +71,13 @@ Spec §1; D1, D3, D4, D5, D8, D9, D10.
 - **Clock discontinuity** (D8): `launch_boot_id ≠ boot id` **or** `now_ms < launch_ms` **or** `now_uptime < launch_uptime` → `unknown launch-clock-discontinuity`.
 - Env: `STEWARD_STATE_DIR`, `STEWARD_TMUX_SOCKET`; `STEWARD_REGISTRY_LIB`, `STEWARD_BRIDGE_LIB`, `BRIDGE_PROC_ROOT`, `STEWARD_BRIDGE_GRACE_MS` (600000), `STEWARD_NOW_MS`, `STEWARD_NOW_UPTIME_MS`, `STEWARD_SELF_HOST`.
 
-- [ ] **Step 1: Failing test** `test/bridge-observe.test.sh` — fixture as `test/supervisor-reap.test.sh` plus `/proc/{<pid>/stat,<pid>/environ,uptime,sys/kernel/random/boot_id}`, `id` shim, clock overrides. Claims:
-1. known birth in stored pane → `identified:managed`; f11–13 filled; generation byte-identical afterwards.
+- [x] **Step 1: Failing test** `test/bridge-observe.test.sh` — fixture as `test/supervisor-reap.test.sh` plus `/proc/{<pid>/stat,<pid>/environ,uptime,sys/kernel/random/boot_id}`, `id` shim, clock overrides. Claims:
+1. known birth in stored pane → `identified:managed`; f11–13 filled; **f15 equals `stat -c %i` of the candidate file** (F2); generation byte-identical afterwards.
 2. fresh pid, no launch → `unknown`.
 3. open launch + nonce + descends from launch pane (alive, recorded birth) + startedAt/mtime/inode fresh → `identified:managed`.
 4. same, nonce absent → `unknown`. 5. same, nonce present, **not** a descendant of the launch pane → `unknown` (D4). 6. same, descendant, but the launch pane's birth differs from the recorded one (pane recreated) → `unknown` (D4). 7. same, inode ∈ `launch_inodes` **and** mtime older than launch → `unknown` (pre-existing, D10); inode ∈ `launch_inodes` but mtime fresh → still `identified:managed` (inode reuse is normal). 8. same, `mtime` older than launch − 1 s → `unknown`.
 9. window elapsed → `unknown`. 10. `now_ms < launch_ms` → `… launch-clock-discontinuity`. 11. `now_uptime < launch_uptime` → same. 12. `launch_boot_id ≠ boot_id` → same (D8).
-13. moved; 14. orphan; 15. stale → `no-process`; 16. two live → `unknown` **and fields 3–7, 11–13 empty** (D9); 17. poison + live → `unknown`, fields empty (D9).
+13. moved; 14. orphan; 15. stale → `no-process`; 16. two live → `unknown` **and fields 3–7, 11–13 and 15 empty** (D9, F2); 17. poison + live → `unknown`, fields empty (D9).
 18. unrelated live claude under another session → `no-process`; another pane of **this** id → `wait-veto`.
 19. launch recorded, past window, pane shell alive, **no** nonce child → f10 `0`, f8 `gone-noreceipt`; with a nonce child alive → f10 `1`, f8 `alive`, answer `unknown`.
 20. generation `pid` set, `birth` empty, process gone → `gone-noreceipt`.
@@ -85,9 +87,9 @@ Spec §1; D1, D3, D4, D5, D8, D9, D10.
 27. `RUNTIME="opencode"` row → `not-applicable`, all other fields empty, no `/proc` or bridge reads attempted (D1; the `pgrep` shim records any call → count 0). 27b. a live candidate whose `/proc/<pid>/stat` state is `Z` → not live: `stale` when in history (→ `no-process` with tmux absent), otherwise `unknown` (E6).
 28. `LABEL_LOG` empty after every claim.
 
-- [ ] **Step 3: Implement** — as v4's script with these changes: refuse `not-applicable` right after `registry_load` when `${RUNTIME:-claude-code}` ≠ `claude-code`; `lbirth` check and `bridge_is_descendant "$pid" "$lpid"` and inode/mtime freshness folded into `claim=1`; `LB="$(cat "$PROC/sys/kernel/random/boot_id")"`, `launch_boot_id` compared; `--bootstrap` calls `bridge_answer "$classes" none "$tmux_present" "$veto" 1` and prints `bootstrap` in field 8; after `ans` is computed: `case "$ans" in identified:*) : ;; *) L_PID=""; L_BIRTH=""; L_PANE=""; L_NAME=""; L_SINCE=""; L_PS=""; L_SID=""; L_MTIME="" ;; esac`; `tuple="$(tmuxc display-message -p -t "=$id" '#{session_id}:#{session_created}')"` with both halves required non-empty (else `unknown tmux-tuple-incomplete`).
-- [ ] **Step 5: Mutations** — one per claim group: write on managed (1); veto on `all_panes` (18); skip nonce (4); skip descent (5); skip pane birth (6); skip inode (7); skip boot id (12); first of two live (16); leave L_* on unknown (16/17); bootstrap with gen `bootstrap` (25); claude-only scope removed (27).
-- [ ] **Step 6: Commit** — `bridge-observe: read-only, fourteen fields, a launch child proven by nonce, pane incarnation and inode`.
+- [x] **Step 3: Implement** — as v4's script with these changes: refuse `not-applicable` right after `registry_load` when `${RUNTIME:-claude-code}` ≠ `claude-code`; `lbirth` check and `bridge_is_descendant "$pid" "$lpid"` and inode/mtime freshness folded into `claim=1`; `LB="$(cat "$PROC/sys/kernel/random/boot_id")"`, `launch_boot_id` compared; `--bootstrap` calls `bridge_answer "$classes" none "$tmux_present" "$veto" 1` and prints `bootstrap` in field 8; after `ans` is computed: `case "$ans" in identified:*) : ;; *) L_PID=""; L_BIRTH=""; L_PANE=""; L_NAME=""; L_SINCE=""; L_PS=""; L_SID=""; L_MTIME=""; L_INODE="" ;; esac` (F1: the inode too, or field 15 leaks on unknown); `tuple="$(tmuxc display-message -p -t "=$id" '#{session_id}:#{session_created}')"` with both halves required non-empty (else `unknown tmux-tuple-incomplete`).
+- [x] **Step 5: Mutations** — one per claim group: write on managed (1); veto on `all_panes` (18); skip nonce (4); skip descent (5); skip pane birth (6); skip inode (7); skip boot id (12); first of two live (16); leave L_* on unknown (16/17); leave only L_INODE on unknown (16, F2); bootstrap with gen `bootstrap` (25); claude-only scope removed (27).
+- [x] **Step 6: Commit** — `bridge-observe: read-only, fifteen fields, a launch child proven by nonce, pane incarnation and inode`.
 
 ---
 
@@ -127,12 +129,12 @@ Spec §1; D1, D2, D5, D7, D12; E1, E2, E3, E4.
 20. `launch_child` `0` past the window → crash path respawns.
 
 - [ ] **Step 3: Implement**
-  - After line 81: source `lib/bridge.sh`, `_bridge_ok=1`, no exit. After the pause guard (:154) and `CFG_ROOT` (:358): `if [ -z "$ADAPTER" ]; then [ "${_bridge_ok:-}" = 1 ] || { echo "… REFUSING: $BRIDGE_LIB does not define bridge_answer" >&2; exit 78; }; fi`. `OBSERVE`, `BKILL` from env or beside `$0`.
+  - After line 81: source `lib/bridge.sh`, `_bridge_ok=1`, no exit. After the pause guard (:154) and `CFG_ROOT` (:358): `if [ "$IS_CLAUDE" = 1 ]; then [ "${_bridge_ok:-}" = 1 ] || { echo "… REFUSING: $BRIDGE_LIB does not define bridge_answer" >&2; exit 78; }; fi`. `OBSERVE`, `BKILL` from env or beside `$0`.
   - Line 1337 (claude rows only): `observe_row; if [ "$B_ANS" = identified:managed ]; then …bind…`. The OpenCode path keeps `claude_alive_in_session`'s **port-based** sibling untouched (do not delete the opencode branch functions; delete only the label-based claude ones).
   - **Replace lines 1731–1761 entirely** for claude rows with the case below; the OpenCode branch keeps its original block (D2):
 
 ```bash
-if [ -z "$ADAPTER" ]; then
+if [ "$IS_CLAUDE" = 1 ]; then
   case "$B_ANS" in
     identified:managed) : ;;
     identified:moved) rm -f "$SUSPECT"; echo "session-supervisor: $NAME — identified but MOVED (pid $B_PID, not under $B_PANE). Nothing written." >&2; exit 0 ;;
@@ -160,7 +162,7 @@ fi
   - Zombie repair (:1994), guarded by `NO_PROCESS_CONFIRMED` (E3, E4, D12):
 
 ```bash
-NP_N="${NP_TUPLE%%:*}"; case "$NP_N" in \$[0-9]*) : ;; *) echo "session-supervisor: $NAME — tuple has no usable session id; not closing." >&2; exit 0 ;; esac
+NP_N="${NP_TUPLE%%:*}"; case "$NP_N" in \$*) : ;; *) NP_N="" ;; esac; case "${NP_N#\$}" in ''|*[!0-9]*) echo "session-supervisor: $NAME — tuple has no usable session id; not closing." >&2; exit 0 ;; esac   # a bare `$` or `$1x` is refused: the stripped part must be non-empty digits
 _now="$(tmuxc display-message -p -t "=$NAME" '#{session_id}:#{session_created}' 2>/dev/null)"
 [ "$_now" = "$NP_TUPLE" ] || { echo "session-supervisor: $NAME — tmux tuple changed before close; resetting." >&2; exit 0; }
 bridge_gen_write "$STATE_DIR" "$NAME" stop_intent="zombie-$(date +%s)"
