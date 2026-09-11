@@ -101,6 +101,11 @@ chmod 600 "$FX/logins.d/acme-team.conf"
 
 printf 'NAME="Alpha"\nMEMBERS="a"\n'  > "$FX/entities.d/alpha.conf"
 printf 'NAME="Site"\nPARENT="alpha"\n' > "$FX/projects.d/site.conf"
+# ONE TARGET PER SUCCESSFUL MIGRATION (plan Task 9a): the gates of spec §3 refuse a second row that renders
+# the same display, or works the same project, under one login key - so claims that only need "a valid
+# target" each get one of their own.
+printf 'NAME="Site Two"\nPARENT="alpha"\n' > "$FX/projects.d/site2.conf"
+printf 'NAME="Beta"\nMEMBERS="a"\n' > "$FX/entities.d/beta.conf"; printf 'NAME="Gamma"\nMEMBERS="a"\n' > "$FX/entities.d/gamma.conf"; printf 'NAME="Delta"\nMEMBERS="a"\n' > "$FX/entities.d/delta.conf"
 
 run() {
   STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config" \
@@ -210,20 +215,20 @@ DOMAIN="alpha"
 RC_LABEL="x"
 REPO_PATH="/pp"
 EOF
-plain="$(run oldplain --account a-h1 --entity alpha --slug plainslug)"; rc=$?
+plain="$(run oldplain --account a-h1 --entity beta --slug plainslug)"; rc=$?
 is  "2b: rc 0" "$rc" "0"
 has "2b: mapping names the old slug and the arrow" "$plain" "migrated oldplain ->"
-has "2b: mapping carries the derived display" "$plain" "display: Alpha"
+has "2b: mapping carries the derived display" "$plain" "display: Beta"
 
 echo "== 2c. an old conf with NO DOMAIN at all: fall back to the target slug =="
 cat > "$SESS/olddomless.conf" <<'EOF'
 OWNER="a"
 REPO_PATH="/p"
 EOF
-out="$(run olddomless --account a-h1 --project site --slug domless --json)"; rc=$?
+out="$(run olddomless --account a-h1 --project site2 --slug domless --json)"; rc=$?
 is "2c: rc 0" "$rc" "0"
 IDB="$(printf '%s' "$out" | jq -r '.id')"
-is "2c: DOMAIN falls back to the target slug (the supervisor requires a line)" "$(load_field "$IDB" DOMAIN)" "site"
+is "2c: DOMAIN falls back to the target slug (the supervisor requires a line)" "$(load_field "$IDB" DOMAIN)" "site2"
 
 echo "== 2d. FAIL-CLOSED on an unmodeled field: refuse and name it; dead knowns are ignored =="
 # The carry-loop is a hand-maintained allowlist. A field OUTSIDE the model
@@ -249,7 +254,7 @@ DOMAIN="alpha"
 REPO_PATH="/p"
 SESSION_NAME="olddead"
 EOF
-out="$(run olddead --account a-h1 --entity alpha --slug deadok --json)"; rc=$?
+out="$(run olddead --account a-h1 --entity gamma --slug deadok --json)"; rc=$?
 is "2d: known-dead SESSION_NAME still migrates rc 0" "$rc" "0"
 IDD="$(printf '%s' "$out" | jq -r '.id')"
 is "2d: the dead line is not carried" "$(grep -c '^SESSION_NAME=' "$SESS/$IDD.conf")" "0"
@@ -309,7 +314,7 @@ echo "== 4. field preservation under injection: a hostile ASSETS is inert =="
 CANARY="$FX/pwned"
 printf 'OWNER="a"\nDOMAIN="alpha"\nRC_LABEL="x"\nREPO_PATH="/i"\nASSETS="\\$(touch %s) \\`touch %s\\`"\n' \
   "$CANARY" "$CANARY" > "$SESS/oldinj.conf"
-out="$(run oldinj --account a-h1 --entity alpha --slug injslug --json)"; rc=$?
+out="$(run oldinj --account a-h1 --entity delta --slug injslug --json)"; rc=$?
 is  "4: rc 0" "$rc" "0"
 ID4="$(printf '%s' "$out" | jq -r '.id')"
 absent "4: the injection did NOT execute (no canary at snapshot/write time)" "$CANARY"

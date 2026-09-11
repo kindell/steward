@@ -1390,6 +1390,23 @@ _registry_validate_session_stage() {
     echo "registry: slug '$SLUG' was taken in account '$ACCOUNT' by a concurrent write — refusing" >&2
     return 70
   fi
+  # THE REGISTRY GATE OF SPEC §3, INSIDE THE LOCK (plan Task 9a): two slugs that render the same display
+  # are two tiles a human cannot tell apart, and one claude-code conversation per (who pays, project) is
+  # the work rule. Both are register lifecycle - what is written - never live state.
+  local _desired _holder _key
+  _key="$(registry_session_login_key "$LOGIN" "$OWNER" "$HOST")"
+  if _desired="$(registry_display_of_fields "" "$TARGET_PROJECT" "$TARGET_ENTITY" "$SLUG" 2>/dev/null)" && [ -n "$_desired" ]; then
+    if _holder="$(registry_session_rendered_unique "$ID" "$_key" "$_desired")"; then
+      echo "registry: REFUSING — the display \"$_desired\" is already rendered by session '$_holder' under the same login ($_key); two rows rendering identically in one tile list are two tiles nobody can tell apart (spec §3). Give the target a name of its own, or retire '$_holder' first." >&2
+      return 70
+    fi
+  fi
+  if [ -n "$TARGET_PROJECT" ]; then
+    if _holder="$(registry_session_work_rule "$ID" "$_key" "$TARGET_PROJECT")"; then
+      echo "registry: REFUSING — session '$_holder' already works on project '$TARGET_PROJECT' under the same login ($_key); one claude-code conversation per (login, project) (spec §3). Retire or retarget '$_holder' first." >&2
+      return 70
+    fi
+  fi
   return 0
 }
 

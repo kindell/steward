@@ -361,6 +361,25 @@ OUT="$( export STEWARD_REGISTRY_DIR="$SESS" STEWARD_ESTATE_ROOT="$FX" STEWARD_EN
 [ "$RC" -ne 0 ] && ok "8f an unresolvable target refuses (rc $RC)" || bad "8f an unresolvable target refuses" "rc 0"
 case "$OUT" in *nope*) ok "8g and stderr names the project" ;; *) bad "8g and stderr names the project" "$OUT" ;; esac
 
+echo "== 9. THE WORK RULE and the rendered gate as library predicates (plan Task 9a) =="
+printf 'NAME="Work"\nPARENT="alpha"\n' > "$PROJ/work.conf"
+printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="work"\nRC_LABEL="First"\n' > "$SESS/wr-one.conf"
+printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="work"\nRC_LABEL="Second"\n' > "$SESS/wr-two.conf"
+printf 'OWNER="a"\nHOST="h2"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="work"\nRC_LABEL="Third"\n' > "$SESS/wr-far.conf"
+printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="work"\nRC_LABEL="Gone"\nLIFECYCLE="retired"\n' > "$SESS/wr-ret.conf"
+in_fixture registry_session_work_rule wr-two "owner:a@h1" work;  is "9a two labels, one (home, project): the holder is named (rc 0)" "$RC$OUT" "0wr-one"
+in_fixture registry_session_work_rule wr-one "owner:a@h1" work;  is "9b and from the other side" "$RC$OUT" "0wr-two"
+in_fixture registry_session_work_rule wr-new "owner:a@h2" work;  is "9c the far home has a holder of its own on the same project (wr-far), not wr-one" "$RC$OUT" "0wr-far"
+in_fixture registry_session_work_rule wr-new "owner:a@h3" work;  is "9c2 a home with no row on the project is free" "$RC" "1"
+in_fixture registry_session_work_rule wr-new "owner:a@h1" nowhere; is "9d a project nobody works on is free" "$RC" "1"
+in_fixture registry_session_work_rule wr-one "owner:a@h1" work;  case "$OUT" in wr-ret) bad "9e a retired row never holds" "$OUT" ;; *) ok "9e a retired row never holds" ;; esac
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "First"; is "9f the rendered gate: 'First' is held in this home" "$RC$OUT" "0wr-one"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h2" "First"; is "9g but not under another key" "$RC" "1"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Gone";  is "9h a retired row's display is free" "$RC" "1"
+in_fixture registry_session_login_key "" a h1; is "9i the legacy key is the home" "$OUT" "owner:a@h1"
+in_fixture registry_session_login_key q-login a h1; is "9j a LOGIN is the key itself" "$OUT" "q-login"
+rm -f "$SESS"/wr-*.conf "$PROJ/work.conf"
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

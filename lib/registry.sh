@@ -3924,6 +3924,86 @@ registry_load() {
 # scoping the moment the row sourced. Everything the conf can influence
 # crosses the boundary as printed field values only; the name used by the
 # fallback is this function's own argument, captured before any load runs.
+# registry_display_of_fields <rc_label> <target_project> <target_entity> <slug> - the desired display
+# of a row that is NOT registered yet (a staged file's fields), with exactly registry_session_display's
+# precedence: a non-empty label wins, then the project, then the entity, then prefix+slug. rc as the
+# renderer's; a target that does not resolve is a refusal, not a fallback.
+registry_display_of_fields() {
+  local label="${1:-}" tproj="${2:-}" tent="${3:-}" slug="${4:-}" disp _prefix
+  if [ -n "$label" ]; then printf '%s\n' "$label"; return 0; fi
+  if [ -n "$tproj" ]; then disp="$(registry_display_for project "$tproj")" || return $?; printf '%s\n' "$disp"; return 0; fi
+  if [ -n "$tent" ]; then disp="$(registry_display_for entity "$tent")" || return $?; printf '%s\n' "$disp"; return 0; fi
+  _prefix="$(registry_rc_label_prefix)" || return 78
+  printf '%s\n' "$_prefix$slug"
+}
+
+# registry_session_login_key <login> <owner> <host> - the key the two gates below scope on: the row's
+# LOGIN (which Claude account pays and shows the tile), or "owner:<OWNER>@<HOST>" for a legacy row
+# without one - the HOME, which is exactly the scope the older same-home label gate measured, because a
+# legacy row's Claude login is not in the register and a home is the closest thing to one.
+registry_session_login_key() { local lg="${1:-}" ow="${2:-}" host="${3:-}"; if [ -n "$lg" ]; then printf '%s' "$lg"; else printf 'owner:%s@%s' "$ow" "$host"; fi; }
+
+# registry_session_rendered_unique <own-id> <login-key> <desired> - THE REGISTRY GATE OF SPEC §3,
+# static, on register lifecycle: prints the id of ANOTHER row under the SAME login key that renders
+# the same display and returns 0 (a collision), or returns 1 when the display is free for that login.
+#
+# SCOPED PER LOGIN, NOT PER ESTATE - Jon's decision 2026-09-11 (point 4): two project accounts logged
+# in under DIFFERENT Claude logins may show the same RC name, because each login has its own tile
+# list and the names never meet; "Chalmers→Innovation" needs no suffix for that. Within ONE login two
+# identical names are two tiles a human cannot tell apart, and that is what is refused. Every host
+# and owner counts within the key; a claude-code row only (RUNTIME first: OpenCode and Codex are
+# exempt), RC-enabled (not the deliberate RC_LABEL=""), and not retired. A row never conflicts with
+# itself; a row whose display does not render holds nothing. Never live state: a writer cannot
+# measure a process.
+registry_session_rendered_unique() {
+  local own="${1:-}" key="${2:-}" desired="${3:-}" d f cand snap rt lc fri lg ow disp
+  [ -n "$key" ] && [ -n "$desired" ] || return 1
+  d="$(registry_dir)" || return 1; [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    [ "$cand" = "$own" ] && continue
+    registry_valid_name "$cand" || continue
+    snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" || continue
+    rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
+    fri="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lg="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; ow="${snap%%$'\n'*}"; local hs="${snap#*$'\n'}"
+    [ "$rt" = claude-code ] || continue
+    [ "$lc" != retired ] || continue
+    [ "$fri" != yes ] || continue
+    [ "$(registry_session_login_key "$lg" "$ow" "$hs")" = "$key" ] || continue
+    disp="$(registry_session_display "$cand" 2>/dev/null)" || continue
+    [ "$disp" = "$desired" ] || continue
+    printf '%s\n' "$cand"; return 0
+  done
+  return 1
+}
+
+# registry_session_work_rule <own-id> <login-key> <project> - one claude-code conversation per
+# (who pays, project), on register lifecycle: prints the id of another non-retired claude-code row
+# with the same login key and TARGET_PROJECT, rc 0; rc 1 when none. The login key is the row's LOGIN,
+# or "owner:<OWNER>" for a legacy row without one, so the rule still binds where no login is named.
+registry_session_work_rule() {
+  local own="${1:-}" key="${2:-}" project="${3:-}" d f cand snap rt lc tp lg ow ckey
+  [ -n "$key" ] && [ -n "$project" ] || return 1
+  d="$(registry_dir)" || return 1; [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    [ "$cand" = "$own" ] && continue
+    registry_valid_name "$cand" || continue
+    snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${TARGET_PROJECT:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" || continue
+    rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
+    tp="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lg="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; ow="${snap%%$'\n'*}"; local hs="${snap#*$'\n'}"
+    [ "$rt" = claude-code ] || continue
+    [ "$lc" != retired ] || continue
+    [ "$tp" = "$project" ] || continue
+    ckey="$(registry_session_login_key "$lg" "$ow" "$hs")"
+    [ "$ckey" = "$key" ] || continue
+    printf '%s\n' "$cand"; return 0
+  done
+  return 1
+}
+
 # registry_session_rc_enabled <id> - rc 0 when the row is a claude-code row that has NOT opted out of
 # Remote Control; rc 1 when it has (RC_LABEL="", the RC-FREE choice) or is not a claude-code row at all
 # (spec §3: RUNTIME first - OpenCode and Codex are exempt); rc 78 when the row does not load, because a
