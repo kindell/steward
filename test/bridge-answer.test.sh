@@ -51,8 +51,13 @@ is "moved"                                       "$(bridge_answer 'live:moved'  
 is "stale only = as none"                        "$(bridge_answer 'stale' gone-noreceipt 0 0 1)" "no-process"
 is "stale + live = identified"                   "$(bridge_answer 'stale live:managed' alive 1 0 1)" "identified:managed"
 is "two live = split-brain"                      "$(bridge_answer 'live:managed live:managed' alive 1 0 1)" "unknown"
+# THE FALL-THROUGH MUST NOT RESCUE THE MUTATION: with gen=alive the answer below the live
+# count is also "unknown", so a broken count would pass by accident. gone-noreceipt would
+# fall through to no-process - the word the correct code must never say for two live pids.
+is "two live, gen gone -> still unknown, never no-process" "$(bridge_answer 'live:managed live:managed' gone-noreceipt 0 0 1)" "unknown"
 is "two live of different kinds = split-brain"   "$(bridge_answer 'live:managed live:orphan' alive 1 0 1)" "unknown"
 is "one unclassifiable poisons"                  "$(bridge_answer 'unclassifiable live:managed' alive 1 0 1)" "unknown"
+is "one unclassifiable, gen gone -> still unknown" "$(bridge_answer 'unclassifiable' gone-noreceipt 0 0 1)" "unknown"
 is "unknown gen_state word = unknown"            "$(bridge_answer '' bogus 0 0 1)" "unknown"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]
