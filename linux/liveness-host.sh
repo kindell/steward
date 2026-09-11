@@ -211,6 +211,42 @@ fi
 # session's panes, and the pane-descendant check below is what carries identity
 # — it has done so since the day an orphaned runtime, reparented to init and
 # matching every pattern, convinced supervision that a dead session was alive.
+# THE ONE ADAPTER FOR CLAUDE ROWS (spec §1; plan Task 8): a claude-code row's agent is what
+# linux/bridge-observe.sh answers - running iff identified:managed, not-running iff no-process, and
+# otherwise `unknown` WITH the adapter's answer as the reason. The pane walk below stays for OpenCode
+# rows, which the adapter does not cover. The observer sits beside this script, deployed
+# (scripts/bridge-observe.sh) or in the checkout (linux/); STEWARD_BRIDGE_OBSERVE overrides (tests).
+OBSERVE="${STEWARD_BRIDGE_OBSERVE:-$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bridge-observe.sh}"
+BRIDGE_STATE_DIR=""; BRIDGE_STATE_REASON=""
+_bs_name="$(registry_state_dir_name 2>/dev/null)"; _bs_rc=$?
+if [ "$_bs_rc" -eq 0 ] && [ -n "$_bs_name" ]; then BRIDGE_STATE_DIR="$HOME/.local/state/$_bs_name"; else BRIDGE_STATE_REASON="the estate does not name a state directory"; fi
+_US="$(printf '\037')"
+# observe_agent <id> -> sets AGENT (running|not-running|unknown) and AGENT_REASON ("" unless unknown)
+observe_agent() {
+  local id="$1" line n _id ans rest gen classes
+  AGENT="unknown"; AGENT_REASON=""
+  if [ -z "$BRIDGE_STATE_DIR" ]; then AGENT_REASON="cannot observe: $BRIDGE_STATE_REASON"; return 0; fi
+  if [ ! -f "$OBSERVE" ]; then AGENT_REASON="cannot observe: the bridge observer is missing ($OBSERVE)"; return 0; fi
+  line="$(STEWARD_STATE_DIR="$BRIDGE_STATE_DIR" STEWARD_TMUX_SOCKET="$HOME/.tmux/${SOCK:-none}" STEWARD_REGISTRY_LIB="$REG_LIB" bash "$OBSERVE" "$id" 2>/dev/null)" || { AGENT_REASON="cannot observe: the bridge observer failed"; return 0; }
+  case "$line" in *"$_US"*) : ;; *) AGENT_REASON="cannot observe: the observer's line is unreadable"; return 0 ;; esac
+  case "$line" in *$'\n'*) AGENT_REASON="cannot observe: the observer answered more than one line"; return 0 ;; esac
+  n="$(printf '%s' "$line" | tr -cd "$_US" | wc -c | tr -d ' ')"
+  [ "$n" -eq 14 ] || { AGENT_REASON="cannot observe: the observer's line has $((n+1)) fields, not fifteen"; return 0; }
+  IFS="$_US" read -r _id ans rest <<EOF
+$line
+EOF
+  [ "$_id" = "$id" ] || { AGENT_REASON="cannot observe: the observer answered about '$_id'"; return 0; }
+  gen="$(printf '%s' "$line" | cut -d "$_US" -f 8)"; classes="$(printf '%s' "$line" | cut -d "$_US" -f 9)"
+  case "$ans" in
+    identified:managed) AGENT="running" ;;
+    no-process)         AGENT="not-running" ;;
+    identified:orphan|identified:moved|unknown|wait-veto|grace|uninspectable|not-applicable)
+                        AGENT="unknown"; AGENT_REASON="bridge: $ans${classes:+ ($classes)}${gen:+, generation $gen}" ;;
+    *)                  AGENT="unknown"; AGENT_REASON="cannot observe: the observer answered '$ans', which is not in its vocabulary" ;;
+  esac
+  return 0
+}
+
 RUNTIME_PAT='(^|[ /])(claude|opencode)'
 RUNTIME_PIDS=""
 # THE SAME DISTINCTION, THE SECOND DOOR. `pgrep` exits 1 when nothing matched -
@@ -369,7 +405,7 @@ for conf in "$RDIR"/*.conf; do
     # decide whether the daemon is up, so the two agree by construction rather
     # than by anybody remembering to keep them in step.
     _cx_thread="$CODEX_STATE_DIR/$id.codex-thread"
-    agent="not-running"
+    agent="not-running"; agent_reason=""
     if [ -S "$CODEX_SOCK" ] && [ -s "$_cx_thread" ]; then agent="running"; fi
 
     # LAST ACTIVITY. The newest mtime of the two files this runtime writes: the
@@ -417,7 +453,9 @@ for conf in "$RDIR"/*.conf; do
       add_omit "$id" "cannot probe on $SELF_HOST: $TMUX_REASON"
       continue
     fi
-    if [ -n "$PGREP_REASON" ]; then
+    # THE PANE-WALK'S OWN pgrep GATE APPLIES TO THE ROWS THE PANE WALK MEASURES (OpenCode); a claude
+    # row's census failures are the adapter's, and come back as `unknown` with their reason.
+    if [ -n "$PGREP_REASON" ] && [ "$runtime" != "claude-code" ]; then
       add_omit "$id" "cannot probe on $SELF_HOST: $PGREP_REASON"
       continue
     fi
@@ -441,8 +479,13 @@ for conf in "$RDIR"/*.conf; do
     # AGENT. A runtime process that descends from one of THIS session's panes.
     # With no tmux session there are no panes, so nothing can descend from it -
     # `not-running` is measured, not assumed.
-    agent="not-running"
+    agent="not-running"; agent_reason=""
     last="null"
+    if [ "$runtime" = "claude-code" ]; then
+      # THE ADAPTER DECIDES for a claude row - never the pane walk, never a label. tmux above stays an
+      # independent measurement; the activity stamp below is still tmux's own answer.
+      observe_agent "$id"; agent="$AGENT"; agent_reason="$AGENT_REASON"
+    fi
     if [ "$tmux_state" = "up" ]; then
       # The exact target form (=name): tmux -t prefix-matches, and a session whose
       # name prefixes a sibling's would otherwise borrow the sibling's panes.
@@ -474,7 +517,7 @@ for conf in "$RDIR"/*.conf; do
         add_omit "$id" "cannot probe on $SELF_HOST: tmux listed the session as up but its panes could not be read (rc $_lprc)${_lpmsg:+: $_lpmsg}"
         continue
       fi
-      if [ -n "$panes" ]; then
+      if [ -n "$panes" ] && [ "$runtime" != "claude-code" ]; then
         for pid in $RUNTIME_PIDS; do
           for pane in $panes; do
             if is_descendant "$pid" "$pane"; then agent="running"; break 2; fi
@@ -498,7 +541,10 @@ for conf in "$RDIR"/*.conf; do
   model="$(_conf_val "$conf" MODEL)"
   if [ -n "$model" ]; then model="\"$(_json_str "$model")\""; else model="null"; fi
 
-  add_sess "\"$(_json_str "$id")\":{\"daemon\":\"$daemon\",\"tmux\":\"$tmux_state\",\"agent\":\"$agent\",\"runtime\":\"$(_json_str "$runtime")\",\"model\":$model,\"lastActivity\":$last}"
+  # THE REASON TRAVELS WITH THE ROW when the agent is unknown - an `unknown` with no reason is the same
+  # silence the seam's omitted rows refuse (lib/liveness.sh).
+  _reason_json=""; [ -z "${agent_reason:-}" ] || _reason_json=",\"reason\":\"$(_json_str "$agent_reason")\""
+  add_sess "\"$(_json_str "$id")\":{\"daemon\":\"$daemon\",\"tmux\":\"$tmux_state\",\"agent\":\"$agent\",\"runtime\":\"$(_json_str "$runtime")\",\"model\":$model,\"lastActivity\":$last$_reason_json}"
 done
 
 printf '{"sessions":{%s},"omitted":{%s}}\n' "$sess_json" "$omit_json"

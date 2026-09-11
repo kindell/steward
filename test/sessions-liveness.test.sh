@@ -46,6 +46,19 @@ is "activity" "$(field "$out" alpha 7)" "2026-08-28T09:00:00.000Z"
 # layer exists to keep. An explicit null means the command looked and found no
 # value; a missing key means it never looked. Collapsing them would turn "we did
 # not measure the model" into "this session has no model".
+# THE EIGHTH FIELD IS WHY, FOR A SESSION ROW TOO (plan Task 8): liveness-host answers `unknown` for
+# a claude row whose bridge adapter could not classify it, and carries the adapter's answer as
+# `reason`. A row without a reason keeps the dash.
+echo "== a session row's reason reaches the eighth field =="
+why="$(stub why 'cat <<'"'"'J'"'"'
+{"sessions":{"gamma":{"daemon":"loaded","tmux":"up","agent":"unknown","runtime":"claude-code","model":null,"lastActivity":null,
+ "reason":"bridge: unknown (live:managed live:managed), generation alive"},
+ "delta":{"daemon":"loaded","tmux":"up","agent":"running","runtime":"claude-code","model":null,"lastActivity":null}}}
+J')"
+outw="$(STEWARD_LIVENESS_CMD="$why" liveness_rows)"
+is "the unknown row's reason is the adapter's answer" "$(field "$outw" gamma 8)" "bridge: unknown (live:managed live:managed), generation alive"
+is "a row without a reason keeps the dash" "$(field "$outw" delta 8)" "-"
+
 echo "== an explicit null is measured-and-empty; a missing key is unmeasured =="
 mixed="$(stub mixed 'cat <<'"'"'J'"'"'
 {"sessions":{"beta":{"daemon":"missing","tmux":"down","agent":"not-running",
