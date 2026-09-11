@@ -38,7 +38,7 @@ bridge_gen_write "$T" "$ID" "bad key=1" >/dev/null 2>&1; is "1g bad key rc 64" "
 is "1h bad key wrote nothing" "$(bridge_gen_get "$T" "$ID" applied)" "Point→Chalmers→HR Pilot"
 # A WELL-FORMED TYPO IS THE DANGEROUS ONE: it passes the grammar and would become a fact.
 bridge_gen_write "$T" "$ID" brith=boot-z:9 >/dev/null 2>&1; is "1i typo key (brith=) rc 64" "$?" "64"
-bridge_gen_get "$T" "$ID" brith >/dev/null 2>&1; is "1j typo key not persisted" "$?" "1"
+is "1j typo key not persisted (read from the file, not via get: get is rc 1 only when the FILE is absent)" "$(grep -c '^brith=' "$T/$ID.generation")" "0"
 bridge_gen_write "$T" "$ID" pid=100 brith=1 >/dev/null 2>&1; is "1k one bad key refuses the WHOLE write" "$?" "64"
 is "1l pid unchanged after the refused write" "$(bridge_gen_get "$T" "$ID" pid)" "100"
 for k in launch_uptime_ms launch_boot_id launch_inodes spawn_state stop_intent; do bridge_gen_write "$T" "$ID" "$k=x" >/dev/null 2>&1; is "1m v4 key $k accepted" "$?" "0"; done
