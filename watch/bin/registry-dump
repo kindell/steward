@@ -13,7 +13,7 @@
 # repo root, and scripts/watch/bin/ beside scripts/lib/ in a deployed home.
 # STEWARD_REGISTRY_LIB overrides; found nowhere is a refusal.
 #
-#   sessions  one JSON object per line: {name, id, slug, rcLabel, label, host, owner}
+#   sessions  one JSON object per line: {name, id, slug, rcLabel, label, host, owner, runtime}
 #             rcLabel is '' for an RC-free row AND for a migrated row without a
 #             label line - both are supervised on the PANE, not the label.
 #   hosts     one JSON object: {<host>: <OPERATOR>} for every hosts.d row that
@@ -63,8 +63,8 @@ case "${1:-}" in
         fields="$(
           registry_load "$n" >/dev/null || exit $?
           jq -cn --arg id "${ID:-}" --arg slug "${SLUG:-}" --arg rcLabel "${RC_LABEL:-}" \
-                 --arg host "${HOST:-}" --arg owner "${OWNER:-}" \
-            '{id:$id,slug:$slug,rcLabel:$rcLabel,host:$host,owner:$owner}'
+                 --arg host "${HOST:-}" --arg owner "${OWNER:-}" --arg runtime "${RUNTIME:-claude-code}" \
+            '{id:$id,slug:$slug,rcLabel:$rcLabel,host:$host,owner:$owner,runtime:$runtime}'
         )"; load_rc=$?
         if [ "$load_rc" -ne 0 ]; then
           echo "registry-dump: $n: the registry refuses the row - skipped" >&2
@@ -75,7 +75,7 @@ case "${1:-}" in
         # and an id the row did not carry falls back to that same key.
         jq -c --arg name "$n" --arg label "$label" \
           '{name:$name, id:(if .id == "" then $name else .id end), slug:.slug,
-            rcLabel:.rcLabel, label:$label, host:.host, owner:.owner}' <<< "$fields"
+            rcLabel:.rcLabel, label:$label, host:.host, owner:.owner, runtime:.runtime}' <<< "$fields"
       )"; row_rc=$?
       [ "$row_rc" -eq 0 ] || continue
       [ -n "$row" ] || continue

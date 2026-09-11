@@ -79,22 +79,9 @@ function startedResumed(psLine) {
   return /\s--resume(\s|$)/.test(psLine)
 }
 
-export function findProcess(psText, rcLabel) {
-  for (const line of psText.split('\n')) {
-    if (!line.includes(`--remote-control ${rcLabel} `) && !line.trimEnd().endsWith(`--remote-control ${rcLabel}`)
-        && !line.includes(`--remote-control "${rcLabel}"`)) continue
-    // THE COMMAND MUST BE THE CLAUDE BINARY. The tmux server carries the
-    // session's whole start command (label included) in its own process line
-    // for as long as the server lives - without the anchor it matches, and the
-    // watch sees a "living" session whose claude is dead. Measured on a session
-    // host: supervision stood looking at the tmux server while the pane showed
-    // a shell prompt.
-    const m = line.match(/^\s*(\d+)\s+(\w{3} \w{3} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+\S*claude /)
-    if (!m) continue
-    return { pid: Number(m[1]), startEpoch: Date.parse(m[2]), resumed: startedResumed(line) }
-  }
-  return null
-}
+// findProcess (the label finder) is GONE. A claude-code row's process is named by the bridge adapter
+// (linux/bridge-observe.sh) and read here through parseObserveLine; an argv label was only ever a
+// finder of candidates and the spec forbids falling back to it (spec §1 "fail closed on schema").
 
 // paneBusy - ONE place for "is the session working right now?".
 //
@@ -265,6 +252,12 @@ export function decide(prev = {}, obs, nowIso, opts = {}) {
   const actions = []
   const next = { ...prev }
   const s = obs.name
+
+  // THE WATCH NEVER REPORTS DEAD ON UNKNOWN (spec §1). obs.identity is the bridge adapter's answer
+  // for a claude-code row: only identified:managed (a process) and no-process (none, proven) reach the
+  // decisions below. Every other answer - unknown, uninspectable, grace, wait-veto, moved, orphan - is
+  // no decision at all: no alarm, no action, and the latch untouched, exactly like procUnknown.
+  if (obs.identity && obs.identity !== 'identified:managed' && obs.identity !== 'no-process') return { alerts, actions, next }
 
   // UNMEASURABLE IS NOT ABSENT. If the session is owned by somebody else, the
   // hub's ssh reaches that account through a BOUND KEY that answers rc 0
@@ -880,4 +873,35 @@ export function restartIntentFresh(mtimeMs, nowMs, maxMs) {
   // fresh - an intent that looks too young must not be read as too old.
   if (mtimeMs > nowMs) return true
   return nowMs - mtimeMs <= maxMs
+}
+
+// ---- the bridge adapter's line ---------------------------------------------------------------------
+// parseObserveLine(text, id) - the ONE line linux/bridge-observe.sh prints for <id>, read as the contract
+// it is: exactly one line, exactly fifteen fields separated by the unit separator (byte 31), this row's
+// id, the answer and gen_state from their closed vocabularies, numbers where numbers are promised, and
+// the invariants the decisions stand on (an identified answer names a pid, a birth and a pane; nothing
+// else names any). Anything else THROWS: a caller that cannot read the line has no identity, and no
+// identity is "unknown" - never "the first thing that parsed".
+export const OBSERVE_US = String.fromCharCode(31)
+export const OBSERVE_ANSWERS = ['identified:managed', 'identified:orphan', 'identified:moved', 'no-process', 'unknown', 'wait-veto', 'grace', 'uninspectable', 'not-applicable']
+export const OBSERVE_GENS = ['none', 'gone-receipt', 'gone-noreceipt', 'alive', 'grace', 'bootstrap']
+export function parseObserveLine(text, id) {
+  if (typeof text !== 'string') throw new Error('observe: no text')
+  const lines = text.replace(/\n$/, '').split('\n')
+  if (lines.length !== 1) throw new Error(`observe: ${lines.length} lines, wanted exactly one`)
+  const f = lines[0].split(OBSERVE_US)
+  if (f.length !== 15) throw new Error(`observe: ${f.length} fields, wanted fifteen`)
+  const [fid, answer, pid, birth, pane, name, nameSince, gen, classes, launchChild, procStart, sessionId, mtime, tuple, inode] = f
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(fid) || fid !== id) throw new Error(`observe: id '${fid}' is not '${id}'`)
+  if (!OBSERVE_ANSWERS.includes(answer)) throw new Error(`observe: answer '${answer}' is not in the vocabulary`)
+  if (!OBSERVE_GENS.includes(gen)) throw new Error(`observe: gen_state '${gen}' is not in the vocabulary`)
+  const num = (v, what) => { if (v === '') return null; if (!/^\d+$/.test(v)) throw new Error(`observe: ${what} '${v}' is not a number`); return Number(v) }
+  const o = { id: fid, answer, pid: num(pid, 'pid'), birth, pane, name, nameSince: num(nameSince, 'nameSince'), gen, classes, launchChild, procStart: num(procStart, 'procStart'), sessionId, mtime: num(mtime, 'mtime'), tuple, inode: num(inode, 'inode') }
+  if (!['', '0', '1'].includes(launchChild)) throw new Error(`observe: launch_child '${launchChild}'`)
+  if (answer.startsWith('identified:')) {
+    if (o.pid === null || !birth || !pane) throw new Error('observe: an identified answer without pid, birth or pane')
+  } else if (pid || birth || pane || procStart || sessionId || inode) {
+    throw new Error(`observe: '${answer}' carries candidate fields`)
+  }
+  return o
 }
