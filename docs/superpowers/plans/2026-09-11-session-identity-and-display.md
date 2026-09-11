@@ -101,7 +101,13 @@ Spec §1; D1, D3, D4, D5, D8, D9, D10.
 
 ---
 
-### Task 5: Supervisor — claude rows on the adapter; claim before spawn; keyed action gate; existing veto kept; OpenCode untouched
+### Task 5: Supervisor — claude rows on the adapter; claim before spawn; keyed action gate; existing veto kept; OpenCode untouched — BUILT
+
+**Built** (`test/supervisor-bridge.test.sh` 101 claims; the four older supervisor suites green after adaptation; 11 mutations bite). Notes from the build:
+- **Claim 19 (display fails) is deferred to Task 6**: `DISPLAY_ERR` does not exist before T6; the hook (`[ -z "${DISPLAY_ERR:-}" ] || exit 78` on no-process) is in place.
+- **The suspect marker is KEPT for the debris gate** when the tuple is present (the gate removes it itself before the close); `bridge_suspect_confirmed` no longer rewrites a confirmed key, so the marker's mtime stays the first sighting — the gate's "first suspected dead" text depends on it. The mutation "old 1731–1761 left in place" is therefore behaviour-preserving (the old block's SUSPECT touch sees the kept marker) and was dropped; claim 4f proves the old TAIL did not run by its text.
+- **Added claim 8d**: a session that appears between the observer's measurement and the spawn (`spawn absent` confirmed) blocks the spawn; its mutation bites.
+- **Older suites**: two rounds per spawn (`_round; _round`), a fixed nonce shim so launch lines stay byte-identical, the observer as a shim answering from the fixtures' control files, `arm` writing `close $7:1789000000` as the key; the reap suite turned around (nothing in a claude row's home is killed by argv pattern; the OpenCode port reap is proven to survive).
 
 Spec §1; D1, D2, D5, D7, D12; E1, E2, E3, E4.
 
@@ -109,7 +115,7 @@ Spec §1; D1, D2, D5, D7, D12; E1, E2, E3, E4.
 
 **Interfaces (internal):** `observe_row` → `B_ANS B_PID B_BIRTH B_PANE B_NAME B_SINCE B_GEN B_CLASSES B_CHILD B_PS B_SID B_MTIME B_TUPLE B_INODE`. `IS_CLAUDE` (1/empty) is set right after the conf is loaded: `case "${RUNTIME:-claude-code}" in claude-code) IS_CLAUDE=1 ;; *) IS_CLAUDE= ;; esac` (E1). `NO_PROCESS_CONFIRMED`, `NP_N` (the parsed `$N`). **The dispatch is an explicit `if [ "$IS_CLAUDE" = 1 ]; then <bridge path> else <today's lines 1731–1761, verbatim> fi`** (E2). `CLAUDE_PAT`, `matching_claude_pids`, `claude_alive_in_session` **stay**: OpenCode rows use `CLAUDE_PAT`'s port branch through them. Only the label branch (`elif [ -n "$RC_LABEL" ]` at :951) is removed; for `IS_CLAUDE` rows `CLAUDE_PAT` is never consulted.
 
-- [ ] **Step 1: Failing tests** — claims:
+- [x] **Step 1: Failing tests** — claims:
 1. managed, display changed → healthy; no label pgrep; no kill; generation gains `pid birth procStart sessionId bridge_mtime`.
 2. **`RUNTIME="opencode"` row → the supervisor never calls the observer, and today's block decides** (D1/E2): observer wrapper counts 0 calls; the row **still** spawns when tmux is absent, still honours the runtime veto, still takes two `SUSPECT` rounds — assert all three on an opencode fixture; `test/supervisor-opencode.test.sh` green.
 3. managed dead, another pane of **this** id → `wait-veto` each round, nothing written.
@@ -128,7 +134,7 @@ Spec §1; D1, D2, D5, D7, D12; E1, E2, E3, E4.
 19. display fails on a live managed row → supervised, `.display-degraded` once; on confirmed no-process → rc 78.
 20. `launch_child` `0` past the window → crash path respawns.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
   - After line 81: source `lib/bridge.sh`, `_bridge_ok=1`, no exit. After the pause guard (:154) and `CFG_ROOT` (:358): `if [ "$IS_CLAUDE" = 1 ]; then [ "${_bridge_ok:-}" = 1 ] || { echo "… REFUSING: $BRIDGE_LIB does not define bridge_answer" >&2; exit 78; }; fi`. `OBSERVE`, `BKILL` from env or beside `$0`.
   - Line 1337 (claude rows only): `observe_row; if [ "$B_ANS" = identified:managed ]; then …bind…`. The OpenCode path keeps `claude_alive_in_session`'s **port-based** sibling untouched (do not delete the opencode branch functions; delete only the label-based claude ones).
   - **Replace lines 1731–1761 entirely** for claude rows with the case below; the OpenCode branch keeps its original block (D2):
@@ -174,8 +180,8 @@ echo "session-supervisor: $NAME — close of $NP_N did not verifiably succeed; n
 ```
   - `spawn_session` (D7): validate before writing — `NONCE` matches `^[0-9a-f]{32}$`; `WALL=$(( $(date +%s) * 1000 ))`, `UP="$(awk '{printf "%d",$1*1000}' "$PROCR/uptime")"`, `BOOT="$(cat "$PROCR/sys/kernel/random/boot_id")"` all non-empty numeric/uuid; `INODES="$(for f in "$CFG_ROOT"/sessions/*.json; do [ -e "$f" ] && stat -c %i "$f"; done | tr '\n' ' ')"`; write `launch_ms launch_uptime_ms launch_boot_id launch_nonce launch_inodes spawn_state=pending pid= birth= stop_receipt=` **before** `new-session`; `pane_pid="$(tmuxc new-session -d -P -F '#{pane_pid}' …)"; rc=$?`; require `rc=0`, numeric `pane_pid`, non-empty `bridge_os_birth "$pane_pid"` → write `launch_pane_pid launch_pane_birth spawn_state=started`; else `spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes=` and degraded.
   - **Keep** `matching_claude_pids`, `CLAUDE_PAT`, `claude_alive_in_session` (the OpenCode path calls them with the port pattern); delete only `RC_LBL_PAT` and the `elif [ -n "$RC_LABEL" ]` label branch; local `is_descendant` becomes `bridge_is_descendant` for both paths (E2).
-- [ ] **Step 5: Mutations** — bridge logic applied to opencode rows (2); old 1731–1761 left in place (4); key without tuple (8); no tuple re-read at the kill site (9); receipt before kill (18); no nonce validation (16); kill on first sighting (6).
-- [ ] **Step 6: Commit** — `supervisor: claude rows on the adapter, a claim before the spawn, the target re-read before the close, and OpenCode untouched`.
+- [x] **Step 5: Mutations** — bridge logic applied to opencode rows (2); old 1731–1761 left in place (4); key without tuple (8); no tuple re-read at the kill site (9); receipt before kill (18); no nonce validation (16); kill on first sighting (6).
+- [x] **Step 6: Commit** — `supervisor: claude rows on the adapter, a claim before the spawn, the target re-read before the close, and OpenCode untouched`.
 
 ---
 
