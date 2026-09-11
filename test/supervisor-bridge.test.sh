@@ -81,6 +81,7 @@ pstat 4243 claude 4242 4243 34816 4243 111 # the managed claude, birth boot-s:11
 PROCTAB="$T/proctab"; TUPLE="$T/tuple"; OBSLINE="$T/obs-line"
 export PROCTAB TUPLE OBSLINE T_HAS_SESSION="$T/has-session" T_KILL_FAILS="$T/kill-fails" T_NEW_FAILS="$T/new-fails" T_GEN_AT_SPAWN="$T/gen-at-spawn"
 export TMUX_LOG="$T/tmux.log" PGREP_LOG="$T/pgrep.log" OBS_LOG="$T/obs.log" BKILL_LOG="$T/bkill.log" STATE="$HOMEDIR/.local/state/fixture-supervisor"
+export OBS_SELF="$NAME" OBS_DIR="$T/obs-other"; mkdir -p "$T/obs-other"
 export T_FG_CMD="$T/fg-cmd" T_SENDKEYS="$T/sendkeys" T_RECEIPT="$T/receipt" T_RENAME_EFFECT="$T/rename-effect" T_BUSY="$T/busy" OBSQUEUE="$T/obs-queue" T_KILL_LOCKS_STATE="$T/kill-locks-state" T_SENDKEYS_FAIL="$T/sendkeys-fail" T_ENTER_FAIL="$T/enter-fail" OBS_SIDE_EFFECT="$T/obs-side-effect"
 cat > "$BIN/tmux" <<'EOF'
 #!/bin/bash
@@ -132,8 +133,13 @@ cat > "$BIN/observe" <<'EOF'
 # A QUEUE OF LINES (one per call) stands in for the world changing between two observations in one
 # round; when it is empty the static line answers.
 printf '%s\n' "$*" >> "$OBS_LOG"
+id="$1"; [ "$id" = --bootstrap ] && id="$2"
+if [ "$id" != "$OBS_SELF" ]; then
+  if [ -f "$OBS_DIR/$id" ]; then cat "$OBS_DIR/$id"; else printf '%s\037unknown\037\037\037\037\037\037none\037\037\037\037\037\037\037\n' "$id"; fi
+  [ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT" "$id"; exit 0
+fi
 if [ -s "$OBSQUEUE" ]; then head -1 "$OBSQUEUE"; sed -i 1d "$OBSQUEUE"; else cat "$OBSLINE"; fi
-[ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT"; exit 0
+[ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT" "$id"; exit 0
 EOF
 cat > "$BIN/bkill" <<'EOF'
 #!/bin/bash
@@ -159,7 +165,7 @@ run() { # [id]
   STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_BRIDGE_KILL="$BIN/bkill" STEWARD_NONCE_CMD="$BIN/nonce" \
   BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 STEWARD_SELF_HOST=h1 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"   # a caller's VAR=x run reaches the supervisor: bash exports a function call's prefix assignments
 }
-reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE"; mkdir -p "$STATE"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL" "$OBS_SIDE_EFFECT"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
+reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE" "$T/obs-other"; mkdir -p "$STATE" "$T/obs-other"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL" "$OBS_SIDE_EFFECT"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
   printf '4242 1 -bash\n' > "$PROCTAB"; printf '$7:1789000000\n' > "$TUPLE"; gen census=1; pstat 4242 bash 1 4242 34816 4243 100; pstat 4243 claude 4242 4243 34816 4243 111; row_claude; }
 row_claude() { # [extra KEY="v" lines...] - the claude row, RC_LABEL="Alpha→Thing" unless overridden
   { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="%s"\nACCOUNT="a-h1"\nCLAUDE_MEMORY_ROOT="%s/memory"\n' "$HOMEDIR" "$NAME" "$T"
@@ -459,32 +465,77 @@ printf '0123456789abcdef0123456789abcdef\n' > "$NONCE_FILE"
 echo "== 39. Task 9b: the HOST GATE - a live row's applied or pending display reserves it on this host =="
 OTHER="s-0000000000000003"
 other_gen() { bash -c ". '$LIBS/bridge.sh'; bridge_gen_write '$STATE' '$OTHER' $*"; }
-reset; other_gen pid=4300 birth=boot-s:300 applied="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+other_row() { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="%s"\nACCOUNT="a-h1"\nRC_LABEL="Other Thing"\n' "$HOMEDIR" "$OTHER" > "$ROOT/sessions.d/$OTHER.conf"; }
+# WHAT HOLDS A DISPLAY IS A LIVE BRIDGE FILE (M3): the other row is ASKED, and only identified:* counts.
+other_live() { printf '%s\037identified:managed\0374300\037boot-s:300\037%s:@0.%%0\037%s\0371\037alive\037live:managed\037\0374300\037t\0371\037$9:1\037778\n' "$OTHER" "$OTHER" "${1:-Other Thing}" > "$T/obs-other/$OTHER"; }
+other_dead() { printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037\037\n' "$OTHER" > "$T/obs-other/$OTHER"; }
+reset; other_row; other_live; other_gen applied="Alpha→Thing" census=1
 line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; out1="$OUT"; run
 is "39a the display is applied by a LIVE row: spawn refused" "$(tl new-session)" "0"; is "39b rc 78" "$RC" "78"; has "39c names the holder (first round, alarm once)" "$out1" "reserved on this host by the live row 's-0000000000000003'"
 run; is "39d the alarm is once (marker)" "$(grep -c 'reserved on this host' "$T/out")" "0"
-rm -rf "$PROC/4300"; run; run; is "39e the holder's process gone -> the display is free -> one spawn" "$(tl new-session)" "1"
+other_dead; run; run; is "39e the holder has NO live bridge file -> the display is free -> one spawn" "$(tl new-session)" "1"
 [ -f "$STATE/$NAME.display-reserved" ] && bad "39f marker cleared when free" "" || ok "39f marker cleared when free"
-reset; other_gen pid=4300 birth=boot-s:300 pending_for="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+reset; other_row; other_live "Something Else"; other_gen pending_for="Alpha→Thing" census=1
 line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39g a PENDING display reserves too" "$(tl new-session)" "0"
-reset; other_gen pid=4300 birth=boot-s:300 bridge_name="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
-line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39h the live bridge name is the additional collision guard" "$(tl new-session)" "0"
-reset; other_gen pid=4300 birth=boot-s:300 applied="Something Else" census=1; pstat 4300 claude 1 4300 34817 4300 300
+reset; other_row; other_live "Alpha→Thing"; other_gen census=1
+line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39h the live bridge's REPORTED name is the additional collision guard" "$(tl new-session)" "0"
+reset; other_row; other_live "Something Else"; other_gen applied="Something Else" census=1
 line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39i another display reserves nothing" "$(tl new-session)" "1"
 # the rename step
-reset; other_gen pid=4300 birth=boot-s:300 applied="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+reset; other_row; other_live; other_gen applied="Alpha→Thing" census=1
 touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; out1="$OUT"; run; run; run
 is "39j a managed row whose desired is reserved: nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; is "39k no baseline seeded" "$(gget pending_for)" ""; has "39l refused to rename, loud (first round, once)" "$out1" "REFUSING to rename"
 is "39l2 and not repeated" "$(grep -c 'REFUSING to rename' "$T/out")" "0"
-# strict mode: another OWNER's row on this host rendering the same display
-printf 'PRINCIPAL="b"\nHOST="h1"\nUSERNAME="b"\n' > "$ROOT/accounts.d/b-h1.conf"
-printf 'OWNER="b"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="s-0000000000000004"\nACCOUNT="b-h1"\nRC_LABEL="Alpha→Thing"\n' "$HOMEDIR" > "$ROOT/sessions.d/s-0000000000000004.conf"
-reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
-is "39m non-strict: another owner's identical display is noted, not refused (one spawn)" "$(tl new-session)" "1"; has "39n the note names the row and the strict knob" "$OUT" "STEWARD_RESERVATION_STRICT"
-reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""
+# ANOTHER UNIX ACCOUNT, THE SAME LOGIN. This is the only shape in which another owner's row can collide
+# at all: the key is the LOGIN, so two homes only share a namespace when they share a login - one human
+# with two unix accounts on one host, which is exactly the pair the credential seam was repaired for. The
+# other home is 0750 from here, so the row can be RENDERED from the register but never ASKED.
+mkdir -p "$ROOT/logins.d"; chmod 700 "$ROOT/logins.d"
+printf 'PRINCIPAL="a"\nACCOUNT="a@example.test"\nPROVIDER="claude-team"\nCONFIG_DIR="~/.claude-logins/shared"\nLEGAL_OWNER="Fixture"\n' > "$ROOT/logins.d/shared-login.conf"
+chmod 600 "$ROOT/logins.d/shared-login.conf"
+printf 'PRINCIPAL="a"\nHOST="h1"\nUSERNAME="b"\n' > "$ROOT/accounts.d/b-h1.conf"
+printf 'OWNER="b"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="s-0000000000000004"\nACCOUNT="b-h1"\nLOGIN="shared-login"\nRC_LABEL="Alpha→Thing"\n' "$HOMEDIR" > "$ROOT/sessions.d/s-0000000000000004.conf"
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LOGIN="shared-login"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; out1="$OUT"; run
+is "39m non-strict: the other home's identical display is noted, not refused (one spawn)" "$(tl new-session)" "1"; has "39n the note names the row and the strict knob" "$out1" "STEWARD_RESERVATION_STRICT"
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LOGIN="shared-login"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""
+STEWARD_RESERVATION_STRICT=1 run; out1="$OUT"; STEWARD_RESERVATION_STRICT=1 run
+is "39o strict: refused, manual census required" "$(tl new-session)" "0"; has "39p says so" "$out1" "MANUAL CENSUS REQUIRED"
+reset; row_claude 'RC_LABEL="Alpha→Thing"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""
 STEWARD_RESERVATION_STRICT=1 run; STEWARD_RESERVATION_STRICT=1 run
-is "39o strict: refused, manual census required" "$(tl new-session)" "0"; has "39p says so" "$OUT" "MANUAL CENSUS REQUIRED"
-rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf"
+is "39q a row under ANOTHER login key is not blocked, even in strict mode (two tile lists)" "$(tl new-session)" "1"
+rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf" "$ROOT/logins.d/shared-login.conf"
+
+echo "== 40. Task 9b, advisor M4: the check and the write it authorises are ONE critical section =="
+# THE LOCK IS HELD WHILE THE GATE RUNS. The observer is called from inside the gate, so a shim that tries
+# to take the same lock measures the critical section from within it - no timing, no sleep.
+reset; other_row; other_live "Something Else"; other_gen census=1
+# ONLY THE CALLS THE GATE MAKES COUNT - the round's own observation of THIS row runs before the gate, and
+# is not in the critical section.
+printf '[ "$1" = "%s" ] && exit 0\nmkdir "%s" 2>/dev/null && { echo FREE >> "%s"; rmdir "%s"; } || echo HELD >> "%s"\n' "$NAME" "$STATE/.display-reservation.lock" "$T/lockprobe" "$STATE/.display-reservation.lock" "$T/lockprobe" > "$OBS_SIDE_EFFECT"
+: > "$T/lockprobe"; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "40a the lock was held every time the gate looked" "$(grep -c FREE "$T/lockprobe")" "0"
+case "$(grep -c HELD "$T/lockprobe")" in 0) bad "40b and it was actually probed" "no probe ran" ;; *) ok "40b and it was actually probed" ;; esac
+rm -f "$OBS_SIDE_EFFECT"
+[ -d "$STATE/.display-reservation.lock" ] && bad "40c the lock is released at the end of the round" "" || ok "40c the lock is released at the end of the round"
+is "40d the spawn happened under it" "$(tl new-session)" "1"
+is "40e and the claim RESERVED the display for the next asker" "$(gget pending_for)" "Alpha→Thing"
+
+echo "== 41. a lock another supervisor holds stands the round down; a stale one is broken =="
+reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+mkdir -p "$STATE/.display-reservation.lock"; run
+is "41a a held lock: no spawn" "$(tl new-session)" "0"; has "41b and says why" "$OUT" "another supervisor holds the display reservation lock"
+touch -d @1700000000 "$STATE/.display-reservation.lock"; run
+is "41c a lock older than the limit is broken and the round proceeds" "$(tl new-session)" "1"; has "41d loudly" "$OUT" "breaking it"
+[ -d "$STATE/.display-reservation.lock" ] && bad "41e and released again" "" || ok "41e and released again"
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; mkdir -p "$STATE/.display-reservation.lock"; run; run
+is "41f a held lock stops the rename step too" "$(grep -c . "$T_SENDKEYS")" "0"; has "41g and says so" "$OUT" "no rename step this round"
+rmdir "$STATE/.display-reservation.lock"
+
+echo "== 42. an unwritable state directory is NOT contention =="
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
+hasnt "42a it never claims another supervisor holds the lock" "$OUT" "another supervisor holds"
+has "42b it says the lock cannot be created there" "$OUT" "cannot be created"
+is "42c and nothing was spawned (the claim write refuses on the same directory)" "$(tl new-session)" "0"
 
 echo "== 21. the bridge library missing on a claude row is a refusal; an OpenCode row does not care =="
 reset; mv "$LIBS/bridge.sh" "$LIBS/bridge.sh.away"; touch "$T_HAS_SESSION"; MANAGED; run; is "21a rc 78" "$RC" "78"; has "21b names the library" "$OUT" "bridge"

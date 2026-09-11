@@ -462,44 +462,105 @@ reobserve_same() {
   return 1
 }
 _steward_nonce() { od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
-# host_display_reserved <desired> - THE HOST GATE OF SPEC §3 (plan Task 9b), local and measured: prints
-# the id of another row in THIS state directory (rows this uid owns) whose generation carries `applied`
-# or `pending_for` equal to desired - or whose last live bridge name equals it, the additional
-# collision guard - AND whose process is ACTIVE (its generation pid alive with its recorded birth). rc 0
-# reserved, rc 1 free. A dead row reserves nothing; this row never reserves against itself.
-# STEWARD_RESERVATION_STRICT=1 extends the refusal to rows of OTHER owners on this host whose rendered
-# display equals desired: those homes are uninspectable from here, so the collision cannot be measured
-# and a manual census is required; without strict, such a row is named once on stderr and the write
-# proceeds.
+# ---- THE HOST GATE OF SPEC §3 (plan Task 9b) ----------------------------------------------------
+# host_display_reserved <desired> - prints the id of another row on THIS host, under the SAME login key,
+# that holds <desired>; rc 0 reserved, rc 1 free.
+#
+# WHAT HOLDS A DISPLAY IS A LIVE BRIDGE FILE (spec §3; advisor M3), not a generation's pid: a process we
+# launched but that never registered holds no tile, and a row whose generation is stale holds nothing at
+# all. So each candidate is ASKED - the adapter's `identified:*` is the proof that a bridge file exists -
+# and only then are its reported name and its generation's applied/pending compared.
+#
+# THE KEY IS THE SAME ONE THE REGISTRY GATE USES (M1): two logins have two tile lists, and a pair the
+# registry allows must not be blocked here. A row of another OWNER on this host cannot be asked at all
+# (its home is 0750): under STEWARD_RESERVATION_STRICT=1 a colliding rendered display is refused - manual
+# census - otherwise it is named once and the write proceeds.
+MY_LOGIN_KEY="$(registry_session_login_key "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" 2>/dev/null)"
 host_display_reserved() {
-  local desired="$1" g other gpid gbirth applied pending bname
+  local desired="$1" n f_owner f_host f_rt f_fri f_lc f_key line applied pending
   [ -n "$desired" ] || return 1
-  for g in "$STATE_DIR"/*.generation; do
-    [ -f "$g" ] || continue
-    other="$(basename "$g" .generation)"; [ "$other" = "$NAME" ] && continue
-    applied="$(bridge_gen_get "$STATE_DIR" "$other" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$other" pending_for 2>/dev/null)"
-    bname="$(bridge_gen_get "$STATE_DIR" "$other" bridge_name 2>/dev/null)"
-    [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ] || [ "$bname" = "$desired" ] || continue
-    gpid="$(bridge_gen_get "$STATE_DIR" "$other" pid 2>/dev/null)"; gbirth="$(bridge_gen_get "$STATE_DIR" "$other" birth 2>/dev/null)"
-    same_nonempty_sv "$(bridge_os_birth "$gpid" 2>/dev/null)" "$gbirth" || continue     # only a LIVE row reserves
-    printf '%s\n' "$other"; return 0
-  done
-  if [ "${STEWARD_RESERVATION_STRICT:-}" = 1 ] || [ -z "${_host_gate_foreign_said:-}" ]; then
-    local n f_owner f_host disp
-    for n in $(registry_list 2>/dev/null); do
-      [ "$n" = "$NAME" ] && continue
-      f_owner="$(sed -n 's/^OWNER="\(.*\)"$/\1/p' "$(registry_dir)/$n.conf" 2>/dev/null | head -1)"; f_host="$(sed -n 's/^HOST="\(.*\)"$/\1/p' "$(registry_dir)/$n.conf" 2>/dev/null | head -1)"
-      [ "$f_owner" != "$(id -un)" ] || continue
-      [ "${f_host:-$(hostname -s)}" = "${STEWARD_SELF_HOST:-$(hostname -s)}" ] || continue
-      disp="$(registry_session_display "$n" 2>/dev/null)" || continue
+  [ -n "$MY_LOGIN_KEY" ] || return 1
+  for n in $(registry_list 2>/dev/null); do
+    [ "$n" = "$NAME" ] && continue
+    # The row's own words first, in a subshell: a conf cannot reach this shell's names.
+    # THE UNIX USER OF A ROW IS ITS ACCOUNT'S USERNAME, not its OWNER field - OWNER may be the principal,
+    # which is a person, not a login on this machine. The adapter resolves it the same way.
+    local snap; snap="$( registry_load "$n" >/dev/null 2>&1 || exit 1
+                         _u="$OWNER"; [ -z "${ACCOUNT:-}" ] || { registry_account_load "$ACCOUNT" >/dev/null 2>&1 && _u="$ACCOUNT_USERNAME"; }
+                         printf '%s\n%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" "$_u" )" || continue
+    f_rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; f_lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
+    f_fri="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; local f_login="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
+    f_owner="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; f_host="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; local f_user="${snap}"
+    [ "$f_rt" = claude-code ] || continue
+    [ "$f_lc" != retired ] || continue
+    [ "$f_fri" != yes ] || continue
+    [ "${f_host:-}" = "${STEWARD_SELF_HOST:-$(hostname -s)}" ] || continue     # the host gate is local
+    f_key="$(registry_session_login_key "$f_login" "$f_owner" "$f_host")"
+    [ "$f_key" = "$MY_LOGIN_KEY" ] || continue
+    if [ "${f_user:-$f_owner}" != "$(id -un)" ]; then
+      # UNINSPECTABLE: another owner's home cannot be read from here, so the only thing we can compare is
+      # what the register says that row RENDERS - a static fact, not a live one.
+      local disp; disp="$(registry_session_display "$n" 2>/dev/null)" || continue
       [ "$disp" = "$desired" ] || continue
-      if [ "${STEWARD_RESERVATION_STRICT:-}" = 1 ]; then echo "session-supervisor: $NAME — the display '$desired' is also rendered by '$n' (owner $f_owner) on this host; that home is uninspectable from here - MANUAL CENSUS REQUIRED (STEWARD_RESERVATION_STRICT=1)." >&2; printf '%s\n' "$n"; return 0; fi
+      if [ "${STEWARD_RESERVATION_STRICT:-}" = 1 ]; then
+        echo "session-supervisor: $NAME — the display '$desired' is also rendered by '$n' (owner $f_owner) on this host; that home is uninspectable from here - MANUAL CENSUS REQUIRED (STEWARD_RESERVATION_STRICT=1)." >&2
+        printf '%s\n' "$n"; return 0
+      fi
       [ -n "${_host_gate_foreign_said:-}" ] || echo "session-supervisor: $NAME — note: '$desired' is also rendered by '$n' (owner $f_owner) on this host; uninspectable from here, not refused (set STEWARD_RESERVATION_STRICT=1 to refuse)." >&2
       _host_gate_foreign_said=1
-    done
-  fi
+      continue
+    fi
+    # OURS TO ASK. identified:* proves a live bridge file; anything else holds no tile.
+    line="$(STEWARD_STATE_DIR="$STATE_DIR" STEWARD_TMUX_SOCKET="$SOCK" STEWARD_REGISTRY_LIB="$REG_LIB" STEWARD_BRIDGE_LIB="$BRIDGE_LIB" bash "$OBSERVE" "$n" 2>/dev/null)" || continue
+    bridge_line_valid "$line" "$n" || continue
+    case "$BL_ANS" in identified:*) : ;; *) continue ;; esac
+    applied="$(bridge_gen_get "$STATE_DIR" "$n" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$n" pending_for 2>/dev/null)"
+    if [ "$BL_NAME" = "$desired" ] || [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ]; then
+      printf '%s\n' "$n"; return 0
+    fi
+  done
   return 1
 }
+
+# ---- the critical section (advisor M4) -----------------------------------------------------------
+# A gate that checks and then writes in two steps is not a reservation: two supervisors can both see a
+# display free and both take it. The check and the write it authorises run under one host-wide lock -
+# a directory, because mkdir is atomic on every filesystem this runs on - and the lock is RE-ENTRANT so
+# a path that gates and then calls spawn_session (which gates again) cannot deadlock against itself.
+HOST_GATE_LOCK="$STATE_DIR/.display-reservation.lock"
+HOST_GATE_DEPTH=0
+HOST_GATE_STALE_SEC="${STEWARD_RESERVATION_STALE_SEC:-120}"
+host_gate_lock() { # rc 0 held (by us), rc 1 ANOTHER supervisor holds it, rc 2 no lock is possible here
+  [ "$HOST_GATE_DEPTH" -gt 0 ] && { HOST_GATE_DEPTH=$((HOST_GATE_DEPTH+1)); return 0; }
+  local age now
+  if ! mkdir "$HOST_GATE_LOCK" 2>/dev/null; then
+    # A LOCK THAT DOES NOT EXIST AND CANNOT BE CREATED IS NOT CONTENTION - it is a state directory this
+    # process cannot write. Saying "another supervisor holds it" there would be a confident false
+    # diagnosis; and nothing can be reserved anyway, because every write below fails on the same
+    # directory. Proceed unlocked and let those writes refuse with their own reason.
+    if [ ! -d "$HOST_GATE_LOCK" ]; then
+      echo "session-supervisor: $NAME — the display reservation lock cannot be created in $STATE_DIR; proceeding unlocked (every write below fails on the same directory)." >&2
+      return 2
+    fi
+    now="$(date +%s)"; age="$(_mtime_of "$HOST_GATE_LOCK")"
+    if _is_epoch "$age" && _is_epoch "$now" && [ $((now - age)) -ge "$HOST_GATE_STALE_SEC" ]; then
+      echo "session-supervisor: $NAME — the display reservation lock is $((now - age))s old (limit ${HOST_GATE_STALE_SEC}s); breaking it." >&2
+      rmdir "$HOST_GATE_LOCK" 2>/dev/null
+      mkdir "$HOST_GATE_LOCK" 2>/dev/null || return 1
+    else
+      return 1
+    fi
+  fi
+  HOST_GATE_DEPTH=1
+  return 0
+}
+host_gate_unlock() {
+  [ "$HOST_GATE_DEPTH" -gt 0 ] || return 0
+  HOST_GATE_DEPTH=$((HOST_GATE_DEPTH-1))
+  [ "$HOST_GATE_DEPTH" -eq 0 ] && rmdir "$HOST_GATE_LOCK" 2>/dev/null
+  return 0
+}
+
 # host_gate_refuses <desired> <where> - the gate applied with its alarm-once marker; rc 0 when the write
 # must NOT happen (reserved), rc 1 when it may. The marker (.display-reserved) is cleared when free.
 host_gate_refuses() {
@@ -542,7 +603,11 @@ claude_claim_open() {
     inodes="$inodes $i"
   done
   inodes="${inodes# }"
-  bridge_gen_write "$STATE_DIR" "$NAME" launch_ms="$wall" launch_uptime_ms="$up" launch_boot_id="$boot" launch_nonce="$nonce" launch_inodes="$inodes" spawn_state=pending pid= birth= procStart= stop_receipt= \
+  # THE CLAIM RESERVES THE DISPLAY (M4): between this write and the first observation of the new process
+  # there is no bridge file to hold the name, so the claim holds it - pending_for is what the host gate
+  # of another row reads. pending_since is left empty on purpose: the rename cycle seeds it from the
+  # first observation of the process that is about to exist.
+  bridge_gen_write "$STATE_DIR" "$NAME" launch_ms="$wall" launch_uptime_ms="$up" launch_boot_id="$boot" launch_nonce="$nonce" launch_inodes="$inodes" spawn_state=pending pid= birth= procStart= stop_receipt= pending_for="${RC_LABEL:-}" pending_since= \
     || { echo "session-supervisor: $NAME — REFUSING to spawn: the pending claim could not be written to $STATE_DIR. DEGRADED: nothing started." >&2; return 1; }
   CLAIM_NONCE="$nonce"
   return 0
@@ -1630,8 +1695,12 @@ if runtime_identified; then
       rm -f "$STATE_DIR/$NAME.display-degraded"    # recovery: the next transition alarms once more
     fi
     DESIRED="$RC_LABEL"; APPLIED="$(bridge_gen_get "$STATE_DIR" "$NAME" applied 2>/dev/null)"
-    if [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ] && host_gate_refuses "$DESIRED" "rename"; then
-      rm -f "$RENAME_SUSPECT"                                                              # spec §3 host gate (Task 9b): no baseline, no keys
+    _hg=0; if [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then host_gate_lock; _hg=$?; fi
+    if [ "$_hg" -eq 1 ]; then
+      rm -f "$RENAME_SUSPECT"
+      echo "session-supervisor: $NAME — another supervisor holds the display reservation lock; no rename step this round." >&2
+    elif [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ] && host_gate_refuses "$DESIRED" "rename"; then
+      host_gate_unlock; rm -f "$RENAME_SUSPECT"                                            # spec §3 host gate (Task 9b): no baseline, no keys
     elif [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then
       # THE BASELINE IS A RECEIPT, NEVER A COERCION (J4): pending_since is the nameSince the pending was
       # recorded on, and only a nameSince ABOVE it receipts. An absent or unreadable baseline is re-seeded
@@ -1642,6 +1711,7 @@ if runtime_identified; then
       _reseed=""; [ "$_pending_for" = "$DESIRED" ] || _reseed=1; case "$PENDING_SINCE" in ''|*[!0-9]*) _reseed=1 ;; esac
       if [ -n "$_reseed" ]; then
         rm -f "$RENAME_SUSPECT"
+        # THE BASELINE IS THE RESERVATION (M4): it is written inside the same lock the gate ran under.
         if bridge_gen_write "$STATE_DIR" "$NAME" pending_for="$DESIRED" pending_since="$B_SINCE" rename_tries=0; then
           echo "session-supervisor: $NAME — rename pending for '$DESIRED' (baseline nameSince $B_SINCE); the cycle starts." >&2
         else
@@ -1649,6 +1719,7 @@ if runtime_identified; then
         fi
         _rn_skip=1     # the round that (re)seeds the baseline takes no further step: a receipt needs a baseline to advance past
       else _rn_skip=""; fi
+      host_gate_unlock                     # the reservation is written; the rest of the cycle needs no lock
       printf '%s\n' "$DESIRED" > "$RENAME_PENDING" 2>/dev/null || true
       _rn_tries="$(bridge_gen_get "$STATE_DIR" "$NAME" rename_tries 2>/dev/null)"; case "${_rn_tries:-}" in ''|*[!0-9]*) _rn_tries=0 ;; esac
       _rn_key="$(bridge_suspect_key rename "$B_PID" "$B_BIRTH" "$PANE_TARGET" "$DESIRED" "$PENDING_SINCE")"
@@ -1966,8 +2037,16 @@ spawn_session() {
   # not leave a launch mark, and must not arm the rename - three refused claims would otherwise read as
   # three failed resumes and fork a fresh thread.
   if [ "$IS_CLAUDE" = 1 ]; then
-    if [ -n "$RC_LABEL" ] && host_gate_refuses "$RC_LABEL" "spawn"; then return 0; fi     # spec §3 host gate (Task 9b)
-    claude_claim_open || return 0
+    # ONE CRITICAL SECTION (M4): the gate and the claim that reserves the display are not two steps that
+    # another supervisor can slip between.
+    host_gate_lock; _hg=$?
+    if [ "$_hg" -eq 1 ]; then
+      echo "session-supervisor: $NAME — another supervisor holds the display reservation lock; not spawning this round." >&2
+      return 0
+    fi
+    if [ -n "$RC_LABEL" ] && host_gate_refuses "$RC_LABEL" "spawn"; then host_gate_unlock; return 0; fi
+    claude_claim_open || { host_gate_unlock; return 0; }
+    host_gate_unlock
   fi
   rm -f "$SUSPECT"
   # The attempt is counted BEFORE the launch, so a resume that is refused can
@@ -2062,7 +2141,12 @@ if [ "$IS_CLAUDE" = 1 ]; then
       "$BKILL" "$B_PID" "$B_BIRTH" TERM >&2; rm -f "$SUSPECT"; exit 0 ;;
     no-process)
       [ -z "${DISPLAY_ERR:-}" ] || { echo "session-supervisor: $NAME — REFUSING to spawn: the display does not derive: $DISPLAY_ERR" >&2; exit 78; }
-      if [ -n "$RC_LABEL" ] && host_gate_refuses "$RC_LABEL" "spawn"; then rm -f "$SUSPECT"; exit 78; fi     # spec §3 host gate (Task 9b), before the suspect is even keyed
+      if [ -n "$RC_LABEL" ]; then                                    # spec §3 host gate (Task 9b), before the suspect is even keyed
+        host_gate_lock; _hg=$?
+        if [ "$_hg" -eq 1 ]; then echo "session-supervisor: $NAME — another supervisor holds the display reservation lock; nothing decided this round." >&2; exit 0; fi
+        if host_gate_refuses "$RC_LABEL" "spawn"; then host_gate_unlock; rm -f "$SUSPECT"; exit 78; fi
+        host_gate_unlock
+      fi
       if [ -n "$B_TUPLE" ]; then _np_key="$(bridge_suspect_key close "$B_TUPLE")"; else _np_key="$(bridge_suspect_key spawn absent)"; fi
       bridge_suspect_confirmed "$SUSPECT" "$_np_key" || exit 0
       # THE MARKER STAYS while the debris gate below runs: its mtime is the gate's "first suspected
