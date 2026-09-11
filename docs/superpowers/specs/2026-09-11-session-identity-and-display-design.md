@@ -263,19 +263,42 @@ rows and migrate sessions one at a time instead of mutating shared edges.
 
 ### 3. Rules — who enforces what
 
-**Registry gate (write time), estate-wide, static.** Reserves every
-*desired* rendered string across all non-retired RC-enabled `claude-code`
-rows in the estate; two slugs rendering identically are refused. The work
-rule — one `claude-code` row per (login, project) — is enforced here too,
-on **register lifecycle** (non-retired; or active+suspended by explicit
-choice), never on live process state, which a writer cannot measure.
-RUNTIME first: OpenCode/Codex exempt; their vestigial `LOGIN` removed.
+**The namespace of both gates is the LOGIN KEY** (amended 2026-09-11 — this
+paragraph replaces the earlier "estate-wide"; Jon's decision of the same
+day, point 4). A display is a tile in one Claude login's list, and two
+logins have two lists that never meet: two project accounts under different
+logins may render the same name, and `Chalmers→Innovation` needs no suffix
+for that. Within ONE login, two identical names are two tiles a human cannot
+tell apart, and that is what is refused. The key is the row's `LOGIN`; for a
+legacy row that names none it is `owner:<OWNER>@<HOST>` — the HOME, which is
+the closest thing to a login a row without one has, and exactly the scope
+the older same-home label gate measured. **Both gates use this same key**; a
+pair the registry gate allows must not be blocked by the host gate.
+
+**Registry gate (write time), static.** Reserves every *desired* rendered
+string across all non-retired RC-enabled `claude-code` rows **under the same
+login key**, on every host; two such rows rendering identically are refused.
+The work rule — one `claude-code` row per (login key, project) — is enforced
+here too, on **register lifecycle** (non-retired; or active+suspended by
+explicit choice), never on live process state, which a writer cannot
+measure. RUNTIME first: OpenCode/Codex exempt; their vestigial `LOGIN`
+removed. **Fail closed:** a candidate row that cannot be read, or whose
+display will not render, makes the answer *uninspectable* and the write is
+refused naming that row — uniqueness cannot be established by omitting the
+rows one could not read.
 
 **Host gate (spawn/rename time), local, measured.** Reserves the *applied*
-and *pending* strings among live bridge files in the homes this host can
-read. "Active" here means *a live bridge file exists*; pause releases
-nothing; a row is retired only by a stop transaction ending with no bridge
-file.
+and *pending* strings of rows **under the same login key** among live bridge
+files in the homes this host can read. "Active" here means *a live bridge
+file exists* — established by asking the adapter about that row and getting
+`identified:*`, not by a generation's pid alone; pause releases nothing; a
+row is retired only by a stop transaction ending with no bridge file. A row
+of another owner on this host is *uninspectable*: under
+`STEWARD_RESERVATION_STRICT=1` a colliding rendered display is refused
+("manual census required"), otherwise it is named once and the write
+proceeds. **The check and the write it authorises are one critical section**
+on a host-wide lock: two supervisors must not both see a display free and
+then both take it.
 
 **Stated gaps.** Cross-host applied/pending and cross-estate anything are
 **manual census** in A: before the first migration of any login used on more
