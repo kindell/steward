@@ -221,7 +221,13 @@ A claude-code row's `agent` is the adapter's answer: `running` iff `identified:m
 
 Runs as the owner over every claude-code row of this uid on this host (or one `<id>`), asks `bridge-observe.sh --bootstrap <id>`, validates the answer through `bridge_line_valid`, and seeds the generation: `identified:managed` → the verified record (pid, birth, procStart, sessionId, bridge name/nameSince/mtime/inode, uid) + `census=1`; `no-process` → `stop_receipt=census-<epoch>` + `census=1`; any other answer → `census=blocked:<answer>` (the supervisor keeps the row unknown until an operator resolves it and re-runs `--force <id>`); `not-applicable` and `uninspectable` are listed, nothing written; `account-missing` is listed as the P0 PREREQUISITE (the ACCOUNT migration first), nothing written. A row already carrying `census=1` is skipped unless `--force`; `--dry-run` writes nothing. rc 0 when every row this uid can seed is seeded, 1 when anything is blocked or a prerequisite is missing. The only writer of `census`. Tests: `test/bridge-census.test.sh` 37 claims; four mutations bite (orphan seeds, force ignored, unreadable seeds, dry run writes). Manifest row added.
 
-### Tasks 11–12 — OUTLINES (as v3/v4: target-only renderer, gate on a temporary copy, atomic replace; legacy removal last). 9c (retarget refusal) is outlined under Task 9.
+### Task 11: `steward registry session derive <session>` — the migration verb — BUILT
+
+A row stops carrying a typed `RC_LABEL` and starts deriving its display from its target. **The line is DELETED, never emptied** (spec §4's trap: `RC_LABEL=""` is the RC-FREE choice in both readers, so emptying it would take every migrated session out of Remote Control silently). Refusals, all before anything is written and all leaving the row byte-identical: an RC-free row (a choice, not a migration), a row with no target, a target that does not render, and a rendered display already held under this row's login key (the Task 9a gate). `--dry-run` reports what would happen; `--json` is data; a row already without the line answers "already derives". After the rewrite the row must load AND render the promised display, or the backup is put back. Tests: `test/registry-session-derive.test.sh` 35 claims; five mutations bite — including the one this task exists for (empty instead of delete).
+
+**Live gate (not a code step):** P1b cases A and B with a human, and P3 census for any login on more than one host or estate, **before** `derive` is run on a live row. Then derive one work row, watch two rounds, confirm `applied` in its generation.
+
+### Task 12 — OUTLINE (legacy removal last: `registry_session_display`'s label branch becomes a warning, then a refusal, only when no row in any estate carries a non-empty `RC_LABEL`). 9c (retarget refusal) is outlined under Task 9.
 
 ---
 
