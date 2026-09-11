@@ -5138,8 +5138,8 @@ registry_login_unix_account() {
   # person had two accounts on one host the answer was decided by GLOB ORDER -
   # and glob order is alphabetical, not meaningful.
   #
-  # Measured on a live host 2026-09-10: `jon-basement` (USERNAME=jon) and
-  # `steward-basement` (USERNAME=steward) both carry the same PRINCIPAL, so this
+  # Measured on a live host 2026-09-10: `alice-h1` (USERNAME=alice) and
+  # `zz-worker-h1` (USERNAME=worker) both carry the same PRINCIPAL, so this
   # answered the first while the session USING that login ran as the second. The
   # credential seam then read the wrong home and reported a refresh deadline
   # twenty hours from the session's real one. On another host the wrong home held

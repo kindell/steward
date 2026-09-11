@@ -617,9 +617,9 @@ echo "== 12. TWO ACCOUNTS, ONE PERSON, ONE HOST - the join has no single answer 
 # whose PRINCIPAL and HOST matched - which means the answer was decided by glob
 # order, and glob order is alphabetical.
 #
-# Measured on a real host 2026-09-10: `jon-basement` (USERNAME=jon) and
-# `steward-basement` (USERNAME=steward) both carry PRINCIPAL=jon, so the lookup
-# answered `jon` while the session that USES that login runs as `steward`. The
+# Measured on a real host 2026-09-10: `alice-h1` (USERNAME=alice) and
+# `zz-worker-h1` (USERNAME=worker) both carry the same PRINCIPAL, so the lookup
+# answered the first while the session that USES that login runs as the second. The
 # credential seam then read the wrong home and reported a refresh deadline
 # TWENTY HOURS from the session's real one. On another host the wrong home had
 # no file at all, so the row said `no-credential` - the words for "nothing to

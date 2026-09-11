@@ -56,6 +56,7 @@ lib/mcpspawn.sh                    scripts/lib/mcpspawn.sh              755  lib
 # journal, while the desk keeps serving the last generation it managed to
 # write.
 lib/liveness.sh                    scripts/lib/liveness.sh              755  lib
+lib/listeners.sh                   scripts/lib/listeners.sh             755  lib
 # THE USAGE SEAM TRAVELS WITH THE REGISTRY FOR THE SAME REASON THE LIVENESS SEAM
 # DOES: it is sourced from the directory its caller found registry.sh in, so a
 # home that had one tree's registry and another tree's usage library would

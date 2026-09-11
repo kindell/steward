@@ -144,10 +144,30 @@ fi
 #   S  the SESSION's own                (M filtered through the pane's process tree)
 # The criterion rests on S. N and M are reported as context: numbers the session
 # should know but does not answer for.
-loop_n="$(ss -ltn 2>/dev/null | awk '/127\.0\.0\.1/ || /\[::1\]/' | grep -c .)"
-lyss_konto="$(ss -ltnp 2>/dev/null | awk '(/127\.0\.0\.1/ || /\[::1\]/) && /users:/ {print "    " $4 "  " $NF}')"
-loop_m="$(printf '%s' "$lyss_konto" | grep -c . )"
-loop_okand=$(( loop_n - loop_m ))
+# THE PROBE MOVED TO lib/listeners.sh, and the reason is the defect it hid.
+# These four lines were built on ss(8), which does not exist on darwin. On a
+# macOS host every pipeline yielded the empty string, so N=0, account=0,
+# session=0 - and the criterion below held because NOTHING HAD BEEN COUNTED.
+# lsof on the same host at the same moment showed nine loopback listeners.
+# Measured 2026-09-11 by the session this script was approving.
+#
+# The comment above argues that the unknown must become a NUMBER rather than a
+# void. On that host the whole surface became a void and this script called it
+# an approval - the exact shape the argument warns about, in the code the
+# argument is attached to.
+#
+# The library measures with whichever tool the host has and REFUSES when it has
+# neither, rather than answering zero. Zero is an answer; "I could not look" is
+# not, and the two must not be spelled the same way.
+# shellcheck source=../lib/listeners.sh
+. "$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/listeners.sh"
+lyss_omatt=""
+if listeners_probe; then
+  loop_n="$LISTENERS_N"; lyss_konto="$LISTENERS_ROWS"; loop_m="$LISTENERS_ACCOUNT"
+  loop_okand=$(( loop_n - loop_m ))
+else
+  lyss_omatt=1; loop_n=0; lyss_konto=""; loop_m=0; loop_okand=0
+fi
 
 # Does the pid descend from the pane's tree? Walk the parent chain; depth-limited
 # so a broken chain cannot hang the probe.
@@ -189,7 +209,13 @@ if [ "$loop_okand" -gt 0 ]; then
   echo "                 A listener that is not mine is not THEREBY harmless — it is therefore UNINVESTIGATED."
   echo "                 Requires root or the owner's word; reported, not decided here."
 fi
-if [ "$loop_s" -eq 0 ]; then
+if [ -n "$lyss_omatt" ]; then
+  # AN UNMEASURED CRITERION IS NOT A PASSED ONE. This branch exists because the
+  # alternative - reporting zero - is indistinguishable from a clean machine,
+  # and that indistinguishability is what let a green approval stand on a host
+  # where nothing had been looked at.
+  nej "(e) could not be measured on this host: neither ss nor lsof is present, so the loopback surface was never counted. This is not an approval; install one of them, or state this platform as unsupported and say so in the report."
+elif [ "$loop_s" -eq 0 ]; then
   ja "no listeners started by THIS SESSION (of $loop_n on the machine, $loop_m on the account)"
 else
   nej "listeners started by this session — name them or close them:
