@@ -422,7 +422,21 @@ observe_line_valid() {
   case "$B_ANS" in identified:managed|identified:orphan|identified:moved|no-process|unknown|wait-veto|grace|uninspectable|not-applicable) : ;; *) return 1 ;; esac
   case "$B_GEN" in none|gone-receipt|gone-noreceipt|alive|grace|bootstrap) : ;; *) return 1 ;; esac
   case "$B_ANS" in
-    identified:*) case "$B_PID" in ''|*[!0-9]*) return 1 ;; esac; [ -n "$B_BIRTH" ] && [ -n "$B_PANE" ] || return 1 ;;
+    identified:*)
+      # TYPED, AND THIS ROW'S EXACT PANE (K5; spec §1 "typed as expected", "tmux is exactly <ID>:@<n>.%<m>").
+      # A pane naming another session would become PANE_TARGET and receive keys; an empty procStart would
+      # equal an empty procStart in every recheck. Neither may bind, receipt or type.
+      case "$B_PID" in ''|*[!0-9]*) return 1 ;; esac
+      case "$B_PS" in ''|*[!0-9]*) return 1 ;; esac
+      case "$B_SINCE" in ''|*[!0-9]*) return 1 ;; esac
+      case "$B_MTIME" in ''|*[!0-9]*) return 1 ;; esac
+      case "$B_INODE" in ''|*[!0-9]*|0) return 1 ;; esac
+      case "$B_BIRTH" in *:*) : ;; *) return 1 ;; esac
+      [ -n "${B_BIRTH%%:*}" ] || return 1; case "${B_BIRTH##*:}" in ''|*[!0-9]*) return 1 ;; esac
+      case "$B_PANE" in "$NAME:@"*) : ;; *) return 1 ;; esac
+      _pw="${B_PANE#"$NAME":@}"; case "$_pw" in *.%*) : ;; *) return 1 ;; esac
+      case "${_pw%%.%*}" in ''|*[!0-9]*) return 1 ;; esac; case "${_pw##*.%}" in ''|*[!0-9]*) return 1 ;; esac
+      [ -n "$B_SID" ] || return 1 ;;
     *) [ -z "$B_PID$B_BIRTH$B_PANE$B_PS$B_SID$B_INODE" ] || return 1 ;;
   esac
   case "$B_CHILD" in ''|0|1) : ;; *) return 1 ;; esac
