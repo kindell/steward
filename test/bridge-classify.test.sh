@@ -92,6 +92,12 @@ printf '4243 (my (odd) claude) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 555 0 0 0
 is "6a token" "$(BRIDGE_PROC_ROOT="$P" bridge_os_birth 4242)" "boot-1111:987654"
 is "6b odd comm" "$(BRIDGE_PROC_ROOT="$P" bridge_os_birth 4243)" "boot-1111:555"
 BRIDGE_PROC_ROOT="$P" bridge_os_birth 9999 >/dev/null 2>&1; is "6c gone rc 1" "$?" "1"
+mkdir -p "$P/4244" "$P/4245"
+printf '4244 (claude) Z 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 777 0 0 0\n' > "$P/4244/stat"   # zombie: same birth, not alive
+printf '4245 (claude) X 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 778 0 0 0\n' > "$P/4245/stat"   # dead
+BRIDGE_PROC_ROOT="$P" bridge_os_birth 4244 >/dev/null 2>&1; is "6d a zombie is not alive (rc 1)" "$?" "1"
+is "6e and prints no token" "$(BRIDGE_PROC_ROOT="$P" bridge_os_birth 4244 2>/dev/null)" ""
+BRIDGE_PROC_ROOT="$P" bridge_os_birth 4245 >/dev/null 2>&1; is "6f state X is dead too" "$?" "1"
 
 echo "== 7. descendant walk via a ps shim =="
 BIN="$T/bin"; mkdir -p "$BIN"

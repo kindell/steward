@@ -107,6 +107,9 @@ bridge_os_birth() {
   rest="${stat##*) }"        # $1 of rest = field 3 (state) ... starttime = field 22 = ${20}
   set -- $rest
   [ "$#" -ge 20 ] || return 1
+  # A ZOMBIE IS NOT ALIVE. State Z keeps its birth token until it is reaped, so a dead but
+  # unreaped Claude would have read as live forever (fifth pass E6). Field 3 is the state.
+  case "$1" in Z|X) return 1 ;; esac
   printf '%s:%s' "$boot" "${20}"
 }
 
@@ -206,7 +209,7 @@ bridge_gen_matches_dead() { # sd id pid procStart
 # brith=) is refused with the whole write, not persisted as a silent new fact - the first
 # version checked only the grammar, so a typo would have looked like a field forever (fourth
 # pass 11). `history` is written by this function itself and is not a caller's key.
-BRIDGE_GEN_KEYS=" pid birth procStart uid sessionId launch_ms launch_uptime_ms launch_boot_id launch_nonce launch_pane_pid launch_pane_birth launch_inodes spawn_state grace_rounds bridge_name bridge_nameSince bridge_mtime applied applied_at applied_nameSince pending_for pending_since rename_tries stop_intent stop_receipt census "
+BRIDGE_GEN_KEYS=" pid birth procStart uid sessionId launch_ms launch_uptime_ms launch_boot_id launch_nonce launch_pane_pid launch_pane_birth launch_inodes spawn_state grace_rounds bridge_name bridge_nameSince bridge_mtime bridge_inode applied applied_at applied_nameSince pending_for pending_since rename_tries stop_intent stop_receipt census "
 _bridge_gen_key_ok() { case "$1" in *[!A-Za-z0-9_]*|'') return 1 ;; esac; case "$BRIDGE_GEN_KEYS" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # bridge_gen_write <sd> <id> key=value ... - atomic (tmp + mv); a DIFFERENT pid pushes the old
