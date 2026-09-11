@@ -73,6 +73,10 @@ REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 # shellcheck source=/dev/null
 . "$REG_LIB" || { echo "liveness-host: REFUSING — registry library could not be read: $REG_LIB" >&2; exit 78; }
 
+# THE BRIDGE LIBRARY, beside the registry library: the one validator of the observer's line (L1).
+BRIDGE_LIB="${STEWARD_BRIDGE_LIB:-$(dirname "$REG_LIB")/bridge.sh}"
+if [ -f "$BRIDGE_LIB" ] && ( . "$BRIDGE_LIB" ) >/dev/null 2>&1; then . "$BRIDGE_LIB"; fi
+declare -F bridge_line_valid >/dev/null 2>&1 || bridge_line_valid() { return 1; }   # no library: every line is unreadable, never a verdict
 RDIR="$(registry_dir)" || exit 78
 HUB_HOST="$(registry_hub_host)" || exit 78
 SELF_HOST="${STEWARD_SELF_HOST:-$(hostname -s 2>/dev/null || hostname)}"
@@ -228,15 +232,20 @@ observe_agent() {
   if [ -z "$BRIDGE_STATE_DIR" ]; then AGENT_REASON="cannot observe: $BRIDGE_STATE_REASON"; return 0; fi
   if [ ! -f "$OBSERVE" ]; then AGENT_REASON="cannot observe: the bridge observer is missing ($OBSERVE)"; return 0; fi
   line="$(STEWARD_STATE_DIR="$BRIDGE_STATE_DIR" STEWARD_TMUX_SOCKET="$HOME/.tmux/${SOCK:-none}" STEWARD_REGISTRY_LIB="$REG_LIB" bash "$OBSERVE" "$id" 2>/dev/null)" || { AGENT_REASON="cannot observe: the bridge observer failed"; return 0; }
-  case "$line" in *"$_US"*) : ;; *) AGENT_REASON="cannot observe: the observer's line is unreadable"; return 0 ;; esac
-  case "$line" in *$'\n'*) AGENT_REASON="cannot observe: the observer answered more than one line"; return 0 ;; esac
-  n="$(printf '%s' "$line" | tr -cd "$_US" | wc -c | tr -d ' ')"
-  [ "$n" -eq 14 ] || { AGENT_REASON="cannot observe: the observer's line has $((n+1)) fields, not fifteen"; return 0; }
-  IFS="$_US" read -r _id ans rest <<EOF
-$line
-EOF
-  [ "$_id" = "$id" ] || { AGENT_REASON="cannot observe: the observer answered about '$_id'"; return 0; }
-  gen="$(printf '%s' "$line" | cut -d "$_US" -f 8)"; classes="$(printf '%s' "$line" | cut -d "$_US" -f 9)"
+  # THE SHARED VALIDATOR (lib/bridge.sh, advisor L1): the same fifteen-field contract, vocabularies,
+  # answer/gen pairs and typed identified fields the supervisor holds the line to. A line that fails it is
+  # unknown with the reason - never running, never not-running (central watch must not report dead on
+  # unknown, spec §1). The reason names the shape when it can, so an operator sees which contract broke.
+  if ! bridge_line_valid "$line" "$id"; then
+    case "$line" in *"$_US"*) : ;; *) AGENT_REASON="cannot observe: the observer's line is unreadable"; return 0 ;; esac
+    case "$line" in *$'\n'*) AGENT_REASON="cannot observe: the observer answered more than one line"; return 0 ;; esac
+    n="$(printf '%s' "$line" | tr -cd "$_US" | wc -c | tr -d ' ')"
+    [ "$n" -eq 14 ] || { AGENT_REASON="cannot observe: the observer's line has $((n+1)) fields, not fifteen"; return 0; }
+    _id="$(printf '%s' "$line" | cut -d "$_US" -f 1)"
+    [ "$_id" = "$id" ] || { AGENT_REASON="cannot observe: the observer answered about '$_id'"; return 0; }
+    AGENT_REASON="cannot observe: the observer's line breaks the contract (answer/gen_state pair or an identified row's typed fields)"; return 0
+  fi
+  ans="$BL_ANS"; gen="$BL_GEN"; classes="$BL_CLASSES"
   case "$ans" in
     identified:managed) AGENT="running" ;;
     no-process)         AGENT="not-running" ;;
@@ -486,7 +495,10 @@ for conf in "$RDIR"/*.conf; do
       # independent measurement; the activity stamp below is still tmux's own answer.
       observe_agent "$id"; agent="$AGENT"; agent_reason="$AGENT_REASON"
     fi
-    if [ "$tmux_state" = "up" ]; then
+    # A CLAUDE ROW NEVER WALKS ITS PANES HERE (L2): its agent is the adapter's answer above, and a pane
+    # census that nothing reads must not be able to omit a measured row. tmux's list-sessions answer
+    # (the tmux column and the activity stamp) is the independent measurement that stays.
+    if [ "$tmux_state" = "up" ] && [ "$runtime" != "claude-code" ]; then
       # The exact target form (=name): tmux -t prefix-matches, and a session whose
       # name prefixes a sibling's would otherwise borrow the sibling's panes.
       # EVERY window (-s), never just the current one: a human who opens a second
@@ -517,13 +529,15 @@ for conf in "$RDIR"/*.conf; do
         add_omit "$id" "cannot probe on $SELF_HOST: tmux listed the session as up but its panes could not be read (rc $_lprc)${_lpmsg:+: $_lpmsg}"
         continue
       fi
-      if [ -n "$panes" ] && [ "$runtime" != "claude-code" ]; then
+      if [ -n "$panes" ]; then
         for pid in $RUNTIME_PIDS; do
           for pane in $panes; do
             if is_descendant "$pid" "$pane"; then agent="running"; break 2; fi
           done
         done
       fi
+    fi
+    if [ "$tmux_state" = "up" ]; then
       # LAST ACTIVITY, only where it is free: tmux already told us, in the same
       # call that told us the session is live. A row that is not up has no
       # activity to report - null, never a stale stamp dressed as a measurement.

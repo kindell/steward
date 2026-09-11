@@ -250,8 +250,9 @@ printf '%s|%s|%s\n' "$1" "${STEWARD_STATE_DIR:-}" "${STEWARD_TMUX_SOCKET:-}" >> 
 if [ -f "$OBS_DIR/$1" ]; then cat "$OBS_DIR/$1"; else printf '%s\037unknown\037\037\037\037\037\037none\037unclassifiable\037\037\037\037\037\037\n' "$1"; fi
 EOF
 obs() { # obs <id> <answer> [gen] [classes] - writes the fifteen-field line for <id>
-  local pid="" birth="" pane="" ps=""; case "$2" in identified:*) pid=101; birth=boot-l:1; pane="$1:@0.%0"; ps=101 ;; esac
-  printf '%s\037%s\037%s\037%s\037%s\037\037\037%s\037%s\037\037%s\037\037\037\037\n' "$1" "$2" "$pid" "$birth" "$pane" "${3:-none}" "${4:-}" "$ps" > "$T/obs/$1"
+  local pid="" birth="" pane="" ps="" since="" sid="" mt="" ino=""
+  case "$2" in identified:*) pid=101; birth=boot-l:1; pane="$1:@0.%0"; ps=101; since=1; sid=t; mt=1; ino=777 ;; esac
+  printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037\037%s\037%s\037%s\037\037%s\n' "$1" "$2" "$pid" "$birth" "$pane" "n" "$since" "${3:-none}" "${4:-}" "$ps" "$sid" "$mt" "$ino" > "$T/obs/$1"
 }
 obs s-a1 identified:managed alive live:managed
 obs s-b2 identified:managed alive live:managed
@@ -354,6 +355,14 @@ eq "a fourteen-field line is not the contract -> unknown" "$(printf '%s' "$out4"
 eq "and says so" "$(printf '%s' "$out4" | jq -r '.sessions["s-a1"].reason')" "cannot observe: the observer's line has 14 fields, not fifteen"
 printf 's-zz\037no-process\037\037\037\037\037\037none\037\037\037\037\037\037\037\n' > "$T/obs/s-a1"; out5="$(run)"
 eq "a line about another id -> unknown" "$(printf '%s' "$out5" | jq -r '.sessions["s-a1"].reason')" "cannot observe: the observer answered about 's-zz'"
+# L1: the same contract the supervisor holds the line to - a malformed answer is unknown, never a verdict
+printf 's-a1\037no-process\037\037\037\037\037\037alive\037\037\037\037\037\037\037\n' > "$T/obs/s-a1"; outL1="$(run)"
+eq "L1: no-process beside gen_state=alive is unknown, not not-running" "$(printf '%s' "$outL1" | jq -r '.sessions["s-a1"].agent')" "unknown"
+eq "L1: with the contract named" "$(printf '%s' "$outL1" | jq -r '.sessions["s-a1"].reason | test("breaks the contract")')" "true"
+printf 's-a1\037identified:managed\037101\037boot-l:1\037s-zz:@0.%%0\037n\0371\037alive\037live:managed\037\037101\037t\0371\037$7:1\037777\n' > "$T/obs/s-a1"; outL1b="$(run)"
+eq "L1: identified with a FOREIGN pane is unknown, not running" "$(printf '%s' "$outL1b" | jq -r '.sessions["s-a1"].agent')" "unknown"
+printf 's-a1\037identified:managed\037101\037boot-l:1\037s-a1:@0.%%0\037n\0371\037alive\037live:managed\037\037\037t\0371\037$7:1\037777\n' > "$T/obs/s-a1"; outL1c="$(run)"
+eq "L1: identified with an EMPTY procStart is unknown, not running" "$(printf '%s' "$outL1c" | jq -r '.sessions["s-a1"].agent')" "unknown"
 obs s-a1 identified:managed alive live:managed; obs s-b2 identified:managed alive live:managed; obs s-c3 no-process gone-noreceipt
 out6="$(env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" STEWARD_CODEX_STATE_DIR="$CX" STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" TMUX_LOG="$T/tmuxlog" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/no-such-observer" bash "$CMD" 2>/dev/null)"
 eq "a missing observer is unknown with its reason, never running" "$(printf '%s' "$out6" | jq -r '.sessions["s-a1"].agent')" "unknown"
@@ -679,13 +688,19 @@ out7="$( env -i HOME="$T/home" PATH="$T/bin7:/usr/bin:/bin" \
           TMUX_LOG="$T/tmuxlog-panes" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>"$T/err-panes" )"
 eq "no up row is answered as not-running" \
    "$(printf '%s' "$out7" | jq -r '[.sessions[] | select(.tmux == "up") | select(.agent == "not-running")] | length')" "0"
-eq "the three up pane rows are omitted instead" \
-   "$(printf '%s' "$out7" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-d4")] | length')" "3"
+eq "the up OpenCode pane row is omitted instead (claude rows never walk their panes here - L2)" \
+   "$(printf '%s' "$out7" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-d4")] | length')" "1"
 eq "and the reason says the panes could not be read" \
-   "$(printf '%s' "$out7" | jq -r '.omitted["s-a1"] | test("panes could not be read")')" "true"
+   "$(printf '%s' "$out7" | jq -r '.omitted["s-d4"] | test("panes could not be read")')" "true"
 # A DOWN ROW NEVER REACHED THE PANE WALK, so it keeps its measurement.
 eq "the row that was never up is still measured" \
    "$(printf '%s' "$out7" | jq -r '.sessions["s-c3"].agent')" "not-running"
+# L2 (plan Task 8): a claude row never walks its panes here, so a pane census that cannot be read omits
+# only the OpenCode row; the claude rows stay measured - tmux up from list-sessions, agent from the adapter.
+eq "L2: the up claude row is NOT omitted for an unreadable pane census" "$(printf '%s' "$out7" | jq -r '.omitted | has("s-a1")')" "false"
+eq "L2: it reads tmux up" "$(printf '%s' "$out7" | jq -r '.sessions["s-a1"].tmux')" "up"
+eq "L2: and agent running, from the adapter" "$(printf '%s' "$out7" | jq -r '.sessions["s-a1"].agent')" "running"
+eq "L2: the OpenCode row IS omitted, with the pane read named" "$(printf '%s' "$out7" | jq -r '.omitted["s-d4"] | test("panes could not be read")')" "true"
 eq "and the codex rows are untouched" \
    "$(printf '%s' "$out7" | jq -r '.sessions["s-g7"].agent')" "running"
 
