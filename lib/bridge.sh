@@ -236,9 +236,14 @@ bridge_gen_write() {
 # orphan B; the key carries the intended action and its target - every argument, in order,
 # "-" for an empty one - and any different key resets the count.
 bridge_suspect_key() { local out="" a; for a in "$@"; do out="${out:+$out }${a:--}"; done; printf '%s' "$out"; }
-bridge_suspect_confirmed() { # <file> <key> -> rc 0 when the file already held exactly this key; always rewrites the file
+# THE FILE IS WRITTEN ONLY WHEN THE KEY CHANGES, so its mtime is the FIRST sighting of the key
+# that is now confirmed - the supervisor's debris gate reads that mtime as "when this session
+# was first suspected dead" (log text, never a verdict). A rewrite on every sighting reset it
+# to "now" each round and the age it reported was always zero.
+bridge_suspect_confirmed() { # <file> <key> -> rc 0 when the file already held exactly this key
   local f="$1" key="$2" prev=""
   [ -f "$f" ] && prev="$(cat "$f")"
+  [ "$prev" = "$key" ] && return 0
   printf '%s\n' "$key" > "$f"
-  [ "$prev" = "$key" ]
+  return 1
 }
