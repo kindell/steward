@@ -260,6 +260,12 @@ reset; live_managed; gen launch_ms=1789000000000 launch_uptime_ms=400000 launch_
 is "35g a WHOLE launch beside a managed process still reads managed (validation does not refuse valid state)" "$(f 2)" "identified:managed"
 is "35h no diagnostics on stderr across the invalid-state claims" "$(grep -c 'syntax error\|integer expression\|unbound variable' "$T/obs.err")" "0"
 
+echo "== 36. K4: a live candidate whose procStart contradicts the generation is not identified =="
+reset; live_managed; gen procStart=4243; bridge 4243 "$ID:@0.%0" "Alpha→Thing" 1789000000000 9999; obs "$ID"
+is "36a same pid+birth, vendor procStart 9999 vs recorded 4243 -> unknown" "$(f 2)" "unknown"; has "36b unclassifiable" "$(f 9)" "unclassifiable"
+reset; live_managed; gen procStart=; bridge 4243 "$ID:@0.%0" "Alpha→Thing" 1789000000000 9999; obs "$ID"
+is "36c a generation without a procStart (first bind) still identifies" "$(f 2)" "identified:managed"
+
 echo "== 28. never a label =="
 is "28 LABEL_LOG empty across the suite" "$(cat "$T/label.log" 2>/dev/null | wc -l | tr -d ' ')" "0"
 

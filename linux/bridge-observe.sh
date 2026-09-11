@@ -126,7 +126,7 @@ observe() { # <id> <bootstrap 0|1>
       [ "$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$uid" ] && uid_ok=1
       if [ "$boot" = 1 ]; then known=1
       else
-        bridge_gen_matches_live "$SD" "$id" "$pid" "$birth" && known=1
+        bridge_gen_matches_live "$SD" "$id" "$pid" "$birth" "$pstart" && known=1   # K4: a procStart that contradicts the generation is not known
         if [ "$open_launch" = 1 ] && [ -n "$lpid_birth" ] && is_digits "${started:-}" && is_digits "${mtime:-}" \
            && [ "$started" -ge "$launch" ] && [ "$mtime" -ge $((launch - 1000)) ] \
            && ! { word_in "$inode" "$linodes" && [ "$mtime" -lt "$launch" ]; } \
