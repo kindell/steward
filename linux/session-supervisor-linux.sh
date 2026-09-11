@@ -410,43 +410,12 @@ EOF
     B_ANS="unknown"; B_GEN="none"; B_CLASSES="observer-unreadable"; B_PID=""; B_BIRTH=""; B_PANE=""; B_NAME=""; B_SINCE=""; B_CHILD=""; B_PS=""; B_SID=""; B_MTIME=""; B_TUPLE=""; B_INODE=""
   }
 }
-# observe_line_valid <line> <id> - exactly one line, exactly fifteen US fields, this row's id, the answer
-# and gen_state from their closed vocabularies, and the structural invariants the actions below stand on:
-# an identified answer carries a numeric pid, a birth and a pane; every other answer carries none.
+# observe_line_valid <line> <id> - THE shared validator (lib/bridge.sh bridge_line_valid, K3-K6): one line,
+# fifteen fields, this row's id, closed vocabularies and the pairs the adapter can emit, typed identified
+# fields and the EXACT pane. The B_* the round reads are the validated BL_*.
 observe_line_valid() {
-  local l="$1" n
-  case "$l" in *"$US"*) : ;; *) return 1 ;; esac
-  case "$l" in *$'\n'*) return 1 ;; esac
-  n="$(printf '%s' "$l" | tr -cd "$US" | wc -c | tr -d ' ')"; [ "$n" -eq 14 ] || return 1
-  [ "$2" = "$NAME" ] || return 1
-  case "$B_ANS" in identified:managed|identified:orphan|identified:moved|no-process|unknown|wait-veto|grace|uninspectable|not-applicable) : ;; *) return 1 ;; esac
-  case "$B_GEN" in none|gone-receipt|gone-noreceipt|alive|grace|bootstrap) : ;; *) return 1 ;; esac
-  case "$B_ANS" in
-    identified:*)
-      # TYPED, AND THIS ROW'S EXACT PANE (K5; spec §1 "typed as expected", "tmux is exactly <ID>:@<n>.%<m>").
-      # A pane naming another session would become PANE_TARGET and receive keys; an empty procStart would
-      # equal an empty procStart in every recheck. Neither may bind, receipt or type.
-      case "$B_PID" in ''|*[!0-9]*) return 1 ;; esac
-      case "$B_PS" in ''|*[!0-9]*) return 1 ;; esac
-      case "$B_SINCE" in ''|*[!0-9]*) return 1 ;; esac
-      case "$B_MTIME" in ''|*[!0-9]*) return 1 ;; esac
-      case "$B_INODE" in ''|*[!0-9]*|0) return 1 ;; esac
-      case "$B_BIRTH" in *:*) : ;; *) return 1 ;; esac
-      [ -n "${B_BIRTH%%:*}" ] || return 1; case "${B_BIRTH##*:}" in ''|*[!0-9]*) return 1 ;; esac
-      case "$B_PANE" in "$NAME:@"*) : ;; *) return 1 ;; esac
-      _pw="${B_PANE#"$NAME":@}"; case "$_pw" in *.%*) : ;; *) return 1 ;; esac
-      case "${_pw%%.%*}" in ''|*[!0-9]*) return 1 ;; esac; case "${_pw##*.%}" in ''|*[!0-9]*) return 1 ;; esac
-      [ -n "$B_SID" ] || return 1 ;;
-    *) [ -z "$B_PID$B_BIRTH$B_PANE$B_PS$B_SID$B_INODE" ] || return 1 ;;
-  esac
-  case "$B_CHILD" in ''|0|1) : ;; *) return 1 ;; esac
-  # ANSWER AND gen_state MUST BE A PAIR THE ADAPTER CAN EMIT (K3): bridge_answer says no-process or
-  # wait-veto only for none/bootstrap/gone-*, and grace only for grace. A line that says no-process
-  # beside an alive generation is malformed output, and malformed output authorises nothing.
-  case "$B_ANS" in
-    no-process|wait-veto) case "$B_GEN" in none|bootstrap|gone-receipt|gone-noreceipt) : ;; *) return 1 ;; esac ;;
-    grace) [ "$B_GEN" = grace ] || return 1 ;;
-  esac
+  bridge_line_valid "$1" "$NAME" || return 1
+  B_ANS="$BL_ANS"; B_PID="$BL_PID"; B_BIRTH="$BL_BIRTH"; B_PANE="$BL_PANE"; B_NAME="$BL_NAME"; B_SINCE="$BL_SINCE"; B_GEN="$BL_GEN"; B_CLASSES="$BL_CLASSES"; B_CHILD="$BL_CHILD"; B_PS="$BL_PS"; B_SID="$BL_SID"; B_MTIME="$BL_MTIME"; B_TUPLE="$BL_TUPLE"; B_INODE="$BL_INODE"
   return 0
 }
 # runtime_identified: the alive question, asked the runtime's own way (E2).
@@ -493,6 +462,58 @@ reobserve_same() {
   return 1
 }
 _steward_nonce() { od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
+# host_display_reserved <desired> - THE HOST GATE OF SPEC §3 (plan Task 9b), local and measured: prints
+# the id of another row in THIS state directory (rows this uid owns) whose generation carries `applied`
+# or `pending_for` equal to desired - or whose last live bridge name equals it, the additional
+# collision guard - AND whose process is ACTIVE (its generation pid alive with its recorded birth). rc 0
+# reserved, rc 1 free. A dead row reserves nothing; this row never reserves against itself.
+# STEWARD_RESERVATION_STRICT=1 extends the refusal to rows of OTHER owners on this host whose rendered
+# display equals desired: those homes are uninspectable from here, so the collision cannot be measured
+# and a manual census is required; without strict, such a row is named once on stderr and the write
+# proceeds.
+host_display_reserved() {
+  local desired="$1" g other gpid gbirth applied pending bname
+  [ -n "$desired" ] || return 1
+  for g in "$STATE_DIR"/*.generation; do
+    [ -f "$g" ] || continue
+    other="$(basename "$g" .generation)"; [ "$other" = "$NAME" ] && continue
+    applied="$(bridge_gen_get "$STATE_DIR" "$other" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$other" pending_for 2>/dev/null)"
+    bname="$(bridge_gen_get "$STATE_DIR" "$other" bridge_name 2>/dev/null)"
+    [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ] || [ "$bname" = "$desired" ] || continue
+    gpid="$(bridge_gen_get "$STATE_DIR" "$other" pid 2>/dev/null)"; gbirth="$(bridge_gen_get "$STATE_DIR" "$other" birth 2>/dev/null)"
+    same_nonempty_sv "$(bridge_os_birth "$gpid" 2>/dev/null)" "$gbirth" || continue     # only a LIVE row reserves
+    printf '%s\n' "$other"; return 0
+  done
+  if [ "${STEWARD_RESERVATION_STRICT:-}" = 1 ] || [ -z "${_host_gate_foreign_said:-}" ]; then
+    local n f_owner f_host disp
+    for n in $(registry_list 2>/dev/null); do
+      [ "$n" = "$NAME" ] && continue
+      f_owner="$(sed -n 's/^OWNER="\(.*\)"$/\1/p' "$(registry_dir)/$n.conf" 2>/dev/null | head -1)"; f_host="$(sed -n 's/^HOST="\(.*\)"$/\1/p' "$(registry_dir)/$n.conf" 2>/dev/null | head -1)"
+      [ "$f_owner" != "$(id -un)" ] || continue
+      [ "${f_host:-$(hostname -s)}" = "${STEWARD_SELF_HOST:-$(hostname -s)}" ] || continue
+      disp="$(registry_session_display "$n" 2>/dev/null)" || continue
+      [ "$disp" = "$desired" ] || continue
+      if [ "${STEWARD_RESERVATION_STRICT:-}" = 1 ]; then echo "session-supervisor: $NAME — the display '$desired' is also rendered by '$n' (owner $f_owner) on this host; that home is uninspectable from here - MANUAL CENSUS REQUIRED (STEWARD_RESERVATION_STRICT=1)." >&2; printf '%s\n' "$n"; return 0; fi
+      [ -n "${_host_gate_foreign_said:-}" ] || echo "session-supervisor: $NAME — note: '$desired' is also rendered by '$n' (owner $f_owner) on this host; uninspectable from here, not refused (set STEWARD_RESERVATION_STRICT=1 to refuse)." >&2
+      _host_gate_foreign_said=1
+    done
+  fi
+  return 1
+}
+# host_gate_refuses <desired> <where> - the gate applied with its alarm-once marker; rc 0 when the write
+# must NOT happen (reserved), rc 1 when it may. The marker (.display-reserved) is cleared when free.
+host_gate_refuses() {
+  local desired="$1" where="$2" holder
+  if holder="$(host_display_reserved "$desired")"; then
+    if [ ! -f "$STATE_DIR/$NAME.display-reserved" ] || [ "$(cat "$STATE_DIR/$NAME.display-reserved" 2>/dev/null)" != "$holder" ]; then
+      printf '%s\n' "$holder" > "$STATE_DIR/$NAME.display-reserved"
+      echo "session-supervisor: $NAME — REFUSING to $where: the display '$desired' is reserved on this host by the live row '$holder' (spec §3 host gate). Nothing written; retire or rename '$holder' first." >&2
+    fi
+    return 0
+  fi
+  rm -f "$STATE_DIR/$NAME.display-reserved"
+  return 1
+}
 # spawn_claude_claimed (D7): the claim is written BEFORE new-session and closed AFTER, and every
 # input is validated before a byte is written - a claim that cannot be written is a failed spawn,
 # never a launch with a hole in its proof.
@@ -1609,7 +1630,9 @@ if runtime_identified; then
       rm -f "$STATE_DIR/$NAME.display-degraded"    # recovery: the next transition alarms once more
     fi
     DESIRED="$RC_LABEL"; APPLIED="$(bridge_gen_get "$STATE_DIR" "$NAME" applied 2>/dev/null)"
-    if [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then
+    if [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ] && host_gate_refuses "$DESIRED" "rename"; then
+      rm -f "$RENAME_SUSPECT"                                                              # spec §3 host gate (Task 9b): no baseline, no keys
+    elif [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then
       # THE BASELINE IS A RECEIPT, NEVER A COERCION (J4): pending_since is the nameSince the pending was
       # recorded on, and only a nameSince ABOVE it receipts. An absent or unreadable baseline is re-seeded
       # from the current observation and the cycle starts over - "0" would have let old pane text and a
@@ -1942,7 +1965,10 @@ spawn_session() {
   # FOR A CLAUDE ROW THE CLAIM COMES FIRST (H7): a refused claim must not count as a resume attempt, must
   # not leave a launch mark, and must not arm the rename - three refused claims would otherwise read as
   # three failed resumes and fork a fresh thread.
-  if [ "$IS_CLAUDE" = 1 ]; then claude_claim_open || return 0; fi
+  if [ "$IS_CLAUDE" = 1 ]; then
+    if [ -n "$RC_LABEL" ] && host_gate_refuses "$RC_LABEL" "spawn"; then return 0; fi     # spec §3 host gate (Task 9b)
+    claude_claim_open || return 0
+  fi
   rm -f "$SUSPECT"
   # The attempt is counted BEFORE the launch, so a resume that is refused can
   # never count itself; the loop protection above reads this file.
@@ -2036,6 +2062,7 @@ if [ "$IS_CLAUDE" = 1 ]; then
       "$BKILL" "$B_PID" "$B_BIRTH" TERM >&2; rm -f "$SUSPECT"; exit 0 ;;
     no-process)
       [ -z "${DISPLAY_ERR:-}" ] || { echo "session-supervisor: $NAME — REFUSING to spawn: the display does not derive: $DISPLAY_ERR" >&2; exit 78; }
+      if [ -n "$RC_LABEL" ] && host_gate_refuses "$RC_LABEL" "spawn"; then rm -f "$SUSPECT"; exit 78; fi     # spec §3 host gate (Task 9b), before the suspect is even keyed
       if [ -n "$B_TUPLE" ]; then _np_key="$(bridge_suspect_key close "$B_TUPLE")"; else _np_key="$(bridge_suspect_key spawn absent)"; fi
       bridge_suspect_confirmed "$SUSPECT" "$_np_key" || exit 0
       # THE MARKER STAYS while the debris gate below runs: its mtime is the gate's "first suspected

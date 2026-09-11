@@ -157,7 +157,7 @@ run() { # [id]
   : > "$TMUX_LOG"; : > "$PGREP_LOG"; : > "$OBS_LOG"; : > "$BKILL_LOG"
   HOME="$HOMEDIR" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config" STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" \
   STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_BRIDGE_KILL="$BIN/bkill" STEWARD_NONCE_CMD="$BIN/nonce" \
-  BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"
+  BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 STEWARD_SELF_HOST=h1 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"   # a caller's VAR=x run reaches the supervisor: bash exports a function call's prefix assignments
 }
 reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE"; mkdir -p "$STATE"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL" "$OBS_SIDE_EFFECT"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
   printf '4242 1 -bash\n' > "$PROCTAB"; printf '$7:1789000000\n' > "$TUPLE"; gen census=1; pstat 4242 bash 1 4242 34816 4243 100; pstat 4243 claude 4242 4243 34816 4243 111; row_claude; }
@@ -426,6 +426,8 @@ reset; touch "$T_HAS_SESSION"; line identified:managed 4243 boot-s:abc "$NAME:@0
 reset; touch "$T_HAS_SESSION"; line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" "" alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; run; is "33t an empty nameSince on an identified row is refused" "$(gget pid)" ""
 reset; touch "$T_HAS_SESSION"; line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' ""; run; is "33u an empty inode on an identified row is refused" "$(gget pid)" ""
 reset; touch "$T_HAS_SESSION"; line identified:managed 4243 boot-s:111 "${NAME}0:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; run; is "33v a pane whose session is a superstring of this id is foreign" "$(gget pid)" ""
+reset; touch "$T_HAS_SESSION"; line identified:managed 4243 boot-s:111 "$NAME:@0.%0.%1" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; run; is "33w K6: '<id>:@0.%0.%1' is not a pane" "$(gget pid)" ""
+reset; touch "$T_HAS_SESSION"; line identified:managed 4243 boot-s:111 "$NAME:@0.%0:@1.%1" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; run; is "33x K6: '<id>:@0.%0:@1.%1' is not a pane" "$(gget pid)" ""
 reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" ""; run; run; is "33h a FOURTEEN-field no-process (inode missing) is not the contract -> no spawn" "$(tl new-session)" "0"
 reset; line no-process "" "" "" "" "" alive "" "" "" "" "" "" ""; run; run; is "33i K3: no-process beside gen_state=alive is impossible output -> no spawn, twice" "$(tl new-session)" "0"; has "33j unreadable" "$OUT" "observer-unreadable"
 reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" grace "" "" "" "" "" '$7:1789000000' ""; run; run; is "33k no-process beside grace -> no close" "$(tl kill-session)" "0"
@@ -453,6 +455,36 @@ reset; printf 'bad\n' > "$NONCE_FILE"; line no-process "" "" "" "" "" gone-norec
 [ -f "$STATE/$NAME.resume-try" ] && bad "35d refused claims do not count as resume attempts" "$(cat "$STATE/$NAME.resume-try")" || ok "35d refused claims do not count as resume attempts"
 [ -f "$STATE/$NAME.launched" ] && bad "35e no launch mark without a launch" "" || ok "35e no launch mark without a launch"
 printf '0123456789abcdef0123456789abcdef\n' > "$NONCE_FILE"
+
+echo "== 39. Task 9b: the HOST GATE - a live row's applied or pending display reserves it on this host =="
+OTHER="s-0000000000000003"
+other_gen() { bash -c ". '$LIBS/bridge.sh'; bridge_gen_write '$STATE' '$OTHER' $*"; }
+reset; other_gen pid=4300 birth=boot-s:300 applied="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; out1="$OUT"; run
+is "39a the display is applied by a LIVE row: spawn refused" "$(tl new-session)" "0"; is "39b rc 78" "$RC" "78"; has "39c names the holder (first round, alarm once)" "$out1" "reserved on this host by the live row 's-0000000000000003'"
+run; is "39d the alarm is once (marker)" "$(grep -c 'reserved on this host' "$T/out")" "0"
+rm -rf "$PROC/4300"; run; run; is "39e the holder's process gone -> the display is free -> one spawn" "$(tl new-session)" "1"
+[ -f "$STATE/$NAME.display-reserved" ] && bad "39f marker cleared when free" "" || ok "39f marker cleared when free"
+reset; other_gen pid=4300 birth=boot-s:300 pending_for="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39g a PENDING display reserves too" "$(tl new-session)" "0"
+reset; other_gen pid=4300 birth=boot-s:300 bridge_name="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39h the live bridge name is the additional collision guard" "$(tl new-session)" "0"
+reset; other_gen pid=4300 birth=boot-s:300 applied="Something Else" census=1; pstat 4300 claude 1 4300 34817 4300 300
+line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39i another display reserves nothing" "$(tl new-session)" "1"
+# the rename step
+reset; other_gen pid=4300 birth=boot-s:300 applied="Alpha→Thing" census=1; pstat 4300 claude 1 4300 34817 4300 300
+touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; out1="$OUT"; run; run; run
+is "39j a managed row whose desired is reserved: nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; is "39k no baseline seeded" "$(gget pending_for)" ""; has "39l refused to rename, loud (first round, once)" "$out1" "REFUSING to rename"
+is "39l2 and not repeated" "$(grep -c 'REFUSING to rename' "$T/out")" "0"
+# strict mode: another OWNER's row on this host rendering the same display
+printf 'PRINCIPAL="b"\nHOST="h1"\nUSERNAME="b"\n' > "$ROOT/accounts.d/b-h1.conf"
+printf 'OWNER="b"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="s-0000000000000004"\nACCOUNT="b-h1"\nRC_LABEL="Alpha→Thing"\n' "$HOMEDIR" > "$ROOT/sessions.d/s-0000000000000004.conf"
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "39m non-strict: another owner's identical display is noted, not refused (one spawn)" "$(tl new-session)" "1"; has "39n the note names the row and the strict knob" "$OUT" "STEWARD_RESERVATION_STRICT"
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""
+STEWARD_RESERVATION_STRICT=1 run; STEWARD_RESERVATION_STRICT=1 run
+is "39o strict: refused, manual census required" "$(tl new-session)" "0"; has "39p says so" "$OUT" "MANUAL CENSUS REQUIRED"
+rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf"
 
 echo "== 21. the bridge library missing on a claude row is a refusal; an OpenCode row does not care =="
 reset; mv "$LIBS/bridge.sh" "$LIBS/bridge.sh.away"; touch "$T_HAS_SESSION"; MANAGED; run; is "21a rc 78" "$RC" "78"; has "21b names the library" "$OUT" "bridge"

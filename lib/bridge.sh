@@ -177,6 +177,62 @@ bridge_answer() {
   if [ "$veto" = 1 ]; then printf 'wait-veto'; else printf 'no-process'; fi
 }
 
+# ---- the observer's line, validated as the contract it is ----------------------------------------
+# bridge_line_valid <line> <id> - rc 0 and BL_* set when <line> is exactly the fifteen-field line
+# linux/bridge-observe.sh prints for <id>; rc 1 (and BL_* emptied) for anything else. ONE validator for
+# every consumer (the supervisor, liveness-host; the watch mirrors it in JS), so a malformed answer cannot
+# become a decision in one reader and not another (advisor K3-K6, L1):
+#   - exactly one line, exactly fifteen US fields, the id asked about (slug grammar)
+#   - answer and gen_state from their closed vocabularies, and a pair the adapter can emit:
+#     no-process/wait-veto only beside none|bootstrap|gone-*, grace only beside grace
+#   - identified:* is TYPED: pid, procStart, nameSince, mtime, inode numeric and non-empty (inode > 0),
+#     birth "<token>:<digits>", sessionId non-empty, and the pane EXACTLY "<id>:@<n>.%<m>" - rebuilt from
+#     its parsed parts and compared whole, so "<id>:@0.%0.%1" and "<id>:@0.%0:@1.%1" are not panes (K6)
+#   - every other answer carries NO candidate field
+#   - launch_child in {"", 0, 1}
+bridge_line_valid() {
+  local l="${1:-}" id="${2:-}" n win pane rest
+  BL_ID=""; BL_ANS=""; BL_PID=""; BL_BIRTH=""; BL_PANE=""; BL_NAME=""; BL_SINCE=""; BL_GEN=""; BL_CLASSES=""; BL_CHILD=""; BL_PS=""; BL_SID=""; BL_MTIME=""; BL_TUPLE=""; BL_INODE=""
+  case "$l" in *"$US"*) : ;; *) return 1 ;; esac
+  case "$l" in *$'\n'*) return 1 ;; esac
+  n="$(printf '%s' "$l" | tr -cd "$US" | wc -c | tr -d ' ')"; [ "$n" -eq 14 ] || return 1
+  IFS="$US" read -r BL_ID BL_ANS BL_PID BL_BIRTH BL_PANE BL_NAME BL_SINCE BL_GEN BL_CLASSES BL_CHILD BL_PS BL_SID BL_MTIME BL_TUPLE BL_INODE <<EOF
+$l
+EOF
+  case "$id" in ''|*[!a-z0-9-]*) _bridge_line_reset; return 1 ;; esac
+  [ "$BL_ID" = "$id" ] || { _bridge_line_reset; return 1; }
+  case "$BL_ANS" in identified:managed|identified:orphan|identified:moved|no-process|unknown|wait-veto|grace|uninspectable|not-applicable) : ;; *) _bridge_line_reset; return 1 ;; esac
+  case "$BL_GEN" in none|gone-receipt|gone-noreceipt|alive|grace|bootstrap) : ;; *) _bridge_line_reset; return 1 ;; esac
+  case "$BL_ANS" in
+    no-process|wait-veto) case "$BL_GEN" in none|bootstrap|gone-receipt|gone-noreceipt) : ;; *) _bridge_line_reset; return 1 ;; esac ;;
+    grace) [ "$BL_GEN" = grace ] || { _bridge_line_reset; return 1; } ;;
+  esac
+  case "$BL_CHILD" in ''|0|1) : ;; *) _bridge_line_reset; return 1 ;; esac
+  case "$BL_ANS" in
+    identified:*)
+      case "$BL_PID"   in ''|*[!0-9]*)   _bridge_line_reset; return 1 ;; esac
+      case "$BL_PS"    in ''|*[!0-9]*)   _bridge_line_reset; return 1 ;; esac
+      case "$BL_SINCE" in ''|*[!0-9]*)   _bridge_line_reset; return 1 ;; esac
+      case "$BL_MTIME" in ''|*[!0-9]*)   _bridge_line_reset; return 1 ;; esac
+      case "$BL_INODE" in ''|*[!0-9]*|0) _bridge_line_reset; return 1 ;; esac
+      case "$BL_BIRTH" in *:*) : ;; *) _bridge_line_reset; return 1 ;; esac
+      [ -n "${BL_BIRTH%%:*}" ] || { _bridge_line_reset; return 1; }
+      case "${BL_BIRTH##*:}" in ''|*[!0-9]*) _bridge_line_reset; return 1 ;; esac
+      [ -n "$BL_SID" ] || { _bridge_line_reset; return 1; }
+      # THE PANE, EXACTLY: <id>:@<digits>.%<digits>, rebuilt and compared whole (K6)
+      case "$BL_PANE" in "$id:@"*) : ;; *) _bridge_line_reset; return 1 ;; esac
+      rest="${BL_PANE#"$id":@}"
+      case "$rest" in *.%*) : ;; *) _bridge_line_reset; return 1 ;; esac
+      win="${rest%%.%*}"; pane="${rest#*.%}"
+      case "$win"  in ''|*[!0-9]*) _bridge_line_reset; return 1 ;; esac
+      case "$pane" in ''|*[!0-9]*) _bridge_line_reset; return 1 ;; esac
+      [ "$BL_PANE" = "$id:@$win.%$pane" ] || { _bridge_line_reset; return 1; } ;;
+    *) [ -z "$BL_PID$BL_BIRTH$BL_PANE$BL_PS$BL_SID$BL_INODE" ] || { _bridge_line_reset; return 1; } ;;
+  esac
+  return 0
+}
+_bridge_line_reset() { BL_ID=""; BL_ANS=""; BL_PID=""; BL_BIRTH=""; BL_PANE=""; BL_NAME=""; BL_SINCE=""; BL_GEN=""; BL_CLASSES=""; BL_CHILD=""; BL_PS=""; BL_SID=""; BL_MTIME=""; BL_TUPLE=""; BL_INODE=""; }
+
 # ---- generation: <state-dir>/<id>.generation, key=value, written atomically -----------------
 # HISTORY AND BOOTSTRAP, NEVER A SECOND TRUTH. When a verified-live bridge file exists ITS
 # fields win; the generation remembers what we launched and what we saw, so a file left

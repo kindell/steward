@@ -60,4 +60,21 @@ is "one unclassifiable poisons"                  "$(bridge_answer 'unclassifiabl
 is "one unclassifiable, gen gone -> still unknown" "$(bridge_answer 'unclassifiable' gone-noreceipt 0 0 1)" "unknown"
 is "unknown gen_state word = unknown"            "$(bridge_answer '' bogus 0 0 1)" "unknown"
 
+echo "== the observer's line, validated as the contract (bridge_line_valid) =="
+US="$(printf '\037')"; ID="s-0000000000000001"
+mkline() { local out="$1"; shift; for a in "$@"; do out="$out$US$a"; done; printf '%s' "$out"; }
+GOOD="$(mkline "$ID" identified:managed 4243 boot-s:111 "$ID:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777)"
+bridge_line_valid "$GOOD" "$ID"; is "V1 a good managed line validates" "$?" "0"; is "V1b and fills BL_PANE" "$BL_PANE" "$ID:@0.%0"
+bridge_line_valid "$(mkline "$ID" identified:managed 4243 boot-s:111 "$ID:@0.%0.%1" "n" 1 alive live:managed "" 4243 t 1 '$7:1' 777)" "$ID"; is "V2 K6: an extra .%1 is not a pane" "$?" "1"; is "V2b and BL_* are emptied" "$BL_ANS" ""
+bridge_line_valid "$(mkline "$ID" identified:managed 4243 boot-s:111 "$ID:@0.%0:@1.%1" "n" 1 alive live:managed "" 4243 t 1 '$7:1' 777)" "$ID"; is "V3 K6: a second :@1.%1 is not a pane" "$?" "1"
+bridge_line_valid "$(mkline "$ID" no-process "" "" "" "" "" alive stale "" "" "" "" "" "")" "$ID"; is "V4 K3: no-process beside alive is not a pair the adapter emits" "$?" "1"
+bridge_line_valid "$(mkline "$ID" grace "" "" "" "" "" alive "" "" "" "" "" "" "")" "$ID"; is "V5 grace beside alive neither" "$?" "1"
+bridge_line_valid "$(mkline "$ID" no-process "" "" "" "" "" gone-noreceipt stale "" "" "" "" "" "")" "$ID"; is "V6 no-process beside gone-noreceipt validates" "$?" "0"
+bridge_line_valid "$(mkline "$ID" identified:managed 4243 boot-s:111 "$ID:@0.%0" "n" 1 alive live:managed "" "" t 1 '$7:1' 777)" "$ID"; is "V7 K5: an identified row without procStart is refused" "$?" "1"
+bridge_line_valid "$(mkline "$ID" no-process 4243 "" "" "" "" gone-noreceipt "" "" "" "" "" "" "")" "$ID"; is "V8 a no-process carrying a pid is refused" "$?" "1"
+bridge_line_valid "$(mkline "$ID" no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "")" "$ID"; is "V9 fourteen fields are refused" "$?" "1"
+bridge_line_valid "$GOOD" "s-0000000000000002"; is "V10 another id is refused" "$?" "1"
+bridge_line_valid "$GOOD
+$GOOD" "$ID"; is "V11 two lines are refused" "$?" "1"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]
