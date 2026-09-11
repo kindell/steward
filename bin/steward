@@ -40,6 +40,7 @@
 #   steward registry session add --account <slug> ( --project <slug> | --entity <slug> ) --slug <slug> --repo /abs/path [--host <host>] [--json]
 #   steward registry session check <session> [--json]
 #   steward registry session realign <session> [--host <host>] [--json]
+#   steward registry session derive <session> [--dry-run] [--json]
 #   steward registry migrate-session <old-slug> --account <slug> ( --project <slug> | --entity <slug> ) --slug <slug> [--json]
 #   steward invite issue --name N --principal P --entity E --host H [--runtime R] [--provider V] [--days D] [--issued-by P] [--json]
 #   steward invite ls [--json]
@@ -1579,7 +1580,8 @@ cmd_registry() {
         add) shift; cmd_registry_session_add "$@" ;;
         check) shift; cmd_registry_session_check "$@" ;;
         realign) shift; cmd_registry_session_realign "$@" ;;
-        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check, realign)" 64 ;;
+        derive) shift; cmd_registry_session_derive "$@" ;;
+        *) fel "steward registry session: unknown verb '${1:-}' (allowed: add, check, realign, derive)" 64 ;;
       esac ;;
     credentials) shift; cmd_registry_credentials "$@" ;;
     migrate-session) shift; cmd_registry_migrate_session "$@" ;;
@@ -5554,6 +5556,119 @@ _realign_login_registered() { # <login>
     [ -n "$hit" ] && return 0
   done
   return 1
+}
+
+# cmd_registry_session_derive <handle> [--dry-run] [--json] - THE MIGRATION VERB of spec section 4: a row
+# stops carrying a typed RC_LABEL and starts DERIVING its display from its target.
+#
+# THE LINE IS DELETED, NEVER EMPTIED. `RC_LABEL=""` is not "no label": it is the RC-FREE choice, and both
+# readers honour it - the supervisor starts such a session with no --remote-control at all, and the
+# uniqueness gate skips it. A migration that emptied the line would take every migrated session out of
+# Remote Control silently. Absence is what "rendered" looks like in a conf.
+#
+# EVERY REFUSAL LEAVES THE ROW BYTE-IDENTICAL, and they come before anything is written: a row must never
+# lose the only name it has. The rendered display must resolve (the target exists) and must be free under
+# this row's login key (the same gate `session add` applies at write time).
+cmd_registry_session_derive() {
+  local want_json="" dry="" args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) want_json=1; shift ;;
+      --dry-run) dry=1; shift ;;
+      -*) _reg_fail "$want_json" "steward registry session derive: unknown flag '$1'" 64; return 64 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  local handle="${args[0]:-}"
+  [ -n "$handle" ] || { _reg_fail "$want_json" "steward registry session derive: needs a session handle" 64; return 64; }
+  [ "${#args[@]}" -le 1 ] || { _reg_fail "$want_json" "steward registry session derive: one session at a time" 64; return 64; }
+
+  . "$HERE/lib/registry.sh"
+
+  local key; key="$(registry_resolve_session "$handle" 2>/dev/null)" || {
+    _reg_fail "$want_json" "steward registry session derive: no such session '$handle'" 78; return 78; }
+  local conf; conf="$(registry_dir)/$key.conf"
+
+  # THE SNAPSHOT IS THE LOADER'S, in a subshell: a conf that assigns this function's own locals cannot
+  # reach them, and a row that does not load is refused rather than half-read.
+  local snap snap_rc
+  snap="$( registry_load "$key" >/dev/null 2>&1 \
+           && printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "${RC_LABEL:-}" "${RC_FRI:-}" "${TARGET_PROJECT:-}" "${TARGET_ENTITY:-}" "${SLUG:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )"; snap_rc=$?
+  if [ "$snap_rc" -ne 0 ]; then
+    _reg_fail "$want_json" "steward registry session derive: '$key' does not load; deriving an unreadable row would only hide the cause" "$snap_rc"; return "$snap_rc"
+  fi
+  local label fri tproj tent slug login owner host rest
+  label="${snap%%$'\n'*}"; rest="${snap#*$'\n'}"
+  fri="${rest%%$'\n'*}";   rest="${rest#*$'\n'}"
+  tproj="${rest%%$'\n'*}"; rest="${rest#*$'\n'}"
+  tent="${rest%%$'\n'*}";  rest="${rest#*$'\n'}"
+  slug="${rest%%$'\n'*}";  rest="${rest#*$'\n'}"
+  login="${rest%%$'\n'*}"; rest="${rest#*$'\n'}"
+  owner="${rest%%$'\n'*}"; host="${rest#*$'\n'}"
+
+  if [ "$fri" = yes ]; then
+    _reg_fail "$want_json" "steward registry session derive: '$key' is RC-free (RC_LABEL=\"\") - a deliberate choice, not a row awaiting migration. Remove the line by hand if the choice has changed." 65
+    return 65
+  fi
+  if ! grep -q '^RC_LABEL=' "$conf" 2>/dev/null; then
+    if [ -n "$want_json" ]; then
+      jq -cn --arg id "$key" --arg d "$(registry_session_display "$key" 2>/dev/null)" '{ok:true,kind:"session-derive",id:$id,changed:false,display:$d}'
+    else
+      printf '%s already derives its display (no RC_LABEL line) - nothing written\n' "$key"
+    fi
+    return 0
+  fi
+  if [ -z "$tproj$tent" ]; then
+    _reg_fail "$want_json" "steward registry session derive: '$key' names no target (TARGET_PROJECT or TARGET_ENTITY), so there is nothing to derive a display from - migrate the row first (steward registry migrate-session)" 65
+    return 65
+  fi
+  local desired derr
+  derr="$( registry_display_of_fields "" "$tproj" "$tent" "$slug" 2>&1 >/dev/null )"
+  desired="$( registry_display_of_fields "" "$tproj" "$tent" "$slug" 2>/dev/null )" || desired=""
+  if [ -z "$desired" ]; then
+    _reg_fail "$want_json" "steward registry session derive: the target of '$key' does not render a display (${tproj:-$tent}): ${derr:-no reason given}. The row keeps its label; fix the target first." 65
+    return 65
+  fi
+  local lkey holder
+  lkey="$(registry_session_login_key "$login" "$owner" "$host")"
+  if holder="$(registry_session_rendered_unique "$key" "$lkey" "$desired")"; then
+    _reg_fail "$want_json" "steward registry session derive: the rendered display \"$desired\" is already carried by session '$holder' under the same login ($lkey) - deriving '$key' would make two tiles nobody can tell apart. The row keeps its label." 65
+    return 65
+  fi
+  if [ -n "$dry" ]; then
+    if [ -n "$want_json" ]; then
+      jq -cn --arg id "$key" --arg was "$label" --arg d "$desired" '{ok:true,kind:"session-derive",id:$id,changed:false,dryRun:true,was:$was,display:$d}'
+    else
+      printf 'DRY RUN: %s would drop RC_LABEL="%s" and derive "%s" - nothing written\n' "$key" "$label" "$desired"
+    fi
+    return 0
+  fi
+
+  # THE REWRITE: the line goes, everything else stays, and the row is put back if it will not load or
+  # will not render what was promised.
+  local tmp backup
+  tmp="$conf.derive.$$"; backup="$conf.derive-backup.$$"
+  cp -p "$conf" "$backup" 2>/dev/null || { _reg_fail "$want_json" "steward registry session derive: could not take a backup of $conf" 70; return 70; }
+  if ! grep -v '^RC_LABEL=' "$backup" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" "$backup"; _reg_fail "$want_json" "steward registry session derive: the rewrite failed; $conf is untouched" 70; return 70
+  fi
+  printf '# display derived from the target (was RC_LABEL="%s")\n' "$label" >> "$tmp"
+  if ! mv -f "$tmp" "$conf" 2>/dev/null; then
+    rm -f "$tmp" "$backup"; _reg_fail "$want_json" "steward registry session derive: could not replace $conf; it is untouched" 70; return 70
+  fi
+  local got; got="$( registry_load "$key" >/dev/null 2>&1 && registry_session_display "$key" 2>/dev/null )"
+  if [ "$got" != "$desired" ]; then
+    mv -f "$backup" "$conf" 2>/dev/null
+    _reg_fail "$want_json" "steward registry session derive: the rewritten row renders '${got:-nothing}', not '$desired' - $conf has been put back" 70
+    return 70
+  fi
+  rm -f "$backup"
+  if [ -n "$want_json" ]; then
+    jq -cn --arg id "$key" --arg was "$label" --arg d "$desired" '{ok:true,kind:"session-derive",id:$id,changed:true,was:$was,display:$d}'
+  else
+    printf '%s derives its display now: "%s" (was RC_LABEL="%s")\n' "$key" "$desired" "$label"
+  fi
+  return 0
 }
 
 # cmd_registry_session_realign <handle> [--json] — rewrite ONE row from the old
