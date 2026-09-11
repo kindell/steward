@@ -81,7 +81,7 @@ pstat 4243 claude 4242 4243 34816 4243 111 # the managed claude, birth boot-s:11
 PROCTAB="$T/proctab"; TUPLE="$T/tuple"; OBSLINE="$T/obs-line"
 export PROCTAB TUPLE OBSLINE T_HAS_SESSION="$T/has-session" T_KILL_FAILS="$T/kill-fails" T_NEW_FAILS="$T/new-fails" T_GEN_AT_SPAWN="$T/gen-at-spawn"
 export TMUX_LOG="$T/tmux.log" PGREP_LOG="$T/pgrep.log" OBS_LOG="$T/obs.log" BKILL_LOG="$T/bkill.log" STATE="$HOMEDIR/.local/state/fixture-supervisor"
-export T_FG_CMD="$T/fg-cmd" T_SENDKEYS="$T/sendkeys" T_RECEIPT="$T/receipt" T_RENAME_EFFECT="$T/rename-effect" T_BUSY="$T/busy" OBSQUEUE="$T/obs-queue" T_KILL_LOCKS_STATE="$T/kill-locks-state" T_SENDKEYS_FAIL="$T/sendkeys-fail" T_ENTER_FAIL="$T/enter-fail"
+export T_FG_CMD="$T/fg-cmd" T_SENDKEYS="$T/sendkeys" T_RECEIPT="$T/receipt" T_RENAME_EFFECT="$T/rename-effect" T_BUSY="$T/busy" OBSQUEUE="$T/obs-queue" T_KILL_LOCKS_STATE="$T/kill-locks-state" T_SENDKEYS_FAIL="$T/sendkeys-fail" T_ENTER_FAIL="$T/enter-fail" OBS_SIDE_EFFECT="$T/obs-side-effect"
 cat > "$BIN/tmux" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "$TMUX_LOG"
@@ -133,6 +133,7 @@ cat > "$BIN/observe" <<'EOF'
 # round; when it is empty the static line answers.
 printf '%s\n' "$*" >> "$OBS_LOG"
 if [ -s "$OBSQUEUE" ]; then head -1 "$OBSQUEUE"; sed -i 1d "$OBSQUEUE"; else cat "$OBSLINE"; fi
+[ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT"; exit 0
 EOF
 cat > "$BIN/bkill" <<'EOF'
 #!/bin/bash
@@ -158,7 +159,7 @@ run() { # [id]
   STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_BRIDGE_KILL="$BIN/bkill" STEWARD_NONCE_CMD="$BIN/nonce" \
   BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"
 }
-reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE"; mkdir -p "$STATE"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
+reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE"; mkdir -p "$STATE"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL" "$OBS_SIDE_EFFECT"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
   printf '4242 1 -bash\n' > "$PROCTAB"; printf '$7:1789000000\n' > "$TUPLE"; gen census=1; pstat 4242 bash 1 4242 34816 4243 100; pstat 4243 claude 4242 4243 34816 4243 111; row_claude; }
 row_claude() { # [extra KEY="v" lines...] - the claude row, RC_LABEL="Alpha→Thing" unless overridden
   { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="%s"\nACCOUNT="a-h1"\nCLAUDE_MEMORY_ROOT="%s/memory"\n' "$HOMEDIR" "$NAME" "$T"
@@ -350,6 +351,26 @@ qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 178900000
 qline no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""
 run; is "36c the receipt is not written from a stale observation" "$(gget applied)" ""; has "36d says the process changed" "$OUT" "changed between the round's observation and the rename step"
 
+echo "== 36b. K1: the foreground is read AFTER the final observation - a subprocess that takes the tty during it stops the keys =="
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run
+# THE FLIP HAPPENS DURING THE THIRD OBSERVATION OF THE ROUND - the final one before the keys (the
+# first is the alive check, the second the rename step's receipt recheck). A flip on any earlier call
+# would be caught by the ordinary foreground check in either order and prove nothing about the order.
+printf '[ "$(grep -c . "%s")" -eq 3 ] && echo vim > "%s"\n' "$OBS_LOG" "$T_FG_CMD" > "$OBS_SIDE_EFFECT"
+echo claude > "$T_FG_CMD"; run
+is "36e the foreground flipped during the final observation -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "36f says the foreground changed" "$OUT" "foreground"
+
+echo "== 36c. K2: the immediate recheck includes the vendor's procStart =="
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 9999 thread-4243 1789000000000 '$7:1789000000' 777
+run; is "36g same pid, birth and pane but another procStart immediately before typing -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "36h names the procStart" "$OUT" "procStart 9999"
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run; run
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000001 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000001 alive live:managed "" 9999 thread-4243 1789000000000 '$7:1789000000' 777
+run; is "36i a procStart contradiction at the receipt boundary -> not receipted" "$(gget applied)" ""
+
 echo "== 37. J4: rename-state writes are receipts; an unreadable baseline is re-seeded, never coerced to 0 =="
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; gen pending_for="Alpha→Thing" pending_since=abc rename_tries=0
 line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000001 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; printf 'Alpha→Thing\n' > "$T_RECEIPT"
@@ -396,6 +417,9 @@ reset; line no-process 4243 "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 reset; line identified:managed "" "" "" "" "" alive live:managed "" "" "" "" "" ""; touch "$T_HAS_SESSION"; run; is "33f identified without pid/birth/pane -> unreadable, nothing bound" "$(gget pid)" ""
 reset; line bogus-answer "" "" "" "" "" none "" "" "" "" "" "" ""; run; run; is "33g an answer outside the vocabulary -> nothing" "$(tl new-session)$(tl kill-session)" "00"
 reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" ""; run; run; is "33h a FOURTEEN-field no-process (inode missing) is not the contract -> no spawn" "$(tl new-session)" "0"
+reset; line no-process "" "" "" "" "" alive "" "" "" "" "" "" ""; run; run; is "33i K3: no-process beside gen_state=alive is impossible output -> no spawn, twice" "$(tl new-session)" "0"; has "33j unreadable" "$OUT" "observer-unreadable"
+reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" grace "" "" "" "" "" '$7:1789000000' ""; run; run; is "33k no-process beside grace -> no close" "$(tl kill-session)" "0"
+reset; touch "$T_HAS_SESSION"; line grace "" "" "" "" "" alive "" "" "" "" "" '$7:1789000000' ""; run; has "33l grace beside alive is refused too" "$OUT" "observer-unreadable"
 
 echo "== 34. H5: a syntactically broken bridge.sh ends nothing for OpenCode and refuses a claude row =="
 # THE BROKEN LIBRARY EXITS: a sourced `exit` ends the sourcing shell, which is what "a broken bridge.sh can
@@ -410,9 +434,11 @@ reset; touch "$T_HAS_SESSION"; MANAGED; gen applied="Alpha→Thing"; run
 line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 4243 thread-NEW 1789000000000 '$7:1789000000' 777; run
 is "35a a changed sessionId is rebound" "$(gget sessionId)" "thread-NEW"
 line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 9999 thread-NEW 1789000000000 '$7:1789000000' 777; run
-is "35b a changed procStart is rebound" "$(gget procStart)" "9999"
-line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 9999 thread-NEW 1789000000000 '$7:1789000000' 778; run
-is "35c a changed inode is rebound" "$(gget bridge_inode)" "778"
+is "35b K4: the same pid+birth with ANOTHER procStart is a contradiction - NOT rebound" "$(gget procStart)" "4243"
+[ -f "$STATE/$NAME.identity-degraded" ] && ok "35b2 and the row is marked degraded" || bad "35b2 and the row is marked degraded" ""; has "35b3 loud, once" "$OUT" "contradiction is not rebound"
+run; is "35b4 the second round does not repeat the alarm" "$(grep -c 'contradiction is not rebound' "$T/out")" "0"
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 4243 thread-NEW 1789000000000 '$7:1789000000' 778; run
+is "35c a changed inode (same procStart) is rebound" "$(gget bridge_inode)" "778"
 reset; printf 'bad\n' > "$NONCE_FILE"; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; run; run
 [ -f "$STATE/$NAME.resume-try" ] && bad "35d refused claims do not count as resume attempts" "$(cat "$STATE/$NAME.resume-try")" || ok "35d refused claims do not count as resume attempts"
 [ -f "$STATE/$NAME.launched" ] && bad "35e no launch mark without a launch" "" || ok "35e no launch mark without a launch"

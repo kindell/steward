@@ -426,6 +426,13 @@ observe_line_valid() {
     *) [ -z "$B_PID$B_BIRTH$B_PANE$B_PS$B_SID$B_INODE" ] || return 1 ;;
   esac
   case "$B_CHILD" in ''|0|1) : ;; *) return 1 ;; esac
+  # ANSWER AND gen_state MUST BE A PAIR THE ADAPTER CAN EMIT (K3): bridge_answer says no-process or
+  # wait-veto only for none/bootstrap/gone-*, and grace only for grace. A line that says no-process
+  # beside an alive generation is malformed output, and malformed output authorises nothing.
+  case "$B_ANS" in
+    no-process|wait-veto) case "$B_GEN" in none|bootstrap|gone-receipt|gone-noreceipt) : ;; *) return 1 ;; esac ;;
+    grace) [ "$B_GEN" = grace ] || return 1 ;;
+  esac
   return 0
 }
 # runtime_identified: the alive question, asked the runtime's own way (E2).
@@ -434,9 +441,16 @@ runtime_identified() {
 }
 # bind_generation: a verified-live bridge record becomes the generation's current fact, so a
 # file left behind by KILL -9 is later recognised by pid:procStart. Written only on change.
-bind_generation() { # rc 1 when the record could not be written - the caller must not go on writing
+bind_generation() { # rc 1 when the record could not be written - the caller must not go on writing; rc 2 on a contradiction
+  local g_uid g_pid g_birth g_ps; g_uid="$(id -u)"
+  g_pid="$(bridge_gen_get "$STATE_DIR" "$NAME" pid 2>/dev/null)"; g_birth="$(bridge_gen_get "$STATE_DIR" "$NAME" birth 2>/dev/null)"; g_ps="$(bridge_gen_get "$STATE_DIR" "$NAME" procStart 2>/dev/null)"
+  # A CONTRADICTION IS NEVER REBOUND (spec §1, K4): the same pid and OS birth with another vendor
+  # procStart is two stories about one process; the generation keeps the first, the row is degraded.
+  if [ "$g_pid" = "$B_PID" ] && [ "$g_birth" = "$B_BIRTH" ] && [ -n "$g_ps" ] && [ -n "$B_PS" ] && [ "$g_ps" != "$B_PS" ]; then
+    [ -f "$STATE_DIR/$NAME.identity-degraded" ] || { touch "$STATE_DIR/$NAME.identity-degraded"; echo "session-supervisor: $NAME — DEGRADED: pid $B_PID (birth $B_BIRTH) now reports procStart $B_PS, the generation recorded $g_ps. A contradiction is not rebound." >&2; }
+    return 2
+  fi
   rm -f "$STATE_DIR/$NAME.identity-degraded"
-  local g_uid; g_uid="$(id -u)"
   if [ "$(bridge_gen_get "$STATE_DIR" "$NAME" pid 2>/dev/null)" != "$B_PID" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" birth 2>/dev/null)" != "$B_BIRTH" ] \
      || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" procStart 2>/dev/null)" != "$B_PS" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" sessionId 2>/dev/null)" != "$B_SID" ] \
      || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" uid 2>/dev/null)" != "$g_uid" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_nameSince 2>/dev/null)" != "$B_SINCE" ] \
@@ -1529,9 +1543,13 @@ bus_signalera() { # <what> <text>
 }
 
 if runtime_identified; then
-  if [ "$IS_CLAUDE" = 1 ] && ! bind_generation; then
-    echo "session-supervisor: $NAME — the verified record could not be written to the generation; no other write this round." >&2
-    exit 0
+  if [ "$IS_CLAUDE" = 1 ]; then
+    bind_generation; _bind_rc=$?
+    if [ "$_bind_rc" -eq 2 ]; then exit 0; fi   # the contradiction is logged once above; nothing else this round
+    if [ "$_bind_rc" -ne 0 ]; then
+      echo "session-supervisor: $NAME — the verified record could not be written to the generation; no other write this round." >&2
+      exit 0
+    fi
   fi
   rm -f "$SUSPECT" "$RESUME_TRY"   # live session = the resume took, reset the counter
   # SURVIVAL TURNS THE LAUNCH MARK INTO last-sid (the macOS twin's hold-loop
@@ -1599,12 +1617,14 @@ if runtime_identified; then
       _rn_key="$(bridge_suspect_key rename "$B_PID" "$B_BIRTH" "$PANE_TARGET" "$DESIRED" "$PENDING_SINCE")"
       # THE ACTION BOUNDARY RE-OBSERVES (J3, as H1): the B_* the round opened with are stale by now. The
       # receipt is judged on a FRESH observation of the same process in the same pane, and so is the type.
-      rename_same_process() { observe_row; [ "$B_ANS" = identified:managed ] && [ "$B_PID" = "$1" ] && [ "$B_BIRTH" = "$2" ] && [ "$B_PANE" = "$3" ]; }
-      _rn_pid="$B_PID"; _rn_birth="$B_BIRTH"; _rn_pane_id="$B_PANE"
+      # THE IMMEDIATE RECHECK IS pid + OS birth + pane + the vendor's procStart (spec §2; K2): the same
+      # pid and birth with another procStart is a contradiction, and a contradiction types nothing.
+      rename_same_process() { observe_row; [ "$B_ANS" = identified:managed ] && [ "$B_PID" = "$1" ] && [ "$B_BIRTH" = "$2" ] && [ "$B_PANE" = "$3" ] && [ "$B_PS" = "$4" ]; }
+      _rn_pid="$B_PID"; _rn_birth="$B_BIRTH"; _rn_pane_id="$B_PANE"; _rn_ps="$B_PS"
       if [ -n "$_rn_skip" ]; then
         :
-      elif ! rename_same_process "$_rn_pid" "$_rn_birth" "$_rn_pane_id"; then
-        rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed between the round's observation and the rename step ($B_ANS); nothing typed, nothing receipted." >&2
+      elif ! rename_same_process "$_rn_pid" "$_rn_birth" "$_rn_pane_id" "$_rn_ps"; then
+        rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed between the round's observation and the rename step ($B_ANS, pid ${B_PID:-none}, procStart ${B_PS:-none}); nothing typed, nothing receipted." >&2
       else
         _rn_pane="$(tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null)"
         if rename_receipt_seen "$_rn_pane" "$DESIRED" && [ "$B_NAME" = "$DESIRED" ] && case "$B_SINCE" in ''|*[!0-9]*) false ;; *) [ "$B_SINCE" -gt "$PENDING_SINCE" ] ;; esac; then
@@ -1623,12 +1643,17 @@ if runtime_identified; then
         elif ! pane_foreground_is_managed "$PANE_TARGET" "$B_PID"; then
           rm -f "$RENAME_SUSPECT"
           echo "session-supervisor: $NAME — rename pending, but the managed pane's foreground is not the managed claude (command, tty and process group must all agree); not typing." >&2
-        elif ! same_nonempty_sv "$(bridge_os_birth "$B_PID" 2>/dev/null)" "$B_BIRTH"; then
-          rm -f "$RENAME_SUSPECT"    # the process changed under us between the observation and now
         elif ! bridge_suspect_confirmed "$RENAME_SUSPECT" "$_rn_key"; then
           :                          # first sighting of exactly this rename: the next identical round types
-        elif ! rename_same_process "$_rn_pid" "$_rn_birth" "$_rn_pane_id"; then
-          rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed immediately before typing ($B_ANS); nothing typed." >&2
+        # THE LAST THREE READINGS BEFORE THE KEYS, IN THIS ORDER (K1): the fresh observation FIRST - it takes
+        # time, and a foreground read before it would be stale by the time the keys leave - then the
+        # foreground, then the OS birth, then send. Nothing is read between the birth and the keys.
+        elif ! rename_same_process "$_rn_pid" "$_rn_birth" "$_rn_pane_id" "$_rn_ps"; then
+          rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed immediately before typing ($B_ANS, pid ${B_PID:-none}, procStart ${B_PS:-none}); nothing typed." >&2
+        elif ! pane_foreground_is_managed "$PANE_TARGET" "$B_PID"; then
+          rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the foreground changed during the final observation; not typing." >&2
+        elif ! same_nonempty_sv "$(bridge_os_birth "$B_PID" 2>/dev/null)" "$B_BIRTH"; then
+          rm -f "$RENAME_SUSPECT"    # the process changed under us between the observation and now
         else
           type_line "$PANE_TARGET" "/rename $DESIRED"; _rn_rc=$?
           rm -f "$RENAME_SUSPECT"
