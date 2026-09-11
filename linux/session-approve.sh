@@ -167,10 +167,18 @@ fi
 # the script sits at scripts/session-approve.sh and the library at
 # scripts/lib/listeners.sh, so ../lib resolves to <HOME>/lib and finds nothing.
 #
-# Measured 2026-09-11 by the session running the deployed path the enroll letter
-# tells it to run: the source failed, the script continued (set -u without -e),
-# listeners_probe was then not a command, and criterion (e) failed with
-# "neither ss nor lsof is present" ON A HOST WITH lsof. Loud, which is the
+# Measured 2026-09-11 by the session this script was approving - NOT by running
+# the deployed path, which does not exist on that home at all: the deploy that
+# built it predates this library and carries three of the manifest's seventeen
+# lib rows. The layout was REPRODUCED in a scratch directory and the resolution
+# and the fallthrough run there. The first version of this comment said the
+# deployed path had been run; it had not, and the reporter corrected it. In a
+# file where the comment is the measurement record, how a thing was measured is
+# the record.
+#
+# What was measured, either way: the source failed, the script continued (set -u
+# without -e), listeners_probe was then not a command, and criterion (e) failed
+# with "neither ss nor lsof is present" ON A HOST WITH lsof. Loud, which is the
 # design holding - but pointing at a cause that is false and a remedy (install
 # ss on a Mac) that is wrong.
 _lyss_lib="$(dirname "$REG_LIB")/listeners.sh"
@@ -178,7 +186,20 @@ if [ -f "$_lyss_lib" ]; then
   # shellcheck source=../lib/listeners.sh
   . "$_lyss_lib" || { echo "session-approve: REFUSING — the listener library could not be read: $_lyss_lib" >&2; exit 78; }
 else
+  # THE REFUSAL SAYS WHAT TO DO, because the likeliest cause is not a broken
+  # install but an OLD one. lib/listeners.sh, its manifest row and this caller
+  # all landed in a single commit - the case deploy-manifest warns about two
+  # rows below: "a row added in the same commit as its caller is a row that
+  # lands after the caller on any home the deploy reaches out of order." On a
+  # home whose deploy predates that commit this script is now inert, loudly and
+  # correctly, and the reader needs the remedy rather than the diagnosis.
+  #
+  # Note also which directory gets named: _reg_lib_default prefers the DEPLOYED
+  # lib over a checkout's, so even a run from a checkout reports the deployed
+  # path here. That is not a bug in the message - it is where the registry
+  # actually came from - but it surprises a reader standing in a checkout.
   echo "session-approve: REFUSING — the listener library is not beside the registry library in $(dirname "$REG_LIB")" >&2
+  echo "session-approve:   this usually means the deployed image predates it — run the estate's install, then run this again" >&2
   exit 78
 fi
 lyss_omatt=""
