@@ -49,8 +49,7 @@
 
 **Files:** `lib/bridge.sh`, `test/bridge-classify.test.sh`.
 **Interface change:** the `ok` line gains an **eleventh** field `inode` (`stat -c %i` | `stat -f %i`); a stat failure is `!unclassifiable … stat` as today. `BRIDGE_GEN_KEYS` already lists `launch_inodes`.
-- [ ] Test: claim 1g `fld 11` is a positive integer; a file replaced by a new one (rm + recreate) yields a different inode. Mutation: emit `0` → 1g fails.
-- [ ] Commit — `bridge: a candidate carries its inode, so a file that predates the spawn can be told from one it made`.
+- [x] Built (`1816fe1`): claims 1g `fld 11` is a positive integer, 1h it equals `stat`'s answer, 1i it is stable across reads. **Not claimed:** that a recreated file gets a new inode — ext4 handed the same number back, which is why D10 pairs the inode with mtime. Mutation `inode=0` fell 1g/1h.
 
 ---
 
