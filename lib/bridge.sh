@@ -170,3 +170,62 @@ bridge_answer() {
   esac
   if [ "$veto" = 1 ]; then printf 'wait-veto'; else printf 'no-process'; fi
 }
+
+# ---- generation: <state-dir>/<id>.generation, key=value, written atomically -----------------
+# HISTORY AND BOOTSTRAP, NEVER A SECOND TRUTH. When a verified-live bridge file exists ITS
+# fields win; the generation remembers what we launched and what we saw, so a file left
+# behind by KILL -9 can be recognised (by pid:procStart - a dead process has no birth) and
+# a fresh launch can be told apart from a stranger (by the nonce, in the adapter).
+bridge_gen_path() { printf '%s/%s.generation' "$1" "$2"; }
+bridge_gen_get()  { local f; f="$(bridge_gen_path "$1" "$2")"; [ -f "$f" ] || return 1; sed -n "s/^$3=//p" "$f" | head -1; }
+_bridge_gen_hist() { sed -n 's/^history=//p' "$(bridge_gen_path "$1" "$2")" 2>/dev/null | head -1; }
+# A HISTORY ENTRY IS pid:procStart:birth, AND birth IS boot_id:ticks - it contains a colon.
+# Splitting on the LAST colon returned only the ticks (B2). Strip two fields from the
+# front and keep the rest whole.
+_bridge_hist_pid()   { printf '%s' "${1%%:*}"; }
+_bridge_hist_ps()    { local r="${1#*:}"; printf '%s' "${r%%:*}"; }
+_bridge_hist_birth() { local r="${1#*:}"; printf '%s' "${r#*:}"; }
+# AN EMPTY KEY NEVER MATCHES. "$(bridge_os_birth $gone)" is empty and so is a birth that was
+# never recorded; two empties compared equal and a dead process read as alive (third pass 3).
+bridge_gen_matches_live() { # sd id pid birth
+  [ -n "${3:-}" ] && [ -n "${4:-}" ] || return 1
+  [ "$(bridge_gen_get "$1" "$2" pid 2>/dev/null)" = "$3" ] && [ "$(bridge_gen_get "$1" "$2" birth 2>/dev/null)" = "$4" ] && return 0
+  local h; for h in $(_bridge_gen_hist "$1" "$2"); do [ "$(_bridge_hist_pid "$h")" = "$3" ] && [ "$(_bridge_hist_birth "$h")" = "$4" ] && return 0; done
+  return 1
+}
+bridge_gen_matches_dead() { # sd id pid procStart
+  [ -n "${3:-}" ] && [ -n "${4:-}" ] || return 1
+  [ "$(bridge_gen_get "$1" "$2" pid 2>/dev/null)" = "$3" ] && [ "$(bridge_gen_get "$1" "$2" procStart 2>/dev/null)" = "$4" ] && return 0
+  local h; for h in $(_bridge_gen_hist "$1" "$2"); do [ "$(_bridge_hist_pid "$h")" = "$3" ] && [ "$(_bridge_hist_ps "$h")" = "$4" ] && return 0; done
+  return 1
+}
+# bridge_gen_write <sd> <id> key=value ... - atomic (tmp + mv); a DIFFERENT pid pushes the old
+# triple into history, bounded to the last 8; an unknown-shaped key refuses the WHOLE write.
+bridge_gen_write() {
+  local dir="$1" id="$2" f tmp kv k v old_pid old_ps old_b hist; shift 2
+  f="$(bridge_gen_path "$dir" "$id")"; tmp="$f.tmp.$$"; mkdir -p "$dir"
+  old_pid="$(bridge_gen_get "$dir" "$id" pid 2>/dev/null)"; old_ps="$(bridge_gen_get "$dir" "$id" procStart 2>/dev/null)"; old_b="$(bridge_gen_get "$dir" "$id" birth 2>/dev/null)"
+  hist="$(_bridge_gen_hist "$dir" "$id")"
+  : > "$tmp"; [ -f "$f" ] && grep -v '^history=' "$f" > "$tmp"
+  for kv in "$@"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    case "$k" in *[!A-Za-z0-9_]*|'') echo "bridge: generation key '$k' refused" >&2; rm -f "$tmp"; return 64 ;; esac
+    grep -v "^$k=" "$tmp" > "$tmp.2"; mv "$tmp.2" "$tmp"; printf '%s=%s\n' "$k" "$v" >> "$tmp"
+    if [ "$k" = pid ] && [ -n "$old_pid" ] && [ "$v" != "$old_pid" ]; then hist="$hist $old_pid:${old_ps:--}:${old_b:--}"; fi
+  done
+  hist="$(printf '%s\n' $hist | grep . | tail -8 | tr '\n' ' ')"; hist="${hist% }"
+  [ -n "$hist" ] && printf 'history=%s\n' "$hist" >> "$tmp"
+  mv -f "$tmp" "$f"
+}
+
+# ---- keyed two-round suspect (B6) --------------------------------------------------------------
+# THE SAME KEY MUST BE SEEN TWICE IN A ROW. A boolean marker let orphan A license the kill of
+# orphan B; the key carries the intended action and its target - every argument, in order,
+# "-" for an empty one - and any different key resets the count.
+bridge_suspect_key() { local out="" a; for a in "$@"; do out="${out:+$out }${a:--}"; done; printf '%s' "$out"; }
+bridge_suspect_confirmed() { # <file> <key> -> rc 0 when the file already held exactly this key; always rewrites the file
+  local f="$1" key="$2" prev=""
+  [ -f "$f" ] && prev="$(cat "$f")"
+  printf '%s\n' "$key" > "$f"
+  [ "$prev" = "$key" ]
+}
