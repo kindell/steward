@@ -573,7 +573,7 @@ EOF2
 lreq "$LFX/l1.txt" widgetl "login=acme-team
 "
 out="$(run_lreq "$LFX/l1.txt")"; rc=$?
-is "L1: a login whose principal matches the account registers, rc 0" "$rc" "0"
+is "L1: a login whose principal matches the account registers, rc 0" "$rc" "0"; [ "$rc" = 0 ] || printf 'DBGL1 %s\n' "$out"
 id1="$(printf '%s' "$out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 has "L1: the row carries the LOGIN line" "$(cat "$LFX/sessions.d/$id1.conf" 2>/dev/null)" 'LOGIN="acme-team"'
 

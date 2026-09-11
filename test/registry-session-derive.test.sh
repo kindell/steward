@@ -82,8 +82,17 @@ out="$(run "$F")"; rc=$?
 is "3h another login key may render the same display (Jon 2026-09-11): rc 0" "$rc" "0"
 is "3i and its line is gone too" "$(grep -c '^RC_LABEL=' "$SESS/$F.conf")" "0"
 out="$(run s-0000000000000099)"; rc=$?; is "3j an unknown session is refused" "$rc" "78"
-G="s-00000000000000g1" ; printf 'garbage\n' > "$SESS/s-00000000000000a9.conf"
+printf 'garbage\n' > "$SESS/s-00000000000000a9.conf"
 out="$(run s-00000000000000a9)"; rc=$?; case "$rc" in 0) bad "3k a row that does not load is refused" "rc 0" ;; *) ok "3k a row that does not load is refused" ;; esac
+# AND THE GATE FAILS CLOSED ON IT (spec §3, advisor M5): a row that yields neither a login key nor a
+# display cannot be shown NOT to carry the display being taken, so no other row may derive while it lies
+# in the register. (A row that merely fails to LOAD is read without being executed and compared instead -
+# see test/registry-session-display.test.sh section 9.)
+I="s-00000000000000i1"; row "$I" nine 'RC_LABEL="Nine"' 'TARGET_ENTITY="alpha"'
+sum="$(cksum < "$SESS/$I.conf")"; out="$(run "$I")"; rc=$?
+is "3l a row that cannot be read blocks every derive (fails closed)" "$rc" "65"; has "3m and is named" "$out" "s-00000000000000a9"
+is "3n byte-identical" "$(cksum < "$SESS/$I.conf")" "$sum"
+rm -f "$SESS/s-00000000000000a9.conf" "$SESS/$I.conf"
 
 echo "== 4. --json is data, and --dry-run writes nothing =="
 H="s-00000000000000h1"; row "$H" seven 'RC_LABEL="Old Seven"' 'TARGET_ENTITY="alpha"'

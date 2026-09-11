@@ -362,6 +362,15 @@ OUT="$( export STEWARD_REGISTRY_DIR="$SESS" STEWARD_ESTATE_ROOT="$FX" STEWARD_EN
 case "$OUT" in *nope*) ok "8g and stderr names the project" ;; *) bad "8g and stderr names the project" "$OUT" ;; esac
 
 echo "== 9. THE WORK RULE and the rendered gate as library predicates (plan Task 9a) =="
+# THE GATES FAIL CLOSED ON A ROW THEY CANNOT READ (spec §3, advisor M5), and the sections above left
+# several rows here that deliberately do not load. They are stashed for this section and one of them is
+# brought back at the end, to prove the refusal rather than assume it.
+mkdir -p "$FX/stash"
+for _f in "$SESS"/*.conf; do
+  _n="$(basename "$_f" .conf)"
+  ( export STEWARD_REGISTRY_DIR="$SESS" STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$ENT" STEWARD_PROJECT_DIR="$PROJ" STEWARD_CONFIG_FILE="$FX/no-such-config"
+    . "$here/lib/registry.sh"; registry_load "$_n" >/dev/null 2>&1 && registry_session_display "$_n" >/dev/null 2>&1 ) || mv "$_f" "$FX/stash/"
+done
 printf 'NAME="Work"\nPARENT="alpha"\n' > "$PROJ/work.conf"
 printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="work"\nRC_LABEL="First"\n' > "$SESS/wr-one.conf"
 printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="work"\nRC_LABEL="Second"\n' > "$SESS/wr-two.conf"
@@ -378,7 +387,42 @@ in_fixture registry_session_rendered_unique wr-new "owner:a@h2" "First"; is "9g 
 in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Gone";  is "9h a retired row's display is free" "$RC" "1"
 in_fixture registry_session_login_key "" a h1; is "9i the legacy key is the home" "$OUT" "owner:a@h1"
 in_fixture registry_session_login_key q-login a h1; is "9j a LOGIN is the key itself" "$OUT" "q-login"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "First"; is "9k with the unreadable rows stashed, the answer is a plain holder" "$RC" "0"
+# A ROW THAT DOES NOT LOAD IS NOT OMITTED - it is read WITHOUT being executed, and compared. At schema 6
+# every row must name a LOGIN, so an estate in the middle of this very migration is full of rows the
+# loader refuses; a gate that refused every write while one of them lay there would stop the migration it
+# protects. What it may never do is pretend such a row is absent.
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="no-such-account"\nRC_LABEL="Broken"\n' > "$SESS/bad-account.conf"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Broken"; is "9l a row that will not LOAD still holds its display, read raw" "$RC$OUT" "0bad-account"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Nobody Renders This"; is "9m and it holds only that display" "$RC" "1"
+# THE UNINSPECTABLE CASE: neither a key nor a display can be read. Then uniqueness is unknowable and the
+# gate refuses - it cannot be established by omitting the row.
+printf 'garbage\n' > "$SESS/unreadable.conf"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Anything"; is "9n a row that yields neither key nor display is UNINSPECTABLE (rc 2)" "$RC" "2"
+is "9o and is named" "$OUT" "unreadable"
+in_fixture registry_session_work_rule wr-new "owner:a@h1" work; is "9p the work rule fails closed the same way" "$RC" "2"
+rm -f "$SESS/bad-account.conf" "$SESS/unreadable.conf"
 rm -f "$SESS"/wr-*.conf "$PROJ/work.conf"
+
+echo "== 10. THE STAGED-ROW RULE (advisor M2): RUNTIME first, RC-free exempt from the rendered gate =="
+# The rule is proven HERE, on its own fields, and not through whichever writer happens to call it.
+printf 'NAME="Gate3"\nPARENT="alpha"\n' > "$PROJ/gate3.conf"
+printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="gate3"\nRC_LABEL="Held"\n' > "$SESS/g3-holder.conf"
+in_fixture registry_session_gate_fields new-id claude-code "" "Held" "" alpha newslug "" a h1
+is "10a a claude row rendering a held display is refused (65)" "$RC" "65"
+in_fixture registry_session_gate_fields new-id opencode "" "Held" "" alpha newslug "" a h1
+is "10b an OpenCode row is exempt from BOTH gates (RUNTIME first)" "$RC" "0"
+in_fixture registry_session_gate_fields new-id codex "" "Held" "" alpha newslug "" a h1
+is "10c and so is a Codex row" "$RC" "0"
+in_fixture registry_session_gate_fields new-id claude-code 1 "" "" alpha newslug "" a h1
+is "10d an RC-FREE claude row is exempt from the rendered gate (it shows no tile)" "$RC" "0"
+in_fixture registry_session_gate_fields new-id claude-code 1 "" gate3 "" newslug "" a h1
+is "10e but the work rule still binds it - the project is the scarce thing, not the name" "$RC" "65"
+in_fixture registry_session_gate_fields new-id claude-code "" "" gate3 "" newslug "" b h1
+is "10f another login key is free of both" "$RC" "0"
+in_fixture registry_session_gate_fields g3-holder claude-code "" "Held" "" alpha g3 "" a h1
+is "10g a row never gates against itself" "$RC" "0"
+rm -f "$SESS/g3-holder.conf" "$PROJ/gate3.conf"
 
 echo
 echo "pass=$pass fail=$fail"

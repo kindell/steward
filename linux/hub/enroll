@@ -699,13 +699,19 @@ _RC_INNEHAVARE="$(registry_session_rc_label_holder "$ID" "$ACCOUNT_LOGIN" "$VARD
 # this one extends from the verbatim label to the rendered display. (Two DIFFERENT logins may show the
 # same name: Jon's decision 2026-09-11.)
 if [ -n "$RC_ETIKETT" ] && declare -F registry_session_rendered_unique >/dev/null 2>&1; then
-  _RC_RENDERED="$(registry_session_rendered_unique "$ID" "owner:$ACCOUNT_LOGIN@$VARD" "$RC_ETIKETT" 2>/dev/null)" && \
+  _RC_RENDERED="$(registry_session_rendered_unique "$ID" "owner:$ACCOUNT_LOGIN@$VARD" "$RC_ETIKETT" 2>/dev/null)"; _RC_RC=$?
+  [ "$_RC_RC" -eq 2 ] && \
+    fel "session '$_RC_RENDERED' cannot be read, so it cannot be shown NOT to render \"$RC_ETIKETT\" - refusing to register '$NAMN' (the gate fails closed). Repair or retire '$_RC_RENDERED' first."
+  [ "$_RC_RC" -eq 0 ] && \
     fel "the display \"$RC_ETIKETT\" is already rendered by session '$_RC_RENDERED' in the same home (owner:$ACCOUNT_LOGIN@$VARD) - refusing to register '$NAMN' under it. Two rows rendering identically in one tile list are two tiles nobody can tell apart (spec §3); ask again with a name of its own - session-new.sh --label '<a name of its own>', which travels as rc_label=."
 fi
 # THE WORK RULE (spec §3; plan Task 9a): one claude-code conversation per (who pays, project), on register
 # lifecycle. Two labels can differ while the project is the same; this is the gate that sees through the label.
 if [ -n "${TARGET_PROJECT:-}" ] && declare -F registry_session_work_rule >/dev/null 2>&1; then
-  _WR_HOLDER="$(registry_session_work_rule "$ID" "owner:$ACCOUNT_LOGIN@$VARD" "$TARGET_PROJECT" 2>/dev/null)" && \
+  _WR_HOLDER="$(registry_session_work_rule "$ID" "owner:$ACCOUNT_LOGIN@$VARD" "$TARGET_PROJECT" 2>/dev/null)"; _WR_RC=$?
+  [ "$_WR_RC" -eq 2 ] && \
+    fel "session '$_WR_HOLDER' cannot be read, so it cannot be shown NOT to work on '$TARGET_PROJECT' - refusing to register '$NAMN' (the gate fails closed). Repair or retire '$_WR_HOLDER' first."
+  [ "$_WR_RC" -eq 0 ] && \
     fel "session '$_WR_HOLDER' already works on project '$TARGET_PROJECT' in the same home (owner:$ACCOUNT_LOGIN@$VARD) - refusing to register '$NAMN' beside it. One claude-code conversation per (login, project) (spec §3); retire or retarget '$_WR_HOLDER' first."
 fi
 # THE TARGET LINE IS A TYPED UNION, built before the heredoc so the heredoc

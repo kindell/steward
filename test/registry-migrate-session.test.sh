@@ -244,6 +244,9 @@ REPO_PATH="/p"
 FUTURE_FIELD="x"
 EOF
 out="$(run oldunknown --account a-h1 --entity alpha --slug unk 2>&1)"; rc=$?
+# THE UNMODELED-FIELD ROW DOES NOT LOAD, and the gates of spec §3 fail closed on a row they cannot read
+# (advisor M5) - so it is removed the moment its own claim is done, exactly as an operator would repair
+# or retire it. Its refusal is asserted below before it goes.
 is "2d: unmodeled field refused rc 65" "$rc" "65"
 case "$out" in *FUTURE_FIELD*) ok "2d: the refusal names the field" ;; *) bad "2d: the refusal names the field" "got: $out" ;; esac
 is "2d: old conf untouched by the refusal" "$(grep -c '^FUTURE_FIELD="x"$' "$SESS/oldunknown.conf")" "1"
@@ -379,6 +382,24 @@ is "5c: nothing was written" "$(row_count)" "$before"
 
 # 5d. A ROW WITHOUT LOGIN IS UNTOUCHED BY THE GATE — no LOGIN line means no
 # gate call at all, and migration proceeds exactly as before this fix.
+# AND THE UNREADABLE ROWS ARE TAKEN OUT OF THE REGISTER HERE. A row whose LOGIN does not resolve does not LOAD, and the
+# gates of spec §3 fail closed on a row they cannot read (advisor M5) - so while it lies there no other
+# row may be written. That is the point of the rule, and its own refusal is the claim below.
+# A ROW WHOSE LOGIN DOES NOT RESOLVE DOES NOT LOAD - and it is still compared, read without being
+# executed (its RC_LABEL is its display). It blocks nothing that does not collide with it.
+sum_ghost="$(cksum < "$SESS/oldlogin-ghost.conf")"
+printf 'NAME="Ghostly"\nMEMBERS="a"\n' > "$FX/entities.d/ghostly.conf"
+out="$(run oldsafe --account a-h1 --entity ghostly --slug pastghost --json)"; rc=$?
+is "5c2: an unreadable-by-loader row does not block a write that does not collide with it" "$rc" "0"
+is "5c3: and it was left untouched" "$(cksum < "$SESS/oldlogin-ghost.conf")" "$sum_ghost"
+# BUT A ROW THAT YIELDS NEITHER A KEY NOR A DISPLAY IS UNINSPECTABLE, and then nothing may be written.
+printf 'garbage\n' > "$SESS/unreadable.conf"
+printf 'NAME="Blocked"\nMEMBERS="a"\n' > "$FX/entities.d/blocked.conf"
+n_before="$(row_count)"
+out="$(run oldsafe2 --account a-h1 --entity blocked --slug blockedrow --json)"; rc=$?
+case "$rc" in 0) bad "5c4: an uninspectable row blocks every write (fail-closed)" "rc 0: $out" ;; *) ok "5c4: an uninspectable row blocks every write (fail-closed)" ;; esac
+is "5c5: and nothing was written" "$(row_count)" "$n_before"
+rm -f "$SESS/unreadable.conf" "$SESS/oldlogin-ghost.conf" "$SESS/oldlogin-mismatch.conf"
 cat > "$SESS/oldlogin-none.conf" <<'EOF'
 OWNER="alice"
 DOMAIN="alpha"

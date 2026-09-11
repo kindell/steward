@@ -1365,8 +1365,11 @@ _registry_validate_login_stage() {
 # mode. Every field is compared — a row where any of them drifted from what
 # the verb meant to write must never publish.
 _registry_validate_session_stage() {
+  # RUNTIME AND RC_LABEL ARE READ FROM THE STAGED ROW TOO (advisor M2): the gates below are decided on
+  # what is about to be written, not on what this caller usually writes - migrate-session preserves the
+  # old row's RUNTIME through this same validator. Both are reset here so a previous row cannot leak in.
   local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
-        HOST="" REPO_PATH="" OWNER="" PERMISSION_MODE="" LOGIN=""
+        HOST="" REPO_PATH="" OWNER="" PERMISSION_MODE="" LOGIN="" RUNTIME="" RC_LABEL=""
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: staged session file did not source: $file" >&2; return 70; }
   local k v
@@ -1391,23 +1394,14 @@ _registry_validate_session_stage() {
     echo "registry: slug '$SLUG' was taken in account '$ACCOUNT' by a concurrent write — refusing" >&2
     return 70
   fi
-  # THE REGISTRY GATE OF SPEC §3, INSIDE THE LOCK (plan Task 9a): two slugs that render the same display
-  # are two tiles a human cannot tell apart, and one claude-code conversation per (who pays, project) is
-  # the work rule. Both are register lifecycle - what is written - never live state.
-  local _desired _holder _key
-  _key="$(registry_session_login_key "$LOGIN" "$OWNER" "$HOST")"
-  if _desired="$(registry_display_of_fields "" "$TARGET_PROJECT" "$TARGET_ENTITY" "$SLUG" 2>/dev/null)" && [ -n "$_desired" ]; then
-    if _holder="$(registry_session_rendered_unique "$ID" "$_key" "$_desired")"; then
-      echo "registry: REFUSING — the display \"$_desired\" is already rendered by session '$_holder' under the same login ($_key); two rows rendering identically in one tile list are two tiles nobody can tell apart (spec §3). Give the target a name of its own, or retire '$_holder' first." >&2
-      return 70
-    fi
-  fi
-  if [ -n "$TARGET_PROJECT" ]; then
-    if _holder="$(registry_session_work_rule "$ID" "$_key" "$TARGET_PROJECT")"; then
-      echo "registry: REFUSING — session '$_holder' already works on project '$TARGET_PROJECT' under the same login ($_key); one claude-code conversation per (login, project) (spec §3). Retire or retarget '$_holder' first." >&2
-      return 70
-    fi
-  fi
+  # THE TWO GATES OF SPEC §3, INSIDE THE LOCK (plan Task 9a), decided on the STAGED ROW'S OWN FIELDS by
+  # the one library rule - RUNTIME first, RC-free exempt from the rendered gate, both fail closed on a row
+  # that cannot be read at all. The decision is provable without this caller: see
+  # test/registry-session-display.test.sh section 10.
+  local _staged_rcfree=""
+  grep -q '^RC_LABEL=""$' "$file" 2>/dev/null && _staged_rcfree=1
+  registry_session_gate_fields "$ID" "${RUNTIME:-claude-code}" "$_staged_rcfree" "${RC_LABEL:-}" \
+    "$TARGET_PROJECT" "$TARGET_ENTITY" "$SLUG" "$LOGIN" "$OWNER" "$HOST" || return 70
   return 0
 }
 
@@ -5629,10 +5623,15 @@ cmd_registry_session_derive() {
     _reg_fail "$want_json" "steward registry session derive: the target of '$key' does not render a display (${tproj:-$tent}): ${derr:-no reason given}. The row keeps its label; fix the target first." 65
     return 65
   fi
-  local lkey holder
+  local lkey holder urc
   lkey="$(registry_session_login_key "$login" "$owner" "$host")"
-  if holder="$(registry_session_rendered_unique "$key" "$lkey" "$desired")"; then
+  holder="$(registry_session_rendered_unique "$key" "$lkey" "$desired")"; urc=$?
+  if [ "$urc" -eq 0 ]; then
     _reg_fail "$want_json" "steward registry session derive: the rendered display \"$desired\" is already carried by session '$holder' under the same login ($lkey) - deriving '$key' would make two tiles nobody can tell apart. The row keeps its label." 65
+    return 65
+  fi
+  if [ "$urc" -eq 2 ]; then
+    _reg_fail "$want_json" "steward registry session derive: session '$holder' cannot be read, so it cannot be shown NOT to carry \"$desired\" (the gate fails closed). The row keeps its label; repair or retire '$holder' first." 65
     return 65
   fi
   if [ -n "$dry" ]; then
@@ -6210,6 +6209,10 @@ cmd_registry_migrate_session() {
   # 8. WRITE through the shared hardened writer; the validate_fn runs the
   # atomic (ACCOUNT, SLUG) gate inside the sessions.d lock. Same expectations
   # `session add` sets, so the SAME validator applies.
+  # THE OLD ROW IS ABOUT TO BE CONSUMED, so it is not a candidate for the uniqueness gates - and it may
+  # be exactly the row that does not load, which is why it is being migrated at all (advisor M5's
+  # fail-closed rule would otherwise refuse the repair it asks for).
+  REGISTRY_GATE_EXCLUDE="$old"
   _REGW_EXPECT_ID="$id"
   _REGW_EXPECT_ACCOUNT="$account"
   _REGW_EXPECT_SLUG="$slug"

@@ -422,7 +422,7 @@ out="$(run add --account a-h1 --project gate --slug g1 --repo /tmp/fixture-repo 
 is "10a the first row on (a, gate) is written" "$rc" "0"
 out="$(run add --account a-h1 --project gate --slug g2 --repo /tmp/fixture-repo --json)"; rc=$?
 is "10b a second row on the SAME (owner, project) is refused by the work rule (rc 70)" "$rc" "70"
-has "10c and the refusal names spec §3 (the rendered gate fires first: the same project renders the same display)" "$out" "spec §3"
+has "10c and the refusal names the rule (the rendered gate fires first: the same project renders the same display)" "$out" "spec section 3"
 n_before="$(ls "$SESS" | wc -l | tr -d ' ')"; out="$(run add --account a-h1 --project gate --slug g3 --repo /tmp/fixture-repo --json)"
 is "10d nothing was written" "$(ls "$SESS" | wc -l | tr -d ' ')" "$n_before"
 out="$(run add --account b-h1 --project gate --slug g4 --repo /tmp/fixture-repo --json)"; rc=$?
