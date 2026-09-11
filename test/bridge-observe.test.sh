@@ -146,29 +146,29 @@ claim_setup() { # <environ-line> <pane-descends 1|0> <lpane-birth-ok 1|0>
   proc 4242 100; proc 4243 111 S "$1"
   bridge 4243 "$ID:@0.%0" "Fresh" 1789000050000
   lb="boot-1:100"; [ "$3" = 1 ] || lb="boot-1:999"
-  gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=abc123 launch_pane_pid=4242 launch_pane_birth="$lb" launch_inodes="" census=1
+  gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=0123456789abcdef0123456789abcdef launch_pane_pid=4242 launch_pane_birth="$lb" launch_inodes="" census=1
 }
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; obs "$ID"; is "3 open launch + nonce + descent + fresh -> managed" "$(f 2)" "identified:managed"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; obs "$ID"; is "3 open launch + nonce + descent + fresh -> managed" "$(f 2)" "identified:managed"
 claim_setup "STEWARD_LAUNCH_NONCE=zzz" 1 1;    obs "$ID"; is "4 wrong nonce -> unknown" "$(f 2)" "unknown"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 0 1; obs "$ID"; is "5 not a descendant of the launch pane -> unknown" "$(f 2)" "unknown"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 0; obs "$ID"; is "6 launch pane birth differs (pane recreated) -> unknown" "$(f 2)" "unknown"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 0 1; obs "$ID"; is "5 not a descendant of the launch pane -> unknown" "$(f 2)" "unknown"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 0; obs "$ID"; is "6 launch pane birth differs (pane recreated) -> unknown" "$(f 2)" "unknown"
 # THE INODE ONLY DECIDES INSIDE THE ONE-SECOND SLACK. An mtime far older than the launch is refused by
 # the mtime rule alone (claim 8); the inode matters for a file whose mtime is within the slack the
 # supervisor's seconds-granular clock needs (launch - 1000 <= mtime < launch). Measured: the first
 # version of this claim used a 2020 mtime and a mutation that dropped the inode clause survived.
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; ino="$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; touch -d @1788999999 "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; ino="$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; touch -d @1788999999 "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"
 is "7a inode in snapshot AND mtime just before launch (inside the slack) -> unknown (pre-existing)" "$(f 2)" "unknown"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; touch -d @1788999999 "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; touch -d @1788999999 "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"
 is "7c inode NOT in snapshot, mtime inside the slack -> managed (the slack is honoured)" "$(f 2)" "identified:managed"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; ino="$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; obs "$ID"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; ino="$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; obs "$ID"
 is "7b inode in snapshot but mtime fresh -> managed (inode reuse is normal)" "$(f 2)" "identified:managed"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; touch -d '2020-01-01' "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"; is "8 mtime older than launch -> unknown" "$(f 2)" "unknown"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; touch -d '2020-01-01' "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"; is "8 mtime older than launch -> unknown" "$(f 2)" "unknown"
 
 echo "== 9-12. clocks =="
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; NOW_UP=1100000; obs "$ID"; is "9 window elapsed -> unknown" "$(f 2)" "unknown"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; NOW_MS=1788999999000; obs "$ID"; is "10 wall stepped back -> discontinuity" "$(f 2)" "unknown"; has "10b reason" "$(f 9)" "launch-clock-discontinuity"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; NOW_UP=300000; obs "$ID"; has "11 uptime went back -> discontinuity" "$(f 9)" "launch-clock-discontinuity"
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; gen launch_boot_id=boot-OLD; obs "$ID"; has "12 boot id differs -> discontinuity" "$(f 9)" "launch-clock-discontinuity"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; NOW_UP=1100000; obs "$ID"; is "9 window elapsed -> unknown" "$(f 2)" "unknown"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; NOW_MS=1788999999000; obs "$ID"; is "10 wall stepped back -> discontinuity" "$(f 2)" "unknown"; has "10b reason" "$(f 9)" "launch-clock-discontinuity"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; NOW_UP=300000; obs "$ID"; has "11 uptime went back -> discontinuity" "$(f 9)" "launch-clock-discontinuity"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; gen launch_boot_id=boot-OLD; obs "$ID"; has "12 boot id differs -> discontinuity" "$(f 9)" "launch-clock-discontinuity"
 
 echo "== 13-15. moved, orphan, stale =="
 reset; live_managed; printf '4300 1 1001 -bash\n4243 4300 1001 claude\n4242 1 1001 -bash\n' > "$PROCTAB"; printf '4242\n4300\n' > "$PANES_ALL"; obs "$ID"
@@ -192,13 +192,17 @@ printf '4242\n4300\n' > "$PANES_SESS"; obs "$ID"; is "18b the same claude under 
 
 echo "== 19. launch child: the pane shell is tmux, not the child =="
 reset; touch "$HAS_SESSION"; printf '$7:1\n' > "$TUPLE"; printf '4242 1 1001 -bash\n' > "$PROCTAB"; printf '4242\n' > "$PANES_SESS"; printf '4242\n' > "$PANES_ALL"; proc 4242 100
-gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=abc123 launch_pane_pid=4242 launch_pane_birth=boot-1:100 census=1
+gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=0123456789abcdef0123456789abcdef launch_pane_pid=4242 launch_pane_birth=boot-1:100 census=1
 NOW_UP=1100000; obs "$ID"; is "19a past window, pane shell alive, no nonce child -> child 0" "$(f 10)" "0"; is "19b gen_state gone-noreceipt" "$(f 8)" "gone-noreceipt"
-printf '4243 4242 1001 claude\n' >> "$PROCTAB"; proc 4243 111 S "STEWARD_LAUNCH_NONCE=abc123"; obs "$ID"
+printf '4243 4242 1001 claude\n' >> "$PROCTAB"; proc 4243 111 S "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef"; obs "$ID"
 is "19c nonce child alive, not registered -> child 1" "$(f 10)" "1"; is "19d gen_state alive" "$(f 8)" "alive"; is "19e answer unknown" "$(f 2)" "unknown"
 
-echo "== 20. generation pid with EMPTY birth, process gone -> gone-noreceipt, never alive =="
-reset; gen pid=4700 birth= census=1; obs "$ID"; is "20 empty birth is not alive" "$(f 8)" "gone-noreceipt"
+echo "== 20. H6: a generation pid WITHOUT a birth is invalid state, never gone (a spawn would follow) =="
+reset; gen pid=4700 birth= census=1; obs "$ID"; is "20a pid without birth -> unknown" "$(f 2)" "unknown"; has "20b reason generation-invalid" "$(f 9)" "generation-invalid"
+reset; live_managed; rm -f "$HOMEDIR/.claude/sessions/4243.json"; gen pid=4243 birth=; obs "$ID"; is "20c LIVE pid, empty birth, no bridge -> unknown, not no-process" "$(f 2)" "unknown"
+reset; live_managed; gen launch_pane_pid=4242 launch_pane_birth=; obs "$ID"; has "20d launch_pane_pid without its birth -> generation-invalid" "$(f 9)" "generation-invalid"
+reset; live_managed; gen launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce='abc123'; obs "$ID"; has "20e a stored nonce that is not 32 lowercase hex -> generation-invalid" "$(f 9)" "generation-invalid"
+reset; live_managed; gen pid=4243 birth=boot-1:abc; obs "$ID"; has "20f a birth whose ticks are not digits is not a birth" "$(f 9)" "generation-invalid"
 
 echo "== 21-24. refusals =="
 reset; row_full "$ID2" 'OWNER="b"' 'ACCOUNT="b-h1"'; obs --all
@@ -240,10 +244,10 @@ reset; gen pid=4600 birth=boot-1:444 procStart=4600 census=1; gen pid= birth= pr
 T_NO_SERVER=1 obs "$ID"; is "32c tmux's own 'no server running' is an ABSENCE: the stale row is still no-process" "$(f 2)" "no-process"
 
 echo "== 33-34. G3: a launch is whole, and the launch child descends from the pane INCARNATION =="
-claim_setup "STEWARD_LAUNCH_NONCE=abc123" 1 1; gen launch_boot_id=; obs "$ID"; is "33a empty launch_boot_id -> unknown" "$(f 2)" "unknown"; has "33b reason discontinuity" "$(f 9)" "launch-clock-discontinuity"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; gen launch_boot_id=; obs "$ID"; is "33a empty launch_boot_id -> unknown" "$(f 2)" "unknown"; has "33b reason discontinuity" "$(f 9)" "launch-clock-discontinuity"
 reset; touch "$HAS_SESSION"; printf '$7:1\n' > "$TUPLE"; printf '4242 1 1001 -bash\n4243 4242 1001 claude\n' > "$PROCTAB"; printf '4242\n' > "$PANES_SESS"; printf '4242\n' > "$PANES_ALL"
-proc 4242 100; proc 4243 111 S "STEWARD_LAUNCH_NONCE=abc123"
-gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=abc123 launch_pane_pid=4242 launch_pane_birth=boot-1:999 census=1
+proc 4242 100; proc 4243 111 S "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef"
+gen pid= birth= launch_ms=1789000000000 launch_uptime_ms=400000 launch_boot_id=boot-1 launch_nonce=0123456789abcdef0123456789abcdef launch_pane_pid=4242 launch_pane_birth=boot-1:999 census=1
 NOW_UP=1100000; obs "$ID"; is "34a past window, nonce child under a REUSED pane pid (birth differs) -> child 0" "$(f 10)" "0"; is "34b gen_state gone-noreceipt, not alive" "$(f 8)" "gone-noreceipt"
 gen launch_pane_birth=boot-1:100; obs "$ID"; is "34c same setup with the recorded incarnation -> child 1" "$(f 10)" "1"
 

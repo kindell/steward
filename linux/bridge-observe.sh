@@ -38,7 +38,10 @@ PROC="${BRIDGE_PROC_ROOT:-/proc}"
 RUNTIME_VETO_PAT='(^|[ /])(claude|opencode)'
 tmuxc() { command tmux -S "$SOCK" "$@"; }
 line() { local first=1 a; for a in "$@"; do [ "$first" = 1 ] && first=0 || printf '%s' "$US"; printf '%s' "$a"; done; printf '\n'; }
-env_has_nonce() { [ -n "${2:-}" ] && LC_ALL=C tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | grep -qx "STEWARD_LAUNCH_NONCE=$2"; }
+env_has_nonce() { [ -n "${2:-}" ] && LC_ALL=C tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | grep -qxF "STEWARD_LAUNCH_NONCE=$2"; }   # -F: state text is never a pattern
+is_nonce() { [ "${#1}" -eq 32 ] && case "$1" in *[!0-9a-f]*) return 1 ;; esac; }
+# is_birth: "<boot id>:<ticks>", the boot id one token without spaces, the ticks digits (H6).
+is_birth() { case "${1:-}" in *:*) : ;; *) return 1 ;; esac; [ -n "${1%%:*}" ] && case "${1%%:*}" in *[[:space:]]*) return 1 ;; esac && is_digits "${1##*:}"; }
 same_nonempty() { [ -n "${1:-}" ] && [ "$1" = "${2:-}" ]; }
 is_digits() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 word_in() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -93,7 +96,12 @@ observe() { # <id> <bootstrap 0|1>
   lboot="$(bridge_gen_get "$SD" "$id" launch_boot_id 2>/dev/null)"; nonce="$(bridge_gen_get "$SD" "$id" launch_nonce 2>/dev/null)"
   census="$(bridge_gen_get "$SD" "$id" census 2>/dev/null)"; lpid="$(bridge_gen_get "$SD" "$id" launch_pane_pid 2>/dev/null)"
   lbirth="$(bridge_gen_get "$SD" "$id" launch_pane_birth 2>/dev/null)"; linodes="$(bridge_gen_get "$SD" "$id" launch_inodes 2>/dev/null)"
-  { [ -z "$gp" ] || is_digits "$gp"; } && { [ -z "$lpid" ] || is_digits "$lpid"; } || { refuse "$id" unknown none generation-invalid; return; }
+  # PAIRS ARE WHOLE (H6): a pid without a birth can never be proven alive OR dead, so with a live process
+  # and no bridge file it would have read as gone -> no-process -> a spawn beside a process whose absence
+  # was never shown. The same for the launch pane; and a stored nonce is exactly 32 lowercase hex.
+  { [ -z "$gp" ] || { is_digits "$gp" && is_birth "$gbirth"; }; } && { [ -z "$gbirth" ] || [ -n "$gp" ]; } \
+    && { [ -z "$lpid$lbirth" ] || { is_digits "$lpid" && is_birth "$lbirth"; }; } \
+    && { [ -z "$nonce" ] || is_nonce "$nonce"; } || { refuse "$id" unknown none generation-invalid; return; }
   if [ -n "$launch$lup$lboot$nonce" ]; then                                    # a launch is recorded: it must be WHOLE (G3, G4)
     is_digits "$launch" && is_digits "$lup" || { refuse "$id" unknown none generation-invalid; return; }
     same_nonempty "$lboot" "$boot_id" || { refuse "$id" unknown none launch-clock-discontinuity; return; }   # empty boot id is a discontinuity too (D8)
