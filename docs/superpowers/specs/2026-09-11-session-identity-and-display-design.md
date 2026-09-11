@@ -304,7 +304,9 @@ TDD; every guard proven by a mutation. Required before the first live row:
 
 *Identity.* First-ever (no tmux, no bridge, no generation) spawns exactly
 one. Cleanly stopped (generation + receipt, no bridge) respawns. Previously
-launched, no receipt, no bridge → refuses, alarms. 0/1/>1 bridge files →
+launched, no receipt, no bridge, process gone → **no-process after two
+rounds → respawns** (the crash path; an earlier draft said "refuses" here
+and was wrong — the bootstrap table is the law). 0/1/>1 bridge files →
 dead-or-spawn / alive / split-brain refusal. Malformed, truncated,
 schema-changed, symlinked bridge → identity-unknown, zero writes. Delayed
 bridge over several rounds → grace → degraded, no duplicate spawn. Display
