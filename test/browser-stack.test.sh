@@ -194,6 +194,17 @@ export -f stat pgrep hostname
 #
 # Asking a child settles it in any shell, and needs no knowledge of which one
 # is running.
+#
+# AND THE GAP IS WORST WHERE IT IS LEAST VISIBLE, which is the part that makes
+# this gate worth its lines. Put either older form back with the `export -f`
+# line removed and this suite goes RED - 16 pass, 9 fail - which looks like a
+# safety net. It is not one. It is a property of a machine with no X: with the
+# binaries absent the fall-through becomes `command not found` and shows up as
+# failing assertions. On a session host the binaries are THERE, so the same
+# fall-through runs them instead - a real X server and a real vnc on the
+# fixture's displays, silently, with the suite reporting green. Measured
+# 2026-09-11: neither Xvfb nor x11vnc nor chromium-browser exists on the
+# machine where those two control runs were made.
 for _n in Xvfb x11vnc setxkbmap xmodmap autocutsel sg stat pgrep hostname; do
   if ! bash -c 'typeset -f "$1" >/dev/null 2>&1' _ "$_n"; then
     echo "browser-stack.test: REFUSING TO RUN - a child process does not see '$_n' as a stub," >&2
