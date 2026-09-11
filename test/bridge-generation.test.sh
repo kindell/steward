@@ -36,6 +36,13 @@ is "1d merge keeps pid" "$(bridge_gen_get "$T" "$ID" pid)" "100"; is "1e applied
 bridge_gen_write "$T" "$ID" applied="Point→Chalmers→HR Pilot"; is "1f spaces and arrows survive" "$(bridge_gen_get "$T" "$ID" applied)" "Point→Chalmers→HR Pilot"
 bridge_gen_write "$T" "$ID" "bad key=1" >/dev/null 2>&1; is "1g bad key rc 64" "$?" "64"
 is "1h bad key wrote nothing" "$(bridge_gen_get "$T" "$ID" applied)" "Point→Chalmers→HR Pilot"
+# A WELL-FORMED TYPO IS THE DANGEROUS ONE: it passes the grammar and would become a fact.
+bridge_gen_write "$T" "$ID" brith=boot-z:9 >/dev/null 2>&1; is "1i typo key (brith=) rc 64" "$?" "64"
+bridge_gen_get "$T" "$ID" brith >/dev/null 2>&1; is "1j typo key not persisted" "$?" "1"
+bridge_gen_write "$T" "$ID" pid=100 brith=1 >/dev/null 2>&1; is "1k one bad key refuses the WHOLE write" "$?" "64"
+is "1l pid unchanged after the refused write" "$(bridge_gen_get "$T" "$ID" pid)" "100"
+for k in launch_uptime_ms launch_boot_id launch_inodes spawn_state stop_intent; do bridge_gen_write "$T" "$ID" "$k=x" >/dev/null 2>&1; is "1m v4 key $k accepted" "$?" "0"; done
+bridge_gen_write "$T" "$ID" history=hacked >/dev/null 2>&1; is "1n history is not a caller key" "$?" "64"
 
 echo "== 2. live and dead matching, colon-safe =="
 bridge_gen_matches_live "$T" "$ID" 100 boot-x:1; is "2a current live, colon in birth" "$?" "0"

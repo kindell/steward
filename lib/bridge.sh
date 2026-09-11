@@ -199,8 +199,15 @@ bridge_gen_matches_dead() { # sd id pid procStart
   local h; for h in $(_bridge_gen_hist "$1" "$2"); do [ "$(_bridge_hist_pid "$h")" = "$3" ] && [ "$(_bridge_hist_ps "$h")" = "$4" ] && return 0; done
   return 1
 }
+# THE GENERATION HAS A CLOSED VOCABULARY. A well-formed but unknown key (a typo such as
+# brith=) is refused with the whole write, not persisted as a silent new fact - the first
+# version checked only the grammar, so a typo would have looked like a field forever (fourth
+# pass 11). `history` is written by this function itself and is not a caller's key.
+BRIDGE_GEN_KEYS=" pid birth procStart uid sessionId launch_ms launch_uptime_ms launch_boot_id launch_nonce launch_pane_pid launch_pane_birth launch_inodes spawn_state grace_rounds bridge_name bridge_nameSince bridge_mtime applied applied_at applied_nameSince pending_for pending_since rename_tries stop_intent stop_receipt census "
+_bridge_gen_key_ok() { case "$1" in *[!A-Za-z0-9_]*|'') return 1 ;; esac; case "$BRIDGE_GEN_KEYS" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
 # bridge_gen_write <sd> <id> key=value ... - atomic (tmp + mv); a DIFFERENT pid pushes the old
-# triple into history, bounded to the last 8; an unknown-shaped key refuses the WHOLE write.
+# triple into history, bounded to the last 8; a key outside the vocabulary refuses the WHOLE write.
 bridge_gen_write() {
   local dir="$1" id="$2" f tmp kv k v old_pid old_ps old_b hist; shift 2
   f="$(bridge_gen_path "$dir" "$id")"; tmp="$f.tmp.$$"; mkdir -p "$dir"
@@ -209,7 +216,7 @@ bridge_gen_write() {
   : > "$tmp"; [ -f "$f" ] && grep -v '^history=' "$f" > "$tmp"
   for kv in "$@"; do
     k="${kv%%=*}"; v="${kv#*=}"
-    case "$k" in *[!A-Za-z0-9_]*|'') echo "bridge: generation key '$k' refused" >&2; rm -f "$tmp"; return 64 ;; esac
+    _bridge_gen_key_ok "$k" || { echo "bridge: generation key '$k' is not in the vocabulary; nothing written" >&2; rm -f "$tmp"; return 64; }
     grep -v "^$k=" "$tmp" > "$tmp.2"; mv "$tmp.2" "$tmp"; printf '%s=%s\n' "$k" "$v" >> "$tmp"
     if [ "$k" = pid ] && [ -n "$old_pid" ] && [ "$v" != "$old_pid" ]; then hist="$hist $old_pid:${old_ps:--}:${old_b:--}"; fi
   done
