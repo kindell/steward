@@ -171,9 +171,32 @@ export -f stat pgrep hostname
 # typeset -f also answers the question this gate actually asks - "is this name
 # specifically a FUNCTION, not something PATH can supply" - which is the
 # distinction the gate exists for, and it is right in both shells.
+# THE GATE ASKS A CHILD, because the child is what the property is about.
+#
+# Both earlier versions asked whether the name was a function IN THIS SHELL -
+# first `type -t`, then `typeset -f` - and that is a proxy for the thing this
+# suite depends on, not the thing itself. What it depends on is that a CHILD
+# process sees the stub: the script under test is run as `bash "$SCRIPT"`, and
+# if the stub does not reach it, PATH does, and on a session host PATH means a
+# real X server on the fixture's displays.
+#
+# The two are not the same question, and measured 2026-09-11 they give
+# different answers in the shell where it matters. zsh has no `export -f` in
+# bash's sense - there it PRINTS the function instead of exporting it:
+#   bash parent: f(){...}; export -f f; bash -c f   -> the stub runs
+#   zsh  parent: same two lines;        bash -c f   -> command not found
+# So under zsh the whole stub mechanism is inert. `type -t` refused everything
+# there by accident (it is a bad option in zsh) and the suite never ran, which
+# is why nobody had met this; `typeset -f` answers correctly that the function
+# exists HERE, the gate passes, and every child then falls through to PATH -
+# the exact hazard the gate exists to prevent, re-opened by making the gate
+# more correct about a narrower question.
+#
+# Asking a child settles it in any shell, and needs no knowledge of which one
+# is running.
 for _n in Xvfb x11vnc setxkbmap xmodmap autocutsel sg stat pgrep hostname; do
-  if ! typeset -f "$_n" >/dev/null 2>&1; then
-    echo "browser-stack.test: REFUSING TO RUN - '$_n' is not a stub function," >&2
+  if ! bash -c 'typeset -f "$1" >/dev/null 2>&1' _ "$_n"; then
+    echo "browser-stack.test: REFUSING TO RUN - a child process does not see '$_n' as a stub," >&2
     echo "  so PATH would decide, and on a host with a real X server this suite" >&2
     echo "  would start one on the fixture's displays. Fix the stub, do not run." >&2
     exit 1
