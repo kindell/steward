@@ -198,17 +198,17 @@ _bridge_hist_birth() { local r="${1#*:}"; printf '%s' "${r#*:}"; }
 # when the generation recorded a procStart for this pid+birth and the caller supplies one, the two must
 # agree - a contradiction is NOT a match, so the candidate reads unclassifiable and the row unknown,
 # never latest-wins. A generation without a procStart (the first bind, a bootstrap) still matches.
-bridge_gen_matches_live() { # sd id pid birth [procStart]
-  [ -n "${3:-}" ] && [ -n "${4:-}" ] || return 1
+bridge_gen_matches_live() { # sd id pid birth procStart - all five required (K5: no four-argument bypass)
+  [ -n "${3:-}" ] && [ -n "${4:-}" ] && [ -n "${5:-}" ] || return 1
   local gps; gps="$(bridge_gen_get "$1" "$2" procStart 2>/dev/null)"
   if [ "$(bridge_gen_get "$1" "$2" pid 2>/dev/null)" = "$3" ] && [ "$(bridge_gen_get "$1" "$2" birth 2>/dev/null)" = "$4" ]; then
-    [ -z "$gps" ] || [ -z "${5:-}" ] || [ "$gps" = "$5" ] || return 1
+    [ -z "$gps" ] || [ "$gps" = "$5" ] || return 1     # a generation without a procStart (first bind) still matches
     return 0
   fi
   local h hps; for h in $(_bridge_gen_hist "$1" "$2"); do
     [ "$(_bridge_hist_pid "$h")" = "$3" ] && [ "$(_bridge_hist_birth "$h")" = "$4" ] || continue
     hps="$(_bridge_hist_ps "$h")"; [ "$hps" = - ] && hps=""
-    [ -z "$hps" ] || [ -z "${5:-}" ] || [ "$hps" = "$5" ] || return 1
+    [ -z "$hps" ] || [ "$hps" = "$5" ] || return 1
     return 0
   done
   return 1

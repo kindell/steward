@@ -45,18 +45,18 @@ for k in launch_uptime_ms launch_boot_id launch_inodes spawn_state stop_intent b
 bridge_gen_write "$T" "$ID" history=hacked >/dev/null 2>&1; is "1n history is not a caller key" "$?" "64"
 
 echo "== 2. live and dead matching, colon-safe =="
-bridge_gen_matches_live "$T" "$ID" 100 boot-x:1; is "2a current live, colon in birth" "$?" "0"
+bridge_gen_matches_live "$T" "$ID" 100 boot-x:1 500; is "2a current live, colon in birth" "$?" "0"
 bridge_gen_write "$T" "$ID" pid=101 birth=boot-x:2 procStart=501
-bridge_gen_matches_live "$T" "$ID" 100 boot-x:1;  is "2b old live pair in history (B2)" "$?" "0"
-bridge_gen_matches_live "$T" "$ID" 100 boot-y:1;  is "2c wrong boot id no" "$?" "1"
-bridge_gen_matches_live "$T" "$ID" 100 boot-x:2;  is "2d wrong ticks no" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" 100 boot-x:1 500;  is "2b old live pair in history (B2)" "$?" "0"
+bridge_gen_matches_live "$T" "$ID" 100 boot-y:1 500;  is "2c wrong boot id no" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" 100 boot-x:2 500;  is "2d wrong ticks no" "$?" "1"
 bridge_gen_matches_dead "$T" "$ID" 100 500;       is "2e old DEAD pair by procStart" "$?" "0"
 bridge_gen_matches_dead "$T" "$ID" 100 999;       is "2f wrong procStart no" "$?" "1"
 bridge_gen_matches_dead "$T" "$ID" 101 501;       is "2g current dead pair" "$?" "0"
 # K4: the vendor's procStart is identity evidence - a contradiction is not a match
 bridge_gen_matches_live "$T" "$ID" 101 boot-x:2 501; is "2h live match WITH the recorded procStart" "$?" "0"
 bridge_gen_matches_live "$T" "$ID" 101 boot-x:2 999; is "2i same pid+birth, DIFFERENT procStart -> no match (contradiction)" "$?" "1"
-bridge_gen_matches_live "$T" "$ID" 101 boot-x:2;     is "2j no procStart supplied -> the pid+birth match stands" "$?" "0"
+bridge_gen_matches_live "$T" "$ID" 101 boot-x:2;     is "2j K5: no procStart supplied -> NO match (the four-argument bypass is gone)" "$?" "1"
 bridge_gen_matches_live "$T" "$ID" 100 boot-x:1 999; is "2k a history entry with a different procStart -> no match" "$?" "1"
 bridge_gen_matches_live "$T" "$ID" 100 boot-x:1 500; is "2l a history entry with the same procStart -> match" "$?" "0"
 bridge_gen_write "$T" "$ID" pid=102 birth=boot-x:3 procStart=
@@ -64,9 +64,10 @@ bridge_gen_matches_live "$T" "$ID" 102 boot-x:3 777; is "2m a generation WITHOUT
 
 echo "== 3. an empty key never matches (third pass 3) =="
 bridge_gen_write "$T" "$ID" pid=200 birth= procStart=
-bridge_gen_matches_live "$T" "$ID" 200 "";        is "3a empty birth vs empty recorded birth = NO match" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" 200 "" 1;      is "3a empty birth vs empty recorded birth = NO match" "$?" "1"
 bridge_gen_matches_dead "$T" "$ID" 200 "";        is "3b empty procStart vs empty recorded = NO match" "$?" "1"
-bridge_gen_matches_live "$T" "$ID" "" boot-x:2;   is "3c empty pid = NO match" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" "" boot-x:2 1; is "3c empty pid = NO match" "$?" "1"
+bridge_gen_matches_live "$T" "$ID" 200 boot-x:9 ""; is "3d empty procStart = NO match" "$?" "1"
 
 echo "== 4. clearing the pid opens a launch claim and keeps history =="
 bridge_gen_write "$T" "$ID" pid= birth= procStart=
