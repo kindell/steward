@@ -36,6 +36,7 @@ linux/session-approve.sh           scripts/session-approve.sh           755  scr
 linux/estate-status.sh             scripts/estate-status.sh             755  scripts
 linux/liveness-host.sh             scripts/liveness-host.sh             755  scripts
 linux/bridge-observe.sh            scripts/bridge-observe.sh            755  scripts
+linux/bridge-kill.py               scripts/bridge-kill.py               755  scripts
 job-runner.sh                      scripts/job-runner.sh                755  scripts
 linux/install-user-jobs.sh         scripts/install-user-jobs.sh         755  scripts
 lib/registry.sh                    scripts/lib/registry.sh              755  lib
