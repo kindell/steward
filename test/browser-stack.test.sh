@@ -155,8 +155,24 @@ export -f stat pgrep hostname
 # about is how this defect would be discovered rather than prevented. If any
 # name below is not a function, PATH would decide, and on a session host PATH
 # means the real X server.
+#
+# typeset -f AND NOT type -t, measured 2026-09-11. The old form was the repo's
+# only `type -t`, and under zsh it is not a test either: `type -t` is a bad
+# option there, stdout is empty, and the comparison "" != "function" holds - so
+# the gate REFUSES. It failed CLOSED, which for a gate whose failure would
+# otherwise start a real X server on somebody's display is the direction one
+# would pick on purpose.
+#
+# It was not picked on purpose, and that is the whole reason to change it. The
+# other instrument in this repo failed OPEN in the same shell for the same
+# reason, and the difference between the two was luck. A property this suite
+# relies on should not rest on which way an accident happened to fall.
+#
+# typeset -f also answers the question this gate actually asks - "is this name
+# specifically a FUNCTION, not something PATH can supply" - which is the
+# distinction the gate exists for, and it is right in both shells.
 for _n in Xvfb x11vnc setxkbmap xmodmap autocutsel sg stat pgrep hostname; do
-  if [ "$(type -t "$_n")" != "function" ]; then
+  if ! typeset -f "$_n" >/dev/null 2>&1; then
     echo "browser-stack.test: REFUSING TO RUN - '$_n' is not a stub function," >&2
     echo "  so PATH would decide, and on a host with a real X server this suite" >&2
     echo "  would start one on the fixture's displays. Fix the stub, do not run." >&2
