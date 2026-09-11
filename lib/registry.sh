@@ -3924,14 +3924,18 @@ registry_load() {
 # scoping the moment the row sourced. Everything the conf can influence
 # crosses the boundary as printed field values only; the name used by the
 # fallback is this function's own argument, captured before any load runs.
-# registry_session_rc_enabled <id> - rc 0 unless the row says RC_LABEL="" (the RC-FREE choice).
-# An ABSENT line means "rendered" and is RC-enabled; only the deliberate empty string opts out.
-# rc 1 for a row that does not exist: nothing is enabled about nothing.
+# registry_session_rc_enabled <id> - rc 0 when the row is a claude-code row that has NOT opted out of
+# Remote Control; rc 1 when it has (RC_LABEL="", the RC-FREE choice) or is not a claude-code row at all
+# (spec §3: RUNTIME first - OpenCode and Codex are exempt); rc 78 when the row does not load, because a
+# row that cannot be read has not chosen anything (advisor J6). An ABSENT line means "rendered" and is
+# RC-enabled; only the deliberate empty string opts out. The row is read through registry_load, never
+# grepped raw: a malformed or duplicate line is a refusal, not a choice.
 registry_session_rc_enabled() {
-  local slug="${1:-}" conf
-  registry_valid_name "$slug" || return 1
-  conf="$(registry_dir)/$slug.conf"; [ -f "$conf" ] || return 1
-  grep -q '^RC_LABEL=""$' "$conf" 2>/dev/null && return 1
+  local slug="${1:-}" snap
+  registry_valid_name "$slug" || return 78
+  snap="$( registry_load "$slug" >/dev/null 2>&1 || exit 78; printf '%s\n%s' "${RUNTIME:-claude-code}" "${RC_FRI:-}" )" || return 78
+  case "${snap%%$'\n'*}" in claude-code) : ;; *) return 1 ;; esac
+  [ "${snap#*$'\n'}" = "yes" ] && return 1
   return 0
 }
 

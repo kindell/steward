@@ -349,7 +349,13 @@ printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PR
 in_fixture registry_session_rc_enabled rc-labeled;  is "8a a non-empty label is RC-enabled" "$RC" "0"
 in_fixture registry_session_rc_enabled rc-derived;  is "8b an ABSENT line is RC-enabled (rendered)" "$RC" "0"
 in_fixture registry_session_rc_enabled rc-free;     is "8c RC_LABEL=\"\" is the RC-free choice: rc 1" "$RC" "1"
-in_fixture registry_session_rc_enabled no-such-row; is "8d an unknown row is not enabled (rc 1)" "$RC" "1"
+in_fixture registry_session_rc_enabled no-such-row; is "8d an unknown row does not load: rc 78, not a choice" "$RC" "78"
+printf 'OWNER="a"\nDOMAIN="alpha"\nRC_LABEL=""\n' > "$SESS/rc-bad.conf"   # no REPO_PATH: the row does not load
+in_fixture registry_session_rc_enabled rc-bad;      is "8d2 a malformed row with an empty label is a refusal (78), never 'disabled'" "$RC" "78"
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nRC_LABEL="X"\nRUNTIME="opencode"\nMODEL="openai/m"\nOPENCODE_VERSION="1.0.0"\nOPENCODE_PORT="4097"\nAUTO_APPROVE="true"\nCLAUDE_MEMORY_ROOT="/tmp/m"\n' > "$SESS/rc-oc.conf"
+in_fixture registry_session_rc_enabled rc-oc;       is "8d3 an OpenCode row is exempt: rc 1 even with a label" "$RC" "1"
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nRC_LABEL="X"\nRUNTIME="codex"\n' > "$SESS/rc-cx.conf"
+in_fixture registry_session_rc_enabled rc-cx;       is "8d4 a Codex row is exempt: rc 1" "$RC" "1"
 in_fixture registry_session_display rc-free;        is "8e an RC-free row with a target STILL derives its display (for --name)" "$OUT" "Alpha→Site"
 OUT="$( export STEWARD_REGISTRY_DIR="$SESS" STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$ENT" STEWARD_PROJECT_DIR="$PROJ" STEWARD_CONFIG_FILE="$FX/no-such-config"; . "$here/lib/registry.sh"; registry_session_display rc-broken 2>&1 >/dev/null )"; RC=$?
 [ "$RC" -ne 0 ] && ok "8f an unresolvable target refuses (rc $RC)" || bad "8f an unresolvable target refuses" "rc 0"
