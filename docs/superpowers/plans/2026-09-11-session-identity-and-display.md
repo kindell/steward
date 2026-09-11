@@ -185,7 +185,9 @@ echo "session-supervisor: $NAME — close of $NP_N did not verifiably succeed; n
 
 ---
 
-### Task 6: Display as a fact; rename two-round to the pane; tty-checked foreground — as v4 (rename key `rename pid birth pane desired pending_since`, two rounds immediately before typing; reset on every other branch; `tty_nr`+`tpgid` both sides; degraded marker cleared on recovery).
+### Task 6: Display as a fact; rename two-round to the pane; tty-checked foreground — BUILT
+
+As v4 (rename key `rename pid birth pane desired pending_since`, two rounds immediately before typing; reset on every other branch; `tty_nr`+`tpgid` both sides; degraded marker cleared on recovery). **Built:** `registry_session_rc_enabled` (test/registry-session-display 8a–8g); supervisor claims 22–29 in `test/supervisor-bridge.test.sh` (136 total), twelve mutations bite. Notes: `DISPLAY`/`DISPLAY_ERR` are derived once at the label site; a verbatim legacy label clears a derivation fault beside it; `--name` = conf → display → applied → label; `PANE_TARGET` = the bridge's pane for an identified claude row, `$NAME` otherwise (the re-ping follows it); T5's deferred claim 19 is claim 28 (28h–28j: rc 78, no spawn, names the missing link). The "pane receipt only" fixture had to ADVANCE nameSince to isolate the bridge-name check (a mutation survived until it did).
 
 ### Task 7: Watch — the fifteen-field line, the remote socket built on the remote, kills only through `bridge-kill.py` (rc 65 → refuse, re-observe), info line on stderr asserted — as v4.
 
