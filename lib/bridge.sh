@@ -46,12 +46,14 @@ _bridge_poison() { printf '!unclassifiable%s%s%s%s\n' "$US" "$1" "$US" "$2"; }
 _bridge_has_ctl() { LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377' | LC_ALL=C grep -q .; }
 
 # bridge_candidates <id> <sessions-dir>
-#   ok US path US pid US procStart US tmux US name US nameSince US sessionId US startedAt US mtime_ms
+#   ok US path US pid US procStart US tmux US name US nameSince US sessionId US startedAt US mtime_ms US inode
+# THE INODE IS THE FRESHNESS RECORD (D10): the supervisor snapshots the inodes in sessions/ before
+# it spawns, and a candidate whose inode was in that set existed before the launch it claims.
 #   !unclassifiable US path US reason
 # A complete, typed file whose tmux names ANOTHER id is silent (foreign). rc 0 always:
 # absence is a measurement, and a non-zero exit would make a caller drop every other row.
 bridge_candidates() {
-  local id="${1:-}" dir="${2:-}" f sz row base mtime
+  local id="${1:-}" dir="${2:-}" f sz row base mtime inode
   [ -n "$id" ] && [ -d "$dir" ] || return 0
   for f in "$dir"/*.json; do
     # A PATH WITH A CONTROL BYTE cannot be framed, so it is named with the bytes replaced.
@@ -85,7 +87,8 @@ bridge_candidates() {
       "!"*|"") _bridge_poison "$f" "${row#!}"; continue ;;
     esac
     mtime="$(_bridge_mtime_ms "$f")" || { _bridge_poison "$f" stat; continue; }
-    printf 'ok%s%s%s%s%s%s\n' "$US" "$f" "$US" "$row" "$US" "$mtime"
+    inode="$(stat -c %i "$f" 2>/dev/null || stat -f %i "$f" 2>/dev/null)"; case "$inode" in ''|*[!0-9]*) _bridge_poison "$f" stat; continue ;; esac
+    printf 'ok%s%s%s%s%s%s%s%s\n' "$US" "$f" "$US" "$row" "$US" "$mtime" "$US" "$inode"
   done
   return 0
 }

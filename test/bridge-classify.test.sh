@@ -39,6 +39,11 @@ out="$(bridge_candidates "$ID" "$D")"
 is "1a one ok" "$(oks "$out")" "1"; is "1b no poison" "$(poison "$out")" "0"
 is "1c pid" "$(fld "$out" 3)" "100"; is "1d tmux" "$(fld "$out" 5)" "$ID:@0.%0"; is "1e name" "$(fld "$out" 6)" "Alpha→Beta"
 case "$out" in *SECRET*) bad "1f no secret leaks" "$out" ;; *) ok "1f no secret leaks" ;; esac
+ino1="$(fld "$out" 11)"; case "$ino1" in ''|*[!0-9]*|0) bad "1g inode is a positive integer" "$ino1" ;; *) ok "1g inode is a positive integer" ;; esac
+is "1h inode equals stat's answer for the path" "$ino1" "$(stat -c %i "$D/100.json" 2>/dev/null || stat -f %i "$D/100.json")"
+is "1i inode is stable across two reads" "$(fld "$(bridge_candidates "$ID" "$D")" 11)" "$ino1"
+# NOT CLAIMED: that a recreated file gets a NEW inode. ext4 reuses a freed inode number at once,
+# so freshness cannot rest on the inode alone - the plan pairs it with mtime (D10, measured here).
 
 echo "== 2. a complete file for another id is silent; a prefix of the id is not the id =="
 mk 101 "s-0000000000000002:@0.%0" "Other"; mk 102 "${ID}0:@0.%0" "Prefix"
