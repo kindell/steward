@@ -31,7 +31,10 @@ OP_TOKEN_FILE_NAME="fixture-token"
 PING_MSG="you have unread mail"
 EOF2
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
-printf 'PRINCIPAL="a"\nHOST="h1"\nUSERNAME="a"\n' > "$ROOT/accounts.d/a-h1.conf"
+ME="$(id -un)"
+# THE CENSUS RUNS AS THE OWNER, and a row's unix user is its ACCOUNT's username - so the fixture's
+# account names the account this test actually runs as. OWNER stays the principal, as a real row's does.
+printf 'PRINCIPAL="a"\nHOST="h1"\nUSERNAME="%s"\n' "$ME" > "$ROOT/accounts.d/a-h1.conf"
 cp "$here/lib/registry.sh" "$here/lib/bridge.sh" "$LIBS/"
 row() { # <id> [KEY="v" ...]
   { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/r"\nID="%s"\nACCOUNT="a-h1"\nRC_LABEL="Fixture: x"\n' "$1"; shift; for l in "$@"; do printf '%s\n' "$l"; done; } > "$ROOT/sessions.d/$1.conf"
@@ -39,7 +42,7 @@ row() { # <id> [KEY="v" ...]
 row s-0000000000000001; row s-0000000000000002; row s-0000000000000003; row s-0000000000000004
 row s-0000000000000005 'RUNTIME="opencode"' 'MODEL="openai/m"' 'OPENCODE_VERSION="1.0.0"' 'OPENCODE_PORT="4097"' 'AUTO_APPROVE="true"' "CLAUDE_MEMORY_ROOT=\"$T/memory\""
 row s-0000000000000006 'HOST="h2"'
-{ printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/r"\nID="s-0000000000000007"\nRC_LABEL="Fixture: x"\n'; } > "$ROOT/sessions.d/s-0000000000000007.conf"   # no ACCOUNT
+{ printf 'OWNER="%s"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/r"\nID="s-0000000000000007"\nRC_LABEL="Fixture: x"\n' "$ME"; } > "$ROOT/sessions.d/s-0000000000000007.conf"   # no ACCOUNT: its unix user is OWNER
 # the observer shim: one line per id in $OBS/<id>, or unknown; every call logged with its mode
 cat > "$BIN/observe" <<'EOF2'
 #!/bin/bash
@@ -70,12 +73,18 @@ is "2b managed: pid seeded" "$(gget s-0000000000000001 pid)" "4243"; is "2c birt
 is "2e sessionId" "$(gget s-0000000000000001 sessionId)" "thread-1"; is "2f bridge_name" "$(gget s-0000000000000001 bridge_name)" "Alpha→Thing"; is "2g bridge_inode" "$(gget s-0000000000000001 bridge_inode)" "777"
 is "2h census=1" "$(gget s-0000000000000001 census)" "1"; is "2i no stop receipt on a live row" "$(gget s-0000000000000001 stop_receipt)" ""
 is "2j no-process: census=1" "$(gget s-0000000000000002 census)" "1"; case "$(gget s-0000000000000002 stop_receipt)" in census-[0-9]*) ok "2k and a census stop receipt";; *) bad "2k and a census stop receipt" "$(gget s-0000000000000002 stop_receipt)";; esac
-is "2l orphan: blocked" "$(gget s-0000000000000003 census)" "blocked:identified:orphan"; is "2m no pid seeded for a blocked row" "$(gget s-0000000000000003 pid)" ""
+# N1: AN ORPHAN IS SEEDED, NOT BLOCKED. The census writes down what is there; the supervisor's own policy
+# then reaps it on the next round. A blocked orphan would leave a live process the adapter can never match.
+is "2l orphan: seeded, with its verified record" "$(gget s-0000000000000003 census)" "1"; is "2m and its pid" "$(gget s-0000000000000003 pid)" "4300"
+is "2m2 and its birth" "$(gget s-0000000000000003 birth)" "boot-c:300"
 is "2n split-brain: blocked:unknown" "$(gget s-0000000000000004 census)" "blocked:unknown"
 [ -f "$SD/s-0000000000000005.generation" ] && bad "2o not-applicable: no generation" "" || ok "2o not-applicable: no generation"
 [ -f "$SD/s-0000000000000007.generation" ] && bad "2p account-missing: no generation (prerequisite)" "" || ok "2p account-missing: no generation (prerequisite)"
 has "2q the report names the prerequisite" "$OUT" "prerequisite"; has "2r and names the ACCOUNT migration" "$OUT" "migrate the row first"
-has "2s the summary counts" "$ERR" "2 seeded, 2 blocked, 1 prerequisite, 1 listed"
+has "2s the summary counts" "$ERR" "3 seeded, 1 blocked, 1 prerequisite, 1 listed"
+# (s-...6 lives on h2 and is not this host's to census - the MOVED case uses a row of this host.)
+line s-0000000000000004 identified:moved 4400 boot-c:400 "s-0000000000000004:@0.%0" "Moved" 1 bootstrap live:moved "" 4400 tm 1 "" 779
+run --force s-0000000000000004; is "2t a MOVED row is seeded too (N1)" "$RC" "0"; is "2u with its record" "$(gget s-0000000000000004 pid)" "4400"
 
 echo "== 3. idempotence: a censused row is skipped unless --force =="
 run s-0000000000000001; is "3a rc 0 for the one seeded row" "$RC" "0"; has "3b already-censused" "$OUT" "already-censused"; is "3c the observer was not asked" "$(grep -c . "$OBS_LOG")" "0"
@@ -89,6 +98,29 @@ run --force s-0000000000000003; is "4a rc 0" "$RC" "0"; is "4b census=1 now" "$(
 echo "== 5. an observer answer outside the contract blocks, never seeds =="
 printf 's-0000000000000002\037identified:managed\n' > "$OBS/s-0000000000000002"; run --force s-0000000000000002
 is "5a rc 1" "$RC" "1"; is "5b blocked:unreadable" "$(gget s-0000000000000002 census)" "blocked:unreadable"; is "5c the receipt from before is kept, no pid invented" "$(gget s-0000000000000002 pid)" ""
+
+echo "== 5b. N2: one gate for one row and for all of them =="
+row s-0000000000000008 'HOST="h2"'
+run s-0000000000000008; is "5e an explicit id on ANOTHER host is refused" "$RC" "1"; has "5f and says where it lives" "$OUT" "it lives on 'h2'"
+[ -f "$SD/s-0000000000000008.generation" ] && bad "5g and writes no generation for it" "" || ok "5g and writes no generation for it"
+is "5h the observer was never asked about it" "$(grep -c 's-0000000000000008' "$OBS_LOG")" "0"
+run s-0000000000000099; is "5i an id that is not a row is refused" "$RC" "1"; has "5j and says so" "$OUT" "does not load"
+[ -f "$SD/s-0000000000000099.generation" ] && bad "5k no debris for an unknown id" "" || ok "5k no debris for an unknown id"
+printf 'OWNER="nobody-else"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/r"\nID="s-0000000000000009"\nRC_LABEL="x"\n' > "$ROOT/sessions.d/s-0000000000000009.conf"
+run s-0000000000000009; is "5l another unix account's row is refused" "$RC" "1"; has "5m and names whose it is" "$OUT" "nobody-else"
+rm -f "$ROOT/sessions.d/s-0000000000000008.conf" "$ROOT/sessions.d/s-0000000000000009.conf"
+
+echo "== 5c. N3: --force is a complete census, not a merge onto stale identity =="
+line s-0000000000000002 identified:managed 4500 boot-c:500 "s-0000000000000002:@0.%0" "Was Live" 1 bootstrap live:managed "" 4500 t2 1 '$5:1' 780
+run --force s-0000000000000002; is "5n first: a live row is seeded" "$(gget s-0000000000000002 pid)" "4500"
+bash -c ". '$LIBS/bridge.sh'; bridge_gen_write '$SD' 's-0000000000000002' launch_ms=1789 launch_nonce=0123456789abcdef0123456789abcdef pending_for='Old Name' applied='Older Name' spawn_state=pending"
+line s-0000000000000002 no-process "" "" "" "" "" bootstrap "" "" "" "" "" "" ""
+run --force s-0000000000000002; is "5o then: the row is gone and re-censused" "$RC" "0"
+is "5p no stale pid survives" "$(gget s-0000000000000002 pid)" ""; is "5q no stale birth" "$(gget s-0000000000000002 birth)" ""
+is "5r no stale launch claim" "$(gget s-0000000000000002 launch_nonce)$(gget s-0000000000000002 launch_ms)$(gget s-0000000000000002 spawn_state)" ""
+is "5s no stale name reservation" "$(gget s-0000000000000002 pending_for)$(gget s-0000000000000002 applied)" ""
+case "$(gget s-0000000000000002 stop_receipt)" in census-[0-9]*) ok "5t and the receipt it DOES state is the new one";; *) bad "5t and the receipt it DOES state is the new one" "$(gget s-0000000000000002 stop_receipt)";; esac
+is "5u the history of earlier processes is kept - a KILL -9 file must stay recognisable" "$(grep -c '^history=' "$SD/s-0000000000000002.generation")" "1"
 
 echo "== 6. usage and environment =="
 run --bogus; is "6a unknown flag rc 64" "$RC" "64"
