@@ -92,6 +92,20 @@ echo "SUDO-CALL: $*"
 exit "${SUDO_RC:-0}"
 EOF
 chmod 755 "$FX/bin/sudo"
+# THE HOME LOOKUP IS STUBBED because the owner below is fictional. deploy_core
+# no longer spells /home/<owner> - it asks the system's account database, and
+# refuses when there is no answer, which is the point of the change. A suite
+# that needed a real second account on the machine would not be a suite that
+# runs, which is exactly why registry.sh exposes this seam.
+cat > "$FX/homelookup" <<'STUB'
+#!/bin/sh
+case "$1" in
+  alfa) printf '/home/alfa\n' ;;
+  *)    exit 1 ;;
+esac
+STUB
+chmod +x "$FX/homelookup"
+export STEWARD_HOME_LOOKUP_CMD="$FX/homelookup"
 printf 'HOST="testhost"\nOWNER="alfa"\nDOMAIN="d"\n' > "$FX/reg/a.conf"
 
 # THE DESK DIRECTORY IS THE HOST'S ANSWER TO "IS THERE A DESK HERE". The
