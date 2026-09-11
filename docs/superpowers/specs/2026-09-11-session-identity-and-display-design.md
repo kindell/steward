@@ -1,9 +1,8 @@
 # Session identity and display
 
 **Date:** 2026-09-11
-**Status:** third revision, after the advisor's review of 04ef73c; awaiting Jon.
-Section 2's receipt mechanism is **gated on probe P1** (see "Gates before
-the plan") — the plan may not lock it until P1 has run.
+**Status:** fourth revision. Probe P1 has run (2026-09-11, results folded in
+below); awaiting Jon and a closing advisor pass before the plan.
 **Scope:** spec A of two. The entity/project graph (Nav/Steward as real
 projects under estate entities, MANAGED_BY hygiene, infra semantics) is
 spec B and is deliberately not here.
@@ -43,7 +42,13 @@ own comment records that a conf string **executes** (`:1392`, canary-proven).
 - **Remote Control shows `--remote-control [name]`, not `--name`.** Probed
   2026-09-11 on a fresh session.
 - **The tile's name is frozen at registration** (`:140-147`, measured
-  2026-08-31): a restart of the same thread reattaches under the stale name;
+  2026-08-31 at the vendor-visible level). **P1 did not reproduce it at the
+  bridge level:** after a clean `/exit`, resuming the same thread with a new
+  `--remote-control` gave a bridge file whose `name` was the new argv value.
+  Either the vendor changed, or the 08-31 case had a still-registered tile,
+  or the two levels differ — the claude.ai tile was not observed in P1. The
+  spec keeps the 08-31 claim scoped to level 3 and relies on level 2 only
+  where P1 measured it. Otherwise: a restart of the same thread reattaches under the stale name;
   the only rename is `/rename` typed into the live session, confirmed by the
   pane receipt `Session renamed to: <name>`. The supervisor runs this cycle
   (`RENAME_PENDING`, `:1369-1403`). Restart is not rename.
@@ -53,9 +58,17 @@ own comment records that a conf string **executes** (`:1392`, canary-proven).
   `sessionId`, `name`, `nameSource`, `nameSince`, `status`, `startedAt`,
   `kind`. Measured on one live process. **It is an undocumented vendor
   format**: the design treats it as *local bridge attestation*, never as
-  authority (§1). Its behaviour on `/rename`, clean exit, TERM, KILL, resume,
-  RC-free rows, tmux rename and two concurrent processes is **unmeasured** —
-  probe P1.
+  authority (§1). **P1 measured its lifecycle** (throwaway sessions, this login): the file
+  appears within 1 s of spawn; `/rename` sent to the exact pane updates
+  `name` and advances `nameSince` within 1 s, with the pane receipt; clean
+  exit and TERM remove it within 2 s; **KILL -9 leaves it behind** (stale
+  file confirmed; it was gone by the time a later process started — vendor
+  GC on start is a hypothesis, not measured); a tmux `rename-session` does
+  **not** update `tmux` — the field records the name at registration; an
+  RC-free row (only `--name`) also gets a file, with `name` from `--name`;
+  two processes in one tmux session get distinct `@win.%pane`;
+  `nameSource` reads `user` whether the name came from argv or `/rename` —
+  it does not distinguish them, `nameSince` does.
 - The renderer exists (`registry_display_for`, root-to-leaf, refuses on an
   unresolved chain); `registry_session_display` applies the precedence.
 - The pause marker does not stop a process (`:160-163`).
@@ -98,7 +111,9 @@ with `pid`+`procStart` naming a live process whose OS start time matches.
 - **dead** — no file, and the persisted launch generation (below) says the
   last known `pid`+`procStart` is gone with a receipted stop, or there is no
   generation at all.
-- **identity-unknown** — everything else: a file that is missing, late,
+- **identity-unknown** — everything else (P1 step G showed why a first-match
+  reader is not acceptable: it attributed a KILLed process's stale file to a
+  fresh RC-free session — the glob-order fault, reproduced by the probe itself): a file that is missing, late,
   half-written or of unknown schema while tmux or a runtime exists; a
   `procStart` mismatch; **more than one** accepted file for `$ID`
   (split-brain). Unknown is never rendered as dead.
@@ -132,6 +147,7 @@ contradiction between the two is *identity-unknown*, never latest-wins.
 | none | present, old pid+procStart gone, **no** stop receipt | absent | unaccounted | refuse spawn, alarm |
 | none | present, old pid+procStart **alive** | absent | orphan | reap that pid+procStart |
 | none | any | present | late or missing registration | grace → unknown |
+| one | — | **absent** | runtime alive under a *renamed* tmux session (P1: the `tmux` field does not follow a rename) | identity-unknown: no spawn, no reap, alarm |
 | one | — | present | managed | alive |
 | >1 | — | — | split-brain | refuse everything, alarm (pid/procStart only) |
 
@@ -168,9 +184,9 @@ pane.
    matches the OS process; the pane shows `Session renamed to: <desired>`;
 3. *vendor-visible* — the claude.ai tile: human eyes until there is an API.
 
-Level 2's mechanics are **what P1 measures**. If P1 shows the bridge file
-does not update on `/rename`, level 2 falls back to the pane receipt alone
-and the spec says so.
+Level 2 is **measured** (P1): `/rename` to the exact pane updated the bridge
+file within 1 s, `nameSince` advanced, the pane receipt appeared. Level 3
+remains eyes-only.
 
 **Retarget is not rename.** A change to `TARGET_PROJECT`, `PARENT` or
 `MANAGED_BY` on an active row changes capabilities, visibility and mates
@@ -262,13 +278,8 @@ measures its own.
 
 ## Gates before the plan
 
-**P1 — bridge file lifecycle probe** (throwaway sessions in this login;
-values of `bridgeSessionId`/`messagingSocketPath` never read): snapshot
-`name`/`nameSince`/`status`; `/rename`; pane receipt; observe the exact
-bridge update and its atomicity; clean exit; TERM; KILL; resume the same
-thread with a changed `--remote-control`; an RC-free row; tmux rename;
-several panes; two concurrent processes. P1's outcome fixes §2's receipt
-level and §1's stale-file handling.
+**P1 — done** (see Facts). Open from it: vendor GC of stale files (seen
+once, not measured), and the level-3 tile on resume (needs eyes).
 
 **P2 — macOS twin**, as above, in the butler estate.
 
