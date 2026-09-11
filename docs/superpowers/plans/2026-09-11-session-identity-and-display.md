@@ -10,18 +10,18 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-11-session-identity-and-display-design.md` (38c719c).
 
-**Revision:** fifth version, after the advisor's fourth pass on 9ee16ff (12 findings, cited *D1…D12*; the advisor also ran the built suites: 93 green, now 103). **Done: Tasks 1–3** (`55e677a` `d14db58` `a8d33f1` `9eaed35` `cde906e` `610d63e` `3862019`). **Next: Task 1b, then 4, 4b, 5** — executed with TDD and reviewed as diffs.
+**Revision:** sixth version, after the advisor's fifth pass (E1–E6). **Done: Tasks 1–3 and 1b** (`55e677a` `d14db58` `a8d33f1` `9eaed35` `cde906e` `610d63e` `3862019` `1816fe1` `378cc3a`; suites 37 + 30 + 47). **E5/E6 partly built:** a zombie (`Z`/`X`) is not alive; `bridge_inode` is a generation key. **Next: Tasks 4, 4b, 5 — built with TDD; the advisor reviews the diff, not another plan.**
 
 ## Global Constraints
 
 - Never read or log `bridgeSessionId` or `messagingSocketPath`.
-- **Bridge identity applies to `claude-code` rows only.** A row with `RUNTIME=opencode|codex` (the supervisor's `ADAPTER` set) keeps today's port/pane supervision; the adapter answers `not-applicable` for it and the supervisor never consults the bridge for it (D1).
+- **Bridge identity applies to `claude-code` rows only, dispatched on `RUNTIME` from the loaded conf** — `IS_CLAUDE=1` when `${RUNTIME:-claude-code}` is `claude-code`, decided right after the row is loaded and long before `ADAPTER` exists at supervisor:1631 (E1). OpenCode/Codex rows keep today's port/pane supervision **verbatim**, including `CLAUDE_PAT`'s port branch, `matching_claude_pids` and `claude_alive_in_session`, which those rows still call (E2). The adapter answers `not-applicable` for them.
 - **The adapter never writes.** Only the supervisor mutates state, from a line read this round.
-- Every destructive or typing action requires the **same keyed observation on two consecutive rounds**, the key naming the action **and its exact target** (`reap pid birth` · `close session_id session_created` · `spawn absent` · `rename pid birth pane desired pending_since`), **re-read immediately before the action**; any difference resets and exits (D5). Destruction also passes the supervisor's **existing** activity/debris veto (D2).
+- Every destructive or typing action requires the **same keyed observation on two consecutive rounds**, the key naming the action **and its exact target** (`reap pid birth` · `close session_id session_created` · `spawn absent` · `rename pid birth pane desired pending_since`), **re-read immediately before the action**; any difference resets and exits (D5). **A close is sent to the immutable tmux `$N`, never to the name** (E4). Destruction also passes the supervisor's **existing** activity/debris veto (D2), and **a respawn follows only a destruction that verifiably succeeded** (E3).
 - A live process is ours only when the generation knows its birth **or** it is a proven launch child: open launch, inside the monotonic window, same boot id, carries the nonce, **descends from the recorded launch pane incarnation**, its bridge file is not an inode that existed before the spawn, and `startedAt`/`mtime` are not older than the launch (D4, D8, D10). Trust boundary: the unix uid (measured: the fallback shell does not inherit the nonce).
 - Birth equality requires both sides non-empty. Clocks: grace on `/proc/uptime` **with the boot id**; wall time only for the vendor's `startedAt`/`mtime`; any discontinuity → `unknown` (D8).
-- Candidate fields in the adapter line are **blank unless the answer starts `identified:`** (D9).
-- A stop receipt is written **after** the destruction succeeded and the target tuple is absent; `stop_intent` may precede it (D12).
+- Candidate fields in the adapter line are **blank unless the answer starts `identified:`** (D9). On an `identified:managed` line the supervisor persists the **full observed bridge record**: `pid birth procStart sessionId uid bridge_name bridge_nameSince bridge_mtime bridge_inode` (E5).
+- A stop receipt is written **after** the destruction succeeded and `$N` is absent; `stop_intent` may precede it (D12). If `kill-session` fails or `$N` still exists: **no receipt, no spawn, exit** (E3).
 - Spawn writes nothing it has not validated: nonce `^[0-9a-f]{32}$`, numeric wall and uptime, tmux exit status 0, numeric pane pid, non-empty pane birth — else the claim is closed and the row degraded (D7).
 - Fields travel with the unit separator; empty travels empty. No literal tab bytes, no backslash-u escapes in files written through JSON-carrying tools. Tests never touch the machine. **A commit requires every touched suite green in the same script; the gate is code, not memory.**
 - Commit with the estate author (`git -c user.name="Jon Kindell" -c user.email="jon+butler@varvet.com" …`, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`, `Claude-Session: https://claude.ai/code/session_01RMVoAh7XJUuje1PCq3tEQX`). Branch `session-identity-display`; merge is butler's.
@@ -33,8 +33,8 @@
 | file | responsibility |
 |---|---|
 | `lib/bridge.sh` (built; T1b adds inode) | candidates (US framing, in-band poison, **inode**), OS birth, descendant walk, classification, four-way answer, generation with closed vocabulary and dead-file history, keyed suspect |
-| `linux/bridge-observe.sh` (new) | read-only adapter: `<id>`, `--all`, `--bootstrap <id>`; **fourteen** fields; `not-applicable` for non-claude rows |
-| `linux/bridge-kill.py` (new) | python3: `pidfd_open` → verify `/proc/<pid>/stat` birth on the pinned process → `pidfd_send_signal`; rc 65 mismatch, rc 69 when pidfd is unavailable — no silent downgrade (D6) |
+| `linux/bridge-observe.sh` (new) | read-only adapter: `<id>`, `--all`, `--bootstrap <id>`; **fifteen** fields; `not-applicable` for non-claude rows |
+| `linux/bridge-kill.py` (new) | python3: `pidfd_open` → read `/proc/<pid>/stat` on the pinned process → refuse `Z`/`X` (rc 65 `zombie, nothing to signal`) → verify birth → `pidfd_send_signal`; `TERM` and `SIGTERM` both accepted and normalised to `signal.Signals.SIGTERM`; rc 65 mismatch, rc 69 when pidfd is unavailable — no silent downgrade (D6, E6) |
 | `linux/session-supervisor-linux.sh` (modify) | claude rows: line → keyed gate → existing veto → action; opencode rows: untouched |
 | `linux/deploy-manifest` (modify) | ships `lib/bridge.sh`, `linux/bridge-observe.sh`, `linux/bridge-kill.py`, `linux/bridge-census.sh` |
 | `watch/…`, `linux/liveness-host.sh`, `lib/registry.sh`, `bin/steward`, `linux/hub/enroll`, `linux/bridge-census.sh` | later tasks |
@@ -53,14 +53,14 @@
 
 ---
 
-### Task 4: `linux/bridge-observe.sh` — read-only, fourteen fields, `--bootstrap`, `not-applicable`
+### Task 4: `linux/bridge-observe.sh` — read-only, fifteen fields, `--bootstrap`, `not-applicable`
 
 Spec §1; D1, D3, D4, D5, D8, D9, D10.
 
 **Interfaces:**
-- **Line — fourteen US fields, empty when absent:** `1 id · 2 answer · 3 pid · 4 birth · 5 pane · 6 name · 7 nameSince · 8 gen_state · 9 classes · 10 launch_child · 11 procStart · 12 sessionId · 13 bridge_mtime · 14 tmux_tuple`
+- **Line — fifteen US fields, empty when absent:** `1 id · 2 answer · 3 pid · 4 birth · 5 pane · 6 name · 7 nameSince · 8 gen_state · 9 classes · 10 launch_child · 11 procStart · 12 sessionId · 13 bridge_mtime · 14 tmux_tuple · 15 inode` (E5: the candidate's inode, from `bridge_candidates` field 11)
   - `answer` ∈ `bridge_answer`'s seven words plus `uninspectable` and **`not-applicable`** (row is not `claude-code`, D1).
-  - 3–7, 11–13 are **blank unless `answer` starts `identified:`** (D9).
+  - 3–7, 11–13 and 15 are **blank unless `answer` starts `identified:`** (D9). A candidate whose `/proc` state is `Z`/`X` is **not alive** (`bridge_os_birth` rc 1, built `378cc3a`): dead → `stale` if in history, else `unclassifiable`; a generation pid in `Z` → `gone-*` (E6).
   - 10 `launch_child` ∈ `1|0|` — a nonce-bearing runtime descends from the recorded launch pane **incarnation** (pane pid alive with the recorded birth).
   - 14 `tmux_tuple` = `<session_id>:<session_created>` (tmux `#{session_id}` is `$N`; both required non-empty when the session exists), else empty (D5).
 - Modes: `<id>` · `--all` (rows this uid owns; others `uninspectable`) · `--bootstrap <id>` (classification ignores generation and claim; **`bridge_answer` is called with `gen_state=none` and `census=1`**, field 8 reports `bootstrap` — D3).
@@ -82,7 +82,7 @@ Spec §1; D1, D3, D4, D5, D8, D9, D10.
 21. `--all`: other uid → `uninspectable`. 22. `sessions/` unreadable → `unknown … sessions-dir-unreadable`. 23. principal gate fails → `login-account-mismatch`. 24. no `ACCOUNT` → `account-missing`.
 25. `--bootstrap`, live legacy, no generation → `identified:managed`; **`--bootstrap`, empty row, no generation → `no-process`** (D3); plain call on the same rows → `unknown`.
 26. tmux present → f14 `$N:<created>` from the shim; absent → empty (D5).
-27. `RUNTIME="opencode"` row → `not-applicable`, all other fields empty, no `/proc` or bridge reads attempted (D1; the `pgrep` shim records any call → count 0).
+27. `RUNTIME="opencode"` row → `not-applicable`, all other fields empty, no `/proc` or bridge reads attempted (D1; the `pgrep` shim records any call → count 0). 27b. a live candidate whose `/proc/<pid>/stat` state is `Z` → not live: `stale` when in history (→ `no-process` with tmux absent), otherwise `unknown` (E6).
 28. `LABEL_LOG` empty after every claim.
 
 - [ ] **Step 3: Implement** — as v4's script with these changes: refuse `not-applicable` right after `registry_load` when `${RUNTIME:-claude-code}` ≠ `claude-code`; `lbirth` check and `bridge_is_descendant "$pid" "$lpid"` and inode/mtime freshness folded into `claim=1`; `LB="$(cat "$PROC/sys/kernel/random/boot_id")"`, `launch_boot_id` compared; `--bootstrap` calls `bridge_answer "$classes" none "$tmux_present" "$veto" 1` and prints `bootstrap` in field 8; after `ans` is computed: `case "$ans" in identified:*) : ;; *) L_PID=""; L_BIRTH=""; L_PANE=""; L_NAME=""; L_SINCE=""; L_PS=""; L_SID=""; L_MTIME="" ;; esac`; `tuple="$(tmuxc display-message -p -t "=$id" '#{session_id}:#{session_created}')"` with both halves required non-empty (else `unknown tmux-tuple-incomplete`).
@@ -101,22 +101,22 @@ Spec §1; D1, D3, D4, D5, D8, D9, D10.
 
 ### Task 5: Supervisor — claude rows on the adapter; claim before spawn; keyed action gate; existing veto kept; OpenCode untouched
 
-Spec §1; D1, D2, D5, D7, D12.
+Spec §1; D1, D2, D5, D7, D12; E1, E2, E3, E4.
 
 **Files:** supervisor; `test/supervisor-bridge.test.sh`; rewrite `test/supervisor-reap.test.sh` claims 2/3; **required runs:** `test/supervisor-opencode.test.sh`, `-mcp-guard`, `-zombie-veto`, `-reap`.
 
-**Interfaces (internal):** `observe_row` → `B_ANS B_PID B_BIRTH B_PANE B_NAME B_SINCE B_GEN B_CLASSES B_CHILD B_PS B_SID B_MTIME B_TUPLE`. `NO_PROCESS_CONFIRMED` (1/empty). Everything below runs **only when `[ -z "$ADAPTER" ]`**; the OpenCode branch is byte-identical to today (D1).
+**Interfaces (internal):** `observe_row` → `B_ANS B_PID B_BIRTH B_PANE B_NAME B_SINCE B_GEN B_CLASSES B_CHILD B_PS B_SID B_MTIME B_TUPLE B_INODE`. `IS_CLAUDE` (1/empty) is set right after the conf is loaded: `case "${RUNTIME:-claude-code}" in claude-code) IS_CLAUDE=1 ;; *) IS_CLAUDE= ;; esac` (E1). `NO_PROCESS_CONFIRMED`, `NP_N` (the parsed `$N`). **The dispatch is an explicit `if [ "$IS_CLAUDE" = 1 ]; then <bridge path> else <today's lines 1731–1761, verbatim> fi`** (E2). `CLAUDE_PAT`, `matching_claude_pids`, `claude_alive_in_session` **stay**: OpenCode rows use `CLAUDE_PAT`'s port branch through them. Only the label branch (`elif [ -n "$RC_LABEL" ]` at :951) is removed; for `IS_CLAUDE` rows `CLAUDE_PAT` is never consulted.
 
 - [ ] **Step 1: Failing tests** — claims:
 1. managed, display changed → healthy; no label pgrep; no kill; generation gains `pid birth procStart sessionId bridge_mtime`.
-2. **`RUNTIME="opencode"` row → the supervisor never calls the observer, and today's port-based health decides** (D1; observer wrapper counts 0 calls; `test/supervisor-opencode.test.sh` green).
+2. **`RUNTIME="opencode"` row → the supervisor never calls the observer, and today's block decides** (D1/E2): observer wrapper counts 0 calls; the row **still** spawns when tmux is absent, still honours the runtime veto, still takes two `SUSPECT` rounds — assert all three on an opencode fixture; `test/supervisor-opencode.test.sh` green.
 3. managed dead, another pane of **this** id → `wait-veto` each round, nothing written.
 4. managed dead, a claude under **another** session, tmux present → round one key `close $N:<created>`, nothing; round two → **reaches the existing activity/debris gate** (the old `SUSPECT` block at 1731–1761 is not executed: assert `SUSPECT` is absent after round two and the zombie repair ran once) (D2).
 5. moved → nothing.
 6. orphan → round one key `reap pid birth`; round two: `bridge-kill.py` recorder shows `<pid> TERM`; orphan→moved→orphan → no kill; `/proc/<pid>` gone between rounds → no kill.
 7. stale, tmux absent → round one key `spawn absent`; round two: one spawn.
 8. tmux absent round one, **human creates `=<id>`** before round two → key differs → no kill, no spawn (D5).
-9. `close` confirmed, but the tuple **changes** (`$N` or created) between confirmation and the kill site → reset, exit, nothing killed (D5).
+9. `close` confirmed, but the tuple **changes** (`$N` or created) between confirmation and the kill site → reset, exit, nothing killed (D5). 9b. tuple re-read passes, then the **named** session is replaced before the kill → the kill goes to the parsed `$N`, the replacement survives (E4: `kill-session -t "$NP_N"`, never `-t "=$NAME"`). 9c. `kill-session` returns non-zero, or `$N` still exists afterwards → **no receipt, no spawn**, exit (E3).
 10. split-brain → nothing; 11. poison+live → nothing; 12. pre-census → no spawn; 13. post-census first-ever → two rounds, one spawn.
 14. grace by uptime deadline; extra observer invocations in one round change nothing.
 15. spawn: before `new-session` the generation holds `launch_ms launch_uptime_ms launch_boot_id launch_nonce launch_inodes spawn_state=pending` (the tmux shim asserts the file); after: `launch_pane_pid launch_pane_birth spawn_state=started`; `new-session` failing → `spawn_state=failed:<epoch>`, claim closed (D7 / v4 C4).
@@ -157,9 +157,21 @@ if [ -z "$ADAPTER" ]; then
   fi
 fi
 ```
-  - Zombie repair (:1994), guarded by `NO_PROCESS_CONFIRMED`: re-read the tuple: `_now="$(tmuxc display-message -p -t "=$NAME" '#{session_id}:#{session_created}' 2>/dev/null)"; [ "$_now" = "$NP_TUPLE" ] || { echo "… tmux tuple changed before close; resetting." >&2; exit 0; }`; `bridge_gen_write … stop_intent="zombie-$(date +%s)"`; `tmuxc kill-session -t "=$NAME" && ! tmuxc has-session -t "=$NAME" 2>/dev/null && bridge_gen_write … stop_receipt="zombie-$(date +%s)"` (D12); then `spawn_session`.
+  - Zombie repair (:1994), guarded by `NO_PROCESS_CONFIRMED` (E3, E4, D12):
+
+```bash
+NP_N="${NP_TUPLE%%:*}"; case "$NP_N" in \$[0-9]*) : ;; *) echo "session-supervisor: $NAME — tuple has no usable session id; not closing." >&2; exit 0 ;; esac
+_now="$(tmuxc display-message -p -t "=$NAME" '#{session_id}:#{session_created}' 2>/dev/null)"
+[ "$_now" = "$NP_TUPLE" ] || { echo "session-supervisor: $NAME — tmux tuple changed before close; resetting." >&2; exit 0; }
+bridge_gen_write "$STATE_DIR" "$NAME" stop_intent="zombie-$(date +%s)"
+if tmuxc kill-session -t "$NP_N" 2>/dev/null && ! tmuxc has-session -t "$NP_N" 2>/dev/null; then
+  bridge_gen_write "$STATE_DIR" "$NAME" stop_receipt="zombie-$(date +%s)"
+  spawn_session; exit 0
+fi
+echo "session-supervisor: $NAME — close of $NP_N did not verifiably succeed; no receipt, no spawn." >&2; exit 0
+```
   - `spawn_session` (D7): validate before writing — `NONCE` matches `^[0-9a-f]{32}$`; `WALL=$(( $(date +%s) * 1000 ))`, `UP="$(awk '{printf "%d",$1*1000}' "$PROCR/uptime")"`, `BOOT="$(cat "$PROCR/sys/kernel/random/boot_id")"` all non-empty numeric/uuid; `INODES="$(for f in "$CFG_ROOT"/sessions/*.json; do [ -e "$f" ] && stat -c %i "$f"; done | tr '\n' ' ')"`; write `launch_ms launch_uptime_ms launch_boot_id launch_nonce launch_inodes spawn_state=pending pid= birth= stop_receipt=` **before** `new-session`; `pane_pid="$(tmuxc new-session -d -P -F '#{pane_pid}' …)"; rc=$?`; require `rc=0`, numeric `pane_pid`, non-empty `bridge_os_birth "$pane_pid"` → write `launch_pane_pid launch_pane_birth spawn_state=started`; else `spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes=` and degraded.
-  - Delete `matching_claude_pids`, `CLAUDE_PAT`, `RC_LBL_PAT`, `claude_alive_in_session`, local `is_descendant`; keep the OpenCode functions and `runtime_alive_in_session`.
+  - **Keep** `matching_claude_pids`, `CLAUDE_PAT`, `claude_alive_in_session` (the OpenCode path calls them with the port pattern); delete only `RC_LBL_PAT` and the `elif [ -n "$RC_LABEL" ]` label branch; local `is_descendant` becomes `bridge_is_descendant` for both paths (E2).
 - [ ] **Step 5: Mutations** — bridge logic applied to opencode rows (2); old 1731–1761 left in place (4); key without tuple (8); no tuple re-read at the kill site (9); receipt before kill (18); no nonce validation (16); kill on first sighting (6).
 - [ ] **Step 6: Commit** — `supervisor: claude rows on the adapter, a claim before the spawn, the target re-read before the close, and OpenCode untouched`.
 
@@ -167,9 +179,9 @@ fi
 
 ### Task 6: Display as a fact; rename two-round to the pane; tty-checked foreground — as v4 (rename key `rename pid birth pane desired pending_since`, two rounds immediately before typing; reset on every other branch; `tty_nr`+`tpgid` both sides; degraded marker cleared on recovery).
 
-### Task 7: Watch — the fourteen-field line, the remote socket built on the remote, kills only through `bridge-kill.py` (rc 65 → refuse, re-observe), info line on stderr asserted — as v4.
+### Task 7: Watch — the fifteen-field line, the remote socket built on the remote, kills only through `bridge-kill.py` (rc 65 → refuse, re-observe), info line on stderr asserted — as v4.
 
-### Tasks 8–12 — OUTLINES (as v3/v4; fourteen fields; census via `--bootstrap`; ACCOUNT migration named as P0 prerequisite).
+### Tasks 8–12 — OUTLINES (as v3/v4; fifteen fields; census via `--bootstrap`; ACCOUNT migration named as P0 prerequisite).
 
 ---
 
@@ -179,4 +191,4 @@ P0 census preceded by ACCOUNT migration of every legacy row. P1b (cases A and B)
 
 ## Self-review
 
-D1 → `not-applicable` + `ADAPTER` guard + `supervisor-opencode` required. D2 → old block replaced for claude rows; assertion that `SUSPECT` is absent and the zombie repair ran. D3 → bootstrap calls `bridge_answer` with `none`/`1`; empty-row claim. D4 → claim requires descent from the launch pane incarnation. D5 → tuple `$N:created`, re-read before close, spawn-absent reset on appearance. D6 → python3 pidfd, no fallback. D7 → validation before the pending write and after `new-session`. D8 → `launch_boot_id`. D9 → fields blanked unless identified. D10 → T1b inode + `launch_inodes` + mtime/startedAt in the claim. D11 → built (`610d63e`, `3862019`). D12 → intent before, receipt after success.
+D1 → `not-applicable` + `ADAPTER` guard + `supervisor-opencode` required. D2 → old block replaced for claude rows; assertion that `SUSPECT` is absent and the zombie repair ran. D3 → bootstrap calls `bridge_answer` with `none`/`1`; empty-row claim. D4 → claim requires descent from the launch pane incarnation. D5 → tuple `$N:created`, re-read before close, spawn-absent reset on appearance. D6 → python3 pidfd, no fallback. D7 → validation before the pending write and after `new-session`. D8 → `launch_boot_id`. D9 → fields blanked unless identified. D10 → T1b inode + `launch_inodes` + mtime/startedAt in the claim. D11 → built (`610d63e`, `3862019`). D12 → intent before, receipt after success. E1 → `IS_CLAUDE` from the loaded `RUNTIME`. E2 → explicit if/else; the OpenCode block verbatim; port functions kept. E3 → no receipt and no spawn unless the close verifiably succeeded. E4 → kill by `$N`, never by name. E5 → fifteenth field `inode`; the full bridge record persisted; key built (`378cc3a`). E6 → zombie not alive (built); `bridge-kill.py` refuses `Z`, normalises `TERM`.
