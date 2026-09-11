@@ -107,4 +107,58 @@ is "4g the old label is reported" "$(printf '%s' "$out" | jq -r '.was')" "Old Se
 is "4h and the new display" "$(printf '%s' "$out" | jq -r '.display')" "Alpha"
 is "4i the line is gone" "$(grep -c '^RC_LABEL=' "$SESS/$H.conf")" "0"
 
+echo "== 5. the write is the registry's own transaction (advisor P1, P2, P5) =="
+printf 'NAME="Tenth"\nMEMBERS="a"\n' > "$ROOT/entities.d/tenth.conf"
+J="s-00000000000000j1"; row "$J" ten 'RC_LABEL="Ten"' 'TARGET_ENTITY="tenth"'
+chmod 0600 "$SESS/$J.conf"; umask 022
+out="$(run "$J")"; rc=$?
+is "5a rc 0" "$rc" "0"
+is "5b the published row keeps mode 0600 even under a loose umask (P2)" "$(stat -c %a "$SESS/$J.conf")" "600"
+is "5c no staging or backup file is left behind" "$(ls "$SESS" | grep -c 'stage\|backup\|derive')" "0"
+# THE GATE RUNS INSIDE THE LOCK (P1): a competitor that takes the same display between the pre-check and
+# the publish is caught by the staged-row validator, and the row keeps its label.
+printf 'NAME="Eleventh"\nPARENT="alpha"\n' > "$ROOT/projects.d/eleventh.conf"
+K="s-00000000000000k1"; row "$K" eleven 'RC_LABEL="Eleven"' 'TARGET_PROJECT="eleventh"'
+out="$(run "$K")"; rc=$?
+is "5d a row whose rendered display is free is published" "$rc" "0"
+is "5d2 and it renders it" "$(display_of "$K")" "Alpha→Eleventh"
+L="s-00000000000000l1"; row "$L" twelve 'RC_LABEL="Twelve"' 'TARGET_PROJECT="site"'
+# 'site' renders Alpha→Site, which $A already carries: the pre-check refuses it - the same refusal the
+# staged-row validator would give inside the lock, and the one an operator sees.
+sum="$(cksum < "$SESS/$L.conf")"; out="$(run "$L")"; rc=$?
+is "5e a taken display is refused" "$rc" "65"; is "5f and the row is byte-identical" "$(cksum < "$SESS/$L.conf")" "$sum"
+# P3: a row of another runtime is not this verb's business, and its bytes are untouched.
+M="s-00000000000000m1"
+printf 'ID="%s"\nACCOUNT="a-h1"\nSLUG="thirteen"\nOWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_ENTITY="alpha"\nRC_LABEL="Thirteen"\nRUNTIME="opencode"\nMODEL="openai/m"\nOPENCODE_VERSION="1.0.0"\nOPENCODE_PORT="4097"\nAUTO_APPROVE="true"\nCLAUDE_MEMORY_ROOT="/tmp/m"\n' "$M" > "$SESS/$M.conf"
+sum="$(cksum < "$SESS/$M.conf")"; out="$(run "$M")"; rc=$?
+is "5g an OpenCode row is refused (RUNTIME first)" "$rc" "65"; has "5h and says why" "$out" "vestigial"
+is "5i byte-identical" "$(cksum < "$SESS/$M.conf")" "$sum"
+# P4: a row already without the line, whose target renders nothing, is not a successful idempotent migration.
+N="s-00000000000000n1"
+printf 'ID="%s"\nACCOUNT="a-h1"\nSLUG="fourteen"\nOWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_PROJECT="no-such-project"\n' "$N" > "$SESS/$N.conf"
+sum="$(cksum < "$SESS/$N.conf")"; out="$(run "$N")"; rc=$?
+is "5j no label and a broken target: refused, not 'already derived'" "$rc" "65"; has "5k and says it has no display at all" "$out" "no display at all"
+is "5l byte-identical" "$(cksum < "$SESS/$N.conf")" "$sum"
+
+echo "== 6. the gate that runs INSIDE the writer's lock, proven on its own (advisor P1) =="
+# registry_row_replace calls this on the STAGED row while it holds the sessions lock. A competitor that
+# takes the display between the pre-check and the publish is caught here, not by the pre-check.
+in_lib() { OUT="$( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"; . "$here/lib/registry.sh"; REGISTRY_DERIVE_ID="$1"; REGISTRY_DERIVE_EXPECT="${3:-}"; "$2" "$4" 2>&1 )"; RC=$?; }
+# Section 5 left a row with no display at all (P4's case) - the gate below fails closed on it, which is
+# section 9's property in test/registry-session-display.test.sh, not this one. Repair it away first.
+rm -f "$SESS/s-00000000000000n1.conf"
+printf 'NAME="Contest"\nPARENT="alpha"\n' > "$ROOT/projects.d/contest.conf"
+STAGED="$T/staged.conf"
+printf 'ID="s-00000000000000p1"\nACCOUNT="a-h1"\nSLUG="fifteen"\nOWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_PROJECT="contest"\n' > "$STAGED"
+in_lib s-00000000000000p1 registry_derive_validate_stage "" "$STAGED"; is "6a a staged row whose display is free passes the in-lock gate" "$RC" "0"
+# the competitor lands between the pre-check and the publish
+printf 'ID="s-00000000000000q1"\nACCOUNT="a-h1"\nSLUG="sixteen"\nOWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_PROJECT="contest"\n' > "$SESS/s-00000000000000q1.conf"
+in_lib s-00000000000000p1 registry_derive_validate_stage "" "$STAGED"; is "6b the same staged row is REFUSED once a competitor holds the display" "$RC" "70"
+has "6c and the refusal names the competitor" "$OUT" "s-00000000000000q1"
+# and the readback is the promise, checked after the publish
+in_lib s-00000000000000q1 registry_derive_readback "Alpha→Contest" s-00000000000000q1; is "6d the readback accepts the promised display" "$RC" "0"
+in_lib s-00000000000000q1 registry_derive_readback "Something Else" s-00000000000000q1; is "6e and refuses any other" "$RC" "1"
+has "6f naming what it found" "$OUT" "Alpha→Contest"
+rm -f "$SESS/s-00000000000000q1.conf" "$ROOT/projects.d/contest.conf"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]

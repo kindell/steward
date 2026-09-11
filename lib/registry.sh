@@ -4101,6 +4101,29 @@ registry_session_gate_fields() {
   return 0
 }
 
+# registry_derive_validate_stage <staged-file> - THE GATE THAT RUNS INSIDE THE WRITER'S LOCK when a row is
+# republished by `session derive` (advisor P1: a check outside the transaction is not a gate - a
+# concurrent add or derive can pass the same check and publish the same rendered name). It lives here,
+# beside the rule it applies, so it can be proven without starting the CLI. REGISTRY_DERIVE_ID names the
+# row being republished; it is excluded from its own comparison.
+registry_derive_validate_stage() {
+  local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
+        HOST="" REPO_PATH="" OWNER="" LOGIN="" RUNTIME="" RC_LABEL=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: the staged row did not source: $file" >&2; return 70; }
+  local rcfree=""; grep -q '^RC_LABEL=""$' "$file" 2>/dev/null && rcfree=1
+  registry_session_gate_fields "${ID:-${REGISTRY_DERIVE_ID:-}}" "${RUNTIME:-claude-code}" "$rcfree" "${RC_LABEL:-}" \
+    "$TARGET_PROJECT" "$TARGET_ENTITY" "$SLUG" "$LOGIN" "$OWNER" "$HOST" || return 70
+  return 0
+}
+# registry_derive_readback <slug> - the published row must LOAD and render exactly what was promised.
+registry_derive_readback() {
+  registry_load "$1" >/dev/null || return 1
+  local got; got="$(registry_session_display "$1" 2>/dev/null)"
+  [ "$got" = "${REGISTRY_DERIVE_EXPECT:-}" ] || { echo "registry: the row renders '${got:-nothing}', not '${REGISTRY_DERIVE_EXPECT:-}'" >&2; return 1; }
+  return 0
+}
+
 # registry_session_rc_enabled <id> - rc 0 when the row is a claude-code row that has NOT opted out of
 # Remote Control; rc 1 when it has (RC_LABEL="", the RC-FREE choice) or is not a claude-code row at all
 # (spec §3: RUNTIME first - OpenCode and Codex are exempt); rc 78 when the row does not load, because a
