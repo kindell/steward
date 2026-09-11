@@ -766,11 +766,21 @@ export CLOUDSDK_CONFIG="$CRED_HOME/gcloud"
 # The label doubles as the pid-finder's anchor and the session's display name;
 # an empty one widens the pattern to "any claude" and leaves the session
 # nameless — the supervisor's own doctrine forbids it.
+# THE DISPLAY IS A FACT, NOT A FALLBACK (spec §2, §3 "refusal is asymmetric"). registry_session_display
+# is the one owner of the derivation; its refusal is KEPT in DISPLAY_ERR instead of being papered over
+# with "<prefix><opaque-id>". A new spawn with an unresolvable display refuses (rc 78, naming the missing
+# link - see the no-process branch); a RUNNING row is kept alive on identity, keeps its applied name, and
+# is marked degraded once per transition (the alive branch). The legacy RC_LABEL line is still read
+# verbatim, byte-for-byte; RC_LABEL="" is still the RC-free choice.
+DISPLAY=""; DISPLAY_ERR=""
+DISPLAY_ERR="$(registry_session_display "$NAME" 2>&1 >/dev/null)" || DISPLAY_ERR="${DISPLAY_ERR:-registry_session_display refused without a reason}"
+DISPLAY="$(registry_session_display "$NAME" 2>/dev/null)" || DISPLAY=""
+if [ -n "$DISPLAY" ]; then DISPLAY_ERR=""; elif [ -z "$DISPLAY_ERR" ]; then DISPLAY_ERR="registry_session_display returned an empty display"; fi
 if grep -q '^RC_LABEL=' "$CONF" 2>/dev/null; then
   RC_LABEL="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$CONF" | head -1)"
+  [ -n "$RC_LABEL" ] && DISPLAY_ERR=""          # a verbatim label IS the display; a derivation failure beside it is not a fault
 else
-  RC_LABEL="$(registry_session_display "$NAME" 2>/dev/null)" || RC_LABEL=""
-  [ -n "$RC_LABEL" ] || RC_LABEL="$RC_PREFIX$NAME"
+  RC_LABEL="$DISPLAY"
 fi
 # SESSION_NAME (optional) -> --name, the DISPLAY name in the app's session list.
 #
@@ -793,6 +803,10 @@ fi
 # session list. An RC-free session with no field has nothing to fall back on,
 # and only there is a derived name the correct outcome.
 SESSION_NAME="$(sed -n 's/^SESSION_NAME="\(.*\)"/\1/p' "$CONF" 2>/dev/null | head -1)"
+# THE DISPLAY, THEN THE LAST APPLIED NAME, THEN THE LABEL (spec §2): an RC-free row (RC_LABEL="") has no
+# label but still has a derived display, and --name is how it stays recognisable in the vendor's list.
+[ -n "$SESSION_NAME" ] || SESSION_NAME="$DISPLAY"
+[ -n "$SESSION_NAME" ] || { [ "${_bridge_ok:-}" = 1 ] && SESSION_NAME="$(bridge_gen_get "$STATE_DIR" "$NAME" applied 2>/dev/null)"; } || true
 [ -n "$SESSION_NAME" ] || SESSION_NAME="$RC_LABEL"
 NAME_ARG=""
 [ -n "$SESSION_NAME" ] && NAME_ARG=" --name \"$SESSION_NAME\""
@@ -1373,12 +1387,33 @@ EOF
 # this only types. TYPED_THIS_ROUND records that keys went to the pane, so
 # the round's other typing site can stand down — see the re-ping.
 TYPED_THIS_ROUND=""
-type_line() {
-  tmuxc send-keys -t "$NAME" -l "$1" 2>/dev/null
+type_line() { # <pane-target> <text> - EVERY keystroke names its pane. For a claude row the target is the
+              # bridge file's exact pane (session:@window.%pane); a human's current window is never it.
+  tmuxc send-keys -t "$1" -l "$2" 2>/dev/null
   sleep "${STEWARD_KEY_SETTLE_SEC:-2}"
-  tmuxc send-keys -t "$NAME" Enter 2>/dev/null
+  tmuxc send-keys -t "$1" Enter 2>/dev/null
   TYPED_THIS_ROUND=1
 }
+# pane_foreground_is_managed <pane-target> <managed-pid> - the pane's FOREGROUND is the managed claude.
+# Descendant-of-pane is not foreground: a vim or a shell in front of claude would receive the keys. Three
+# independent readings must agree (spec §2, plan B9): tmux says the current command is claude; the pane
+# shell and the managed pid share the same nonzero tty (field 7 of /proc/<pid>/stat); and that tty's
+# foreground process group (field 8, tpgid) - read on BOTH sides - is the managed pid's own group (field 5).
+pane_foreground_is_managed() {
+  local pane_pid root="${BRIDGE_PROC_ROOT:-/proc}" a b
+  [ "$(tmuxc display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)" = claude ] || return 1
+  pane_pid="$(tmuxc display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)"; case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
+  a="$(sed 's/^.*) //' "$root/$pane_pid/stat" 2>/dev/null)"; b="$(sed 's/^.*) //' "$root/$2/stat" 2>/dev/null)"
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  set -- $a; local p_tty="${5:-}" p_tpgid="${6:-}"
+  set -- $b; local m_pgrp="${3:-}" m_tty="${5:-}" m_tpgid="${6:-}"
+  case "$p_tty" in ''|0|*[!0-9]*) return 1 ;; esac
+  [ "$p_tty" = "$m_tty" ] && [ "$p_tpgid" = "$m_tpgid" ] && [ "$p_tpgid" = "$m_pgrp" ]
+}
+same_nonempty_sv() { [ -n "${1:-}" ] && [ "$1" = "${2:-}" ]; }
+# PANE_TARGET: where this round's keystrokes go. The bridge's exact pane for an identified claude row;
+# the session name (today's form) for everything else.
+PANE_TARGET="$NAME"
 
 # bus_signalera <what> <text> — send an AUTO-ALERT to the hub and REPORT THE
 # TRUTH about why it failed. rc 0 on success, non-zero otherwise.
@@ -1452,50 +1487,59 @@ if runtime_identified; then
   # process accomplishing zero, and without this line it looks like any
   # healthy session.
   warn_if_untrusted_while_running
-  # AUTO-RENAME AFTER A SPAWN THIS SUPERVISOR PERFORMED (see RENAME_PENDING at
-  # the top for why the tile name goes stale). spawn_session wrote the pending
-  # file; this branch drives the rename one step per timer round, on a session
-  # the alive check just confirmed. The label is the round's already-resolved
-  # RC_LABEL — the single source, no re-derivation. Attempts are bounded:
-  # exhaustion is LOUD every round and leaves the pending file as the trace —
-  # a stale tile name must never be silent, and must never block the session.
-  # An RC-free session (empty label) has no name to drive in and is skipped.
-  if [ -n "$RC_LABEL" ] && [ -f "$RENAME_PENDING" ]; then
-    _rn_tries=""
-    IFS=' ' read -r _rn_tries _ < "$RENAME_PENDING" 2>/dev/null || true
-    case "${_rn_tries:-}" in ''|*[!0-9]*) _rn_tries=0 ;; esac
-    # Pane-level commands take the PLAIN name behind the exact-alive guard —
-    # the same measured rule as the re-ping below (capture-pane and send-keys
-    # refuse the =form on tmux 3.4 and 3.6b).
-    _rn_pane="$(tmuxc capture-pane -p -t "$NAME" 2>/dev/null)"
-    if rename_receipt_seen "$_rn_pane" "$RC_LABEL"; then
-        # The receipt — the ONLY thing that clears the pending file. A pane
-        # line EQUAL to the receipt for the whole label (spaces and arrows
-        # verbatim), never a regex, never a substring: a truncated receipt
-        # must not count, and neither must one with a tail after the label.
-        rm -f "$RENAME_PENDING"
-        echo "session-supervisor: $NAME — rename receipt verified: the tile now carries '$RC_LABEL'" >&2
+  # THE RENAME CYCLE, BOUND TO THE BRIDGE'S PANE (spec §2; plan Task 6). Desired is the display this
+  # round derived; APPLIED is the last display confirmed by a receipt, kept in the generation - never the
+  # bridge file's reported name, which follows argv on a resume and proves nothing about the tile. When
+  # desired != applied the row is RENAME PENDING (persistent across restarts; the trace file is log
+  # text): every step is addressed to the bridge file's exact pane, the pane's foreground must be the
+  # managed claude, and the /rename is a KEYED two-round suspect - typed only when two consecutive rounds
+  # saw the same pid, birth, pane, desired and pending_since immediately before typing. The receipt has
+  # to hold on three sides at once: the pane line, the bridge's reported name, and a nameSince that
+  # ADVANCED past the observation the pending was recorded on. OpenCode has no /rename and no cycle.
+  if [ "$IS_CLAUDE" = 1 ]; then
+    [ -n "$B_PANE" ] && PANE_TARGET="$B_PANE"
+    RENAME_SUSPECT="$STATE_DIR/$NAME.rename-suspect"
+    if [ -n "$DISPLAY_ERR" ]; then
+      if [ ! -f "$STATE_DIR/$NAME.display-degraded" ]; then
+        touch "$STATE_DIR/$NAME.display-degraded"
+        echo "session-supervisor: $NAME — DEGRADED: the display no longer derives ($DISPLAY_ERR); keeping the applied name, supervising on identity." >&2
+      fi
     else
-        if rename_pane_busy "$_rn_pane"; then
-          : # busy pane: never type — the round burns no attempt, retry next round
-        elif [ "$_rn_tries" -ge 5 ]; then
-          echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no receipt 'Session renamed to: $RC_LABEL' in the pane." >&2
-          echo "session-supervisor: $NAME — the tile may carry a stale name. $RENAME_PENDING remains as the trace; later rounds keep watching for the receipt." >&2
-        elif ! runtime_identified; then
-          # RE-ASSERT CLAUDE-IN-PANE IMMEDIATELY BEFORE TYPING. The alive-check
-          # far above ran before warn_if_untrusted_while_running spawned jq
-          # (tens of ms); the launch string ends "; exec bash", so if claude
-          # exited in that window the pane is now a SHELL, and RC_LABEL is free
-          # conf text. A hostile label typed into bash EXECUTES (proven with a
-          # canary in review). The busy predicate cannot tell a bash prompt
-          # from an idle claude, so this re-check is the only thing standing
-          # between a conf line and a shell. No claude descendant now -> skip;
-          # a later round retries once the session is genuinely up.
-          : # zombie/bash pane: never type a conf-derived label into a shell
-        else
-          type_line "/rename $RC_LABEL"
-          printf '%s %s\n' "$(( _rn_tries + 1 ))" "$RC_LABEL" > "$RENAME_PENDING"
-        fi
+      rm -f "$STATE_DIR/$NAME.display-degraded"    # recovery: the next transition alarms once more
+    fi
+    DESIRED="$RC_LABEL"; APPLIED="$(bridge_gen_get "$STATE_DIR" "$NAME" applied 2>/dev/null)"
+    if [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then
+      if [ "$(bridge_gen_get "$STATE_DIR" "$NAME" pending_for 2>/dev/null)" != "$DESIRED" ]; then
+        bridge_gen_write "$STATE_DIR" "$NAME" pending_for="$DESIRED" pending_since="$B_SINCE" rename_tries=0   # the observation that must ADVANCE
+        rm -f "$RENAME_SUSPECT"
+      fi
+      printf '%s\n' "$DESIRED" > "$RENAME_PENDING"
+      PENDING_SINCE="$(bridge_gen_get "$STATE_DIR" "$NAME" pending_since 2>/dev/null)"; case "$PENDING_SINCE" in ''|*[!0-9]*) PENDING_SINCE=0 ;; esac
+      _rn_tries="$(bridge_gen_get "$STATE_DIR" "$NAME" rename_tries 2>/dev/null)"; case "${_rn_tries:-}" in ''|*[!0-9]*) _rn_tries=0 ;; esac
+      _rn_pane="$(tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null)"
+      if rename_receipt_seen "$_rn_pane" "$DESIRED" && [ "$B_NAME" = "$DESIRED" ] && case "$B_SINCE" in ''|*[!0-9]*) false ;; *) [ "$B_SINCE" -gt "$PENDING_SINCE" ] ;; esac; then
+        bridge_gen_write "$STATE_DIR" "$NAME" applied="$DESIRED" applied_at="$(( $(date +%s) * 1000 ))" applied_nameSince="$B_SINCE" rename_tries=0 pending_for= pending_since=
+        rm -f "$RENAME_PENDING" "$RENAME_SUSPECT"
+        echo "session-supervisor: $NAME — rename receipted: pane and bridge both report '$DESIRED', nameSince advanced ($PENDING_SINCE -> $B_SINCE)." >&2
+      elif rename_pane_busy "$_rn_pane"; then
+        rm -f "$RENAME_SUSPECT"    # busy pane: never type; the two-round count restarts
+      elif [ "$_rn_tries" -ge 5 ]; then
+        rm -f "$RENAME_SUSPECT"
+        echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no full receipt for '$DESIRED'. The tile may carry a stale name; $RENAME_PENDING remains as the trace." >&2
+      elif ! pane_foreground_is_managed "$PANE_TARGET" "$B_PID"; then
+        rm -f "$RENAME_SUSPECT"
+        echo "session-supervisor: $NAME — rename pending, but the managed pane's foreground is not the managed claude (command, tty and process group must all agree); not typing." >&2
+      elif ! same_nonempty_sv "$(bridge_os_birth "$B_PID" 2>/dev/null)" "$B_BIRTH"; then
+        rm -f "$RENAME_SUSPECT"    # the process changed under us between the observation and now
+      elif ! bridge_suspect_confirmed "$RENAME_SUSPECT" "$(bridge_suspect_key rename "$B_PID" "$B_BIRTH" "$PANE_TARGET" "$DESIRED" "$PENDING_SINCE")"; then
+        :                          # first sighting of exactly this rename: the next identical round types
+      else
+        type_line "$PANE_TARGET" "/rename $DESIRED"
+        bridge_gen_write "$STATE_DIR" "$NAME" rename_tries=$(( _rn_tries + 1 ))
+        rm -f "$RENAME_SUSPECT"
+      fi
+    else
+      rm -f "$RENAME_SUSPECT" "$RENAME_PENDING"
     fi
   fi
   # RE-PING: a ping that arrived while the session was working was lost.
@@ -1589,8 +1633,8 @@ if runtime_identified; then
       # (three minutes later, the rename receipted or not) pings as usual.
       if [ -n "$TYPED_THIS_ROUND" ]; then
         echo "session-supervisor: $NAME has unread mail but the rename typed this round — ping deferred to the next round" >&2
-      elif ! tmuxc capture-pane -p -t "$NAME" 2>/dev/null | grep -q "esc to interrupt"; then
-        type_line "$PING_MSG"
+      elif ! tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null | grep -q "esc to interrupt"; then
+        type_line "$PANE_TARGET" "$PING_MSG"
         printf '%s %s' "$OLDEST_FILE" "$(date +%s)" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
@@ -1769,9 +1813,9 @@ spawn_session() {
   # one (empty label) has, by definition, no name to drive in.
   # NO RENAME CYCLE FOR OPENCODE: it has no /rename, and a keystroke typed into
   # a runtime that does not expect it is free text into a conversation.
-  if [ -n "$RC_LABEL" ] && [ -z "$ADAPTER" ]; then
-    printf '%s %s\n' 0 "$RC_LABEL" > "$RENAME_PENDING"
-  fi
+  # SINCE TASK 6 pending is DERIVED every alive round from desired != applied (the generation's
+  # `applied`); a spawn only resets the attempt counter. The trace file is written by the cycle itself.
+  if [ "$IS_CLAUDE" = 1 ]; then bridge_gen_write "$STATE_DIR" "$NAME" rename_tries=0; fi
   if [ -n "$ADAPTER" ]; then
     tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
       "exec \"$ADAPTER\" \"$NAME\""

@@ -181,7 +181,7 @@ case "${argv[0]:-}" in
     done < "$CLIENTS"
     exit 0 ;;
   capture-pane) exit 0 ;;
-  display-message) case "${argv[${#argv[@]}-1]}" in *session_id*) [ -f "$T_HAS_SESSION" ] && echo '$7:1789000000' ;; esac; exit 0 ;;
+  display-message) case "${argv[${#argv[@]}-1]}" in *session_id*) [ -f "$T_HAS_SESSION" ] && echo '$7:1789000000' ;; *pane_current_command*) echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
   kill-session) rm -f "$T_HAS_SESSION"; exit 0 ;;
   new-session)  for a in "${argv[@]}"; do [ "$a" = "-P" ] && echo 4242; done; touch "$T_HAS_SESSION"; exit 0 ;;
   *)            exit 0 ;;
@@ -246,7 +246,9 @@ EOF
 chmod 755 "$BIN/observe" "$BIN/nonce"
 PROC="$T/proc"; mkdir -p "$PROC/sys/kernel/random" "$PROC/4242"
 printf 'boot-m\n' > "$PROC/sys/kernel/random/boot_id"; printf '500.00 400.00\n' > "$PROC/uptime"
-printf '4242 (bash) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0 0\n' > "$PROC/4242/stat"
+mkdir -p "$PROC/4243"
+printf '4242 (bash) S 1 4242 4242 34816 4243 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0 0\n' > "$PROC/4242/stat"     # the pane shell; its tty's foreground group is claude's
+printf '4243 (claude) S 4242 4243 4243 34816 4243 0 0 0 0 0 0 0 0 0 20 0 1 0 111 0 0 0\n' > "$PROC/4243/stat"  # the managed claude, birth boot-m:111 (the observer shim's line)
 export OBS_LOG="$T/obs.log"
 BRIDGE_ENV=( STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_NONCE_CMD="$BIN/nonce" BRIDGE_PROC_ROOT="$PROC" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" )
 
