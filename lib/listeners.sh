@@ -53,13 +53,22 @@ listeners_probe() {
     # process tree reads `pid=<n>` either way and never learns which host it is
     # running on - which is the point of the shared spelling.
     # -a IS LOAD-BEARING: lsof ORs its selections by default, so without it this
-    # asks for "(TCP listeners) OR (this uid's open files)" - which on a host
-    # with one account looks identical to the intended AND, and on a SHARED host
-    # silently attributes every other account's loopback listener to this one.
-    # The report then prints them under "THE ACCOUNT'S, NOT THE SESSION'S",
-    # naming somebody else's ports as this account's. The session verdict itself
-    # survives (S filters through the pane's process tree, and another uid's pid
-    # is not in it) - it is the attribution that lies.
+    # asks for "(TCP listeners) OR (this uid's open files)" - and the second
+    # half is not a near-miss, it is every open file the account has. MEASURED
+    # on both platforms: 455 rows against 5 on Linux, 15477 against 17 on
+    # macOS. Without -a the approval report lists the account's FILES under a
+    # heading that says listeners: the wrong CLASS of object, thousands of them.
+    #
+    # AN EARLIER VERSION OF THIS COMMENT CLAIMED SOMETHING ELSE - that the OR
+    # returns other accounts' listeners and attributes them to this one. That is
+    # wrong, and two measurements say so. A non-root lsof is not handed another
+    # uid's sockets: on Linux, as one of five accounts, it returned five rows
+    # all its own where root saw eight accounts; on macOS it returned sixteen,
+    # all its own, while netstat counted twenty-nine listening sockets on the
+    # same machine - thirteen this account cannot see. The inode is visible in
+    # /proc/net/tcp on Linux, but the process mapping needs another uid's
+    # /proc/<pid>/fd. So the attribution lie is unreachable, and -a is
+    # load-bearing for the class of object rather than for whose it is.
     LISTENERS_ROWS="$(lsof -nP -a -iTCP -sTCP:LISTEN -u "$(id -u)" 2>/dev/null \
                       | _listeners_loopback_only \
                       | awk '{ for (i = NF; i > 1; i--) if ($i ~ /:[0-9]+$/) { addr = $i; break }
