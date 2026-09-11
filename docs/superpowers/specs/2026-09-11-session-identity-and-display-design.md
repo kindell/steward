@@ -1,8 +1,9 @@
 # Session identity and display
 
 **Date:** 2026-09-11
-**Status:** fourth revision. Probe P1 has run (2026-09-11, results folded in
-below); awaiting Jon and a closing advisor pass before the plan.
+**Status:** fifth revision. §1 rewritten as a state machine after the
+advisor's fifth pass: identity apart from health, a crash path, stale as its
+own class, a bootstrap census. Awaiting Jon.
 **Scope:** spec A of two. The entity/project graph (Nav/Steward as real
 projects under estate entities, MANAGED_BY hygiene, infra semantics) is
 spec B and is deliberately not here.
@@ -91,65 +92,93 @@ own comment records that a conf string **executes** (`:1392`, canary-proven).
 
 ## Design
 
-### 1. Identity — one adapter, tri-state
+### 1. Identity — one adapter, identity apart from health
 
 **One strict adapter** answers "what is row `$ID`'s managed process" for every
 consumer (supervisor, watch, liveness-host, doctor). Four direct JSON readers
 would drift the day the schema moves; one reader fails in one place.
 
 The adapter resolves the config dir through the row's **LOGIN + ACCOUNT +
-OWNER**, never login alone — the two-account fault of 2026-09-11 must not
-return inside identity itself. It reads `sessions/*.json` in that dir and
-accepts a file only if it is a regular file (no symlink), bounded in size,
-well-formed, typed as expected, with `tmux` exactly `<ID>:@<n>.%<m>`, and
-with `pid`+`procStart` naming a live process whose OS start time matches.
+OWNER**, never login alone. It reads `sessions/*.json` there. A file is a
+*candidate* for `$ID` only if it is a regular file (no symlink), bounded,
+well-formed, typed as expected, and its `tmux` is exactly `<ID>:@<n>.%<m>`.
 `bridgeSessionId` and `messagingSocketPath` are never read or logged.
 
-**Its answer is tri-state:**
+**Each candidate is classified**, never picked by order (P1 step G showed a
+first-match reader attributing a KILLed process's stale file to a fresh
+session — the glob-order fault, reproduced by the probe itself):
 
-- **alive** — exactly one accepted file for `$ID`.
-- **dead** — no file, and the persisted launch generation (below) says the
-  last known `pid`+`procStart` is gone with a receipted stop, or there is no
-  generation at all.
-- **identity-unknown** — everything else (P1 step G showed why a first-match
-  reader is not acceptable: it attributed a KILLed process's stale file to a
-  fresh RC-free session — the glob-order fault, reproduced by the probe itself): a file that is missing, late,
-  half-written or of unknown schema while tmux or a runtime exists; a
-  `procStart` mismatch; **more than one** accepted file for `$ID`
-  (split-brain). Unknown is never rendered as dead.
+- **verified-live** — `pid`+`procStart` name a live process whose OS start
+  matches (Linux: `/proc/<pid>/stat` starttime plus boot id; macOS: P2), whose
+  uid is the row's account, and whose file is not older than the current
+  spawn generation's launch (during grace a file that predates the launch is
+  never the new registration). *Attachment* is then **managed-pane** when the
+  pid is a descendant of the file's exact tmux pane, or **orphan** when that
+  pane or session is gone (P1: the `tmux` field does not follow a rename, so a
+  renamed session reads as orphan — see the table).
+- **stale** — well-formed, matches a known generation's `pid`+`procStart`,
+  and that exact OS process is provably gone. Stale is evidence of a past
+  process, not an unknown. It is ignored after two stable observations and
+  recorded in the generation; the vendor's file is not deleted by us.
+- **unclassifiable** — anything else: malformed, unknown schema, a live pid
+  whose `procStart` or uid does not match, a file predating the launch during
+  grace.
+
+**The adapter's answer:**
+
+| answer | when | writes allowed |
+|---|---|---|
+| **identified / managed-pane** | exactly one verified-live, attached | health, rename cycle to that exact pane, receipt |
+| **identified / orphan** | exactly one verified-live, detached | reap that `pid`+`procStart` (existing two-round rule and human veto), then → no-process |
+| **no-process** (after two rounds) | zero verified-live; every candidate stale or absent; no broad-veto runtime under the managed pane/session | close zombie tmux per existing veto; **exactly one respawn**; receipt classifies the exit *planned* (stop receipt) or *unplanned* (none) |
+| **identity-unknown** | ≥2 verified-live (split-brain); any unclassifiable candidate; the generation's process alive but no candidate names it | **nothing** written; degraded; alarm once (pid/procStart only) |
+
+**Crash recovery is the normal path, not the exception.** A crash or a
+human `/exit` removes the bridge file and leaves the generation without a
+stop receipt. That is *no-process* once the generation's exact process is
+gone and nothing else answers — and no-process respawns. The stop receipt
+classifies the cause; it is **never a condition for resurrection**. Fail-closed
+is for unknown, not for dead.
 
 **No writes on unknown.** Kill, restart, `/rename`, reap and spawn all
-require *alive* or *dead*. Central watch must not report dead on unknown.
+require an identified or no-process answer. Central watch must not report
+dead on unknown.
 
-**Bounded grace at spawn.** After a spawn the adapter allows N rounds for the
-bridge file to appear; during grace the process and pane may live but nothing
-is written and watch stays quiet; after grace the row is degraded, alarms
-once, and still nothing is written.
+**Bounded grace at spawn.** After a spawn the adapter allows N rounds for a
+fresh registration; during grace the process and pane may live but nothing
+is written and watch stays quiet; after grace: degraded, alarm once, still
+nothing written.
 
 **Fail closed on schema.** If the vendor stops writing the file or changes
-it so the adapter cannot parse, the identity capability reports *unsupported
-bridge schema*, stops all writes, and **never** falls back to an argv or
-label match. The doctor feature-probes the format; a green probe does not
-turn a later parse failure into dead.
+it so no candidate classifies, the capability reports *unsupported bridge
+schema*, stops all writes, and **never** falls back to an argv or label
+match. The doctor feature-probes the format; a green probe does not turn a
+later parse failure into dead.
 
-**Persisted launch generation.** After each confirmed bridge registration
-the supervisor stores, per `$ID`: `pid`, `procStart`, `sessionId`, the last
-observed bridge file name and time. This is history and bootstrap, not a
-second truth: when a valid live bridge file exists, **its** fields win; a
-contradiction between the two is *identity-unknown*, never latest-wins.
+**Persisted launch generation**, per `$ID`: `pid`, `procStart`, uid,
+`sessionId`, our launch time, last observed bridge (`name`, `nameSince`,
+mtime), stop receipt if any, stale files seen. History and bootstrap, not a
+second truth: a verified-live file's fields win; a contradiction is
+identity-unknown, never latest-wins.
 
-**Bootstrap and orphan, by generation:**
+**Bootstrap.** *No generation* means first-ever **only after a one-time
+census**: at first deploy on existing rows, every row's processes, bridge
+files and tmux sessions are snapshotted, a generation seeded, and a bootstrap
+receipt written. Before that census, no-generation on an existing row is
+identity-unknown — it may be an old unregistered orphan. After it, the table
+holds:
 
-| bridge file | generation | tmux `$ID` | meaning | allowed |
+| bridge | generation | tmux `$ID` | reading | action |
 |---|---|---|---|---|
-| none | none | absent | never launched, or cleanly offboarded | **spawn** (exactly one) |
-| none | present, old pid+procStart gone, stop receipted | absent | cleanly stopped | spawn |
-| none | present, old pid+procStart gone, **no** stop receipt | absent | unaccounted | refuse spawn, alarm |
-| none | present, old pid+procStart **alive** | absent | orphan | reap that pid+procStart |
-| none | any | present | late or missing registration | grace → unknown |
-| one | — | **absent** | runtime alive under a *renamed* tmux session (P1: the `tmux` field does not follow a rename) | identity-unknown: no spawn, no reap, alarm |
-| one | — | present | managed | alive |
-| >1 | — | — | split-brain | refuse everything, alarm (pid/procStart only) |
+| none | none (post-census) | absent | first-ever | spawn exactly one |
+| none | process gone, stop receipt | absent | planned stop | respawn if the row is active |
+| none | process gone, no receipt | absent | **unplanned exit** | two rounds → no-process → respawn |
+| none | process gone | present | zombie tmux | existing veto → close → respawn |
+| none | process **alive** | any | live process, no attestation | identity-unknown (grace after our own spawn) |
+| one live, attached | — | present | managed | identified / managed-pane |
+| one live, detached | — | absent or renamed | orphan | identified / orphan → reap |
+| stale only | matches | any | past process | as "none" for that row |
+| ≥2 live | — | — | split-brain | identity-unknown |
 
 `runtime_alive_in_session` stays exactly as it is: a broad veto that
 postpones destruction. It never asserts identity or health.
@@ -193,14 +222,16 @@ remains eyes-only.
 while the old process runs with the old MCP/config. Two operator paths, both
 explicit:
 - *Scope change* (the session's real customer/project changes): do **not**
-  resume the old thread under the new target — create a new row and thread
-  under the new target, verify, then stop and retire the old.
+  resume the old thread under the new target. Create the new row and thread
+  first **only if** both can coexist under the desired-name gate; otherwise
+  stop and retire the old with a receipt first, accepting the downtime.
 - *Same work, organisational move* (`PARENT`/`MANAGED_BY`): drain, stop with
   a receipt (no live bridge file), mutate the graph, re-render capabilities,
   restart, receipt.
 `PARENT` and `MANAGED_BY` are shared edges: the graph writer computes the
-**reverse dependency closure** and refuses while any affected row has not
-gone through the stop transaction. Under pressure, create new entity/project
+**reverse dependency closure on register lifecycle across all hosts** — not
+on bridge liveness, which a writer cannot measure — and refuses while any
+affected row has not gone through the stop transaction. Under pressure, create new entity/project
 rows and migrate sessions one at a time instead of mutating shared edges.
 
 ### 3. Rules — who enforces what
@@ -265,6 +296,15 @@ level 2 (or level 1 + pane, per P1). Missing generation on a live legacy
 process → seeded from the bridge file, never the register; bridge ≠
 generation → unknown.
 
+*State machine.* Crash (bridge gone, no receipt, tmux present) → two rounds
+→ no-process → exactly one respawn. `/exit` with a shell left in the pane →
+same. Stale file (pid gone, procStart matches generation) → classified
+stale, ignored after two rounds, respawn allowed, file untouched. Stale +
+one live → identified. Malformed + live → unknown, zero writes. Orphan
+(one live, tmux gone) → reap that pid+procStart, then respawn. Pre-census
+existing row, no generation → unknown; post-census → first-ever. File
+predating our launch during grace → not accepted as the registration.
+
 *Rules.* Two slugs rendering the same string → refused at write. Paused but
 live → uniqueness not released. Retarget on an active row → refused;
 shared-edge mutation refuses the whole reverse closure. Watch in another
@@ -281,13 +321,33 @@ measures its own.
 **P1 — done** (see Facts). Open from it: vendor GC of stale files (seen
 once, not measured), and the level-3 tile on resume (needs eyes).
 
+**P1b — one human acceptance of level 3**, before the first live NAME-drift
+rename: a live probe, `/rename` through the *real* supervisor cycle to the
+exact pane with a shell canary current, and a human sees the old tile become
+the new one with no duplicate and no stale tile. After P1b the level-2
+receipt drives name-only renames automatically. Until then, resume with new
+argv is not a rename proof.
+
+**P0 — bootstrap census** before the adapter is activated on any existing
+row: snapshot processes, bridge files and tmux per row; seed generations;
+write the bootstrap receipt.
+
+**Still unmeasured, carried by the plan:** `procStart` precision and
+semantics per OS (is it a unique birth token, or second-rounded?); bridge
+`tmux`/`pid`/`procStart` on macOS; partial-write atomicity of the bridge
+file; stale-file lifecycle when the next process gets the same or another
+pid; adapter answers for stale+live and malformed+live; `/exit` or crash
+with a tmux shell left; the exact-pane canary through the production
+`type_line`; central watch via the owner's host measurement.
+
 **P2 — macOS twin**, as above, in the butler estate.
 
 **P3 — manual census** for any login on more than one host or estate.
 
 ## Order of work
 
-1. The adapter: tri-state, grace, generation, bootstrap table, fail-closed.
+1. The adapter: candidate classification, four answers, grace, generation,
+   bootstrap census (P0), fail-closed.
    Supervisor liveness, duplicate guard and orphan reap on it;
    `matching_claude_pids` out of decisions.
 2. Watch (`findProcess` and callers) and liveness-host on the adapter;
