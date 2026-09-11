@@ -250,12 +250,21 @@ deploy_home_list() {
   # linux/deploy-self.sh - while still refusing if it is genuinely absent. A
   # missing command is not an answer; it is the defect this whole change is
   # about, one library over.
-  if ! declare -F _registry_owner_home >/dev/null 2>&1; then
+  #
+  # `command -v`, NOT `declare -F`. Measured 2026-09-11: in zsh, `declare -F
+  # name` is not an existence test - it DECLARES a float and returns 0, so the
+  # guard passes for a function that does not exist, the lazy load is skipped,
+  # and you land in exactly the `command not found` the guard exists to prevent.
+  # Every consumer here is bash and the shebang says so, so this was never a
+  # live defect - but a reader sourcing this library from an interactive zsh
+  # prompt meets it, and one did. A guard that READS like a test and is not one
+  # is the shape this file spent the day removing.
+  if ! command -v _registry_owner_home >/dev/null 2>&1; then
     _dc_lib="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/registry.sh"
     # shellcheck source=registry.sh
     [ -f "$_dc_lib" ] && . "$_dc_lib" 2>/dev/null
   fi
-  if ! declare -F _registry_owner_home >/dev/null 2>&1; then
+  if ! command -v _registry_owner_home >/dev/null 2>&1; then
     echo "deploy-core: REFUSING - the registry library is not beside this one, so a home cannot be looked up" >&2
     return 78
   fi
