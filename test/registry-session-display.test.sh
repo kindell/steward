@@ -341,6 +341,20 @@ is "7a: unknown session rc 1" "$RC" "1"
 in_fixture registry_session_display 'Bad Name'
 is "7b: invalid name rc 1" "$RC" "1"
 
+echo "== 8. RC-ENABLED — only the deliberate empty string opts out (plan v6 Task 6) =="
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nRC_LABEL="Some Label"\n' > "$SESS/rc-labeled.conf"
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="site"\n' > "$SESS/rc-derived.conf"
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="site"\nRC_LABEL=""\n' > "$SESS/rc-free.conf"
+printf 'OWNER="a"\nDOMAIN="alpha"\nREPO_PATH="/tmp/x"\nACCOUNT="a-h1"\nTARGET_PROJECT="nope"\n' > "$SESS/rc-broken.conf"
+in_fixture registry_session_rc_enabled rc-labeled;  is "8a a non-empty label is RC-enabled" "$RC" "0"
+in_fixture registry_session_rc_enabled rc-derived;  is "8b an ABSENT line is RC-enabled (rendered)" "$RC" "0"
+in_fixture registry_session_rc_enabled rc-free;     is "8c RC_LABEL=\"\" is the RC-free choice: rc 1" "$RC" "1"
+in_fixture registry_session_rc_enabled no-such-row; is "8d an unknown row is not enabled (rc 1)" "$RC" "1"
+in_fixture registry_session_display rc-free;        is "8e an RC-free row with a target STILL derives its display (for --name)" "$OUT" "Alpha→Site"
+OUT="$( export STEWARD_REGISTRY_DIR="$SESS" STEWARD_ESTATE_ROOT="$FX" STEWARD_ENTITY_DIR="$ENT" STEWARD_PROJECT_DIR="$PROJ" STEWARD_CONFIG_FILE="$FX/no-such-config"; . "$here/lib/registry.sh"; registry_session_display rc-broken 2>&1 >/dev/null )"; RC=$?
+[ "$RC" -ne 0 ] && ok "8f an unresolvable target refuses (rc $RC)" || bad "8f an unresolvable target refuses" "rc 0"
+case "$OUT" in *nope*) ok "8g and stderr names the project" ;; *) bad "8g and stderr names the project" "$OUT" ;; esac
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -3924,6 +3924,17 @@ registry_load() {
 # scoping the moment the row sourced. Everything the conf can influence
 # crosses the boundary as printed field values only; the name used by the
 # fallback is this function's own argument, captured before any load runs.
+# registry_session_rc_enabled <id> - rc 0 unless the row says RC_LABEL="" (the RC-FREE choice).
+# An ABSENT line means "rendered" and is RC-enabled; only the deliberate empty string opts out.
+# rc 1 for a row that does not exist: nothing is enabled about nothing.
+registry_session_rc_enabled() {
+  local slug="${1:-}" conf
+  registry_valid_name "$slug" || return 1
+  conf="$(registry_dir)/$slug.conf"; [ -f "$conf" ] || return 1
+  grep -q '^RC_LABEL=""$' "$conf" 2>/dev/null && return 1
+  return 0
+}
+
 registry_session_display() {
   local slug="${1:-}"
   if ! registry_valid_name "$slug"; then
