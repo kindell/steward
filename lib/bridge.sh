@@ -117,3 +117,55 @@ bridge_is_descendant() {
   done
   return 1
 }
+
+# ---- classification: all inputs measured by the caller; this only decides ------------------
+# bridge_classify_candidate <alive> <uid_ok> <birth_known> <launch_claim> <stored_pane_has_pid> <any_pane_has_pid> <dead_match>
+#   live:managed    alive, the owner's uid, ours (known birth or proven launch claim), in the stored pane
+#   live:moved      ... under a pane that is not the stored one (tmux renamed, or dragged) - never touched
+#   live:orphan     ... under NO pane on the socket
+#   stale           dead, and (pid, procStart) is in the generation's history - KILL -9 leaves this behind
+#   unclassifiable  everything else; it is never chosen, and it poisons the answer (see bridge_answer)
+bridge_classify_candidate() {
+  local alive="${1:-0}" uid_ok="${2:-0}" known="${3:-0}" claim="${4:-0}" stored="${5:-0}" any="${6:-0}" dead="${7:-0}"
+  if [ "$alive" = 1 ]; then
+    [ "$uid_ok" = 1 ] || { printf 'unclassifiable'; return 0; }
+    # OURS IN EXACTLY TWO WAYS: the generation knows this birth, or the adapter proved the
+    # launch claim - open launch, inside the window, started after it, AND carrying this
+    # launch's nonce in its environment. Time and place alone do not prove that our spawn
+    # created the process; a replacement someone typed into the pane has the same time and
+    # place and not the nonce (B4).
+    [ "$known" = 1 ] || [ "$claim" = 1 ] || { printf 'unclassifiable'; return 0; }
+    if [ "$stored" = 1 ]; then printf 'live:managed'; elif [ "$any" = 1 ]; then printf 'live:moved'; else printf 'live:orphan'; fi
+    return 0
+  fi
+  if [ "$dead" = 1 ]; then printf 'stale'; else printf 'unclassifiable'; fi
+}
+
+# ---- the answer -------------------------------------------------------------------------------
+# bridge_answer <classes> <gen_state> <tmux_present> <veto> <census>
+#   classes     space-separated words from bridge_classify_candidate (may be empty)
+#   gen_state   none | gone-receipt | gone-noreceipt | alive | grace
+#   census      the generation's census value; ONLY the exact string "1" means done (B11)
+# Prints one of: identified:managed identified:orphan identified:moved no-process unknown wait-veto grace
+#
+# ANY unclassifiable candidate, or more than one live one, is unknown - the answer is never
+# the first thing that looked plausible. THE VETO IS AN ACTION GATE, NOT A FIFTH IDENTITY:
+# no-process with the runtime veto held is wait-veto, so the caller neither closes nor spawns,
+# without pretending it does not know what it saw.
+bridge_answer() {
+  local classes="${1:-}" gen="${2:-none}" tmux="${3:-0}" veto="${4:-0}" census="${5:-}" w live=0 unclass=0 kind=""
+  for w in $classes; do
+    case "$w" in live:*) live=$((live+1)); kind="${w#live:}" ;; stale) : ;; *) unclass=$((unclass+1)) ;; esac
+  done
+  [ "$unclass" -eq 0 ] || { printf 'unknown'; return 0; }
+  [ "$live" -le 1 ]    || { printf 'unknown'; return 0; }
+  [ "$live" -eq 1 ]    && { printf 'identified:%s' "$kind"; return 0; }
+  case "$gen" in
+    grace) printf 'grace'; return 0 ;;
+    alive) printf 'unknown'; return 0 ;;          # our process lives but nothing attests it
+    none)  [ "$census" = 1 ] || { printf 'unknown'; return 0; } ;;
+    gone-receipt|gone-noreceipt) : ;;
+    *) printf 'unknown'; return 0 ;;
+  esac
+  if [ "$veto" = 1 ]; then printf 'wait-veto'; else printf 'no-process'; fi
+}
