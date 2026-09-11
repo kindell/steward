@@ -81,7 +81,7 @@ observe() { # <id> <bootstrap 0|1>
   is_digits "$now_ms" && is_digits "$now_up" && is_digits "$GRACE_MS" && [ -n "$boot_id" ] || { refuse "$id" unknown none clock-invalid; return; }
   # ---- the tmux census (G2): presence, tuple, this session's panes, every pane on the socket ----
   if tmuxc has-session -t "=$id" 2>/dev/null; then
-    tmux_present=1; tuple="$(tmuxc display-message -p -t "=$id" '#{session_id}:#{session_created}' 2>/dev/null)"
+    tmux_present=1; tuple="$(tmuxc list-sessions -F '#{session_id}:#{session_created}' -f "#{==:#{session_name},$id}" 2>/dev/null | head -1)"
     case "$tuple" in *:*) [ -n "${tuple%%:*}" ] && [ -n "${tuple#*:}" ] || tuple="" ;; *) tuple="" ;; esac     # D5: both halves, or nothing
     [ -n "$tuple" ] || { refuse "$id" unknown none tmux-tuple-incomplete; return; }
     sess_panes="$(tmux_panes -s -t "=$id")" || { refuse "$id" unknown none tmux-session-panes-unreadable; return; }

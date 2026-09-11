@@ -92,7 +92,10 @@ case "${argv[0]:-}" in
   has-session)  [ -f "$T_HAS_SESSION" ] ;;
   list-panes)   [ -f "$T_HAS_SESSION" ] && echo 4242; exit 0 ;;
   list-clients) exit 0 ;;
-  display-message) case "$last" in *session_id*) [ -f "$T_HAS_SESSION" ] && cat "$TUPLE" ;; *pane_current_command*) cat "$T_FG_CMD" 2>/dev/null || echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
+  # tmux 3.4, MEASURED on the live host: session formats expand through list-sessions, never through
+  # display-message -t "=name" - which answers nothing at all there. Pane targets do work.
+  list-sessions) [ -f "$T_HAS_SESSION" ] && cat "$TUPLE"; exit 0 ;;
+  display-message) case "$last" in *session_id*) : ;; *pane_current_command*) cat "$T_FG_CMD" 2>/dev/null || echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
   send-keys) tgt=""; prev=""; txt=""; for a in "${argv[@]}"; do [ "$prev" = "-t" ] && tgt="$a"; [ "$prev" = "-l" ] && txt="$a"; prev="$a"; done
              [ -f "$T_SENDKEYS_FAIL" ] && exit 1
              [ -f "$T_ENTER_FAIL" ] && [ "$last" = Enter ] && exit 1
@@ -313,13 +316,22 @@ is "23a pane receipt and nameSince advanced, but the bridge still says Old -> ap
 reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run; run
 is "23b bridge says desired but nameSince unchanged -> applied stays empty" "$(gget applied)" ""
 
-echo "== 24-25. the foreground must be the managed claude: command AND tty AND process group =="
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; echo vim > "$T_FG_CMD"; OLD; run; run; run; run
-is "24a foreground vim -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "24b says so" "$OUT" "foreground"
+echo "== 24-25. the foreground is measured on the tty, never by the command's name =="
+# THE PRODUCTION SHAPE, MEASURED ON THE LIVE HOST 2026-09-11: the launch string ends "; exec bash" in a
+# non-interactive shell, so claude never gets a process group of its own - pane shell and claude share
+# pgid, and tmux reports the pane's current command as "bash" for a perfectly healthy session. A guard
+# that required the command to be "claude" passed every fixture and would have blocked every real rename.
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; echo bash > "$T_FG_CMD"
+pstat 4242 bash 1 4242 34816 4242 100; pstat 4243 claude 4242 4242 34816 4242 111   # one group, as in production
+OLD; run; run; run
+is "24a the production shape types (pane command 'bash', one shared process group)" "$(grep -c . "$T_SENDKEYS")" "2"
+pstat 4242 bash 1 4242 34816 4243 100; pstat 4243 claude 4242 4243 34816 4243 111   # back to the fixture's own shape
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4243 claude 4242 4243 34817 4243 111; OLD; run; run; run; run
-is "25a same tpgid, different tty_nr -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
+is "25a same tpgid, different tty_nr -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "25a2 and says the foreground changed" "$OUT" "foreground"
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4242 bash 1 4242 34816 4300 100; OLD; run; run; run; run
-is "25b the tty's foreground group is another process -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
+is "25b a human's command takes the tty (another foreground group) -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4243 claude 4242 4299 34816 4243 111; OLD; run; run; run; run
+is "25c the managed process is not IN the foreground group -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
 
 echo "== 26. a busy pane between the two rounds restarts the count =="
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run; touch "$T_BUSY"; run; rm -f "$T_BUSY"; run
@@ -362,8 +374,9 @@ reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run
 # THE FLIP HAPPENS DURING THE THIRD OBSERVATION OF THE ROUND - the final one before the keys (the
 # first is the alive check, the second the rename step's receipt recheck). A flip on any earlier call
 # would be caught by the ordinary foreground check in either order and prove nothing about the order.
-printf '[ "$(grep -c . "%s")" -eq 3 ] && echo vim > "%s"\n' "$OBS_LOG" "$T_FG_CMD" > "$OBS_SIDE_EFFECT"
-echo claude > "$T_FG_CMD"; run
+# The foreground is a tty fact, so the flip is one: a human's command takes the tty's process group.
+printf '[ "$(grep -c . "%s")" -eq 3 ] && printf "4242 (bash) S 1 4242 4242 34816 4300 0 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0 0\\n" > "%s"\n' "$OBS_LOG" "$PROC/4242/stat" > "$OBS_SIDE_EFFECT"
+run
 is "36e the foreground flipped during the final observation -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "36f says the foreground changed" "$OUT" "foreground"
 
 echo "== 36c. K2: the immediate recheck includes the vendor's procStart =="

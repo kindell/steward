@@ -69,6 +69,29 @@ has "3d filename-pid reason" "$out" "filename-pid"
 is "3e 109 reason is types (schema), not json" "$(printf '%s\n' "$out" | grep 109.json | cut -d "$US" -f 3)" "types"
 is "3f 110 reason is control-char" "$(printf '%s\n' "$out" | grep 110.json | cut -d "$US" -f 3)" "control-char"
 
+echo "== 3b. procStart: the vendor writes it as a NUMBER on one build and a STRING on another =="
+# MEASURED on basement 2026-09-11: "procStart":"54058753" - a string. P1 measured a number. It is an
+# opaque token we only compare, so both are read and both become the same digits; anything else is poison.
+# (this section keeps only its own files; section 5 counts what section 4 left)
+printf '{"pid":120,"procStart":"54058753","tmux":"%s","name":"Str","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/120.json"
+out="$(bridge_candidates "$ID" "$D" | grep "${US}120${US}")"
+is "3b1 a string procStart is accepted" "$(printf '%s\n' "$out" | cut -d "$US" -f 4)" "54058753"
+printf '{"pid":121,"procStart":54058753,"tmux":"%s","name":"Num","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/121.json"
+out="$(bridge_candidates "$ID" "$D" | grep "${US}121${US}")"
+is "3b2 a number procStart gives the SAME digits" "$(printf '%s\n' "$out" | cut -d "$US" -f 4)" "54058753"
+printf '{"pid":122,"procStart":"5405 8753","tmux":"%s","name":"Bad","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/122.json"
+is "3b3 a string that is not digits is poison" "$(bridge_candidates "$ID" "$D" | grep '122.json' | cut -d "$US" -f 3)" "types"
+printf '{"pid":125,"procStart":"abc","tmux":"%s","name":"Word","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/125.json"
+is "3b3b a word is poison too - the shape is digits, not 'any string'" "$(bridge_candidates "$ID" "$D" | grep '125.json' | cut -d "$US" -f 3)" "types"
+printf '{"pid":126,"procStart":"","tmux":"%s","name":"Empty","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/126.json"
+is "3b3c an empty string is poison" "$(bridge_candidates "$ID" "$D" | grep '126.json' | cut -d "$US" -f 3)" "types"
+rm -f "$D/125.json" "$D/126.json"
+printf '{"pid":123,"procStart":54058753.5,"tmux":"%s","name":"Frac","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/123.json"
+is "3b4 a fractional procStart is poison" "$(bridge_candidates "$ID" "$D" | grep '123.json' | cut -d "$US" -f 3)" "types"
+printf '{"pid":124,"procStart":null,"tmux":"%s","name":"Null","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/124.json"
+is "3b5 a null procStart is poison" "$(bridge_candidates "$ID" "$D" | grep '124.json' | cut -d "$US" -f 3)" "types"
+rm -f "$D"/12*.json
+
 echo "== 4. an EMPTY name survives framing as EMPTY; a literal dash stays a dash =="
 rm -f "$D"/10[1-9].json "$D"/11?.json
 printf '{"pid":112,"procStart":1,"tmux":"%s","name":"","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@5.%5" > "$D/112.json"

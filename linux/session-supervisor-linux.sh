@@ -1574,14 +1574,24 @@ type_line() { # <pane-target> <text> - EVERY keystroke names its pane. For a cla
   tmuxc send-keys -t "$1" Enter 2>/dev/null || return 2
   return 0
 }
-# pane_foreground_is_managed <pane-target> <managed-pid> - the pane's FOREGROUND is the managed claude.
-# Descendant-of-pane is not foreground: a vim or a shell in front of claude would receive the keys. Three
-# independent readings must agree (spec §2, plan B9): tmux says the current command is claude; the pane
-# shell and the managed pid share the same nonzero tty (field 7 of /proc/<pid>/stat); and that tty's
-# foreground process group (field 8, tpgid) - read on BOTH sides - is the managed pid's own group (field 5).
+# pane_foreground_is_managed <pane-target> <managed-pid> - the pane's FOREGROUND is the managed runtime.
+# Descendant-of-pane is not foreground: a vim or a shell in front of claude would receive the keys.
+#
+# WHAT IS MEASURED, AND WHY NOT THE COMMAND NAME. The first version also required tmux's
+# `#{pane_current_command}` to be "claude", as an independent canary. MEASURED ON THE LIVE HOST
+# 2026-09-11: it is "bash" for a perfectly healthy managed session. The launch string is
+# `... claude ...; exec bash` in a non-interactive shell, so claude never gets a process group of its own -
+# pane shell and claude share pgid, and tmux reports the group leader's command. That canary would have
+# silently blocked every rename in production while every fixture passed.
+#
+# What remains is the tty itself, and it is enough: the pane shell and the managed process must sit on the
+# SAME nonzero tty (field 7), that tty's foreground process group (field 8, tpgid, read on BOTH sides)
+# must agree, and it must be the managed process's own group (field 5). A human who runs vim in that pane
+# gets a process group of its own - the shell there is interactive, job control is on - and every one of
+# those three readings changes. A pane whose claude has died never reaches this branch at all: the adapter
+# does not answer identified:managed for it.
 pane_foreground_is_managed() {
   local pane_pid root="${BRIDGE_PROC_ROOT:-/proc}" a b
-  [ "$(tmuxc display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)" = claude ] || return 1
   pane_pid="$(tmuxc display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)"; case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
   a="$(sed 's/^.*) //' "$root/$pane_pid/stat" 2>/dev/null)"; b="$(sed 's/^.*) //' "$root/$2/stat" 2>/dev/null)"
   [ -n "$a" ] && [ -n "$b" ] || return 1
@@ -2445,7 +2455,7 @@ if [ "$IS_CLAUDE" = 1 ]; then
   # returned 0 AND the id is gone (E3, D12) - and a spawn follows only a receipt.
   NP_N="${NP_TUPLE%%:*}"; case "$NP_N" in \$*) : ;; *) NP_N="" ;; esac
   case "${NP_N#\$}" in ''|*[!0-9]*) rm -f "$SUSPECT"; echo "session-supervisor: $NAME — tuple has no usable session id; not closing." >&2; exit 0 ;; esac
-  _now="$(tmuxc display-message -p -t "=$NAME" '#{session_id}:#{session_created}' 2>/dev/null)"
+  _now="$(tmuxc list-sessions -F '#{session_id}:#{session_created}' -f "#{==:#{session_name},$NAME}" 2>/dev/null | head -1)"
   [ "$_now" = "$NP_TUPLE" ] || { rm -f "$SUSPECT"; echo "session-supervisor: $NAME — tmux tuple changed before close ($NP_TUPLE is now ${_now:-gone}); resetting." >&2; exit 0; }
   echo "session-supervisor: $NAME — NO PROCESS confirmed twice under $NP_TUPLE: closing $NP_N and respawning." >&2
   reobserve_same no-process "$(bridge_suspect_key close "$NP_TUPLE")" || exit 0   # H1: still no process, immediately before the close

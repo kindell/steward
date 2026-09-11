@@ -69,14 +69,20 @@ bridge_candidates() {
       def ctl: (explode | any(. < 32 or . == 127));
       def esc: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\-])"; "\\" + .c);   # jq: the replacement sees NAMED CAPTURES only
       def us: ([31] | implode);
+      # procStart IS A STRING ON THIS VENDOR BUILD and a number on another (measured on basement
+      # 2026-09-11: "procStart":"54058753"; P1 saw a number). It is an opaque token we only ever compare,
+      # so both shapes are read and both become the same digit string - while anything that is not
+      # digits is still poison. Nothing else about the strictness moves.
       if type != "object" then "!notobject"
-      elif ((.pid|type) != "number") or ((.procStart|type) != "number") or ((.tmux|type) != "string")
+      elif ((.pid|type) != "number") or ((.tmux|type) != "string")
         or ((.name|type) != "string") or ((.nameSince|type) != "number") or ((.sessionId|type) != "string")
         or ((.startedAt|type) != "number") then "!types"
+      elif ((.procStart|type) == "number" | not) and (((.procStart|type) == "string" and (.procStart | test("^[0-9]+$"))) | not) then "!types"
+      elif ((.procStart|type) == "number") and ((.procStart|floor) != .procStart or .procStart < 0) then "!types"
       elif (.tmux|ctl) or (.name|ctl) or (.sessionId|ctl) then "!control-char"
       elif ((.pid|tostring) != $base) then "!filename-pid"
       elif (.tmux | test("^" + ($id|esc) + ":@[0-9]+[.]%[0-9]+$")) | not then "!foreign"
-      else [(.pid|tostring), (.procStart|tostring), .tmux,
+      else [(.pid|tostring), (.procStart|tostring), .tmux,   # tostring on either shape gives the same digits
             .name,
             (.nameSince|tostring),
             .sessionId,

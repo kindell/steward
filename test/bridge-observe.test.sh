@@ -59,13 +59,16 @@ printf '%s\n' "$*" >> "$TMUX_LOG"
 argv=("$@"); [ "${argv[0]:-}" = "-S" ] && argv=("${argv[@]:2}")
 case "${argv[0]:-}" in
   has-session) [ -f "$HAS_SESSION" ] ;;
+  list-sessions) [ -n "${T_NO_SERVER:-}" ] && { echo "no server running on $2" >&2; exit 1; }
+              # tmux 3.4, MEASURED: session formats expand here and NOT through display-message -t "=name".
+              [ -f "$HAS_SESSION" ] && cat "$TUPLE"; exit 0 ;;
   list-panes) [ -n "${T_NO_SERVER:-}" ] && { echo "no server running on $2" >&2; exit 1; }
               for a in "${argv[@]}"; do [ "$a" = "-a" ] && { [ -n "${T_PANES_ALL_FAIL:-}" ] && { echo "lost server" >&2; exit 1; }; cat "$PANES_ALL"; exit 0; }; done
               [ -n "${T_PANES_SESS_FAIL:-}" ] && { echo "lost server" >&2; exit 1; }; [ -f "$HAS_SESSION" ] && cat "$PANES_SESS"; exit 0 ;;
   display-message)
     tgt=""; prev=""; fmt=""; for a in "${argv[@]}"; do [ "$prev" = "-t" ] && tgt="$a"; prev="$a"; fmt="$a"; done
     case "$fmt" in
-      '#{session_id}:#{session_created}') [ -f "$HAS_SESSION" ] && cat "$TUPLE" ;;
+      '#{session_id}:#{session_created}') : ;;   # tmux 3.4 answers NOTHING here (measured on the live host)
       '#{pane_pid}') awk -v t="$tgt" '$1==t {print $2}' "$PANEMAP" ;;
     esac; exit 0 ;;
   *) exit 0 ;;
