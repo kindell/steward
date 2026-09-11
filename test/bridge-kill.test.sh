@@ -42,6 +42,11 @@ run "$GONE" boot-k:4242; is "2k gone pid (stat fixture present, no process) -> 6
 rm -rf "$PROC/$SLEEPER"; run "$SLEEPER" boot-k:4242; is "2n pinned but no stat -> 65" "$RC" "65"; is "2o not signalled" "$(cat "$REC")" ""
 stat_for "$SLEEPER" 4242
 
+echo "== 2b. a recorder that fails is not a delivery =="
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"; exit 3\n' "$REC" > "$T/recorder-fails"; chmod 755 "$T/recorder-fails"
+: > "$REC"; OUT="$(BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder-fails" python3 "$K" "$SLEEPER" boot-k:4242 2>"$T/err")"; RC=$?
+is "2p recorder rc 3 -> 65" "$RC" "65"; is "2q no 'killed' receipt printed" "$OUT" ""; has "2r says why" "$(cat "$T/err")" "non-zero"
+
 echo "== 3. usage: rc 64 =="
 run "$SLEEPER" boot-k:4242 BOGUS; is "3a bad signal name -> 64" "$RC" "64"; is "3b not signalled" "$(cat "$REC")" ""
 run abc boot-k:4242; is "3c bad pid -> 64" "$RC" "64"

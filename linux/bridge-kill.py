@@ -98,9 +98,14 @@ def main(argv):
             return refuse("pid %d birth is %s, caller saw %s; the number was reused" % (pid, token, birth))
         recorder = os.environ.get("STEWARD_KILL")
         if recorder:
-            subprocess.run([recorder, str(pid), sig_name], check=False)
+            # THE RECORDER STANDS IN FOR THE SIGNAL, so its failure is the signal's failure: no receipt.
+            if subprocess.run([recorder, str(pid), sig_name], check=False).returncode != 0:
+                return refuse("the signal recorder %r returned non-zero; nothing is claimed delivered" % recorder)
         else:
-            signal.pidfd_send_signal(fd, sig)
+            try:
+                signal.pidfd_send_signal(fd, sig)
+            except ProcessLookupError:
+                return refuse("pid %d died between its stat and the signal" % pid)
     finally:
         os.close(fd)
     print("killed %d %s %s" % (pid, birth, sig_name))
