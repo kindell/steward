@@ -80,15 +80,12 @@ if [ -f "$REG_LIB" ]; then
   # shellcheck source=/dev/null
   . "$REG_LIB" 2>/dev/null && _reg_ok=1
 fi
-# THE BRIDGE LIBRARY SITS BESIDE THE REGISTRY LIBRARY, found the same way. It is loaded
-# here and REFUSED later, for claude rows only (see IS_CLAUDE below): a paused session must
-# reach its guard without being asked anything, and an OpenCode row never reads it.
+# THE BRIDGE LIBRARY SITS BESIDE THE REGISTRY LIBRARY, found the same way - but it is loaded only
+# once the runtime is known (after the conf, at IS_CLAUDE), and only for a claude row: an OpenCode
+# round must be byte-identical to what it was, and a syntactically broken bridge.sh must not be able
+# to end it (advisor H5). The path is resolved here, the source happens below.
 BRIDGE_LIB="${STEWARD_BRIDGE_LIB:-$(dirname "$REG_LIB")/bridge.sh}"
 _bridge_ok=""
-if [ -f "$BRIDGE_LIB" ]; then
-  # shellcheck source=/dev/null
-  . "$BRIDGE_LIB" 2>/dev/null && declare -F bridge_answer >/dev/null 2>&1 && _bridge_ok=1
-fi
 # THE SPAWN LIBRARIES SIT NEXT TO THE REGISTRY LIBRARY, and are found the same
 # way: whatever directory REG_LIB actually resolved to, deployed or in a
 # checkout. Deriving them separately would let a host load its registry from
@@ -303,6 +300,14 @@ fi
 # so no branch below can read RUNTIME two different ways.
 case "${RUNTIME:-claude-code}" in claude-code) IS_CLAUDE=1 ;; *) IS_CLAUDE="" ;; esac
 NO_PROCESS_CONFIRMED=""; NP_TUPLE=""
+# THE BRIDGE LIBRARY, FOR CLAUDE ROWS ONLY, PROBED IN A SUBSHELL FIRST: a syntax error in a sourced
+# file is fatal to a non-interactive shell, so the probe takes the hit and this shell sources only a
+# file that has already been shown to load. The refusal itself is below (after the pause guard and
+# CFG_ROOT), so a paused row is never asked anything.
+if [ "$IS_CLAUDE" = 1 ] && [ -f "$BRIDGE_LIB" ] && ( . "$BRIDGE_LIB" ) >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  . "$BRIDGE_LIB" 2>/dev/null && declare -F bridge_answer >/dev/null 2>&1 && _bridge_ok=1
+fi
 
 # THE LIBRARY VALIDATES WHAT THE RAW SOURCE ABOVE ONLY READS.
 #
@@ -400,10 +405,28 @@ observe_row() {
   IFS="$US" read -r _id B_ANS B_PID B_BIRTH B_PANE B_NAME B_SINCE B_GEN B_CLASSES B_CHILD B_PS B_SID B_MTIME B_TUPLE B_INODE <<EOF
 $_l
 EOF
-  if [ "$_id" != "$NAME" ]; then
-    # AN UNREADABLE ANSWER IS unknown, NEVER no-process: nothing below may act on it.
+  observe_line_valid "$_l" "$_id" || {
+    # AN UNREADABLE ANSWER IS unknown, NEVER no-process: nothing below may act on it (H4).
     B_ANS="unknown"; B_GEN="none"; B_CLASSES="observer-unreadable"; B_PID=""; B_BIRTH=""; B_PANE=""; B_NAME=""; B_SINCE=""; B_CHILD=""; B_PS=""; B_SID=""; B_MTIME=""; B_TUPLE=""; B_INODE=""
-  fi
+  }
+}
+# observe_line_valid <line> <id> - exactly one line, exactly fifteen US fields, this row's id, the answer
+# and gen_state from their closed vocabularies, and the structural invariants the actions below stand on:
+# an identified answer carries a numeric pid, a birth and a pane; every other answer carries none.
+observe_line_valid() {
+  local l="$1" n
+  case "$l" in *"$US"*) : ;; *) return 1 ;; esac
+  case "$l" in *$'\n'*) return 1 ;; esac
+  n="$(printf '%s' "$l" | tr -cd "$US" | wc -c | tr -d ' ')"; [ "$n" -eq 14 ] || return 1
+  [ "$2" = "$NAME" ] || return 1
+  case "$B_ANS" in identified:managed|identified:orphan|identified:moved|no-process|unknown|wait-veto|grace|uninspectable|not-applicable) : ;; *) return 1 ;; esac
+  case "$B_GEN" in none|gone-receipt|gone-noreceipt|alive|grace|bootstrap) : ;; *) return 1 ;; esac
+  case "$B_ANS" in
+    identified:*) case "$B_PID" in ''|*[!0-9]*) return 1 ;; esac; [ -n "$B_BIRTH" ] && [ -n "$B_PANE" ] || return 1 ;;
+    *) [ -z "$B_PID$B_BIRTH$B_PANE$B_PS$B_SID$B_INODE" ] || return 1 ;;
+  esac
+  case "$B_CHILD" in ''|0|1) : ;; *) return 1 ;; esac
+  return 0
 }
 # runtime_identified: the alive question, asked the runtime's own way (E2).
 runtime_identified() {
@@ -411,46 +434,84 @@ runtime_identified() {
 }
 # bind_generation: a verified-live bridge record becomes the generation's current fact, so a
 # file left behind by KILL -9 is later recognised by pid:procStart. Written only on change.
-bind_generation() {
+bind_generation() { # rc 1 when the record could not be written - the caller must not go on writing
   rm -f "$STATE_DIR/$NAME.identity-degraded"
+  local g_uid; g_uid="$(id -u)"
   if [ "$(bridge_gen_get "$STATE_DIR" "$NAME" pid 2>/dev/null)" != "$B_PID" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" birth 2>/dev/null)" != "$B_BIRTH" ] \
+     || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" procStart 2>/dev/null)" != "$B_PS" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" sessionId 2>/dev/null)" != "$B_SID" ] \
+     || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" uid 2>/dev/null)" != "$g_uid" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_nameSince 2>/dev/null)" != "$B_SINCE" ] \
+     || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_inode 2>/dev/null)" != "$B_INODE" ] \
      || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_name 2>/dev/null)" != "$B_NAME" ] || [ "$(bridge_gen_get "$STATE_DIR" "$NAME" bridge_mtime 2>/dev/null)" != "$B_MTIME" ] \
      || [ -n "$(bridge_gen_get "$STATE_DIR" "$NAME" spawn_state 2>/dev/null)" ]; then
     bridge_gen_write "$STATE_DIR" "$NAME" pid="$B_PID" birth="$B_BIRTH" procStart="$B_PS" sessionId="$B_SID" bridge_mtime="$B_MTIME" bridge_inode="$B_INODE" \
-      bridge_name="$B_NAME" bridge_nameSince="$B_SINCE" uid="$(id -u)" spawn_state=
+      bridge_name="$B_NAME" bridge_nameSince="$B_SINCE" uid="$g_uid" spawn_state= || return 1
   fi
+  return 0
+}
+# reobserve_same <answer> <key> - the action-boundary re-observation (H1): the adapter is asked again
+# immediately before an action and must give the SAME answer and the SAME action key; anything else
+# resets the suspect and ends the round. Prints the reason on stderr and returns 1 on any difference.
+reobserve_same() {
+  local want_ans="$1" want_key="$2" got_key
+  observe_row
+  case "$want_key" in
+    "reap "*)  got_key="$(bridge_suspect_key reap "$B_PID" "$B_BIRTH")" ;;
+    "close "*) got_key="$(bridge_suspect_key close "$B_TUPLE")" ;;
+    *)         got_key="$(bridge_suspect_key spawn absent)"; [ -z "$B_TUPLE" ] || got_key="(tuple present)" ;;
+  esac
+  if [ "$B_ANS" = "$want_ans" ] && [ "$got_key" = "$want_key" ]; then return 0; fi
+  rm -f "$SUSPECT"
+  echo "session-supervisor: $NAME — the re-observation before the action differs ($B_ANS, $got_key; wanted $want_ans, $want_key); resetting, nothing done." >&2
+  return 1
 }
 _steward_nonce() { od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
 # spawn_claude_claimed (D7): the claim is written BEFORE new-session and closed AFTER, and every
 # input is validated before a byte is written - a claim that cannot be written is a failed spawn,
 # never a launch with a hole in its proof.
-spawn_claude_claimed() {
-  local nonce wall up boot inodes f pane_pid pbirth="" rc
+_claim_fail() { # <why> - close the claim as failed; the launch never happens
+  bridge_gen_write "$STATE_DIR" "$NAME" spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes= || true
+  echo "session-supervisor: $NAME — REFUSING to spawn: $1. DEGRADED: nothing started." >&2
+  return 1
+}
+# claude_claim_open (D7, H3, H7): every input is read as TEXT and validated, then the pending claim is
+# written - and only a SUCCESSFUL write opens the claim. Nothing else about the spawn (attempt counters,
+# marks, the launch) may happen before this returned 0.
+CLAIM_NONCE=""
+claude_claim_open() {
+  local nonce wall up boot inodes f i
   nonce="$(${STEWARD_NONCE_CMD:-_steward_nonce} 2>/dev/null)"
   [ "${#nonce}" -eq 32 ] || nonce=""; case "$nonce" in *[!0-9a-f]*) nonce="" ;; esac
-  wall=$(( $(date +%s) * 1000 ))
+  wall="$(date +%s 2>/dev/null)"; case "$wall" in ''|*[!0-9]*) wall="" ;; *) wall="${wall}000" ;; esac
   up="$(awk '{printf "%d", $1*1000}' "$PROCR/uptime" 2>/dev/null)"; case "$up" in ''|*[!0-9]*) up="" ;; esac
   boot="$(cat "$PROCR/sys/kernel/random/boot_id" 2>/dev/null)"; case "$boot" in ''|*[!0-9A-Za-z-]*) boot="" ;; esac   # compared for equality only; one token, no spaces
-  if [ -z "$nonce" ] || [ -z "$up" ] || [ -z "$boot" ]; then
-    bridge_gen_write "$STATE_DIR" "$NAME" spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes=
-    echo "session-supervisor: $NAME — REFUSING to spawn: the launch claim cannot be written (nonce ${nonce:-invalid}, uptime ${up:-unreadable}, boot id ${boot:-unreadable}). DEGRADED: nothing started." >&2
-    return 1
-  fi
+  [ -n "$nonce" ] && [ -n "$wall" ] && [ -n "$up" ] && [ -n "$boot" ] \
+    || { _claim_fail "the launch claim cannot be written (nonce ${nonce:-invalid}, wall ${wall:-unreadable}, uptime ${up:-unreadable}, boot id ${boot:-unreadable})"; return 1; }
   inodes=""
-  for f in "$CFG_ROOT"/sessions/*.json; do [ -e "$f" ] || continue; inodes="$inodes $(stat -c %i "$f" 2>/dev/null || stat -f %i "$f" 2>/dev/null)"; done
+  for f in "$CFG_ROOT"/sessions/*.json; do
+    [ -e "$f" ] || continue
+    i="$(stat -c %i "$f" 2>/dev/null || stat -f %i "$f" 2>/dev/null)"; case "$i" in ''|*[!0-9]*) _claim_fail "the inode of $f cannot be read for the snapshot"; return 1 ;; esac
+    inodes="$inodes $i"
+  done
   inodes="${inodes# }"
-  bridge_gen_write "$STATE_DIR" "$NAME" launch_ms="$wall" launch_uptime_ms="$up" launch_boot_id="$boot" launch_nonce="$nonce" launch_inodes="$inodes" spawn_state=pending pid= birth= procStart= stop_receipt=
+  bridge_gen_write "$STATE_DIR" "$NAME" launch_ms="$wall" launch_uptime_ms="$up" launch_boot_id="$boot" launch_nonce="$nonce" launch_inodes="$inodes" spawn_state=pending pid= birth= procStart= stop_receipt= \
+    || { echo "session-supervisor: $NAME — REFUSING to spawn: the pending claim could not be written to $STATE_DIR. DEGRADED: nothing started." >&2; return 1; }
+  CLAIM_NONCE="$nonce"
+  return 0
+}
+# claude_claim_launch: new-session under the open claim, then the claim closed - started or failed.
+claude_claim_launch() {
+  local pane_pid pbirth="" rc
   # THE NONCE RIDES IN FRONT OF claude AS AN ENVIRONMENT ASSIGNMENT, never behind the ';' -
   # the fallback shell must not inherit it (measured P1: it does not).
   pane_pid="$(tmuxc new-session -d -P -F '#{pane_pid}' -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
-      "STEWARD_LAUNCH_NONCE=$nonce ${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash")"; rc=$?
+      "STEWARD_LAUNCH_NONCE=$CLAIM_NONCE ${LOGIN_PREFIX}$HOME/.local/bin/$CLAUDE_CMD; exec bash")"; rc=$?
   case "$pane_pid" in ''|*[!0-9]*) pane_pid="" ;; esac
   if [ "$rc" -eq 0 ] && [ -n "$pane_pid" ] && pbirth="$(bridge_os_birth "$pane_pid")" && [ -n "$pbirth" ]; then
-    bridge_gen_write "$STATE_DIR" "$NAME" launch_pane_pid="$pane_pid" launch_pane_birth="$pbirth" spawn_state=started
+    if bridge_gen_write "$STATE_DIR" "$NAME" launch_pane_pid="$pane_pid" launch_pane_birth="$pbirth" spawn_state=started; then return 0; fi
+    echo "session-supervisor: $NAME — the session started but the claim could not be recorded as started; the launch child will be judged by its nonce alone. DEGRADED." >&2
     return 0
   fi
-  bridge_gen_write "$STATE_DIR" "$NAME" spawn_state="failed:$(date +%s)" launch_nonce= launch_ms= launch_uptime_ms= launch_boot_id= launch_inodes=
-  echo "session-supervisor: $NAME — new-session did not verifiably start (rc $rc, pane pid ${pane_pid:-none}); the claim is closed. DEGRADED." >&2
+  _claim_fail "new-session did not verifiably start (rc $rc, pane pid ${pane_pid:-none}); the claim is closed"
   return 1
 }
 HIST="$CFG_ROOT/projects/$(printf '%s' "$REPO" | sed 's|[^a-zA-Z0-9]|-|g')"
@@ -772,10 +833,12 @@ export CLOUDSDK_CONFIG="$CRED_HOME/gcloud"
 # link - see the no-process branch); a RUNNING row is kept alive on identity, keeps its applied name, and
 # is marked degraded once per transition (the alive branch). The legacy RC_LABEL line is still read
 # verbatim, byte-for-byte; RC_LABEL="" is still the RC-free choice.
-DISPLAY=""; DISPLAY_ERR=""
-DISPLAY_ERR="$(registry_session_display "$NAME" 2>&1 >/dev/null)" || DISPLAY_ERR="${DISPLAY_ERR:-registry_session_display refused without a reason}"
-DISPLAY="$(registry_session_display "$NAME" 2>/dev/null)" || DISPLAY=""
-if [ -n "$DISPLAY" ]; then DISPLAY_ERR=""; elif [ -z "$DISPLAY_ERR" ]; then DISPLAY_ERR="registry_session_display returned an empty display"; fi
+# ONE CALL, ONE SNAPSHOT (advisor J5): the register can change between two reads, and the stderr of the
+# read whose stdout is used would be lost. stderr goes to a file beside the state, read back, removed.
+DISPLAY=""; DISPLAY_ERR=""; _derr="$STATE_DIR/$NAME.display-stderr"
+if DISPLAY="$(registry_session_display "$NAME" 2>"$_derr")"; then :; else DISPLAY=""; fi
+DISPLAY_ERR="$(cat "$_derr" 2>/dev/null)"; rm -f "$_derr"
+if [ -n "$DISPLAY" ]; then DISPLAY_ERR=""; elif [ -z "$DISPLAY_ERR" ]; then DISPLAY_ERR="registry_session_display returned an empty display without a reason"; fi
 if grep -q '^RC_LABEL=' "$CONF" 2>/dev/null; then
   RC_LABEL="$(sed -n 's/^RC_LABEL="\(.*\)"/\1/p' "$CONF" | head -1)"
   [ -n "$RC_LABEL" ] && DISPLAY_ERR=""          # a verbatim label IS the display; a derivation failure beside it is not a fault
@@ -1083,8 +1146,7 @@ session_pane_pids()    { tmuxc list-panes -s -t "=$NAME" -F '#{pane_pid}' 2>/dev
 # Is $1 equal to or a descendant of $2? Follow ppid upwards until target, init
 # (1) or a ceiling is reached — the ceiling protects against a broken ps that
 # cycles.
-is_descendant() {
-  if [ "${_bridge_ok:-}" = 1 ]; then bridge_is_descendant "$@"; return $?; fi   # the same walk the adapter uses (E2)
+is_descendant() {   # the OpenCode path's own walk, unchanged; the adapter has the same walk in lib/bridge.sh (E2, H5)
   local pid="$1" target="$2" n=0
   while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$n" -lt 40 ]; do
     [ "$pid" = "$target" ] && return 0
@@ -1389,10 +1451,14 @@ EOF
 TYPED_THIS_ROUND=""
 type_line() { # <pane-target> <text> - EVERY keystroke names its pane. For a claude row the target is the
               # bridge file's exact pane (session:@window.%pane); a human's current window is never it.
-  tmuxc send-keys -t "$1" -l "$2" 2>/dev/null
-  sleep "${STEWARD_KEY_SETTLE_SEC:-2}"
-  tmuxc send-keys -t "$1" Enter 2>/dev/null
+              # rc 0 delivered; rc 1 nothing left this process (the literal failed); rc 2 PARTIAL - the literal
+              # landed but Enter did not, which is an attempt (the text is in the pane) and must be loud, because
+              # an immediate retry would double the input (advisor J7).
+  tmuxc send-keys -t "$1" -l "$2" 2>/dev/null || return 1
   TYPED_THIS_ROUND=1
+  sleep "${STEWARD_KEY_SETTLE_SEC:-2}"
+  tmuxc send-keys -t "$1" Enter 2>/dev/null || return 2
+  return 0
 }
 # pane_foreground_is_managed <pane-target> <managed-pid> - the pane's FOREGROUND is the managed claude.
 # Descendant-of-pane is not foreground: a vim or a shell in front of claude would receive the keys. Three
@@ -1463,7 +1529,10 @@ bus_signalera() { # <what> <text>
 }
 
 if runtime_identified; then
-  [ "$IS_CLAUDE" = 1 ] && bind_generation
+  if [ "$IS_CLAUDE" = 1 ] && ! bind_generation; then
+    echo "session-supervisor: $NAME — the verified record could not be written to the generation; no other write this round." >&2
+    exit 0
+  fi
   rm -f "$SUSPECT" "$RESUME_TRY"   # live session = the resume took, reset the counter
   # SURVIVAL TURNS THE LAUNCH MARK INTO last-sid (the macOS twin's hold-loop
   # round two, translated to the one-shot model: a full timer interval alive
@@ -1509,34 +1578,66 @@ if runtime_identified; then
     fi
     DESIRED="$RC_LABEL"; APPLIED="$(bridge_gen_get "$STATE_DIR" "$NAME" applied 2>/dev/null)"
     if [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then
-      if [ "$(bridge_gen_get "$STATE_DIR" "$NAME" pending_for 2>/dev/null)" != "$DESIRED" ]; then
-        bridge_gen_write "$STATE_DIR" "$NAME" pending_for="$DESIRED" pending_since="$B_SINCE" rename_tries=0   # the observation that must ADVANCE
+      # THE BASELINE IS A RECEIPT, NEVER A COERCION (J4): pending_since is the nameSince the pending was
+      # recorded on, and only a nameSince ABOVE it receipts. An absent or unreadable baseline is re-seeded
+      # from the current observation and the cycle starts over - "0" would have let old pane text and a
+      # bridge name that already reads desired pass as a receipt.
+      _pending_for="$(bridge_gen_get "$STATE_DIR" "$NAME" pending_for 2>/dev/null)"
+      PENDING_SINCE="$(bridge_gen_get "$STATE_DIR" "$NAME" pending_since 2>/dev/null)"
+      _reseed=""; [ "$_pending_for" = "$DESIRED" ] || _reseed=1; case "$PENDING_SINCE" in ''|*[!0-9]*) _reseed=1 ;; esac
+      if [ -n "$_reseed" ]; then
         rm -f "$RENAME_SUSPECT"
-      fi
-      printf '%s\n' "$DESIRED" > "$RENAME_PENDING"
-      PENDING_SINCE="$(bridge_gen_get "$STATE_DIR" "$NAME" pending_since 2>/dev/null)"; case "$PENDING_SINCE" in ''|*[!0-9]*) PENDING_SINCE=0 ;; esac
+        if bridge_gen_write "$STATE_DIR" "$NAME" pending_for="$DESIRED" pending_since="$B_SINCE" rename_tries=0; then
+          echo "session-supervisor: $NAME — rename pending for '$DESIRED' (baseline nameSince $B_SINCE); the cycle starts." >&2
+        else
+          echo "session-supervisor: $NAME — the rename baseline could not be written; no rename step this round." >&2
+        fi
+        _rn_skip=1     # the round that (re)seeds the baseline takes no further step: a receipt needs a baseline to advance past
+      else _rn_skip=""; fi
+      printf '%s\n' "$DESIRED" > "$RENAME_PENDING" 2>/dev/null || true
       _rn_tries="$(bridge_gen_get "$STATE_DIR" "$NAME" rename_tries 2>/dev/null)"; case "${_rn_tries:-}" in ''|*[!0-9]*) _rn_tries=0 ;; esac
-      _rn_pane="$(tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null)"
-      if rename_receipt_seen "$_rn_pane" "$DESIRED" && [ "$B_NAME" = "$DESIRED" ] && case "$B_SINCE" in ''|*[!0-9]*) false ;; *) [ "$B_SINCE" -gt "$PENDING_SINCE" ] ;; esac; then
-        bridge_gen_write "$STATE_DIR" "$NAME" applied="$DESIRED" applied_at="$(( $(date +%s) * 1000 ))" applied_nameSince="$B_SINCE" rename_tries=0 pending_for= pending_since=
-        rm -f "$RENAME_PENDING" "$RENAME_SUSPECT"
-        echo "session-supervisor: $NAME — rename receipted: pane and bridge both report '$DESIRED', nameSince advanced ($PENDING_SINCE -> $B_SINCE)." >&2
-      elif rename_pane_busy "$_rn_pane"; then
-        rm -f "$RENAME_SUSPECT"    # busy pane: never type; the two-round count restarts
-      elif [ "$_rn_tries" -ge 5 ]; then
-        rm -f "$RENAME_SUSPECT"
-        echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no full receipt for '$DESIRED'. The tile may carry a stale name; $RENAME_PENDING remains as the trace." >&2
-      elif ! pane_foreground_is_managed "$PANE_TARGET" "$B_PID"; then
-        rm -f "$RENAME_SUSPECT"
-        echo "session-supervisor: $NAME — rename pending, but the managed pane's foreground is not the managed claude (command, tty and process group must all agree); not typing." >&2
-      elif ! same_nonempty_sv "$(bridge_os_birth "$B_PID" 2>/dev/null)" "$B_BIRTH"; then
-        rm -f "$RENAME_SUSPECT"    # the process changed under us between the observation and now
-      elif ! bridge_suspect_confirmed "$RENAME_SUSPECT" "$(bridge_suspect_key rename "$B_PID" "$B_BIRTH" "$PANE_TARGET" "$DESIRED" "$PENDING_SINCE")"; then
-        :                          # first sighting of exactly this rename: the next identical round types
+      _rn_key="$(bridge_suspect_key rename "$B_PID" "$B_BIRTH" "$PANE_TARGET" "$DESIRED" "$PENDING_SINCE")"
+      # THE ACTION BOUNDARY RE-OBSERVES (J3, as H1): the B_* the round opened with are stale by now. The
+      # receipt is judged on a FRESH observation of the same process in the same pane, and so is the type.
+      rename_same_process() { observe_row; [ "$B_ANS" = identified:managed ] && [ "$B_PID" = "$1" ] && [ "$B_BIRTH" = "$2" ] && [ "$B_PANE" = "$3" ]; }
+      _rn_pid="$B_PID"; _rn_birth="$B_BIRTH"; _rn_pane_id="$B_PANE"
+      if [ -n "$_rn_skip" ]; then
+        :
+      elif ! rename_same_process "$_rn_pid" "$_rn_birth" "$_rn_pane_id"; then
+        rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed between the round's observation and the rename step ($B_ANS); nothing typed, nothing receipted." >&2
       else
-        type_line "$PANE_TARGET" "/rename $DESIRED"
-        bridge_gen_write "$STATE_DIR" "$NAME" rename_tries=$(( _rn_tries + 1 ))
-        rm -f "$RENAME_SUSPECT"
+        _rn_pane="$(tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null)"
+        if rename_receipt_seen "$_rn_pane" "$DESIRED" && [ "$B_NAME" = "$DESIRED" ] && case "$B_SINCE" in ''|*[!0-9]*) false ;; *) [ "$B_SINCE" -gt "$PENDING_SINCE" ] ;; esac; then
+          _now_s="$(date +%s 2>/dev/null)"; case "$_now_s" in ''|*[!0-9]*) _now_s="" ;; esac
+          if [ -n "$_now_s" ] && bridge_gen_write "$STATE_DIR" "$NAME" applied="$DESIRED" applied_at="${_now_s}000" applied_nameSince="$B_SINCE" rename_tries=0 pending_for= pending_since=; then
+            rm -f "$RENAME_PENDING" "$RENAME_SUSPECT"
+            echo "session-supervisor: $NAME — rename receipted: pane and bridge both report '$DESIRED', nameSince advanced ($PENDING_SINCE -> $B_SINCE)." >&2
+          else
+            echo "session-supervisor: $NAME — the receipt for '$DESIRED' holds but could not be WRITTEN as applied; nothing cleared, next round retries the write." >&2
+          fi
+        elif rename_pane_busy "$_rn_pane"; then
+          rm -f "$RENAME_SUSPECT"    # busy pane: never type; the two-round count restarts
+        elif [ "$_rn_tries" -ge 5 ]; then
+          rm -f "$RENAME_SUSPECT"
+          echo "session-supervisor: $NAME — RENAME NOT CONFIRMED after $_rn_tries attempts: no full receipt for '$DESIRED'. The tile may carry a stale name; $RENAME_PENDING remains as the trace." >&2
+        elif ! pane_foreground_is_managed "$PANE_TARGET" "$B_PID"; then
+          rm -f "$RENAME_SUSPECT"
+          echo "session-supervisor: $NAME — rename pending, but the managed pane's foreground is not the managed claude (command, tty and process group must all agree); not typing." >&2
+        elif ! same_nonempty_sv "$(bridge_os_birth "$B_PID" 2>/dev/null)" "$B_BIRTH"; then
+          rm -f "$RENAME_SUSPECT"    # the process changed under us between the observation and now
+        elif ! bridge_suspect_confirmed "$RENAME_SUSPECT" "$_rn_key"; then
+          :                          # first sighting of exactly this rename: the next identical round types
+        elif ! rename_same_process "$_rn_pid" "$_rn_birth" "$_rn_pane_id"; then
+          rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed immediately before typing ($B_ANS); nothing typed." >&2
+        else
+          type_line "$PANE_TARGET" "/rename $DESIRED"; _rn_rc=$?
+          rm -f "$RENAME_SUSPECT"
+          case "$_rn_rc" in
+            0|2) bridge_gen_write "$STATE_DIR" "$NAME" rename_tries=$(( _rn_tries + 1 )) || echo "session-supervisor: $NAME — the rename attempt could not be counted in the generation." >&2
+                 [ "$_rn_rc" -eq 2 ] && echo "session-supervisor: $NAME — PARTIAL delivery: the /rename text reached the pane but Enter did not; counted as an attempt, NOT retried this round (a retry would double the input)." >&2 ;;
+            *)   echo "session-supervisor: $NAME — send-keys failed; nothing reached the pane, no attempt counted." >&2 ;;
+          esac
+        fi
       fi
     else
       rm -f "$RENAME_SUSPECT" "$RENAME_PENDING"
@@ -1634,7 +1735,7 @@ if runtime_identified; then
       if [ -n "$TYPED_THIS_ROUND" ]; then
         echo "session-supervisor: $NAME has unread mail but the rename typed this round — ping deferred to the next round" >&2
       elif ! tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null | grep -q "esc to interrupt"; then
-        type_line "$PANE_TARGET" "$PING_MSG"
+        type_line "$PANE_TARGET" "$PING_MSG" || echo "session-supervisor: $NAME — the re-ping did not fully reach the pane (type_line rc $?)" >&2
         printf '%s %s' "$OLDEST_FILE" "$(date +%s)" > "$PING_MARK"
         echo "session-supervisor: $NAME had unread mail and stood idle — pinged again" >&2
       fi
@@ -1799,6 +1900,10 @@ spawn_session() {
   # THE ADAPTER OWNS ORPHANS FOR CLAUDE ROWS (identified:orphan, keyed, killed on the pin);
   # the pattern reap is the OpenCode path's, which finds its process by port.
   [ "$IS_CLAUDE" = 1 ] || reap_orphan_claude   # a killed tmux session may have left an orphaned adapter
+  # FOR A CLAUDE ROW THE CLAIM COMES FIRST (H7): a refused claim must not count as a resume attempt, must
+  # not leave a launch mark, and must not arm the rename - three refused claims would otherwise read as
+  # three failed resumes and fork a fresh thread.
+  if [ "$IS_CLAUDE" = 1 ]; then claude_claim_open || return 0; fi
   rm -f "$SUSPECT"
   # The attempt is counted BEFORE the launch, so a resume that is refused can
   # never count itself; the loop protection above reads this file.
@@ -1820,7 +1925,7 @@ spawn_session() {
     tmuxc new-session -d -s "$NAME" -c "$REPO" "${CRED_ENV_ARGS[@]}" \
       "exec \"$ADAPTER\" \"$NAME\""
   else
-    spawn_claude_claimed || return 0    # a failed claim is a failed spawn: nothing started, nothing to alarm about below
+    claude_claim_launch || return 0    # a failed launch is a failed spawn: nothing started, nothing to alarm about below
   fi
   # THE ALARM IS ON THE SPAWN PATH, AND ONLY THERE. A degraded or refused set
   # is a property of the session that was just STARTED, so it is signalled once
@@ -1884,9 +1989,12 @@ if [ "$IS_CLAUDE" = 1 ]; then
       echo "session-supervisor: $NAME — identity-unknown ($B_CLASSES). Nothing written." >&2; exit 0 ;;
     grace|wait-veto) rm -f "$SUSPECT"; exit 0 ;;
     identified:orphan)
-      bridge_suspect_confirmed "$SUSPECT" "$(bridge_suspect_key reap "$B_PID" "$B_BIRTH")" || exit 0
+      _key="$(bridge_suspect_key reap "$B_PID" "$B_BIRTH")"
+      bridge_suspect_confirmed "$SUSPECT" "$_key" || exit 0
+      [ -x "$BKILL" ] || { echo "session-supervisor: $NAME — ORPHAN confirmed, but the kill helper is missing or not executable: $BKILL. Nothing signalled." >&2; exit 0; }
+      reobserve_same identified:orphan "$_key" || exit 0                      # H1: the same orphan, immediately before the signal
       echo "session-supervisor: $NAME — ORPHAN confirmed twice (pid $B_PID, birth $B_BIRTH): signalling TERM on the pin." >&2
-      bash "$BKILL" "$B_PID" "$B_BIRTH" TERM >&2; rm -f "$SUSPECT"; exit 0 ;;
+      "$BKILL" "$B_PID" "$B_BIRTH" TERM >&2; rm -f "$SUSPECT"; exit 0 ;;
     no-process)
       [ -z "${DISPLAY_ERR:-}" ] || { echo "session-supervisor: $NAME — REFUSING to spawn: the display does not derive: $DISPLAY_ERR" >&2; exit 78; }
       if [ -n "$B_TUPLE" ]; then _np_key="$(bridge_suspect_key close "$B_TUPLE")"; else _np_key="$(bridge_suspect_key spawn absent)"; fi
@@ -1899,7 +2007,8 @@ if [ "$IS_CLAUDE" = 1 ]; then
   esac
   if [ -n "$NO_PROCESS_CONFIRMED" ]; then
     if [ -z "$NP_TUPLE" ]; then
-      tmuxc has-session -t "=$NAME" 2>/dev/null && { echo "session-supervisor: $NAME — a tmux session appeared after 'spawn absent' was confirmed; resetting." >&2; exit 0; }
+      tmuxc has-session -t "=$NAME" 2>/dev/null && { rm -f "$SUSPECT"; echo "session-supervisor: $NAME — a tmux session appeared after 'spawn absent' was confirmed; resetting." >&2; exit 0; }
+      reobserve_same no-process "spawn absent" || exit 0                      # H1: still nothing, immediately before the spawn
       spawn_session; exit 0
     fi
     : # tmux present: fall into the EXISTING activity/debris gate below, then the close by $N
@@ -2189,10 +2298,13 @@ if [ "$IS_CLAUDE" = 1 ]; then
   _now="$(tmuxc display-message -p -t "=$NAME" '#{session_id}:#{session_created}' 2>/dev/null)"
   [ "$_now" = "$NP_TUPLE" ] || { rm -f "$SUSPECT"; echo "session-supervisor: $NAME — tmux tuple changed before close ($NP_TUPLE is now ${_now:-gone}); resetting." >&2; exit 0; }
   echo "session-supervisor: $NAME — NO PROCESS confirmed twice under $NP_TUPLE: closing $NP_N and respawning." >&2
-  bridge_gen_write "$STATE_DIR" "$NAME" stop_intent="zombie-$(date +%s)"
+  reobserve_same no-process "$(bridge_suspect_key close "$NP_TUPLE")" || exit 0   # H1: still no process, immediately before the close
+  bridge_gen_write "$STATE_DIR" "$NAME" stop_intent="zombie-$(date +%s)" \
+    || { echo "session-supervisor: $NAME — the stop intent could not be written; not closing (H3)." >&2; exit 0; }
   if tmuxc kill-session -t "$NP_N" 2>/dev/null && ! tmuxc has-session -t "$NP_N" 2>/dev/null; then
-    bridge_gen_write "$STATE_DIR" "$NAME" stop_receipt="zombie-$(date +%s)"
-    spawn_session; exit 0
+    if bridge_gen_write "$STATE_DIR" "$NAME" stop_receipt="zombie-$(date +%s)"; then spawn_session; exit 0; fi
+    echo "session-supervisor: $NAME — $NP_N is closed but the receipt could not be written; NO spawn without a receipt (D12). The next round sees no-process and takes the two-round path again." >&2
+    exit 0
   fi
   echo "session-supervisor: $NAME — close of $NP_N did not verifiably succeed; no receipt, no spawn." >&2; exit 0
 fi

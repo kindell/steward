@@ -81,7 +81,7 @@ pstat 4243 claude 4242 4243 34816 4243 111 # the managed claude, birth boot-s:11
 PROCTAB="$T/proctab"; TUPLE="$T/tuple"; OBSLINE="$T/obs-line"
 export PROCTAB TUPLE OBSLINE T_HAS_SESSION="$T/has-session" T_KILL_FAILS="$T/kill-fails" T_NEW_FAILS="$T/new-fails" T_GEN_AT_SPAWN="$T/gen-at-spawn"
 export TMUX_LOG="$T/tmux.log" PGREP_LOG="$T/pgrep.log" OBS_LOG="$T/obs.log" BKILL_LOG="$T/bkill.log" STATE="$HOMEDIR/.local/state/fixture-supervisor"
-export T_FG_CMD="$T/fg-cmd" T_SENDKEYS="$T/sendkeys" T_RECEIPT="$T/receipt" T_RENAME_EFFECT="$T/rename-effect" T_BUSY="$T/busy"
+export T_FG_CMD="$T/fg-cmd" T_SENDKEYS="$T/sendkeys" T_RECEIPT="$T/receipt" T_RENAME_EFFECT="$T/rename-effect" T_BUSY="$T/busy" OBSQUEUE="$T/obs-queue" T_KILL_LOCKS_STATE="$T/kill-locks-state" T_SENDKEYS_FAIL="$T/sendkeys-fail" T_ENTER_FAIL="$T/enter-fail"
 cat > "$BIN/tmux" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "$TMUX_LOG"
@@ -93,6 +93,8 @@ case "${argv[0]:-}" in
   list-clients) exit 0 ;;
   display-message) case "$last" in *session_id*) [ -f "$T_HAS_SESSION" ] && cat "$TUPLE" ;; *pane_current_command*) cat "$T_FG_CMD" 2>/dev/null || echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
   send-keys) tgt=""; prev=""; txt=""; for a in "${argv[@]}"; do [ "$prev" = "-t" ] && tgt="$a"; [ "$prev" = "-l" ] && txt="$a"; prev="$a"; done
+             [ -f "$T_SENDKEYS_FAIL" ] && exit 1
+             [ -f "$T_ENTER_FAIL" ] && [ "$last" = Enter ] && exit 1
              printf '%s\n' "$tgt" >> "$T_SENDKEYS"
              # THE RENAME'S EFFECT (measured P1): within a second the bridge file reports the new name with nameSince
              # advanced, and the pane shows the receipt. T_RENAME_EFFECT selects how faithful the fixture is:
@@ -105,7 +107,7 @@ case "${argv[0]:-}" in
                   receipt) awk -v US="$(printf '\037')" 'BEGIN{FS=OFS=US} {$7=$7+1; print}' "$OBSLINE" > "$OBSLINE.n" && mv "$OBSLINE.n" "$OBSLINE" ;;
                   noadvance) awk -v US="$(printf '\037')" -v d="$d" 'BEGIN{FS=OFS=US} {$6=d; print}' "$OBSLINE" > "$OBSLINE.n" && mv "$OBSLINE.n" "$OBSLINE" ;;
                 esac ;; esac; exit 0 ;;
-  kill-session) [ -f "$T_KILL_FAILS" ] && exit 1; rm -f "$T_HAS_SESSION"; exit 0 ;;
+  kill-session) [ -f "$T_KILL_FAILS" ] && exit 1; rm -f "$T_HAS_SESSION"; [ -f "$T_KILL_LOCKS_STATE" ] && chmod 500 "$STATE"; exit 0 ;;
   new-session)  cp "$STATE"/s-0000000000000001.generation "$T_GEN_AT_SPAWN" 2>/dev/null
                 [ -f "$T_NEW_FAILS" ] && exit 1
                 for a in "${argv[@]}"; do [ "$a" = "-P" ] && echo 4242; done; touch "$T_HAS_SESSION"; exit 0 ;;
@@ -127,7 +129,10 @@ while read -r p pp rest; do case "$p" in ""|\#*) continue;; esac; [ "$p" = "$pid
 EOF
 cat > "$BIN/observe" <<'EOF'
 #!/bin/bash
-printf '%s\n' "$*" >> "$OBS_LOG"; cat "$OBSLINE"
+# A QUEUE OF LINES (one per call) stands in for the world changing between two observations in one
+# round; when it is empty the static line answers.
+printf '%s\n' "$*" >> "$OBS_LOG"
+if [ -s "$OBSQUEUE" ]; then head -1 "$OBSQUEUE"; sed -i 1d "$OBSQUEUE"; else cat "$OBSLINE"; fi
 EOF
 cat > "$BIN/bkill" <<'EOF'
 #!/bin/bash
@@ -145,6 +150,7 @@ gget() { sed -n "s/^$1=//p" "$GEN" 2>/dev/null | head -1; }
 line() { # <answer> <pid> <birth> <pane> <name> <since> <gen> <classes> <child> <ps> <sid> <mtime> <tuple> <inode>
   printf '%s' "$NAME" > "$OBSLINE"; for a in "$@"; do printf '%s%s' "$US" "$a" >> "$OBSLINE"; done; printf '\n' >> "$OBSLINE"
 }
+qline() { local keep; keep="$(cat "$OBSLINE")"; line "$@"; cat "$OBSLINE" >> "$OBSQUEUE"; printf '%s\n' "$keep" > "$OBSLINE"; }
 MANAGED() { line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; }
 run() { # [id]
   : > "$TMUX_LOG"; : > "$PGREP_LOG"; : > "$OBS_LOG"; : > "$BKILL_LOG"
@@ -152,7 +158,7 @@ run() { # [id]
   STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_BRIDGE_KILL="$BIN/bkill" STEWARD_NONCE_CMD="$BIN/nonce" \
   BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"
 }
-reset() { rm -rf "$STATE"; mkdir -p "$STATE"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
+reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE"; mkdir -p "$STATE"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
   printf '4242 1 -bash\n' > "$PROCTAB"; printf '$7:1789000000\n' > "$TUPLE"; gen census=1; pstat 4242 bash 1 4242 34816 4243 100; pstat 4243 claude 4242 4243 34816 4243 111; row_claude; }
 row_claude() { # [extra KEY="v" lines...] - the claude row, RC_LABEL="Alpha→Thing" unless overridden
   { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="%s"\nACCOUNT="a-h1"\nCLAUDE_MEMORY_ROOT="%s/memory"\n' "$HOMEDIR" "$NAME" "$T"
@@ -284,32 +290,33 @@ reset; gen launch_ms=1 launch_uptime_ms=1 launch_nonce=abc; line no-process "" "
 echo "== 22. rename: desired != applied on a fresh managed row -> two rounds, then /rename to the EXACT pane, applied only on the full receipt =="
 OLD() { line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; }
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run
-is "22a round one: nothing typed (the rename is a keyed two-round suspect)" "$(grep -c . "$T_SENDKEYS")" "0"
+is "22a round one: the baseline is seeded, nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
 is "22b pending_for recorded" "$(gget pending_for)" "Alpha→Thing"; is "22c pending_since = the observation that must advance" "$(gget pending_since)" "1789000000000"
-run; is "22d round two: two send-keys (text, Enter), both to the bridge's exact pane" "$(sk "$NAME:@0.%0")" "2"; is "22e never to the bare session name" "$(sk "$NAME")" "0"
+run; is "22a2 round two: the keyed suspect's first sighting, nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
+run; is "22d round three: two send-keys (text, Enter), both to the bridge's exact pane" "$(sk "$NAME:@0.%0")" "2"; is "22e never to the bare session name" "$(sk "$NAME")" "0"
 is "22f rename_tries=1" "$(gget rename_tries)" "1"; is "22g not yet applied" "$(gget applied)" ""
-run; is "22h round three: applied from the FULL receipt (pane + bridge name + nameSince advanced)" "$(gget applied)" "Alpha→Thing"
+run; is "22h round four: applied from the FULL receipt (pane + bridge name + nameSince advanced)" "$(gget applied)" "Alpha→Thing"
 is "22i applied_nameSince is the advanced one" "$(gget applied_nameSince)" "1789000000001"; is "22j pending cleared" "$(gget pending_for)" ""
 [ -f "$STATE/$NAME.rename-pending" ] && bad "22k trace file gone" "" || ok "22k trace file gone"; has "22l says receipted" "$OUT" "receipted"
 run; is "22m a further round types nothing (desired = applied)" "$(grep -c . "$T_SENDKEYS")" "2"
 
 echo "== 23. receipt LEVELS: the pane line alone, or the bridge name without an advanced nameSince, is not applied =="
-reset; touch "$T_HAS_SESSION"; echo receipt > "$T_RENAME_EFFECT"; OLD; run; run; run
+reset; touch "$T_HAS_SESSION"; echo receipt > "$T_RENAME_EFFECT"; OLD; run; run; run; run
 is "23a pane receipt and nameSince advanced, but the bridge still says Old -> applied stays empty" "$(gget applied)" ""
-reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run
+reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run; run
 is "23b bridge says desired but nameSince unchanged -> applied stays empty" "$(gget applied)" ""
 
 echo "== 24-25. the foreground must be the managed claude: command AND tty AND process group =="
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; echo vim > "$T_FG_CMD"; OLD; run; run; run
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; echo vim > "$T_FG_CMD"; OLD; run; run; run; run
 is "24a foreground vim -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "24b says so" "$OUT" "foreground"
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4243 claude 4242 4243 34817 4243 111; OLD; run; run; run
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4243 claude 4242 4243 34817 4243 111; OLD; run; run; run; run
 is "25a same tpgid, different tty_nr -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4242 bash 1 4242 34816 4300 100; OLD; run; run; run
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; pstat 4242 bash 1 4242 34816 4300 100; OLD; run; run; run; run
 is "25b the tty's foreground group is another process -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"
 
 echo "== 26. a busy pane between the two rounds restarts the count =="
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; touch "$T_BUSY"; run; rm -f "$T_BUSY"; run
-is "26a busy in between: round three still types nothing" "$(grep -c . "$T_SENDKEYS")" "0"; run; is "26b round four types" "$(grep -c . "$T_SENDKEYS")" "2"
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run; touch "$T_BUSY"; run; rm -f "$T_BUSY"; run
+is "26a busy in between: the round after it still types nothing" "$(grep -c . "$T_SENDKEYS")" "0"; run; is "26b the next identical round types" "$(grep -c . "$T_SENDKEYS")" "2"
 
 echo "== 27. an RC-free row (RC_LABEL=\"\") spawns without --remote-control and WITH --name = the derived display =="
 printf 'NAME="Thing"\nPARENT="alpha"\n' > "$ROOT/projects.d/thing.conf"
@@ -329,6 +336,87 @@ is "28h a NEW spawn with an unresolvable display is refused, rc 78" "$RC" "78"; 
 echo "== 29. the re-ping goes to the exact pane too =="
 reset; touch "$T_HAS_SESSION"; MANAGED; gen applied="Alpha→Thing"; mkdir -p "$HOMEDIR/.config/agent-bus/$NAME/inbox"; printf '{}' > "$HOMEDIR/.config/agent-bus/$NAME/inbox/1789000000-x.json"; run
 is "29a ping typed to the bridge's pane" "$(sk "$NAME:@0.%0")" "2"; is "29b never to the bare name" "$(sk "$NAME")" "0"; rm -rf "$HOMEDIR/.config/agent-bus"
+
+echo "== 36. J3: the rename's receipt and type are judged on a FRESH observation =="
+# type: seed, suspect, then at the type boundary the process is gone -> nothing typed
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777   # the round's alive check: still managed
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777   # the rename step's first re-observation
+qline no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""                                                                # immediately before typing: gone
+run; is "36a the process vanished immediately before typing -> nothing typed" "$(grep -c . "$T_SENDKEYS")" "0"; has "36b says so" "$OUT" "changed immediately before typing"
+# receipt: pane shows it, the static line says desired+advanced, but the fresh observation at the boundary says the process is gone
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run; run   # typed; the static line now reads desired, nameSince advanced
+qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000001 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777
+qline no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""
+run; is "36c the receipt is not written from a stale observation" "$(gget applied)" ""; has "36d says the process changed" "$OUT" "changed between the round's observation and the rename step"
+
+echo "== 37. J4: rename-state writes are receipts; an unreadable baseline is re-seeded, never coerced to 0 =="
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; gen pending_for="Alpha→Thing" pending_since=abc rename_tries=0
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000001 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; printf 'Alpha→Thing\n' > "$T_RECEIPT"
+run; is "37a pane receipt + bridge desired + corrupt baseline -> NOT receipted" "$(gget applied)" ""; is "37b baseline re-seeded from the current observation" "$(gget pending_since)" "1789000000001"
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; chmod 500 "$STATE"; run; run; chmod 700 "$STATE"
+is "37c with the state unwritable nothing is typed (the attempt could not be counted, the suspect could not be kept)" "$(grep -c . "$T_SENDKEYS")" "0"
+
+echo "== 38. J7: type_line reports delivery; a failed literal is no attempt, a failed Enter is a loud partial one =="
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run; touch "$T_SENDKEYS_FAIL"; run
+is "38a literal failed -> rename_tries stays 0" "$(gget rename_tries)" "0"; has "38b says nothing reached the pane" "$OUT" "nothing reached the pane"
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; run; touch "$T_ENTER_FAIL"; run
+is "38c Enter failed -> counted as an attempt" "$(gget rename_tries)" "1"; has "38d and loud about the partial delivery" "$OUT" "PARTIAL delivery"; is "38e one send-keys only (no retry in the round)" "$(grep -c . "$T_SENDKEYS")" "1"
+
+echo "== 30. H1: the action boundary re-observes, and acts only on the SAME answer and key =="
+# THE QUEUE: the round's first observation must still CONFIRM the key (orphan again); only the re-observation
+# at the action boundary sees the changed world. One queued line would have been eaten by the alive check.
+reset; ORPHAN; run; qline identified:orphan 4243 boot-s:111 "$NAME:@0.%0" "X" 1 alive live:orphan "" 4243 t 1 "" 1; qline identified:moved 4243 boot-s:111 "$NAME:@0.%0" "X" 1 alive live:moved "" 4243 t 1 '$7:1' 1; run
+is "30a orphan confirmed, then MOVED at the boundary -> no kill" "$(grep -c . "$BKILL_LOG")" "0"; has "30b says so" "$OUT" "re-observation before the action differs"
+[ -f "$SUSPECT" ] && bad "30c suspect reset" "" || ok "30c suspect reset"
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; qline no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; qline identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1 alive live:managed "" 4243 t 1 "" 777; run
+is "30d spawn-absent confirmed, then IDENTIFIED at the boundary -> no spawn" "$(tl new-session)" "0"
+reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run
+qline no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; qline wait-veto "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run
+is "30e close confirmed, then WAIT-VETO at the boundary -> no kill, no intent" "$(tl kill-session)$(gget stop_intent)" "0"
+reset; ORPHAN; run; qline identified:orphan 4243 boot-s:111 "$NAME:@0.%0" "X" 1 alive live:orphan "" 4243 t 1 "" 1; qline identified:orphan 4300 boot-s:222 "$NAME:@0.%0" "X" 1 alive live:orphan "" 4300 t 1 "" 1; run
+is "30f orphan, but a DIFFERENT pid at the boundary -> no kill" "$(grep -c . "$BKILL_LOG")" "0"
+
+echo "== 31. H2: the kill helper is executed as itself, and its absence is a refusal =="
+reset; ORPHAN; run; run; is "31a the helper ran (a bash shim with a shebang, executed directly)" "$(cat "$BKILL_LOG")" "4243 boot-s:111 TERM"
+chmod 644 "$BIN/bkill"; reset; ORPHAN; run; run; is "31b not executable -> nothing signalled" "$(grep -c . "$BKILL_LOG")" "0"; has "31c says the helper is missing" "$OUT" "kill helper"; chmod 755 "$BIN/bkill"
+
+echo "== 32. H3: a generation write that fails gates the action =="
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
+is "32a pending claim unwritable -> no new-session" "$(tl new-session)" "0"; has "32b says the claim could not be written" "$OUT" "could not be written"
+reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
+is "32c stop_intent unwritable -> no kill" "$(tl kill-session)" "0"; has "32d says so" "$OUT" "stop intent could not be written"
+reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run; touch "$T_KILL_LOCKS_STATE"; run; chmod 700 "$STATE"
+is "32e closed, but the receipt unwritable -> NO spawn" "$(tl new-session)" "0"; is "32f the kill did happen" "$(tl kill-session)" "1"; has "32g says: no spawn without a receipt" "$OUT" "NO spawn without a receipt"
+
+echo "== 33. H4: the observer's line is a fifteen-field contract =="
+reset; printf '%s\037no-process\n' "$NAME" > "$OBSLINE"; run; run; is "33a a two-field no-process with the right id -> no action" "$(tl new-session)" "0"; has "33b unreadable" "$OUT" "observer-unreadable"
+reset; MANAGED; cp "$OBSLINE" "$T/l1"; cat "$T/l1" >> "$OBSLINE"; touch "$T_HAS_SESSION"; run; has "33c two lines -> unreadable" "$OUT" "observer-unreadable"; is "33d nothing bound" "$(gget pid)" ""
+reset; line no-process 4243 "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "33e no-process carrying a pid violates the invariant -> no spawn" "$(tl new-session)" "0"
+reset; line identified:managed "" "" "" "" "" alive live:managed "" "" "" "" "" ""; touch "$T_HAS_SESSION"; run; is "33f identified without pid/birth/pane -> unreadable, nothing bound" "$(gget pid)" ""
+reset; line bogus-answer "" "" "" "" "" none "" "" "" "" "" "" ""; run; run; is "33g an answer outside the vocabulary -> nothing" "$(tl new-session)$(tl kill-session)" "00"
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" ""; run; run; is "33h a FOURTEEN-field no-process (inode missing) is not the contract -> no spawn" "$(tl new-session)" "0"
+
+echo "== 34. H5: a syntactically broken bridge.sh ends nothing for OpenCode and refuses a claude row =="
+# THE BROKEN LIBRARY EXITS: a sourced `exit` ends the sourcing shell, which is what "a broken bridge.sh can
+# end the whole OpenCode round" means in practice (a bare syntax error is survived by bash's source).
+cp "$LIBS/bridge.sh" "$LIBS/bridge.sh.good"; printf 'echo "bridge.sh is broken" >&2\nexit 3\n' > "$LIBS/bridge.sh"
+reset; rm -f "$T_HAS_SESSION"; run "$OC"; is "34a OpenCode round rc 0 with a broken bridge.sh" "$RC" "0"; is "34b and it spawned through the adapter" "$(tl "new-session.*$ADAPTER")" "1"
+reset; touch "$T_HAS_SESSION"; MANAGED; run; is "34c a claude row refuses, rc 78" "$RC" "78"; has "34d names the library" "$OUT" "bridge"
+mv "$LIBS/bridge.sh.good" "$LIBS/bridge.sh"
+
+echo "== 35. H7: the bind is the WHOLE record, and a refused claim is not a resume attempt =="
+reset; touch "$T_HAS_SESSION"; MANAGED; gen applied="Alpha→Thing"; run
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 4243 thread-NEW 1789000000000 '$7:1789000000' 777; run
+is "35a a changed sessionId is rebound" "$(gget sessionId)" "thread-NEW"
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 9999 thread-NEW 1789000000000 '$7:1789000000' 777; run
+is "35b a changed procStart is rebound" "$(gget procStart)" "9999"
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000000 alive live:managed "" 9999 thread-NEW 1789000000000 '$7:1789000000' 778; run
+is "35c a changed inode is rebound" "$(gget bridge_inode)" "778"
+reset; printf 'bad\n' > "$NONCE_FILE"; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; run; run
+[ -f "$STATE/$NAME.resume-try" ] && bad "35d refused claims do not count as resume attempts" "$(cat "$STATE/$NAME.resume-try")" || ok "35d refused claims do not count as resume attempts"
+[ -f "$STATE/$NAME.launched" ] && bad "35e no launch mark without a launch" "" || ok "35e no launch mark without a launch"
+printf '0123456789abcdef0123456789abcdef\n' > "$NONCE_FILE"
 
 echo "== 21. the bridge library missing on a claude row is a refusal; an OpenCode row does not care =="
 reset; mv "$LIBS/bridge.sh" "$LIBS/bridge.sh.away"; touch "$T_HAS_SESSION"; MANAGED; run; is "21a rc 78" "$RC" "78"; has "21b names the library" "$OUT" "bridge"
