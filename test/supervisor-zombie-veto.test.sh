@@ -181,7 +181,10 @@ case "${argv[0]:-}" in
     done < "$CLIENTS"
     exit 0 ;;
   capture-pane) exit 0 ;;
-  display-message) case "${argv[${#argv[@]}-1]}" in *session_id*) [ -f "$T_HAS_SESSION" ] && echo '$7:1789000000' ;; *pane_current_command*) echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
+  # tmux 3.4, MEASURED on the live host: session formats expand through list-sessions, never through
+  # display-message -t "=name", which answers nothing at all there. Pane targets do work.
+  list-sessions) [ -f "$T_HAS_SESSION" ] && echo '$7:1789000000'; exit 0 ;;
+  display-message) case "${argv[${#argv[@]}-1]}" in *session_id*) : ;; *pane_current_command*) echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
   kill-session) rm -f "$T_HAS_SESSION"; exit 0 ;;
   new-session)  for a in "${argv[@]}"; do [ "$a" = "-P" ] && echo 4242; done; touch "$T_HAS_SESSION"; exit 0 ;;
   *)            exit 0 ;;
