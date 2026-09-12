@@ -27,6 +27,30 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esa
 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/bin"
+# PATH IS THE FIXTURE'S ALONE. The first version ran every probe with
+# "$FX/bin:$PATH" - the stubs first, the HOST after. On darwin that was
+# harmless: there is no ss, so section 3 (lsof only) met exactly the tools it
+# staged. On Linux the host's real ss sat behind the stubs, `command -v ss`
+# found it the moment the ss stub was removed, and section 3 measured the
+# HOST's ss instead of the staged lsof: 14/5, assertions 3b-3f, measured by
+# basement 2026-09-12 against the deployed tree. A suite that passes only on
+# the platform that cannot exercise its failure branch has proven nothing
+# about that branch - rule 11, applied to PATH. The probe needs awk, grep and
+# id; they are SYMLINKED in so the PATH can be closed completely.
+#
+# SYMLINKS, NOT COPIES, AND `type -P`, NOT `command -v`. The first version
+# copied the binaries and went 11/8 on darwin: an Apple-signed arm64e binary
+# copied out of /usr/bin is killed by the signature check, so awk and grep died
+# silently inside every pipeline and each count came back empty - which is the
+# probe's own defect (an empty result read as a number), reproduced by its own
+# fixture. A symlink executes the original at its original path, so the
+# signature holds. And `command -v` in a shell where grep is an alias prints
+# "grep", not a path; `type -P` prints the PATH executable or nothing.
+for _t in awk grep id; do
+  _p="$(type -P "$_t")" || { echo "listeners.test: no $_t on PATH; cannot build the fixture" >&2; exit 70; }
+  ln -s "$_p" "$FX/bin/$_t"
+done
+PATH_FX="$FX/bin"
 # shellcheck source=/dev/null
 . "$here/lib/listeners.sh"
 
@@ -60,7 +84,7 @@ mk ss 'case "$*" in
            printf "LISTEN 0 4096 [::1]:8791 [::]:*\n"
            printf "LISTEN 0 4096 127.0.0.1:9222 0.0.0.0:*\n" ;;
 esac'
-run_probe "$FX/bin:$PATH"
+run_probe "$PATH_FX"
 is "2a rc 0"                         "$rc" "0"
 is "2b the tool is named"            "$LISTENERS_TOOL" "ss"
 is "2c N counts the whole surface"   "$LISTENERS_N" "3"
@@ -87,7 +111,7 @@ mk lsof 'case "$*" in
         printf "node    222 someone  7u  IPv6 0x2  0t0  TCP [::1]:8791 (LISTEN)\n"
         printf "Chrome  333 other    9u  IPv4 0x3  0t0  TCP 127.0.0.1:9222 (LISTEN)\n" ;;
 esac'
-run_probe "$FX/bin:$PATH"
+run_probe "$PATH_FX"
 is "3a rc 0"                        "$rc" "0"
 is "3b the tool is named"           "$LISTENERS_TOOL" "lsof"
 is "3c N counts the whole surface"  "$LISTENERS_N" "3"
@@ -100,13 +124,13 @@ has "3e the rows carry their pids"  "$LISTENERS_ROWS" "pid=111"
 # NON-LOOPBACK IS NOT THIS PROBE'S QUESTION and must not inflate the count: a
 # listener bound outward is a different conversation with a different remedy.
 mk lsof 'printf "srv  444 someone  3u  IPv4 0x9  0t0  TCP 192.0.2.7:443 (LISTEN)\n"'
-run_probe "$FX/bin:$PATH"
+run_probe "$PATH_FX"
 is "3f an outward-bound listener is not counted" "$LISTENERS_N" "0"
 
 echo "== 4. ss wins when both are present, so a Linux host measures as before =="
 mk ss 'printf "LISTEN 0 4096 127.0.0.1:8787 0.0.0.0:*\n"'
 mk lsof 'printf "x 1 y 3u IPv4 0x1 0t0 TCP 127.0.0.1:9999 (LISTEN)\n"'
-run_probe "$FX/bin:$PATH"
+run_probe "$PATH_FX"
 is "4a the tool is ss" "$LISTENERS_TOOL" "ss"
 is "4b and the count is ss's" "$LISTENERS_N" "1"
 
