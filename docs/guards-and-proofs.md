@@ -247,3 +247,60 @@ The suite totals were `17/0` before and after this fix. Nothing in the sum
 changed; what changed is that the mutation can now fail. Which is rule 1
 from the other side: a fix that moves no number can still be the one that
 makes the suite true.
+
+## 11. A fixture that overrides one variable must override everything that outranks it.
+
+A suite stood at `82/101` on one machine and `96/87` on another with no
+difference in the code. The fixture builds a fake home and exports
+`HOME="$T/home"` into the round - and every path in it was derived instead
+from `STEWARD_ESTATE_ROOT`, which the resolver reads BEFORE `$HOME` and which
+happened to be set in one author's shell profile. Fourteen assertions were
+measuring a shell.
+
+The shape is not "an environment variable leaked". It is narrower and worth
+naming: **the fixture overrode the variable it knew about, and the code it
+tests consults a variable that WINS over that one.** Overriding `HOME` looks
+like total control of where the code will look, and it is total control only
+until somebody adds a higher-priority resolver - which is exactly what an
+estate resolver is for.
+
+Both halves of the remedy are needed and the second is the one that is easy
+to skip:
+
+- Clear or pin every variable in the resolver's precedence chain, not just
+  the one at the bottom of it. Reading the resolver is the only way to know
+  what the chain is.
+- A suite whose result depends on the author's profile should say so out
+  loud. The receipt to require is the same suite passing under `env -i` plus
+  an explicit environment - otherwise a green run on the machine that wrote
+  the fixture proves nothing about any other machine, and a red run there
+  gets blamed on the code.
+
+Related to rule 8: an ambient value and a fixture value become the same value
+here, and the code cannot tell which one it was handed.
+
+## 12. A bisection must prove that each step checked out what it claims.
+
+A four-row bisection blamed a commit, and every row of it had measured an
+empty directory. `rm -rf` had removed a worktree's files but left git's
+registration behind, so each `git worktree add ... 2>/dev/null` refused
+silently, the checkout never happened, and the suite ran against nothing.
+The refusal and the answer were the same value - rule 8 again, wearing the
+clothes of a method that FEELS rigorous because it is systematic.
+
+The correct answer turned out to be the opposite of the reported one: every
+commit the bisection blamed was green, `183/0`.
+
+So a bisection step owes a receipt that is not its own exit code:
+
+- Assert the tree is what the row says - `git -C <dir> rev-parse HEAD` equals
+  the commit under test, checked, not assumed.
+- Never silence the checkout's errors. `2>/dev/null` on the line that
+  establishes the measurement is the line that hides the measurement's
+  absence.
+- Assert the suite was actually there to run: a file count, or the suite's
+  own total against a known one. A bisection over an empty tree produces a
+  perfectly clean, perfectly monotonic table.
+
+Systematic method does not confer correctness. It confers a shape that is
+harder to doubt, which is worse.

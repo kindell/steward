@@ -271,7 +271,25 @@ deploy_home_list() {
   # whose subject was not, in the file whose own comment calls that shape the
   # one it spent the day removing.
   if ! typeset -f _registry_owner_home >/dev/null 2>&1; then
-    _dc_lib="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/registry.sh"
+    # STEWARD_REGISTRY_LIB FIRST, as eleven other entry points already do
+    # (session-approve, session-new, both bridge scripts, the supervisor,
+    # browser-stack, install-user-jobs, liveness-host, estate-status, hub/lib).
+    # This file was the only one that ignored it, and the variable is not
+    # merely a convention: the supervisor and bridge-census EXPORT it into
+    # child processes, so a child that reaches this line was given an explicit
+    # answer and was throwing it away.
+    #
+    # COSTS ZERO ASSERTIONS TODAY AND THAT IS WRITTEN DOWN ON PURPOSE (rule 1,
+    # dormant). Measured 2026-09-12: with the line removed, the estate's
+    # butler-deploy suite is 31/0 either way. It first appeared to cost 13 of
+    # those 31 - but that number measured a FIXTURE that staged deploy-core
+    # without registry.sh, which was the fixture's defect and has been fixed
+    # there. No test is written to make the zero look better; the line stays
+    # because no deploy path may be the one place an exported answer is
+    # ignored, and its value shows only in the combination where a caller
+    # exports it.
+    _dc_lib="${STEWARD_REGISTRY_LIB:-}"
+    [ -n "$_dc_lib" ] || _dc_lib="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/registry.sh"
     # shellcheck source=registry.sh
     [ -f "$_dc_lib" ] && . "$_dc_lib" 2>/dev/null
   fi
