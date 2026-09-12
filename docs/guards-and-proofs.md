@@ -389,3 +389,22 @@ question that was about the tile.
 Measured 2026-09-12 by the session that owns the product's supervisor, which
 also withdrew an earlier explanation of its own - that the rename cycle never
 runs for derived sessions - when this one turned out to fit the evidence.
+
+**And there is a third remedy, when the surface cannot be read at all: act at
+the moment you know it changes.** The same session shipped it the same
+evening. Nothing on the machine can see the tile - not the record, which is
+correct, and not the pane, which renders something else - so no receipt can
+ever prove the tile is right. But the corruption has a known TIME: the
+runtime autotitles a fresh registration from its first prompt. So the fix
+does not measure; it re-applies the name once more after the session's first
+turn, detected as a pane seen busy and then idle again. Two steps, never one:
+an idle pane alone is also how a session looks that has never had a prompt,
+and then there is no autotitle to correct.
+
+The shape generalises. An unmeasurable surface is not the end of the
+analysis - ask whether its corruption is *predictable in time* even though it
+is invisible in state. Where it is, the honest design is idempotent
+re-application at that moment, and the cost is stated rather than hidden: one
+rename too many costs a line in the pane, one too few costs a name nobody can
+see is wrong. That trade is written into the code beside it. A guard that
+cannot observe its subject can still be correct about when to act.
