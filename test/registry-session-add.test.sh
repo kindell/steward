@@ -426,7 +426,7 @@ has "10c and the refusal names the rule (the rendered gate fires first: the same
 n_before="$(ls "$SESS" | wc -l | tr -d ' ')"; out="$(run add --account a-h1 --project gate --slug g3 --repo /tmp/fixture-repo --json)"
 is "10d nothing was written" "$(ls "$SESS" | wc -l | tr -d ' ')" "$n_before"
 out="$(run add --account b-h1 --project gate --slug g4 --repo /tmp/fixture-repo --json)"; rc=$?
-is "10e ANOTHER owner (another login key) on the same project renders the same display and is ALLOWED (Jon 2026-09-11: two logins may show one name)" "$rc" "0"
+is "10e ANOTHER owner (another login key) on the same project renders the same display and is ALLOWED (the owner, 2026-09-11: two logins may show one name)" "$rc" "0"
 out="$(run add --account a-h1 --entity gamma --slug e1 --repo /tmp/fixture-repo --json)"; rc=$?
 is "10f a first entity-target row under a renders 'Gamma'" "$rc" "0"
 out="$(run add --account a-h1 --entity gamma --slug e2 --repo /tmp/fixture-repo --json)"; rc=$?

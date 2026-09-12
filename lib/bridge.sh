@@ -70,8 +70,8 @@ bridge_candidates() {
       def esc: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\-])"; "\\" + .c);   # jq: the replacement sees NAMED CAPTURES only
       def us: ([31] | implode);
       # procStart NORMALISES TO DIGITS OR IT IS POISON. Three vendor shapes are known: a number
-      # (P1), a digit string (basement 2026-09-11), and - on darwin - the lstart words of ps(1),
-      # "Sat Sep 12 08:40:24 2026" (butler 2026-09-12). The third read as !types, so EVERY bridge
+      # (P1), a digit string (a Linux host, 2026-09-11), and - on darwin - the lstart words of ps(1),
+      # "Sat Sep 12 08:40:24 2026" (a darwin host, 2026-09-12). The third read as !types, so EVERY bridge
       # file on a Mac was poison and the adapter answered unknown for a session plainly running.
       #
       # pidDomain IS THE DISCRIMINATOR, NOT THE SHAPE. Reading the date because it resembles one
@@ -91,7 +91,7 @@ bridge_candidates() {
            elif .pidDomain == "darwin" then (try (.procStart|strptime("%a %b %d %H:%M:%S %Y")|mktime|tostring) catch null)
            else null end)
         else null end;
-      # procStart IS A STRING ON THIS VENDOR BUILD and a number on another (measured on basement
+      # procStart IS A STRING ON THIS VENDOR BUILD and a number on another (measured on a Linux host
       # 2026-09-11: "procStart":"54058753"; P1 saw a number). It is an opaque token we only ever compare,
       # so both shapes are read and both become the same digit string - while anything that is not
       # digits is still poison. Nothing else about the strictness moves.

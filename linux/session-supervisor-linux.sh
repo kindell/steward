@@ -791,7 +791,7 @@ _pick=""
 # apostrophe in the Python COMMENTS below ("SESSION'S") opened a shell quote and the
 # whole picker died at parse time: `e: command not found`, `syntax error near
 # unexpected token '('`. _pick came back empty and the round fell through to the
-# newest-by-content picker - the one this block exists to replace. Measured on butler
+# newest-by-content picker - the one this block exists to replace. Measured on a darwin host
 # 2026-09-12 in the hub's own supervisor log. read -r -d '' has no such scanner.
 _py=""; read -r -d '' _py <<'PY' || true
 import glob, json, os, sys
