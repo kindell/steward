@@ -249,6 +249,12 @@ A row stops carrying a typed `RC_LABEL` and starts deriving its display from its
 
 ---
 
+## Live status 2026-09-12 (after merge)
+
+**PR #1 merged 07:31Z (93fc7f6) on Jon's word, without the advisor's lock of Tasks 9–11** (its weekly quota ran out 2026-09-11 evening). **Basement:** main deployed 07:33Z by the hub; census `--force` on both rows; the hub's row moved to `LOGIN="jon-point"` with the thread copied first — its `~/.claude` was measured (`claude auth status`) to be **jon@varvet.com**, which is why its tile never appeared under Point and why it had been spending Varvet's budget; restarted under Point 07:44Z by the new supervisor's spawn path, `identified:managed` as `Basement→Nav`. Census `--force` clears `applied`, so each censused row types one `/rename` in its next cycle (N3, expected).
+
+**P2 measured on minin (macOS arm64) by the Point butler session:** bash 3.2.57 OK, python 3.14 OK, **no `pidfd_open` on darwin** → `bridge-kill.py` refuses everything with 69 there by design (D6): orphan reaping is inert on minin; identification, rename, zombie close (`tmux kill-session`) and spawn are unaffected. Whether a darwin kill path is built is Jon's decision. The suites were red (36 claims) for GNU spellings in the FIXTURES (`sed -i 1d`, `touch -d`, `stat -c`) and one product line (`chmod --reference`); fixed in PR #2 (33be264). **Deploying to minin needs `sudo -n`, which the account there lacks: Jon at the laptop.** Minin's rows: the steward row is the Point butler session itself (already `jon-point`); the hub row `s-e454a6d0d02c86f2` (`jon-varvet`, `Steward→Butler`) is being moved and both derive, names reported before writing.
+
 ## Gates carried by this plan
 
 P0 census preceded by ACCOUNT migration of every legacy row. P1b (cases A and B) before Task 11's first derive. P2 macOS twin (python3 ≥ 3.9 there too, or `bridge-kill` refuses with 69), bash 3.2 for `test/bridge-*.test.sh`. P3 manual census; Task 9 strict mode.
