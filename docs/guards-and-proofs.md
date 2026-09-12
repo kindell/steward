@@ -183,6 +183,35 @@ an invalid enum value, a field count one short - and each refusal looked
 like an answer. When a probe reports what you expected, check that it
 reached the code you meant to measure.
 
+## 8b. A retrospective audit can measure its author instead of its subject.
+
+A message lost a whole sentence in transmission: it was written in backticks
+inside a double-quoted shell string, so the shell expanded it away before the
+sending tool ever saw the argument. The sender saw an rc error that reads as
+noise; the receiver got a text with a hole and no way to know anything was
+missing.
+
+The instructive part is the audit that followed. 712 sent messages were swept
+for the same damage with a heuristic - lines that stop abruptly after a colon -
+and it returned 462 hits. A sample showed every one of them was an ordinary
+heading. The heuristic had measured the author's writing style, not lost
+content.
+
+Two rules fall out of that, and the second is the sharper one:
+
+- **A sweep that cannot distinguish its target from the author's own habits
+  should not report a number at all.** 462 looked like a finding and was a
+  self-portrait.
+- **Some damage cannot be audited afterwards at any effort**, because the
+  evidence is destroyed before the artefact exists - here, the expansion
+  happens before the message is composed. When that is true, the check has to
+  live at the moment of creation, and no amount of later diligence substitutes
+  for it.
+
+What the same sweep COULD measure honestly: 78 of those 712 messages carry
+backticks that survived, so the hazard is not uniform and the mechanism was
+not understood. That was reported as an open question rather than as safety.
+
 ## 9. Compare classes, not counts.
 
 A suite at `162/2` and the same suite at `163/1` can hide a new failure
