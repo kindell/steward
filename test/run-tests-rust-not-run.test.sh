@@ -15,7 +15,12 @@ hasnt() { case "$2" in *"$3"*) bad "$1" "unexpected '$3' in: $(printf '%s' "$2" 
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/tree/tools" "$FX/tree/test" "$FX/tree/cockpit" "$FX/bin"; cp "$here/tools/run-tests.sh" "$FX/tree/tools/"
 printf '#!/bin/bash\necho "pass=1 fail=0"\n' > "$FX/tree/test/tiny.test.sh"; chmod +x "$FX/tree/test/tiny.test.sh"
-run() { ( cd "$FX/tree" && CARGO="$1" bash tools/run-tests.sh . 2>&1 ); }
+# THE FIXTURE RUN MUST NOT INHERIT THE GATE'S OWN ENVIRONMENT. The full gate is run with
+# STEWARD_ESTATE_ROOT set (CLAUDE.md prescribes it), and the runner then runs the estate's leak
+# guard - against this five-line fixture tree, which is not a git checkout, so the guard is red and
+# every count this suite asserts on shifts by one. Measured 2026-09-12: green here, 9/3 inside the
+# gate, from the same commit. A suite that drives the runner owns the runner's environment.
+run() { ( cd "$FX/tree" && unset STEWARD_ESTATE_ROOT; CARGO="$1" bash tools/run-tests.sh . 2>&1 ); }
 
 echo "== 1. no cargo: NOT RUN, said, not red, not swept =="
 out="$(run "$FX/bin/no-such-cargo")"; rc=$?
