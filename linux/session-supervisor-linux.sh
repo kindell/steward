@@ -749,7 +749,14 @@ if [ -f "$LAST_SID_FILE" ]; then
 fi
 _kind=""
 _pick=""
-[ -n "$_latest" ] || _pick="$(python3 - "$HIST" <<'PY' 2>/dev/null
+# THE HEREDOC LIVES OUTSIDE $( ). bash 3.2 - the /bin/bash every macOS LaunchDaemon runs -
+# scans a command substitution for its closing paren with naive quote tracking, so an
+# apostrophe in the Python COMMENTS below ("SESSION'S") opened a shell quote and the
+# whole picker died at parse time: `e: command not found`, `syntax error near
+# unexpected token '('`. _pick came back empty and the round fell through to the
+# newest-by-content picker - the one this block exists to replace. Measured on butler
+# 2026-09-12 in the hub's own supervisor log. read -r -d '' has no such scanner.
+_py=""; read -r -d '' _py <<'PY' || true
 import glob, json, os, sys
 # THE FIRST RECORD SEPARATES THE SESSION'S OWN THREAD FROM AN ERRAND THREAD.
 # Measured over every thread file under the projects directory: exactly three
@@ -833,7 +840,7 @@ for kind in ("human", "job"):
         print(best[kind][1])
         break
 PY
-)"
+[ -n "$_latest" ] || _pick="$(printf '%s\n' "$_py" | python3 - "$HIST" 2>/dev/null)"
 if [ -n "$_pick" ]; then
   _kind="$(printf '%s\n' "$_pick" | sed -n '1p')"
   _latest="$(printf '%s\n' "$_pick" | sed -n '2p')"
