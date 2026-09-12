@@ -86,6 +86,32 @@ is "3b3b a word is poison too - the shape is digits, not 'any string'" "$(bridge
 printf '{"pid":126,"procStart":"","tmux":"%s","name":"Empty","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/126.json"
 is "3b3c an empty string is poison" "$(bridge_candidates "$ID" "$D" | grep '126.json' | cut -d "$US" -f 3)" "types"
 rm -f "$D/125.json" "$D/126.json"
+
+echo "== 3c. procStart on darwin is a DATE, and the discriminator is pidDomain =="
+# MEASURED on butler (macOS 25.5) 2026-09-12: the vendor writes "procStart":"Sat Sep 12 08:40:24 2026"
+# - ps(1)'s lstart words, not digits. Every bridge file on the host read as "types" poison, so every
+# candidate was unclassifiable and the adapter answered unknown for a session that was plainly running.
+#
+# THE SHAPE IS NOT THE DISCRIMINATOR, pidDomain IS. Deciding from the value's looks is how the digit
+# string got read as "any string will do" once already; a date that arrives without pidDomain=darwin
+# is still poison, so a Linux build cannot start smuggling words through this gate.
+#
+# AND IT NORMALISES AS UTC. The vendor writes procStart in UTC while ps(1) prints lstart in LOCAL time
+# - measured +2h apart on three live pids the same second. Parsed in their own zones both name the same
+# instant; parsed in one zone they are 7200s apart forever, and the mismatch would read as "wrong
+# process" rather than "wrong timezone". jq's mktime is UTC, which is why this is one call and not a
+# date(1) dance.
+printf '{"pid":130,"pidDomain":"darwin","procStart":"Sat Sep 12 08:40:24 2026","tmux":"%s","name":"Dar","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/130.json"
+out="$(bridge_candidates "$ID" "$D" | grep "${US}130${US}")"
+is "3c1 a darwin lstart date is accepted, normalised to UTC epoch" "$(printf '%s\n' "$out" | cut -d "$US" -f 4)" "1789202424"
+printf '{"pid":131,"procStart":"Sat Sep 12 08:40:24 2026","tmux":"%s","name":"NoDom","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/131.json"
+is "3c2 the same date WITHOUT pidDomain=darwin is still poison" "$(bridge_candidates "$ID" "$D" | grep '131.json' | cut -d "$US" -f 3)" "types"
+printf '{"pid":132,"pidDomain":"darwin","procStart":"not a date","tmux":"%s","name":"Bad","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/132.json"
+is "3c3 pidDomain=darwin does not make any string legal" "$(bridge_candidates "$ID" "$D" | grep '132.json' | cut -d "$US" -f 3)" "types"
+printf '{"pid":133,"pidDomain":"darwin","procStart":"54058753","tmux":"%s","name":"DarNum","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/133.json"
+out="$(bridge_candidates "$ID" "$D" | grep "${US}133${US}")"
+is "3c4 a digit string on darwin still reads as itself" "$(printf '%s\n' "$out" | cut -d "$US" -f 4)" "54058753"
+rm -f "$D/130.json" "$D/131.json" "$D/132.json" "$D/133.json"
 printf '{"pid":123,"procStart":54058753.5,"tmux":"%s","name":"Frac","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/123.json"
 is "3b4 a fractional procStart is poison" "$(bridge_candidates "$ID" "$D" | grep '123.json' | cut -d "$US" -f 3)" "types"
 printf '{"pid":124,"procStart":null,"tmux":"%s","name":"Null","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/124.json"

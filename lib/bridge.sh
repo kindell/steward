@@ -69,6 +69,28 @@ bridge_candidates() {
       def ctl: (explode | any(. < 32 or . == 127));
       def esc: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\-])"; "\\" + .c);   # jq: the replacement sees NAMED CAPTURES only
       def us: ([31] | implode);
+      # procStart NORMALISES TO DIGITS OR IT IS POISON. Three vendor shapes are known: a number
+      # (P1), a digit string (basement 2026-09-11), and - on darwin - the lstart words of ps(1),
+      # "Sat Sep 12 08:40:24 2026" (butler 2026-09-12). The third read as !types, so EVERY bridge
+      # file on a Mac was poison and the adapter answered unknown for a session plainly running.
+      #
+      # pidDomain IS THE DISCRIMINATOR, NOT THE SHAPE. Reading the date because it resembles one
+      # is how a gate loosens into "any string will do" - the digit string taught us that
+      # once. Without pidDomain=="darwin" a date is still poison, so no other build can smuggle
+      # words through here.
+      #
+      # mktime IS UTC, AND THAT IS THE POINT. The vendor writes procStart in UTC; ps(1) prints
+      # lstart in LOCAL time - measured exactly 7200s apart on three live pids in one second on a
+      # CEST host. Each parsed in its own zone names the same instant. Parsed in one zone they
+      # never compare equal, and the failure would read as "wrong process", not "wrong timezone".
+      def psnorm:
+        if (.procStart|type) == "number" then
+          (if (.procStart|floor) == .procStart and .procStart >= 0 then (.procStart|tostring) else null end)
+        elif (.procStart|type) == "string" then
+          (if (.procStart|test("^[0-9]+$")) then .procStart
+           elif .pidDomain == "darwin" then (try (.procStart|strptime("%a %b %d %H:%M:%S %Y")|mktime|tostring) catch null)
+           else null end)
+        else null end;
       # procStart IS A STRING ON THIS VENDOR BUILD and a number on another (measured on basement
       # 2026-09-11: "procStart":"54058753"; P1 saw a number). It is an opaque token we only ever compare,
       # so both shapes are read and both become the same digit string - while anything that is not
@@ -77,12 +99,11 @@ bridge_candidates() {
       elif ((.pid|type) != "number") or ((.tmux|type) != "string")
         or ((.name|type) != "string") or ((.nameSince|type) != "number") or ((.sessionId|type) != "string")
         or ((.startedAt|type) != "number") then "!types"
-      elif ((.procStart|type) == "number" | not) and (((.procStart|type) == "string" and (.procStart | test("^[0-9]+$"))) | not) then "!types"
-      elif ((.procStart|type) == "number") and ((.procStart|floor) != .procStart or .procStart < 0) then "!types"
+      elif (psnorm == null) then "!types"
       elif (.tmux|ctl) or (.name|ctl) or (.sessionId|ctl) then "!control-char"
       elif ((.pid|tostring) != $base) then "!filename-pid"
       elif (.tmux | test("^" + ($id|esc) + ":@[0-9]+[.]%[0-9]+$")) | not then "!foreign"
-      else [(.pid|tostring), (.procStart|tostring), .tmux,   # tostring on either shape gives the same digits
+      else [(.pid|tostring), psnorm, .tmux,   # every accepted shape leaves here as the same digits
             .name,
             (.nameSince|tostring),
             .sessionId,
