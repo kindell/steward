@@ -282,6 +282,20 @@ to skip:
   finds fewer names than it expects, because a rewritten expression would
   otherwise silence the whole protection without turning a single test red.
   Silently clearing nothing looks exactly like having cleared everything.
+- **The same rule holds for `PATH`, and closing it has a platform trap.** A
+  fixture that runs its probe with `"$FX/bin:$PATH"` has overridden the front
+  of the path and left the back to the host: on a host that has the real tool
+  behind the stub, the section meant to exercise the fallback measures the
+  host instead. Measured 2026-09-12 - green on darwin, which has no `ss` and
+  so could never reach the failure branch, `14/5` on Linux, which could. The
+  fix is a PATH of one directory. But the tools the probe needs must be
+  **symlinked** into it, not copied: an Apple-signed binary copied out of
+  `/usr/bin` is killed by the signature check, so every pipeline's count came
+  back empty and the same suite went `11/8` on darwin - the probe's own
+  defect class, an empty result read as a number, reproduced by its fixture.
+  A symlink runs the original at its original path. And resolve the tools
+  with `type -P`, not `command -v`: in a shell where `grep` is an alias,
+  `command -v grep` prints `grep`.
 - A suite whose result depends on the author's profile should say so out
   loud. The receipt to require is the same suite passing under `env -i` plus
   an explicit environment - otherwise a green run on the machine that wrote
