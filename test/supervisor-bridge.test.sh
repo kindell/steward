@@ -672,75 +672,43 @@ echo "== 41. a lock another supervisor holds stands the round down; a stale one 
 reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 mkdir -p "$STATE/.display-reservation.lock"; run
 is "41a a held lock: no spawn" "$(tl new-session)" "0"; has "41b and says why" "$OUT" "another supervisor holds the display reservation lock"
-# AGE ALONE BREAKS NOTHING (advisor M8): a lock is broken only when its recorded owner is PROVABLY dead.
+# NOTHING BREAKS A LOCK (advisor M8, M10, M12, M15): not age, not a dead-looking owner. Every automatic
+# steal left an ABA window; the spec asks for mutual exclusion, not stale recovery. Contention stands the
+# round down and, past the limit, alarms with the owner, its liveness and the remedy.
 set_mtime "$STATE/.display-reservation.lock" 1700000000; run
-is "41c a stale lock WITHOUT an owner record is not broken (nothing proves the holder dead)" "$(tl new-session)" "0"; has "41d and it alarms with the age and the remedy" "$OUT" "cannot be proven dead"
+is "41c a stale lock WITHOUT an owner record is not broken" "$(tl new-session)" "0"; has "41d and it alarms with the age and the remedy" "$OUT" "remove"; has "41d2 saying locks are never stolen" "$OUT" "never stolen"
 [ -d "$STATE/.display-reservation.lock" ] && ok "41e and the lock stands" || bad "41e and the lock stands" "gone" "present"
 printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"; run
-is "41h a lock whose owner pid is GONE is broken at once, whatever its age" "$(tl new-session)" "1"; has "41i saying the owner is dead" "$OUT" "owner"
-[ -d "$STATE/.display-reservation.lock" ] && bad "41j and released again" "" || ok "41j and released again"
+is "41h a lock whose owner pid is GONE is NOT broken either" "$(tl new-session)" "0"; has "41i but the alarm names the owner as dead" "$OUT" "DEAD"
+[ -d "$STATE/.display-reservation.lock" ] && ok "41j and the lock stands" || bad "41j and the lock stands" "gone" "present"
 reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 mkdir -p "$STATE/.display-reservation.lock"; printf '4242 boot-s:100\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" 1700000000; run
-is "41k a stale lock whose owner is ALIVE (same pid, same birth) is NOT broken" "$(tl new-session)" "0"; has "41l and alarms as held by a live holder past the limit" "$OUT" "live"
+is "41k a stale lock whose owner is ALIVE: not broken" "$(tl new-session)" "0"; has "41l and the alarm says alive" "$OUT" "alive"
 printf '4242 boot-s:999\n' > "$STATE/.display-reservation.lock/owner"; run
-is "41m the same pid with ANOTHER birth is a reused number: dead, broken" "$(tl new-session)" "1"
-# NO /proc ON DARWIN (measured on minin 2026-09-12: 41o read 0 spawns there): the two contenders and the
-# probe below read the REAL /proc on purpose, so on a host without one the claim is SKIPPED loudly. The
-# steal itself goes through lib/bridge.sh, which has the darwin backend, and is measured on minin live.
+is "41m the same pid with ANOTHER birth: named dead, still not broken" "$(tl new-session)" "0"; has "41m2 says another birth" "$OUT" "another birth"
+printf '4242 boot-s:100\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" "$(date +%s)"; run
+hasnt "41n a FRESH lock with a LIVE owner alarms nothing beyond contention" "$OUT" "never stolen"; has "41n2 just contention" "$OUT" "another supervisor holds"
+printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" "$(date +%s)"; run
+has "41n3 but a fresh lock with a DEAD owner alarms at once - the operator has something to do" "$OUT" "DEAD"
+rm -rf "$STATE/.display-reservation.lock"
+# two contenders on a dead-looking lock against the REAL /proc: neither steals, nothing spawns, the lock stands
 if [ ! -d /proc/self ]; then
-  echo "== 41o/41o2 SKIPPED: no /proc on this host (darwin); the contenders and the in-section probe need the real one =="
+  echo "== 41o SKIPPED: no /proc on this host (darwin); the contenders read the real one =="
 else
-# M10: the steal is atomic. Two contenders meet the same dead lock in the same instant; exactly ONE spawns.
-# THE CONTENDERS READ THE REAL /proc HERE: under the fixture proc every real pid looks dead, so the loser
-# would judge the winner's fresh lock dead too and the claim would measure the suspect file, not the
-# lock. With the real /proc the winner's owner record (its live pid) is judged alive; the dead owner's
-# recorded birth carries the fixture boot token, so it mismatches whatever the host has and is dead.
-# The suspect is pre-confirmed so both contenders reach the spawn path in the same round.
 reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 mkdir -p "$STATE/.display-reservation.lock"; printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"
-# AND THE SECTION IS MEASURED FROM INSIDE (as in 40): a probe runs inside each contender's critical
-# section (the observer call for the other row) and reads the owner record; if it names another pid than
-# the supervisor running the probe, the other contender replaced the lock underneath a live holder.
-rm -f "$T/clobber"
-# the probe waits inside the section before reading, so the section spans the moment a late steal would land
-cat > "$OBS_SIDE_EFFECT" <<PROBE
-[ "\$1" = "$OTHER" ] || exit 0          # only the observation of the OTHER row happens inside the critical section
-sleep 0.4
-# the TOPMOST ancestor whose command line is the supervisor: a \$( ) subshell is a fork with the same
-# command line, but the owner record carries the main shell's \$\$ - so keep climbing while it matches
-p=\$PPID; sup=""; for i in 1 2 3 4 5 6 7 8; do c="\$(tr '\\0' ' ' < /proc/\$p/cmdline 2>/dev/null)"; case "\$c" in *session-supervisor-linux.sh*) sup="\$p" ;; *) [ -n "\$sup" ] && break ;; esac; p="\$(sed 's/^.*) //' /proc/\$p/stat 2>/dev/null | awk '{print \$2}')"; [ -n "\$p" ] && [ "\$p" -gt 1 ] 2>/dev/null || break; done   # ppid from /proc, never the ps shim
-own="\$(cut -d' ' -f1 "$STATE/.display-reservation.lock/owner" 2>/dev/null)"
-[ -n "\$sup" ] && [ "\$own" != "\$sup" ] && echo "CLOBBERED holder=\$sup owner=\${own:-none}" >> "$T/clobber"   # inside the section the lock must exist and be ours
-exit 0
-PROBE
-# each contender keeps its own tmux log (run truncates the shared one at start, so two runs would erase
-# each other's lines); the second starts a beat later, so both judge the dead lock before either has
-# finished replacing it - the schedule in which a non-atomic steal clobbers the first steal's new lock
 ( TMUX_LOG="$T/tmux.c1.log" PROC_OVERRIDE=/proc run ) & sleep 0.15; ( TMUX_LOG="$T/tmux.c2.log" PROC_OVERRIDE=/proc run ) & wait
-rm -f "$OBS_SIDE_EFFECT"
-is "41o two contenders on a dead lock: exactly one spawn" "$(cat "$T/tmux.c1.log" "$T/tmux.c2.log" | grep -c new-session)" "1"
-[ -f "$T/clobber" ] && bad "41o2 no contender found the lock replaced under it" "$(cat "$T/clobber")" "" || ok "41o2 no contender found the lock replaced under it"
+is "41o two contenders on a dead-looking lock: no spawn at all" "$(cat "$T/tmux.c1.log" "$T/tmux.c2.log" | grep -c new-session)" "0"
+[ -d "$STATE/.display-reservation.lock" ] && ok "41o2 and the lock stands" || bad "41o2 and the lock stands" "gone" "present"
+[ "$(cat "$STATE/.display-reservation.lock/owner")" = "4299 boot-s:1" ] && ok "41o3 with its owner record untouched" || bad "41o3 with its owner record untouched" "$(cat "$STATE/.display-reservation.lock/owner" 2>/dev/null)" "4299 boot-s:1"
+rm -rf "$STATE/.display-reservation.lock"
 fi
-[ -n "$(ls -d "$STATE"/.display-reservation.lock.stolen.* 2>/dev/null)" ] && bad "41p no quarantine debris left behind" "$(ls -d "$STATE"/.display-reservation.lock.stolen.*)" "" || ok "41p no quarantine debris left behind"
-[ -d "$STATE/.display-reservation.lock" ] && bad "41q and the lock is released" "" || ok "41q and the lock is released"
-# an owner that recorded "?" (could not read its own birth) is judged by its pid alone: alive = not broken
+# an owner that recorded "?" (could not read its own birth) is judged by its pid alone in the ALARM
 reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 mkdir -p "$STATE/.display-reservation.lock"; printf '4242 ?\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" 1700000000; run
-is "41r owner '4242 ?' with pid 4242 alive: not broken" "$(tl new-session)" "0"
-printf '4299 ?\n' > "$STATE/.display-reservation.lock/owner"; run; is "41s owner '4299 ?' with pid gone: broken" "$(tl new-session)" "1"
-# M12: the steal is a CAS. A dead lock that already carries a steal MARKER belongs to another contender's
-# steal in progress: stand down, touch nothing. A completed steal leaves no marker and no quarantine.
-reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
-mkdir -p "$STATE/.display-reservation.lock/steal"; printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"; run
-is "41t a dead lock whose steal marker another contender holds: no spawn" "$(tl new-session)" "0"; has "41u and says another contender is stealing" "$OUT" "already stealing"
-[ -d "$STATE/.display-reservation.lock/steal" ] && ok "41v the lock and its marker are untouched" || bad "41v the lock and its marker are untouched" "gone" "present"
-rmdir "$STATE/.display-reservation.lock/steal"; run; is "41w without the marker the steal proceeds" "$(tl new-session)" "1"
-[ -e "$STATE/.display-reservation.lock" ] && bad "41x and leaves nothing" "" || ok "41x and leaves nothing"
-run; [ -f "$STATE/.display-reservation.lock/owner" ] && ok "41n our own lock records its owner while held (seen mid-round by the probe below)" || ok "41n (checked in 40)"
-rmdir "$STATE/.display-reservation.lock" 2>/dev/null; rm -rf "$STATE/.display-reservation.lock"
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; mkdir -p "$STATE/.display-reservation.lock"; run; run
-is "41f a held lock stops the rename step too" "$(grep -c . "$T_SENDKEYS")" "0"; has "41g and says so" "$OUT" "no rename step this round"
-rmdir "$STATE/.display-reservation.lock"
+is "41r owner '4242 ?' with pid 4242 alive: not broken, named alive" "$(tl new-session):$(printf '%s' "$OUT" | grep -c 'alive (pid 4242)')" "0:1"
+printf '4299 ?\n' > "$STATE/.display-reservation.lock/owner"; run; is "41s owner '4299 ?' with pid gone: still not broken, named dead" "$(tl new-session):$(printf '%s' "$OUT" | grep -c DEAD)" "0:1"
+rm -rf "$STATE/.display-reservation.lock"
 
 echo "== 42. an unwritable state directory is NOT contention - and it is NOT a licence to proceed unlocked (M8) =="
 reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
