@@ -166,23 +166,27 @@ echo "== rust suites =="
 # not found" and a silent green line, exactly the absence of measurement
 # this file exists against.
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
+rust="none"              # none: no rust suite in this tree; ok|RED|not-run otherwise
 for d in cockpit; do
   [ -d "$d" ] || continue
   found=$((found+1))
   case "$d" in *"$ONLY"*) ;; *) continue ;; esac
   ran=$((ran+1))
   if [ ! -x "$CARGO" ]; then
-    # A MISSING TOOL IS NOT A GREEN TEST. It is a measurement that could not
-    # be made, and it must show as red — not skipped over with a reassuring
-    # line.
-    printf '  RED    %-34s (cargo missing: %s)\n' "$d" "$CARGO"
-    red=$((red+1)); continue
+    # A MISSING TOOL IS NOT A GREEN TEST - but it is not a red product either. It is a measurement
+    # that could not be made, and it is SAID so: a NOT RUN line with the path that was looked at,
+    # and rust=not-run in the summary, the same form as the estate guard. It used to count as RED;
+    # on the two steward homes that have no Rust (2026-09-12, both platforms) every full gate then
+    # carried one red that meant "no cargo here", and a summary that never reads red=0 stops
+    # meaning anything. The count of suites that RAN is not touched: this suite did not run.
+    ran=$((ran-1)); rust="not-run"
+    printf '  NOT RUN %-33s cargo missing at %s\n' "$d" "$CARGO"; continue
   fi
   if run_with_timeout bash -c "cd '$d' && '$CARGO' test --quiet" >/dev/null 2>&1; then
-    printf '  ok     %-34s\n' "$d"
+    printf '  ok     %-34s\n' "$d"; [ "$rust" = "not-run" ] || rust="ok"
   else
     printf '  RED    %-34s (cargo test)\n' "$d"
-    red=$((red+1))
+    red=$((red+1)); rust="RED"
   fi
 done
 
@@ -212,9 +216,10 @@ else
 fi
 [ -n "$eg_reason" ] && printf '  NOT RUN estate leak-guard: %s\n' "$eg_reason"
 echo
-echo "suites found=$found ran=$ran red=$red silent=$silent estate-guard=$estate_guard"
+echo "suites found=$found ran=$ran red=$red silent=$silent rust=$rust estate-guard=$estate_guard"
 [ -n "$ONLY" ] && echo "NOTE: filter '$ONLY' is active — this is NOT a full run."
-if [ "$ran" -ne "$found" ] && [ -z "$ONLY" ]; then
+expected_ran=$found; [ "$rust" = "not-run" ] && expected_ran=$((found-1))   # said in the summary, not swept under
+if [ "$ran" -ne "$expected_ran" ] && [ -z "$ONLY" ]; then
   echo "REFUSED: $ran of $found suites ran with no filter — the sweep skipped something." >&2
   exit 1
 fi
