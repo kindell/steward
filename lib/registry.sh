@@ -3924,6 +3924,221 @@ registry_load() {
 # scoping the moment the row sourced. Everything the conf can influence
 # crosses the boundary as printed field values only; the name used by the
 # fallback is this function's own argument, captured before any load runs.
+# registry_display_of_fields <rc_label> <target_project> <target_entity> <slug> - the desired display
+# of a row that is NOT registered yet (a staged file's fields), with exactly registry_session_display's
+# precedence: a non-empty label wins, then the project, then the entity, then prefix+slug. rc as the
+# renderer's; a target that does not resolve is a refusal, not a fallback.
+registry_display_of_fields() {
+  local label="${1:-}" tproj="${2:-}" tent="${3:-}" slug="${4:-}" disp _prefix
+  if [ -n "$label" ]; then printf '%s\n' "$label"; return 0; fi
+  if [ -n "$tproj" ]; then disp="$(registry_display_for project "$tproj")" || return $?; printf '%s\n' "$disp"; return 0; fi
+  if [ -n "$tent" ]; then disp="$(registry_display_for entity "$tent")" || return $?; printf '%s\n' "$disp"; return 0; fi
+  _prefix="$(registry_rc_label_prefix)" || return 78
+  printf '%s\n' "$_prefix$slug"
+}
+
+# registry_session_login_key <login> <owner> <host> - the key the two gates below scope on: the row's
+# LOGIN (which Claude account pays and shows the tile), or "owner:<OWNER>@<HOST>" for a legacy row
+# without one - the HOME, which is exactly the scope the older same-home label gate measured, because a
+# legacy row's Claude login is not in the register and a home is the closest thing to one.
+registry_session_login_key() { local lg="${1:-}" ow="${2:-}" host="${3:-}"; if [ -n "$lg" ]; then printf '%s' "$lg"; else printf 'owner:%s@%s' "$ow" "$host"; fi; }
+
+# registry_session_rendered_unique <own-id> <login-key> <desired> - THE REGISTRY GATE OF SPEC §3,
+# static, on register lifecycle: prints the id of ANOTHER row under the SAME login key that renders
+# the same display and returns 0 (a collision), or returns 1 when the display is free for that login.
+#
+# SCOPED PER LOGIN, NOT PER ESTATE - Jon's decision 2026-09-11 (point 4): two project accounts logged
+# in under DIFFERENT Claude logins may show the same RC name, because each login has its own tile
+# list and the names never meet; "Chalmers→Innovation" needs no suffix for that. Within ONE login two
+# identical names are two tiles a human cannot tell apart, and that is what is refused. Every host
+# and owner counts within the key; a claude-code row only (RUNTIME first: OpenCode and Codex are
+# exempt), RC-enabled (not the deliberate RC_LABEL=""), and not retired. A row never conflicts with
+# itself; a row whose display does not render holds nothing. Never live state: a writer cannot
+# measure a process.
+# _registry_gate_raw <file> <KEY> - the value of KEY="..." read WITHOUT sourcing. The gates below need it
+# for a candidate the loader refuses: at schema 6 every row must name a LOGIN, so an estate in the middle
+# of the migration this feature exists for is FULL of rows that do not load - and a gate that refused
+# every write while one of them lay there would stop the migration it is meant to protect. Reading the
+# fields without executing the file is not trusting the row; it is refusing to pretend the row is absent.
+_registry_gate_raw() { sed -n "s/^$2=\"\(.*\)\"\$/\1/p" "$1" 2>/dev/null | head -1; }
+
+# REGISTRY_GATE_EXCLUDE: space-separated slugs the caller is about to CONSUME - the old row of a
+# migration, which may be exactly the row that does not load. Everything else counts.
+_registry_gate_excluded() { case " ${REGISTRY_GATE_EXCLUDE:-} " in *" ${1:-} "*) return 0 ;; *) return 1 ;; esac; }
+
+# rc 0 a holder (its id on stdout) - rc 1 free - rc 2 UNINSPECTABLE (the id of the row that could not be
+# read, on stdout): a static gate cannot establish uniqueness by omitting the rows it could not read, so
+# a candidate whose conf will not load, or whose display will not render, refuses the write instead of
+# disappearing from the comparison (advisor M5). A row that declares itself out of the question - another
+# runtime, retired, RC-free, another login key - is not an omission: it holds nothing by its own words.
+registry_session_rendered_unique() {
+  local own="${1:-}" key="${2:-}" desired="${3:-}" d f cand snap rt lc fri lg ow disp
+  [ -n "$key" ] && [ -n "$desired" ] || return 1
+  d="$(registry_dir)" || return 1; [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    [ "$cand" = "$own" ] && continue
+    _registry_gate_excluded "$cand" && continue
+    registry_valid_name "$cand" || { printf '%s\n' "$cand"; return 2; }
+    local raw=""
+    snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" \
+      || { raw=1
+           rt="$(_registry_gate_raw "$f" RUNTIME)"; rt="${rt:-claude-code}"
+           lc="$(_registry_gate_raw "$f" LIFECYCLE)"; lc="${lc:-active}"
+           fri=""; grep -q '^RC_LABEL=""$' "$f" 2>/dev/null && fri=yes
+           lg="$(_registry_gate_raw "$f" LOGIN)"; ow="$(_registry_gate_raw "$f" OWNER)"; local hsr; hsr="$(_registry_gate_raw "$f" HOST)"
+           # THE SAME DEFAULT THE LOADER APPLIES: a row that names no HOST lives on the estate's hub host.
+           [ -n "$hsr" ] || hsr="$(registry_hub_host 2>/dev/null)"
+           [ -n "$lg$ow" ] || { printf '%s\n' "$cand"; return 2; }
+           snap=""; }
+    if [ -z "$raw" ]; then
+      rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
+      fri="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lg="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; ow="${snap%%$'\n'*}"; hsr="${snap#*$'\n'}"
+    fi
+    [ "$rt" = claude-code ] || continue
+    [ "$lc" != retired ] || continue
+    [ "$fri" != yes ] || continue
+    [ "$(registry_session_login_key "$lg" "$ow" "$hsr")" = "$key" ] || continue
+    if [ -z "$raw" ]; then
+      disp="$(registry_session_display "$cand" 2>/dev/null)" || { printf '%s\n' "$cand"; return 2; }
+    else
+      # THE ROW DOES NOT LOAD: render it from what can be read without executing it, and refuse only when
+      # even that yields no display - then the row really is uninspectable and uniqueness is unknowable.
+      disp="$(_registry_gate_raw "$f" RC_LABEL)"
+      if [ -z "$disp" ]; then
+        disp="$(registry_display_of_fields "" "$(_registry_gate_raw "$f" TARGET_PROJECT)" "$(_registry_gate_raw "$f" TARGET_ENTITY)" "$(_registry_gate_raw "$f" SLUG)" 2>/dev/null)" || disp=""
+      fi
+      [ -n "$disp" ] || { printf '%s\n' "$cand"; return 2; }
+    fi
+    [ "$disp" = "$desired" ] || continue
+    printf '%s\n' "$cand"; return 0
+  done
+  return 1
+}
+
+# registry_session_work_rule <own-id> <login-key> <project> - one claude-code conversation per
+# (who pays, project), on register lifecycle: prints the id of another non-retired claude-code row
+# with the same login key and TARGET_PROJECT, rc 0; rc 1 when none. The login key is the row's LOGIN,
+# or "owner:<OWNER>" for a legacy row without one, so the rule still binds where no login is named.
+# rc 0 a holder - rc 1 free - rc 2 UNINSPECTABLE (M5, as above).
+registry_session_work_rule() {
+  local own="${1:-}" key="${2:-}" project="${3:-}" d f cand snap rt lc tp lg ow ckey
+  [ -n "$key" ] && [ -n "$project" ] || return 1
+  d="$(registry_dir)" || return 1; [ -d "$d" ] || return 1
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    [ "$cand" = "$own" ] && continue
+    _registry_gate_excluded "$cand" && continue
+    registry_valid_name "$cand" || { printf '%s\n' "$cand"; return 2; }
+    local raw=""
+    snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${TARGET_PROJECT:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" \
+      || { raw=1
+           rt="$(_registry_gate_raw "$f" RUNTIME)"; rt="${rt:-claude-code}"
+           lc="$(_registry_gate_raw "$f" LIFECYCLE)"; lc="${lc:-active}"
+           tp="$(_registry_gate_raw "$f" TARGET_PROJECT)"
+           lg="$(_registry_gate_raw "$f" LOGIN)"; ow="$(_registry_gate_raw "$f" OWNER)"; local hsr; hsr="$(_registry_gate_raw "$f" HOST)"
+           # THE SAME DEFAULT THE LOADER APPLIES: a row that names no HOST lives on the estate's hub host.
+           [ -n "$hsr" ] || hsr="$(registry_hub_host 2>/dev/null)"
+           [ -n "$lg$ow" ] || { printf '%s\n' "$cand"; return 2; }
+           snap=""; }
+    if [ -z "$raw" ]; then
+      rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
+      tp="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; lg="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; ow="${snap%%$'\n'*}"; hsr="${snap#*$'\n'}"
+    fi
+    [ "$rt" = claude-code ] || continue
+    [ "$lc" != retired ] || continue
+    [ "$tp" = "$project" ] || continue
+    ckey="$(registry_session_login_key "$lg" "$ow" "$hsr")"
+    [ "$ckey" = "$key" ] || continue
+    printf '%s\n' "$cand"; return 0
+  done
+  return 1
+}
+
+# registry_session_gate_fields <own-id> <runtime> <rc-free 1|""> <rc_label> <target_project> <target_entity> <slug> <login> <owner> <host>
+#   THE TWO GATES OF SPEC section 3, AS ONE DECISION ON THE FIELDS OF A ROW ABOUT TO BE WRITTEN. It lives
+#   here, not in the writer, because it must be provable on its own: the callers differ (`session add`
+#   writes derived claude rows, `migrate-session` preserves whatever RUNTIME the old row had) and a rule
+#   that is only ever exercised through one caller's habits is not a rule (advisor M2).
+#
+#   RUNTIME FIRST: an OpenCode or Codex row is exempt from both gates - their labels are vestigial.
+#   RC-FREE (the deliberate RC_LABEL="") is exempt from the rendered gate: it shows no tile. The work
+#   rule still binds it, because the scarce thing there is the project, not the name.
+#   rc 0 allowed; rc 65 refused (the reason on stderr, naming the holder); the caller maps that to its own
+#   exit code.
+registry_session_gate_fields() {
+  local own="${1:-}" rt="${2:-claude-code}" rcfree="${3:-}" label="${4:-}" tproj="${5:-}" tent="${6:-}" slug="${7:-}" login="${8:-}" owner="${9:-}" host="${10:-}"
+  [ "$rt" = claude-code ] || return 0
+  local key desired holder rc
+  key="$(registry_session_login_key "$login" "$owner" "$host")"
+  if [ -z "$rcfree" ]; then
+    desired="$(registry_display_of_fields "$label" "$tproj" "$tent" "$slug" 2>/dev/null)" || desired=""
+    if [ -n "$desired" ]; then
+      holder="$(registry_session_rendered_unique "$own" "$key" "$desired")"; rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "registry: REFUSING — the display \"$desired\" is already rendered by session '$holder' under the same login ($key); two rows rendering identically in one tile list are two tiles nobody can tell apart (spec section 3). Give the target a name of its own, or retire '$holder' first." >&2
+        return 65
+      fi
+      if [ "$rc" -eq 2 ]; then
+        echo "registry: REFUSING — session '$holder' cannot be read at all (neither a login key nor a display), so it cannot be shown NOT to render \"$desired\" (the gate fails closed: uniqueness is not established by omitting a row one could not read). Repair or retire '$holder' first." >&2
+        return 65
+      fi
+    fi
+  fi
+  if [ -n "$tproj" ]; then
+    holder="$(registry_session_work_rule "$own" "$key" "$tproj")"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "registry: REFUSING — session '$holder' already works on project '$tproj' under the same login ($key); one claude-code conversation per (login, project) (spec section 3). Retire or retarget '$holder' first." >&2
+      return 65
+    fi
+    if [ "$rc" -eq 2 ]; then
+      echo "registry: REFUSING — session '$holder' cannot be read at all, so it cannot be shown NOT to work on '$tproj' (the gate fails closed). Repair or retire '$holder' first." >&2
+      return 65
+    fi
+  fi
+  return 0
+}
+
+# registry_derive_validate_stage <staged-file> - THE GATE THAT RUNS INSIDE THE WRITER'S LOCK when a row is
+# republished by `session derive` (advisor P1: a check outside the transaction is not a gate - a
+# concurrent add or derive can pass the same check and publish the same rendered name). It lives here,
+# beside the rule it applies, so it can be proven without starting the CLI. REGISTRY_DERIVE_ID names the
+# row being republished; it is excluded from its own comparison.
+registry_derive_validate_stage() {
+  local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
+        HOST="" REPO_PATH="" OWNER="" LOGIN="" RUNTIME="" RC_LABEL=""
+  # shellcheck source=/dev/null
+  source "$file" || { echo "registry: the staged row did not source: $file" >&2; return 70; }
+  local rcfree=""; grep -q '^RC_LABEL=""$' "$file" 2>/dev/null && rcfree=1
+  registry_session_gate_fields "${ID:-${REGISTRY_DERIVE_ID:-}}" "${RUNTIME:-claude-code}" "$rcfree" "${RC_LABEL:-}" \
+    "$TARGET_PROJECT" "$TARGET_ENTITY" "$SLUG" "$LOGIN" "$OWNER" "$HOST" || return 70
+  return 0
+}
+# registry_derive_readback <slug> - the published row must LOAD and render exactly what was promised.
+registry_derive_readback() {
+  registry_load "$1" >/dev/null || return 1
+  local got; got="$(registry_session_display "$1" 2>/dev/null)"
+  [ "$got" = "${REGISTRY_DERIVE_EXPECT:-}" ] || { echo "registry: the row renders '${got:-nothing}', not '${REGISTRY_DERIVE_EXPECT:-}'" >&2; return 1; }
+  return 0
+}
+
+# registry_session_rc_enabled <id> - rc 0 when the row is a claude-code row that has NOT opted out of
+# Remote Control; rc 1 when it has (RC_LABEL="", the RC-FREE choice) or is not a claude-code row at all
+# (spec §3: RUNTIME first - OpenCode and Codex are exempt); rc 78 when the row does not load, because a
+# row that cannot be read has not chosen anything (advisor J6). An ABSENT line means "rendered" and is
+# RC-enabled; only the deliberate empty string opts out. The row is read through registry_load, never
+# grepped raw: a malformed or duplicate line is a refusal, not a choice.
+registry_session_rc_enabled() {
+  local slug="${1:-}" snap
+  registry_valid_name "$slug" || return 78
+  snap="$( registry_load "$slug" >/dev/null 2>&1 || exit 78; printf '%s\n%s' "${RUNTIME:-claude-code}" "${RC_FRI:-}" )" || return 78
+  case "${snap%%$'\n'*}" in claude-code) : ;; *) return 1 ;; esac
+  [ "${snap#*$'\n'}" = "yes" ] && return 1
+  return 0
+}
+
 registry_session_display() {
   local slug="${1:-}"
   if ! registry_valid_name "$slug"; then

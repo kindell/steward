@@ -2,8 +2,8 @@
 // decision over every session the hub is responsible for.
 //
 // Carried over from the estate's watchdog (2026-09-06). The core is here:
-// liveness per session (the pane's pid for an RC-free row, the label
-// otherwise), the pause and restart markers, auto-resume with a notice, stuck
+// identity per session (the bridge adapter's answer for a claude-code row, the
+// pane's pid for other runtimes; never a label), the pause and restart markers, auto-resume with a notice, stuck
 // input, blocked, logged out, the bus's unacknowledged and unreadable mail, the
 // mechanical answerer, and the alarm channel. Two probes - jobs and hosts - run
 // only if the estate names a command for them. What was macOS-only in the
@@ -25,7 +25,7 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync, unlinkSy
 import { homedir, userInfo } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, busAlert, malformedAlert, parseBusDump, jobAlerts, groupJobAlerts, hostAlerts, HOST_UNKNOWN_CYCLES, authExpired, authAlerts, restartIntentFresh, credentialAlerts } from './lib.mjs'
+import { sessionScope, findProcessByPanePid, parseObserveLine, paneState, decide, busAlert, malformedAlert, parseBusDump, jobAlerts, groupJobAlerts, hostAlerts, HOST_UNKNOWN_CYCLES, authExpired, authAlerts, restartIntentFresh, credentialAlerts } from './lib.mjs'
 import { sendMail } from './send-mail.mjs'
 import { runResume, injectNote, sleep, redeliverStuck, clearStuckInput } from './resume.mjs'
 import { listSessions, hostOperators, estate as readEstate } from './estate.mjs'
@@ -58,11 +58,21 @@ function busBin(name) {
   }
   return null
 }
+// THE ONE ADAPTER (spec §1): linux/bridge-observe.sh, beside this directory in a deployed home
+// (scripts/bridge-observe.sh) and under linux/ in the checkout. STEWARD_BRIDGE_OBSERVE overrides (tests).
+function bridgeObserve() {
+  if (process.env.STEWARD_BRIDGE_OBSERVE) return process.env.STEWARD_BRIDGE_OBSERVE
+  for (const p of [join(HERE, '..', 'bridge-observe.sh'), join(HERE, '..', 'linux', 'bridge-observe.sh')]) {
+    try { statSync(p); return p } catch {}
+  }
+  return null
+}
 
 try {
   const est = await readEstate()
   const SOCK = join(homedir(), '.tmux', est.tmuxSocket)
   const STATE_DIR = join(homedir(), '.local', 'state', est.stateDirName)
+  const OBSERVE = bridgeObserve()
   // TWO FILES, AND A DRY RUN NEVER TOUCHES THE ONE THAT MATTERS. Every alarm
   // here de-duplicates against the previous cycle's state, so a dry run that
   // wrote the real file would mark alerts as "already sent" WITHOUT sending
@@ -136,11 +146,40 @@ try {
       // is owned by the host's own supervisor. Locally, the account the watch
       // runs as is the one it can inspect; another owner's tmux is 0750 away.
       const procInspectable = remote ? s.owner === ME : (!s.owner || s.owner === ME)
-      // AN RC-FREE SESSION IS FOUND ON THE PANE, NOT ON THE LABEL. If tmux does
-      // not answer the pid is empty and findProcessByPanePid gives null, which is
-      // right: we do not know whether it lives, and unknown must not look healthy.
-      let proc
-      if (s.rcLabel === '') {
+      // IDENTITY THROUGH THE ONE ADAPTER (spec §1). A claude-code row is asked about through
+      // linux/bridge-observe.sh - locally with this hub's state dir and socket, remotely with the
+      // REMOTE home's, built on the remote from its own $HOME (never this hub's absolute path) - and
+      // its answer decides: identified:managed -> the process by pid (ps gives its start and whether it
+      // was started with --resume) and every keystroke below goes to the bridge's EXACT pane;
+      // no-process -> the missing alarm; anything else -> no decision at all, one info line on stderr.
+      // The watch never reports dead on unknown, and never finds a claude by its label.
+      // Rows of other runtimes (OpenCode, Codex) are found on the pane, as before.
+      let proc = null, identity = null, paneTarget = s.name
+      if ((s.runtime || 'claude-code') === 'claude-code') {
+        if (!procInspectable) identity = 'uninspectable'
+        else {
+          let text = null
+          try {
+            if (remote) {
+              text = (await ssh(s, `STEWARD_STATE_DIR="$HOME/.local/state/${est.stateDirName}" STEWARD_TMUX_SOCKET="$HOME/.tmux/${est.tmuxSocket}" bash ~/scripts/bridge-observe.sh ${s.id}`)).stdout
+            } else if (OBSERVE) {
+              text = (await exec('bash', [OBSERVE, s.id], { env: { ...process.env, STEWARD_STATE_DIR: STATE_DIR, STEWARD_TMUX_SOCKET: SOCK } })).stdout
+            } else { console.error(`[watch] no bridge observer found beside ${HERE}`); text = null }
+          } catch (e) { console.error(`[watch] observer unreachable for ${s.id}: ${e.message.split('\n')[0]}`); text = null }
+          let o = null
+          if (text !== null) { try { o = parseObserveLine(text, s.id) } catch (e) { console.error(`[watch] observer line refused for ${s.id}: ${e.message}`) } }
+          if (!o) identity = 'unknown'
+          else if (o.answer === 'identified:managed') {
+            const p = findProcessByPanePid(psLocal, o.pid)
+            if (p) { proc = { ...p, pane: o.pane, name: o.name, birth: o.birth }; identity = 'identified:managed'; paneTarget = o.pane }
+            else { identity = 'unknown'; console.error(`[watch] observer says managed pid ${o.pid} for ${s.id} but ps does not list it`) }
+          } else identity = o.answer
+        }
+        if (identity !== 'identified:managed' && identity !== 'no-process') console.error(`[watch] identity ${identity} for ${s.id}`)
+      } else {
+        // AN RC-FREE ROW OF ANOTHER RUNTIME IS FOUND ON THE PANE, NOT ON A LABEL. If tmux does not
+        // answer the pid is empty and findProcessByPanePid gives null, which is right: we do not
+        // know whether it lives, and unknown must not look healthy.
         let panePid = ''
         try {
           const { stdout } = remote
@@ -149,15 +188,13 @@ try {
           panePid = stdout.trim().split('\n')[0] || ''
         } catch { panePid = '' }
         proc = findProcessByPanePid(psLocal, panePid)
-      } else {
-        proc = findProcess(psLocal, s.rcLabel)
       }
       let pane = null, paneRaw = ''
       if (proc) {
         try {
           const { stdout } = remote
-            ? await ssh(s, `tmux capture-pane -t ${s.name} -p`)
-            : await exec('tmux', ['-S', SOCK, 'capture-pane', '-t', s.name, '-p'])
+            ? await ssh(s, `tmux capture-pane -t '${paneTarget}' -p`)
+            : await exec('tmux', ['-S', SOCK, 'capture-pane', '-t', paneTarget, '-p'])
           paneRaw = stdout
           pane = paneState(stdout)
         } catch { pane = null }
@@ -203,7 +240,7 @@ try {
       }
       // The login state is read from the SAME pane already captured.
       authObs.push({ name: s.name, expired: pane ? authExpired(paneRaw) : false })
-      const { alerts, actions, next } = decide(state[s.name], { name: s.name, proc, procUnknown: !procInspectable, pane }, nowIso, decideOpts)
+      const { alerts, actions, next } = decide(state[s.name], { name: s.name, proc, procUnknown: !procInspectable, pane, identity }, nowIso, decideOpts)
       state[s.name] = next
       for (const a of alerts) {
         try { await mail(a.subject, a.body) }
@@ -218,13 +255,13 @@ try {
           // in redeliverStuck otherwise defers to the next cycle (decide then
           // issues the same action again).
           try {
-            const r = await redeliverStuck(SOCK, s.name, act.text, act.isPing)
+            const r = await redeliverStuck(SOCK, paneTarget, act.text, act.isPing)
             if (r.ok) state[s.name] = { ...state[s.name], stuck: { text: act.text, reinjected: true, alerted: false } }
           } catch (e) { console.error(`redelivery error (${s.name}): ${e.message}`) }
           continue
         }
         if (act.type === 'clearStuck') {
-          try { await clearStuckInput(SOCK, s.name) } catch (e) { console.error(`clear error (${s.name}): ${e.message}`) }
+          try { await clearStuckInput(SOCK, paneTarget) } catch (e) { console.error(`clear error (${s.name}): ${e.message}`) }
           continue
         }
         if (act.type !== 'resume') continue
@@ -238,11 +275,11 @@ try {
           continue
         }
         try {
-          const result = await runResume(SOCK, s.name)
+          const result = await runResume(SOCK, paneTarget)
           if (result.ok) {
             state[s.name] = { ...state[s.name], startEpoch: proc.startEpoch }
             try {
-              await injectNote(SOCK, s.name, `[the watch] Your process died unexpectedly and was respawned at ${new Date(proc.startEpoch).toISOString()}; I have auto-resumed the conversation. A resume is invisible from inside - your context is continuous but the process history has a break (new pid ${proc.pid}). MCP servers are reloaded.`)
+              await injectNote(SOCK, paneTarget, `[the watch] Your process died unexpectedly and was respawned at ${new Date(proc.startEpoch).toISOString()}; I have auto-resumed the conversation. A resume is invisible from inside - your context is continuous but the process history has a break (new pid ${proc.pid}). MCP servers are reloaded.`)
               await sleep(1000)
             } catch (e) { console.error(`notice error (${s.name}): ${e.message}`) }
             try { await mail(`${PREFIX}: auto-resumed ${s.name}`, `${s.name} respawned (pid ${proc.pid}) and was auto-resumed by the watch. (${nowIso})`) }

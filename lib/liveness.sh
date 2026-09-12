@@ -266,7 +266,7 @@ liveness_rows() {
         ($v.runtime // "unknown"),
         (if ($v|has("model"))        then ($v.model        // "-") else "unknown" end),
         (if ($v|has("lastActivity")) then ($v.lastActivity // "-") else "unknown" end),
-        "-"
+        (($v.reason // "-") | if . == "" then "-" else . end)
       ]),
     ((.omitted // {}) | (if type == "object" then . else {} end) | to_entries[] |
       [ .key, "unknown", "unknown", "unknown", "unknown", "-", "-",

@@ -101,6 +101,11 @@ chmod 600 "$FX/logins.d/acme-team.conf"
 
 printf 'NAME="Alpha"\nMEMBERS="a"\n'  > "$FX/entities.d/alpha.conf"
 printf 'NAME="Site"\nPARENT="alpha"\n' > "$FX/projects.d/site.conf"
+# ONE TARGET PER SUCCESSFUL MIGRATION (plan Task 9a): the gates of spec §3 refuse a second row that renders
+# the same display, or works the same project, under one login key - so claims that only need "a valid
+# target" each get one of their own.
+printf 'NAME="Site Two"\nPARENT="alpha"\n' > "$FX/projects.d/site2.conf"
+printf 'NAME="Beta"\nMEMBERS="a"\n' > "$FX/entities.d/beta.conf"; printf 'NAME="Gamma"\nMEMBERS="a"\n' > "$FX/entities.d/gamma.conf"; printf 'NAME="Delta"\nMEMBERS="a"\n' > "$FX/entities.d/delta.conf"
 
 run() {
   STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config" \
@@ -210,20 +215,20 @@ DOMAIN="alpha"
 RC_LABEL="x"
 REPO_PATH="/pp"
 EOF
-plain="$(run oldplain --account a-h1 --entity alpha --slug plainslug)"; rc=$?
+plain="$(run oldplain --account a-h1 --entity beta --slug plainslug)"; rc=$?
 is  "2b: rc 0" "$rc" "0"
 has "2b: mapping names the old slug and the arrow" "$plain" "migrated oldplain ->"
-has "2b: mapping carries the derived display" "$plain" "display: Alpha"
+has "2b: mapping carries the derived display" "$plain" "display: Beta"
 
 echo "== 2c. an old conf with NO DOMAIN at all: fall back to the target slug =="
 cat > "$SESS/olddomless.conf" <<'EOF'
 OWNER="a"
 REPO_PATH="/p"
 EOF
-out="$(run olddomless --account a-h1 --project site --slug domless --json)"; rc=$?
+out="$(run olddomless --account a-h1 --project site2 --slug domless --json)"; rc=$?
 is "2c: rc 0" "$rc" "0"
 IDB="$(printf '%s' "$out" | jq -r '.id')"
-is "2c: DOMAIN falls back to the target slug (the supervisor requires a line)" "$(load_field "$IDB" DOMAIN)" "site"
+is "2c: DOMAIN falls back to the target slug (the supervisor requires a line)" "$(load_field "$IDB" DOMAIN)" "site2"
 
 echo "== 2d. FAIL-CLOSED on an unmodeled field: refuse and name it; dead knowns are ignored =="
 # The carry-loop is a hand-maintained allowlist. A field OUTSIDE the model
@@ -239,6 +244,9 @@ REPO_PATH="/p"
 FUTURE_FIELD="x"
 EOF
 out="$(run oldunknown --account a-h1 --entity alpha --slug unk 2>&1)"; rc=$?
+# THE UNMODELED-FIELD ROW DOES NOT LOAD, and the gates of spec §3 fail closed on a row they cannot read
+# (advisor M5) - so it is removed the moment its own claim is done, exactly as an operator would repair
+# or retire it. Its refusal is asserted below before it goes.
 is "2d: unmodeled field refused rc 65" "$rc" "65"
 case "$out" in *FUTURE_FIELD*) ok "2d: the refusal names the field" ;; *) bad "2d: the refusal names the field" "got: $out" ;; esac
 is "2d: old conf untouched by the refusal" "$(grep -c '^FUTURE_FIELD="x"$' "$SESS/oldunknown.conf")" "1"
@@ -249,7 +257,7 @@ DOMAIN="alpha"
 REPO_PATH="/p"
 SESSION_NAME="olddead"
 EOF
-out="$(run olddead --account a-h1 --entity alpha --slug deadok --json)"; rc=$?
+out="$(run olddead --account a-h1 --entity gamma --slug deadok --json)"; rc=$?
 is "2d: known-dead SESSION_NAME still migrates rc 0" "$rc" "0"
 IDD="$(printf '%s' "$out" | jq -r '.id')"
 is "2d: the dead line is not carried" "$(grep -c '^SESSION_NAME=' "$SESS/$IDD.conf")" "0"
@@ -309,7 +317,7 @@ echo "== 4. field preservation under injection: a hostile ASSETS is inert =="
 CANARY="$FX/pwned"
 printf 'OWNER="a"\nDOMAIN="alpha"\nRC_LABEL="x"\nREPO_PATH="/i"\nASSETS="\\$(touch %s) \\`touch %s\\`"\n' \
   "$CANARY" "$CANARY" > "$SESS/oldinj.conf"
-out="$(run oldinj --account a-h1 --entity alpha --slug injslug --json)"; rc=$?
+out="$(run oldinj --account a-h1 --entity delta --slug injslug --json)"; rc=$?
 is  "4: rc 0" "$rc" "0"
 ID4="$(printf '%s' "$out" | jq -r '.id')"
 absent "4: the injection did NOT execute (no canary at snapshot/write time)" "$CANARY"
@@ -374,6 +382,24 @@ is "5c: nothing was written" "$(row_count)" "$before"
 
 # 5d. A ROW WITHOUT LOGIN IS UNTOUCHED BY THE GATE — no LOGIN line means no
 # gate call at all, and migration proceeds exactly as before this fix.
+# AND THE UNREADABLE ROWS ARE TAKEN OUT OF THE REGISTER HERE. A row whose LOGIN does not resolve does not LOAD, and the
+# gates of spec §3 fail closed on a row they cannot read (advisor M5) - so while it lies there no other
+# row may be written. That is the point of the rule, and its own refusal is the claim below.
+# A ROW WHOSE LOGIN DOES NOT RESOLVE DOES NOT LOAD - and it is still compared, read without being
+# executed (its RC_LABEL is its display). It blocks nothing that does not collide with it.
+sum_ghost="$(cksum < "$SESS/oldlogin-ghost.conf")"
+printf 'NAME="Ghostly"\nMEMBERS="a"\n' > "$FX/entities.d/ghostly.conf"
+out="$(run oldsafe --account a-h1 --entity ghostly --slug pastghost --json)"; rc=$?
+is "5c2: an unreadable-by-loader row does not block a write that does not collide with it" "$rc" "0"
+is "5c3: and it was left untouched" "$(cksum < "$SESS/oldlogin-ghost.conf")" "$sum_ghost"
+# BUT A ROW THAT YIELDS NEITHER A KEY NOR A DISPLAY IS UNINSPECTABLE, and then nothing may be written.
+printf 'garbage\n' > "$SESS/unreadable.conf"
+printf 'NAME="Blocked"\nMEMBERS="a"\n' > "$FX/entities.d/blocked.conf"
+n_before="$(row_count)"
+out="$(run oldsafe2 --account a-h1 --entity blocked --slug blockedrow --json)"; rc=$?
+case "$rc" in 0) bad "5c4: an uninspectable row blocks every write (fail-closed)" "rc 0: $out" ;; *) ok "5c4: an uninspectable row blocks every write (fail-closed)" ;; esac
+is "5c5: and nothing was written" "$(row_count)" "$n_before"
+rm -f "$SESS/unreadable.conf" "$SESS/oldlogin-ghost.conf" "$SESS/oldlogin-mismatch.conf"
 cat > "$SESS/oldlogin-none.conf" <<'EOF'
 OWNER="alice"
 DOMAIN="alpha"

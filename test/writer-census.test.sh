@@ -144,6 +144,7 @@ LEGAL_OWNER="Acme Corp"
 OPERATOR="alice"
 EOF
 
+printf 'NAME="Acme Two"\nMEMBERS="someone"\n' > "$FX/entities.d/acme-two.conf"   # one login, one "Acme" (spec section 3)
 cat > "$FX/entities.d/acme.conf" <<'EOF'
 NAME="Acme"
 EOF
@@ -202,7 +203,7 @@ LOGIN="acme-team"
 EOF
 out="$( STEWARD_ESTATE_ROOT="$FX" STEWARD_CONFIG_FILE="$FX/no-such-config" \
         bash "$STEWARD" registry migrate-session census-old \
-        --account acct-acme-team --entity acme --slug census-mig --json )"
+        --account acct-acme-team --entity acme-two --slug census-mig --json )"
 rc=$?
 is "migrate-session: rc 0" "$rc" "0"
 id_mig="$(printf '%s' "$out" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"

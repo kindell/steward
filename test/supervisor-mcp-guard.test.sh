@@ -94,6 +94,12 @@ case "${argv[0]:-}" in
   list-panes)   [ -f "$T_HAS_SESSION" ] && echo 4242; exit 0 ;;
   list-clients) exit 0 ;;
   capture-pane) cat "$T_PANE" 2>/dev/null; exit 0 ;;
+  # tmux 3.4, MEASURED on the live host: session formats expand through list-sessions, never through
+  # display-message -t "=name", which answers nothing at all there. Pane targets do work.
+  list-sessions) [ -f "$T_HAS_SESSION" ] && echo '$7:1789000000'; exit 0 ;;
+  display-message) case "${argv[${#argv[@]}-1]}" in *session_id*) : ;; *pane_current_command*) echo claude ;; *pane_pid*) echo 4242 ;; esac; exit 0 ;;
+  kill-session) rm -f "$T_HAS_SESSION"; exit 0 ;;
+  new-session)  for a in "${argv[@]}"; do [ "$a" = "-P" ] && echo 4242; done; touch "$T_HAS_SESSION"; exit 0 ;;
   *)            exit 0 ;;
 esac
 EOF
@@ -114,16 +120,48 @@ export T_PANE="$T/pane.txt"
 : > "$T_PANE"
 
 STATE="$HOMEDIR/.local/state/fixture-supervisor"
+cp "$here/lib/bridge.sh" "$LIBS/bridge.sh"
+cat > "$BIN/observe" <<'EOF'
+#!/bin/bash
+# THE OBSERVER SHIM: its measuring is proven in test/bridge-observe.test.sh; here it answers from
+# the fixture's two control files so this suite keeps testing what the supervisor DOES.
+printf '%s\n' "$*" >> "${OBS_LOG:-/dev/null}"; id="${1:-}"; [ "$id" = --bootstrap ] && id="${2:-}"
+if [ -f "${T_CLAUDE_ALIVE:-/nonexistent}" ] && [ -f "$T_HAS_SESSION" ]; then
+  printf '%s\037identified:managed\0374243\037boot-m:111\037%s:@0.%%0\037L\0371\037alive\037live:managed\037\0374243\037t\0371\037$7:1789000000\037777\n' "$id" "$id"
+elif [ -f "$T_HAS_SESSION" ]; then
+  printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037$7:1789000000\037\n' "$id"
+else
+  printf '%s\037no-process\037\037\037\037\037\037gone-noreceipt\037\037\037\037\037\037\037\n' "$id"
+fi
+EOF
+cat > "$BIN/nonce" <<'EOF'
+#!/bin/bash
+echo 0123456789abcdef0123456789abcdef
+EOF
+chmod 755 "$BIN/observe" "$BIN/nonce"
+PROC="$T/proc"; mkdir -p "$PROC/sys/kernel/random" "$PROC/4242"
+printf 'boot-m\n' > "$PROC/sys/kernel/random/boot_id"; printf '500.00 400.00\n' > "$PROC/uptime"
+mkdir -p "$PROC/4243"
+printf '4242 (bash) S 1 4242 4242 34816 4243 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0 0\n' > "$PROC/4242/stat"     # the pane shell; its tty's foreground group is claude's
+printf '4243 (claude) S 4242 4243 4243 34816 4243 0 0 0 0 0 0 0 0 0 20 0 1 0 111 0 0 0\n' > "$PROC/4243/stat"  # the managed claude, birth boot-m:111 (the observer shim's line)
+export OBS_LOG="$T/obs.log"
+BRIDGE_ENV=( STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_NONCE_CMD="$BIN/nonce" BRIDGE_PROC_ROOT="$PROC" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" )
 
-run() { # -> rc; stdout+stderr in $T/out
-  : > "$TMUX_LOG"
+# TWO ROUNDS PER run. A claude row's spawn is a KEYED two-round suspect since the bridge adapter
+# (plan v6 Task 5): round one records `spawn absent`, round two spawns. The tmux log spans both;
+# the rc is the last round's. A live session's second round is a no-op and a refusal refuses twice.
+_round() {
   HOME="$HOMEDIR" \
   STEWARD_ESTATE_ROOT="$ROOT" \
   STEWARD_CONFIG_FILE="$T/no-such-config" \
   STEWARD_REGISTRY_LIB="$LIBS/registry.sh" \
   STEWARD_TMUX_SOCKET="$T/fixture.sock" \
   PATH="$BIN:$PATH" \
-  bash "$SUP" "$NAME" >"$T/out" 2>&1
+  env "${BRIDGE_ENV[@]}" bash "$SUP" "$NAME" >"$T/out" 2>&1
+}
+run() { # -> rc; stdout+stderr in $T/out
+  : > "$TMUX_LOG"
+  _round; _round
 }
 
 # THE CONTROL GROUP FIRST. Without it every assertion below could be passing
@@ -186,12 +224,12 @@ for b in /usr/bin/* /bin/*; do
   ln -sf "$b" "$T/nojq/$n" 2>/dev/null
 done
 ln -sf "$BIN/tmux" "$T/nojq/tmux"; ln -sf "$BIN/pgrep" "$T/nojq/pgrep"
-run4() {
-  : > "$TMUX_LOG"
+_round4() {
   HOME="$HOMEDIR" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config" \
   STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_TMUX_SOCKET="$T/fixture.sock" \
-  PATH="$T/nojq" bash "$SUP" "$NAME" >"$T/out" 2>&1
+  PATH="$T/nojq" env "${BRIDGE_ENV[@]}" bash "$SUP" "$NAME" >"$T/out" 2>&1
 }
+run4() { : > "$TMUX_LOG"; _round4; _round4; }
 touch "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
 rm -f "$STATE/$NAME.last-sid"; printf '%s\n' "$NAME" > "$STATE/$NAME.launched"
 run4; rc4=$?
@@ -390,9 +428,7 @@ write_login_conf() { # [login-slug]
   } > "$ROOT/sessions.d/$NAME.conf"
 }
 
-run_login() { # <extra env...> -> rc; stdout+stderr in $T/out, tmux calls in $TMUX_LOG
-  rm -f "$STATE/$NAME".*
-  : > "$TMUX_LOG"
+_round_login() {
   HOME="$HOMEDIR" \
   STEWARD_ESTATE_ROOT="$ROOT" \
   STEWARD_CONFIG_FILE="$T/no-such-config" \
@@ -400,7 +436,12 @@ run_login() { # <extra env...> -> rc; stdout+stderr in $T/out, tmux calls in $TM
   STEWARD_TMUX_SOCKET="$T/fixture.sock" \
   STEWARD_HOME_LOOKUP_CMD="$BIN/login-home" \
   PATH="$BIN:$PATH" \
-    env "$@" bash "$SUP" "$NAME" >"$T/out" 2>&1
+    env "${BRIDGE_ENV[@]}" "$@" bash "$SUP" "$NAME" >"$T/out" 2>&1
+}
+run_login() { # <extra env...> -> rc; stdout+stderr in $T/out, tmux calls in $TMUX_LOG (two rounds, see run)
+  rm -f "$STATE/$NAME".*
+  : > "$TMUX_LOG"
+  _round_login "$@"; _round_login "$@"
 }
 
 write_login_conf

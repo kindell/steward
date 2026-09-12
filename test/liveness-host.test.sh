@@ -242,7 +242,22 @@ case "$pid" in
   *) exit 1 ;;
 esac
 EOF
-chmod +x "$T/bin/systemctl" "$T/bin/tmux" "$T/bin/pgrep" "$T/bin/ps"
+# THE BRIDGE OBSERVER STUB (plan Task 8): a claude row's agent is the adapter's answer. Per id a line
+# in $T/obs/<id>; absent -> unknown. Every call and its environment are logged.
+mkdir -p "$T/obs"
+cat > "$T/bin/bridge-observe" <<'EOF'
+printf '%s|%s|%s\n' "$1" "${STEWARD_STATE_DIR:-}" "${STEWARD_TMUX_SOCKET:-}" >> "${OBS_LOG:?}"
+if [ -f "$OBS_DIR/$1" ]; then cat "$OBS_DIR/$1"; else printf '%s\037unknown\037\037\037\037\037\037none\037unclassifiable\037\037\037\037\037\037\n' "$1"; fi
+EOF
+obs() { # obs <id> <answer> [gen] [classes] - writes the fifteen-field line for <id>
+  local pid="" birth="" pane="" ps="" since="" sid="" mt="" ino=""
+  case "$2" in identified:*) pid=101; birth=boot-l:1; pane="$1:@0.%0"; ps=101; since=1; sid=t; mt=1; ino=777 ;; esac
+  printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037\037%s\037%s\037%s\037\037%s\n' "$1" "$2" "$pid" "$birth" "$pane" "n" "$since" "${3:-none}" "${4:-}" "$ps" "$sid" "$mt" "$ino" > "$T/obs/$1"
+}
+obs s-a1 identified:managed alive live:managed
+obs s-b2 identified:managed alive live:managed
+obs s-c3 no-process gone-noreceipt
+chmod +x "$T/bin/systemctl" "$T/bin/tmux" "$T/bin/pgrep" "$T/bin/ps" "$T/bin/bridge-observe"
 
 run() { # run [extra PATH dir first] -> stdout of the answerer
   env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
@@ -250,7 +265,7 @@ run() { # run [extra PATH dir first] -> stdout of the answerer
     STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
     STEWARD_CODEX_STATE_DIR="$CX" \
     STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
-    TMUX_LOG="$T/tmuxlog" \
+    TMUX_LOG="$T/tmuxlog" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" \
     bash "$CMD" 2>"$T/err"
 }
 
@@ -289,6 +304,14 @@ eq "and it reads as a timestamp" \
    "$(printf '%s' "$out" | jq -r '.sessions["s-a1"].lastActivity
                                   | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")')" "true"
 
+echo "== a claude row's agent is the bridge adapter's answer, asked with the estate's state dir and socket =="
+eq "s-a1 was asked about" "$(grep -c '^s-a1|' "$T/obslog")" "1"
+eq "with STEWARD_STATE_DIR under the estate's state directory name" "$(grep '^s-a1|' "$T/obslog" | cut -d'|' -f2)" "$T/home/.local/state/acme-supervisor"
+eq "and the declared socket" "$(grep '^s-a1|' "$T/obslog" | cut -d'|' -f3)" "$T/home/.tmux/acme.sock"
+eq "the OpenCode row is never asked (the pane walk is its measure)" "$(grep -c '^s-d4|' "$T/obslog")" "0"
+eq "nor the codex rows" "$(grep -c '^s-g7|' "$T/obslog")" "0"
+eq "a managed row has no reason key" "$(printf '%s' "$out" | jq -r '.sessions["s-a1"] | has("reason")')" "false"
+
 echo "== a session with no timer: missing, and still measured otherwise =="
 eq "daemon is missing"  "$(printf '%s' "$out" | jq -r '.sessions["s-b2"].daemon')" "missing"
 eq "tmux is still up"   "$(printf '%s' "$out" | jq -r '.sessions["s-b2"].tmux')"   "up"
@@ -312,6 +335,40 @@ eq "agent is not-running" "$(printf '%s' "$out" | jq -r '.sessions["s-d4"].agent
 eq "the declared runtime is reported" \
    "$(printf '%s' "$out" | jq -r '.sessions["s-d4"].runtime')" "opencode"
 eq "and its model"      "$(printf '%s' "$out" | jq -r '.sessions["s-d4"].model')"  "acme/model-x"
+
+echo "== the adapter decides for a claude row: the pane walk no longer does =="
+: > "$T/tmuxlog"; : > "$T/obslog"
+obs s-a1 unknown alive "live:managed live:managed"          # a runtime under s-a1's pane (pid 101) - and the adapter says split-brain
+obs s-b2 identified:moved alive live:moved
+obs s-c3 identified:managed alive live:managed              # tmux DOWN for s-c3, yet the adapter says managed (it measured; we report it)
+out2="$(run)"
+eq "s-a1: a runtime under the pane, adapter unknown -> agent unknown, not running" "$(printf '%s' "$out2" | jq -r '.sessions["s-a1"].agent')" "unknown"
+eq "s-a1: the reason is the adapter's answer with its classes" "$(printf '%s' "$out2" | jq -r '.sessions["s-a1"].reason')" "bridge: unknown (live:managed live:managed), generation alive"
+eq "s-a1: tmux is still measured independently (up)" "$(printf '%s' "$out2" | jq -r '.sessions["s-a1"].tmux')" "up"
+eq "s-b2: moved is unknown with its reason" "$(printf '%s' "$out2" | jq -r '.sessions["s-b2"].reason')" "bridge: identified:moved (live:moved), generation alive"
+eq "s-c3: the adapter's managed is running even with tmux down (two measurements, both reported)" "$(printf '%s' "$out2" | jq -r '.sessions["s-c3"].agent')" "running"
+eq "s-d4 (OpenCode) is unchanged: not-running by the pane walk" "$(printf '%s' "$out2" | jq -r '.sessions["s-d4"].agent')" "not-running"
+rm -f "$T/obs/s-a1"; out3="$(run)"
+eq "no line for a claude row -> the stub's unknown -> agent unknown" "$(printf '%s' "$out3" | jq -r '.sessions["s-a1"].agent')" "unknown"
+printf 's-a1\037no-process\037\037\037\037\037\037none\037\037\037\037\037\037\n' > "$T/obs/s-a1"; out4="$(run)"
+eq "a fourteen-field line is not the contract -> unknown" "$(printf '%s' "$out4" | jq -r '.sessions["s-a1"].agent')" "unknown"
+eq "and says so" "$(printf '%s' "$out4" | jq -r '.sessions["s-a1"].reason')" "cannot observe: the observer's line has 14 fields, not fifteen"
+printf 's-zz\037no-process\037\037\037\037\037\037none\037\037\037\037\037\037\037\n' > "$T/obs/s-a1"; out5="$(run)"
+eq "a line about another id -> unknown" "$(printf '%s' "$out5" | jq -r '.sessions["s-a1"].reason')" "cannot observe: the observer answered about 's-zz'"
+# L1: the same contract the supervisor holds the line to - a malformed answer is unknown, never a verdict
+printf 's-a1\037no-process\037\037\037\037\037\037alive\037\037\037\037\037\037\037\n' > "$T/obs/s-a1"; outL1="$(run)"
+eq "L1: no-process beside gen_state=alive is unknown, not not-running" "$(printf '%s' "$outL1" | jq -r '.sessions["s-a1"].agent')" "unknown"
+eq "L1: with the contract named" "$(printf '%s' "$outL1" | jq -r '.sessions["s-a1"].reason | test("breaks the contract")')" "true"
+printf 's-a1\037identified:managed\037101\037boot-l:1\037s-zz:@0.%%0\037n\0371\037alive\037live:managed\037\037101\037t\0371\037$7:1\037777\n' > "$T/obs/s-a1"; outL1b="$(run)"
+eq "L1: identified with a FOREIGN pane is unknown, not running" "$(printf '%s' "$outL1b" | jq -r '.sessions["s-a1"].agent')" "unknown"
+printf 's-a1\037identified:managed\037101\037boot-l:1\037s-a1:@0.%%0\037n\0371\037alive\037live:managed\037\037\037t\0371\037$7:1\037777\n' > "$T/obs/s-a1"; outL1c="$(run)"
+eq "L1: identified with an EMPTY procStart is unknown, not running" "$(printf '%s' "$outL1c" | jq -r '.sessions["s-a1"].agent')" "unknown"
+obs s-a1 identified:managed alive live:managed; obs s-b2 identified:managed alive live:managed; obs s-c3 no-process gone-noreceipt
+out6="$(env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" STEWARD_CODEX_STATE_DIR="$CX" STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" TMUX_LOG="$T/tmuxlog" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/no-such-observer" bash "$CMD" 2>/dev/null)"
+eq "a missing observer is unknown with its reason, never running" "$(printf '%s' "$out6" | jq -r '.sessions["s-a1"].agent')" "unknown"
+eq "and names the path" "$(printf '%s' "$out6" | jq -r '.sessions["s-a1"].reason | test("bridge observer is missing")')" "true"
+eq "while the OpenCode row is untouched by that" "$(printf '%s' "$out6" | jq -r '.sessions["s-d4"].agent')" "not-running"
+: > "$T/tmuxlog"; out="$(run)"
 
 echo "== a codex row is measured by its own machinery =="
 # Measured on a session host: a healthy codex row - timer active, the owner's
@@ -353,7 +410,7 @@ out4="$( env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
           STEWARD_CODEX_STATE_DIR="$CX" \
           STEWARD_CODEX_DAEMON_SOCK="$T/no-such-daemon.sock" \
-          TMUX_LOG="$T/tmuxlog4" bash "$CMD" 2>/dev/null )"
+          TMUX_LOG="$T/tmuxlog4" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>/dev/null )"
 eq "daemon is still loaded"  "$(printf '%s' "$out4" | jq -r '.sessions["s-i9"].daemon')" "loaded"
 eq "but the agent is not-running" \
    "$(printf '%s' "$out4" | jq -r '.sessions["s-i9"].agent')" "not-running"
@@ -388,7 +445,7 @@ echo "== the production default paths, with no knob set anywhere =="
 out5="$( env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
           STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
-          TMUX_LOG="$T/tmuxlog5" bash "$CMD" 2>/dev/null )"
+          TMUX_LOG="$T/tmuxlog5" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>/dev/null )"
 eq "the daemon socket is found at the runtime home's default path" \
    "$(printf '%s' "$out5" | jq -r '.sessions["s-j0"].agent')" "running"
 
@@ -401,7 +458,7 @@ echo "== an estate that names no state directory makes a codex row unmeasurable 
 out6="$( env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
           STEWARD_ESTATE_ROOT="$T/nameless" STEWARD_REGISTRY_DIR="$T/sessions.d" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
-          TMUX_LOG="$T/tmuxlog6" bash "$CMD" 2>/dev/null )"
+          TMUX_LOG="$T/tmuxlog6" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>/dev/null )"
 eq "the codex row is not measured" \
    "$(printf '%s' "$out6" | jq -r '.sessions | has("s-g7")')" "false"
 eq "it is omitted with the reason, named" \
@@ -464,7 +521,7 @@ for f in tmux pgrep ps; do rm -f "$T/bin2/$f"; cp "$T/bin/$f" "$T/bin2/$f"; done
 out2="$( env -i HOME="$T/home" PATH="$T/bin2" \
           STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
-          TMUX_LOG="$T/tmuxlog2" bash "$CMD" 2>/dev/null )"
+          TMUX_LOG="$T/tmuxlog2" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>/dev/null )"
 eq "the answer is still valid JSON" \
    "$(printf '%s' "$out2" | jq -r '.sessions | type')" "object"
 eq "nothing is measured" \
@@ -491,7 +548,7 @@ out3="$( env -i HOME="$T/home" PATH="$T/bin3" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
           STEWARD_CODEX_STATE_DIR="$CX" \
           STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
-          TMUX_LOG="$T/tmuxlog7" bash "$CMD" 2>/dev/null )"
+          TMUX_LOG="$T/tmuxlog7" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>/dev/null )"
 eq "nothing is measured" \
    "$(printf '%s' "$out3" | jq -r '.sessions | length')" "0"
 eq "and the reason names the tool" \
@@ -500,7 +557,7 @@ eq "and the reason names the tool" \
 echo "== no argument is taken: the contract is the whole home in one call =="
 env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" \
   STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
-  STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" TMUX_LOG="$T/tmuxlog3" \
+  STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" TMUX_LOG="$T/tmuxlog3" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" \
   bash "$CMD" s-a1 >"$T/argout" 2>/dev/null; rc3=$?
 if [ "$rc3" -ne 0 ]; then ok "an argument is refused"; else bad "an argument is refused" "rc=0"; fi
 # A REFUSAL MUST NOT LEAK ONTO STDOUT, or the caller cannot tell it from an
@@ -551,7 +608,7 @@ EOF
             STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
             STEWARD_CODEX_STATE_DIR="$CX" \
             STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
-            TMUX_LOG="$T/tmuxlog-$trc" bash "$CMD" 2>"$T/err-$trc" )"
+            TMUX_LOG="$T/tmuxlog-$trc" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>"$T/err-$trc" )"
 
   eq "rc $trc: the answer is still valid JSON" \
      "$(printf '%s' "$out4" | jq -r '.sessions | type')" "object"
@@ -628,16 +685,22 @@ out7="$( env -i HOME="$T/home" PATH="$T/bin7:/usr/bin:/bin" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
           STEWARD_CODEX_STATE_DIR="$CX" \
           STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
-          TMUX_LOG="$T/tmuxlog-panes" bash "$CMD" 2>"$T/err-panes" )"
+          TMUX_LOG="$T/tmuxlog-panes" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>"$T/err-panes" )"
 eq "no up row is answered as not-running" \
    "$(printf '%s' "$out7" | jq -r '[.sessions[] | select(.tmux == "up") | select(.agent == "not-running")] | length')" "0"
-eq "the three up pane rows are omitted instead" \
-   "$(printf '%s' "$out7" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-d4")] | length')" "3"
+eq "the up OpenCode pane row is omitted instead (claude rows never walk their panes here - L2)" \
+   "$(printf '%s' "$out7" | jq -r '[.omitted | keys[] | select(. == "s-a1" or . == "s-b2" or . == "s-d4")] | length')" "1"
 eq "and the reason says the panes could not be read" \
-   "$(printf '%s' "$out7" | jq -r '.omitted["s-a1"] | test("panes could not be read")')" "true"
+   "$(printf '%s' "$out7" | jq -r '.omitted["s-d4"] | test("panes could not be read")')" "true"
 # A DOWN ROW NEVER REACHED THE PANE WALK, so it keeps its measurement.
 eq "the row that was never up is still measured" \
    "$(printf '%s' "$out7" | jq -r '.sessions["s-c3"].agent')" "not-running"
+# L2 (plan Task 8): a claude row never walks its panes here, so a pane census that cannot be read omits
+# only the OpenCode row; the claude rows stay measured - tmux up from list-sessions, agent from the adapter.
+eq "L2: the up claude row is NOT omitted for an unreadable pane census" "$(printf '%s' "$out7" | jq -r '.omitted | has("s-a1")')" "false"
+eq "L2: it reads tmux up" "$(printf '%s' "$out7" | jq -r '.sessions["s-a1"].tmux')" "up"
+eq "L2: and agent running, from the adapter" "$(printf '%s' "$out7" | jq -r '.sessions["s-a1"].agent')" "running"
+eq "L2: the OpenCode row IS omitted, with the pane read named" "$(printf '%s' "$out7" | jq -r '.omitted["s-d4"] | test("panes could not be read")')" "true"
 eq "and the codex rows are untouched" \
    "$(printf '%s' "$out7" | jq -r '.sessions["s-g7"].agent')" "running"
 
@@ -655,21 +718,27 @@ for prc in 1 2; do
             STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
             STEWARD_CODEX_STATE_DIR="$CX" \
             STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
-            TMUX_LOG="$T/tmuxlog-pg$prc" bash "$CMD" 2>"$T/err-pg$prc" )"
+            TMUX_LOG="$T/tmuxlog-pg$prc" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>"$T/err-pg$prc" )"
   if [ "$prc" = 1 ]; then
     eq "rc 1: nothing matched is a measurement, rows stay in sessions" \
        "$(printf '%s' "$out8" | jq -r '.sessions | length')" "9"
-    eq "rc 1: and a live pane row honestly reads not-running" \
-       "$(printf '%s' "$out8" | jq -r '.sessions["s-a1"].agent')" "not-running"
+    eq "rc 1: and the OpenCode pane row honestly reads not-running" \
+       "$(printf '%s' "$out8" | jq -r '.sessions["s-d4"].agent')" "not-running"
+    eq "rc 1: a claude row carries the adapter's answer, not pgrep's" \
+       "$(printf '%s' "$out8" | jq -r '.sessions["s-a1"].agent')" "running"
     eq "rc 1: nothing is excused" \
        "$(printf '%s' "$out8" | jq -r '.omitted | length')" "0"
   else
-    eq "rc 2: no pane row is invented as not-running" \
-       "$(printf '%s' "$out8" | jq -r '[.sessions[] | select(.tmux != "n/a")] | length')" "0"
-    eq "rc 2: the pane rows are omitted with pgrep named" \
-       "$(printf '%s' "$out8" | jq -r '.omitted["s-a1"] | test("pgrep")')" "true"
-    eq "rc 2: the codex rows still answer" \
-       "$(printf '%s' "$out8" | jq -r '.sessions | length')" "5"
+    # SINCE TASK 8 the host's pgrep measures only the OpenCode pane walk; a claude row's agent is the
+    # bridge adapter's answer, whose own census failures come back as unknown with their reason.
+    eq "rc 2: the OpenCode pane row is not invented as not-running" \
+       "$(printf '%s' "$out8" | jq -r '[.sessions[] | select(.runtime == "opencode")] | length')" "0"
+    eq "rc 2: it is omitted with pgrep named" \
+       "$(printf '%s' "$out8" | jq -r '.omitted["s-d4"] | test("pgrep")')" "true"
+    eq "rc 2: the claude rows are not omitted for the host's pgrep - the adapter measured them" \
+       "$(printf '%s' "$out8" | jq -r '.omitted | has("s-a1")')" "false"
+    eq "rc 2: the codex rows and the claude rows still answer" \
+       "$(printf '%s' "$out8" | jq -r '.sessions | length')" "8"
   fi
 done
 
@@ -689,20 +758,22 @@ echo "no server running on $HOME/.tmux/acme.sock" >&2
 exit 1
 EOF
 chmod +x "$T/bin4/tmux"
+obs s-a1 no-process gone-noreceipt   # with no server the adapter finds nothing either; the stub says so
 out5="$( env -i HOME="$T/home" PATH="$T/bin4:/usr/bin:/bin" \
           STEWARD_ESTATE_ROOT="$T" STEWARD_REGISTRY_DIR="$T/sessions.d" \
           STEWARD_SELF_HOST="h1" STEWARD_SELF_USER="alice" \
           STEWARD_CODEX_STATE_DIR="$CX" \
           STEWARD_CODEX_DAEMON_SOCK="$T/codex-daemon.sock" \
-          TMUX_LOG="$T/tmuxlog-noserver" bash "$CMD" 2>"$T/err-noserver" )"
+          TMUX_LOG="$T/tmuxlog-noserver" OBS_LOG="$T/obslog" OBS_DIR="$T/obs" STEWARD_BRIDGE_OBSERVE="$T/bin/bridge-observe" bash "$CMD" 2>"$T/err-noserver" )"
 eq "all nine rows are measured, none excused" \
    "$(printf '%s' "$out5" | jq -r '.sessions | length')" "9"
 eq "no pane row is omitted" \
    "$(printf '%s' "$out5" | jq -r '.omitted | length')" "0"
 eq "a pane row reads down - we looked, and there was no server" \
    "$(printf '%s' "$out5" | jq -r '.sessions["s-a1"].tmux')" "down"
-eq "and its agent reads not-running, which is measured" \
+eq "and its agent reads not-running, which is measured (the adapter's no-process)" \
    "$(printf '%s' "$out5" | jq -r '.sessions["s-a1"].agent')" "not-running"
+obs s-a1 identified:managed alive live:managed
 # A MEASUREMENT IS NOT AN INCIDENT: nothing is written to stderr for the
 # ordinary quiet home, or the log fills with a warning nobody reads.
 eq "and nothing is reported as a failure" "$(cat "$T/err-noserver")" ""

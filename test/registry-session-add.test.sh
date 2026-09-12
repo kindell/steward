@@ -105,7 +105,12 @@ chmod 600 "$FX/logins.d/alice-team.conf"
 
 # One team, one project under it — the display derivation's inputs.
 printf 'NAME="Alpha"\nMEMBERS="a"\n'  > "$FX/entities.d/alpha.conf"
+printf 'NAME="Beta"\nMEMBERS="a"\n'   > "$FX/entities.d/beta.conf"    # a second entity, so a hostile-conf claim renders a display of its own
+printf 'NAME="Gamma"\nMEMBERS="a"\n'  > "$FX/entities.d/gamma.conf"   # a third, for the rendered-uniqueness claims
 printf 'NAME="Site"\nPARENT="alpha"\n' > "$FX/projects.d/site.conf"
+# ONE PROJECT PER CLAIM (plan Task 9a): the work rule allows one claude-code row per (login, project),
+# so the claims below that only need "a valid target" each get a project of their own.
+for _p in p1 p2 p3 p4 p5 p6 p7 p8 p9; do printf 'NAME="Project %s"\nPARENT="alpha"\n' "$_p" > "$FX/projects.d/$_p.conf"; done
 
 # run <args...> — a hermetic invocation of the verb under test.
 run() {
@@ -241,20 +246,20 @@ is "3: and now (b-h1, web) is taken too — the scan reads the row this verb wro
 
 echo "== 4. injection: hostile values and hostile neighbouring confs =="
 before="$(row_count)"
-out="$(run add --account a-h1 --project site --slug inj1 --repo "/tmp/\$(touch $FX/pwned-dollar)" --json)"; rc=$?
+out="$(run add --account a-h1 --project p1 --slug inj1 --repo "/tmp/\$(touch $FX/pwned-dollar)" --json)"; rc=$?
 is     "4: command-substitution repo is accepted as inert bytes (rc 0)" "$rc" "0"
 IDD="$(printf '%s' "$out" | jq -r '.id')"
 absent "4: ...and sourcing the row runs nothing" "$FX/pwned-dollar"
 is     "4: the repo round-trips byte-identical" \
        "$(load_session "$IDD" | cut -d'|' -f7)" "/tmp/\$(touch $FX/pwned-dollar)"
 absent "4: ...even after the round trip" "$FX/pwned-dollar"
-out="$(run add --account a-h1 --project site --slug inj2 --repo "/tmp/\`touch $FX/pwned-tick\`" --json)"; rc=$?
+out="$(run add --account a-h1 --project p2 --slug inj2 --repo "/tmp/\`touch $FX/pwned-tick\`" --json)"; rc=$?
 is     "4: backtick repo — same story (rc 0)" "$rc" "0"
 IDT="$(printf '%s' "$out" | jq -r '.id')"
 load_session "$IDT" >/dev/null
 absent "4: no backtick side effect either" "$FX/pwned-tick"
 ctrl="$(printf '/tmp/x\ty')"
-out="$(run add --account a-h1 --project site --slug inj3 --repo "$ctrl" --json)"; rc=$?
+out="$(run add --account a-h1 --project p3 --slug inj3 --repo "$ctrl" --json)"; rc=$?
 is "4: a control byte in --repo refuses rc 64" "$rc" "64"
 absent "4: control-byte case wrote nothing" "$SESS/inj3.conf"
 
@@ -262,7 +267,7 @@ absent "4: control-byte case wrote nothing" "$SESS/inj3.conf"
 # divert the write — the load is subshelled, so the assignments die with it.
 printf 'PRINCIPAL="a"\nHOST="h1"\nslug="hijacked"\nrepo="/tmp/evil"\naccount="a-h1"\nid="s-ffffffffffff"\n' \
   > "$FX/accounts.d/evil.conf"
-out="$(run add --account evil --entity alpha --slug safe --repo /tmp/fixture-repo --json)"; rc=$?
+out="$(run add --account evil --entity beta --slug safe --repo /tmp/fixture-repo --json)"; rc=$?
 is "4: hostile account conf — the verb still writes what was ASKED (rc 0)" "$rc" "0"
 IDE="$(printf '%s' "$out" | jq -r '.id')"
 is "4: the slug written is the operator's, not the conf's" \
@@ -343,7 +348,7 @@ echo "== 7. --login: GATE 1 in the WRITER — the login's PRINCIPAL must be the 
 # accounts.d/other-mac (PRINCIPAL="bob"), logins.d/alice-team (PRINCIPAL="alice").
 
 # 7a. THE RIGHT PAIR IS WRITTEN.
-out="$(run add --account acme-mac --login alice-team --project site --slug loginok --repo /tmp/fixture-repo --json)"; rc=$?
+out="$(run add --account acme-mac --login alice-team --project p4 --slug loginok --repo /tmp/fixture-repo --json)"; rc=$?
 is "7a: rc 0 — login's principal matches the account's" "$rc" "0"
 IDL="$(printf '%s' "$out" | jq -r '.id')"
 is "7a: the row on disk carries LOGIN=\"alice-team\"" "$(grep -c '^LOGIN="alice-team"$' "$SESS/$IDL.conf")" "1"
@@ -351,7 +356,7 @@ is "7a: --json carries the login field when it was given" "$(printf '%s' "$out" 
 
 # 7b. THE WRONG PAIR IS REFUSED rc 65 — THE GATE.
 before="$(sess_hash)"
-out="$(run add --account other-mac --login alice-team --project site --slug loginbad --repo /tmp/fixture-repo --json)"; rc=$?
+out="$(run add --account other-mac --login alice-team --project p5 --slug loginbad --repo /tmp/fixture-repo --json)"; rc=$?
 is "7b: rc 65 — account other-mac (bob) may not carry alice-team's login" "$rc" "65"
 # 7c. NO FILE WAS WRITTEN — sessions.d is byte for byte unchanged.
 is "7c: sessions.d is byte-identical after the refusal" "$(sess_hash)" "$before"
@@ -362,7 +367,7 @@ has "7d: the refusal names the account's principal (bob)" "$reason" "bob"
 
 # 7e. AN UNKNOWN LOGIN REFUSES rc 78, nothing written.
 before="$(sess_hash)"
-out="$(run add --account acme-mac --login no-such-login --project site --slug loginghost --repo /tmp/fixture-repo --json)"; rc=$?
+out="$(run add --account acme-mac --login no-such-login --project p6 --slug loginghost --repo /tmp/fixture-repo --json)"; rc=$?
 is "7e: rc 78 — the login does not resolve" "$rc" "78"
 is "7e: sessions.d unchanged" "$(sess_hash)" "$before"
 # THE FLAG THE OPERATOR TYPED SURVIVES INTO THE MESSAGE (task 9B, fix round
@@ -372,7 +377,7 @@ is "7e: sessions.d unchanged" "$(sess_hash)" "$before"
 has "7e: the refusal names the flag the operator typed" "$(printf '%s' "$out" | jq -r '.reason')" "--login '"
 
 # 7f. WITHOUT --login, NO LOGIN LINE IS WRITTEN — the transition, byte preserved.
-out="$(run add --account acme-mac --project site --slug nologinhere --repo /tmp/fixture-repo --json)"; rc=$?
+out="$(run add --account acme-mac --project p7 --slug nologinhere --repo /tmp/fixture-repo --json)"; rc=$?
 is "7f: rc 0" "$rc" "0"
 IDN="$(printf '%s' "$out" | jq -r '.id')"
 is "7f: no LOGIN= line on disk" "$(grep -c '^LOGIN=' "$SESS/$IDN.conf")" "0"
@@ -387,12 +392,12 @@ is "7g: --json has no login key when --login was not given" "$(printf '%s' "$out
 # "wrote" invites the operator to start the session and wait for mail that
 # can never be answered. The fact is constant — the id was minted this very
 # call — so the receipt STATES it rather than measuring anything.
-out="$(run add --account acme-mac --project site --slug mutetext --repo /tmp/fixture-repo)"; rc=$?
+out="$(run add --account acme-mac --project p8 --slug mutetext --repo /tmp/fixture-repo)"; rc=$?
 is  "8a: rc 0" "$rc" "0"
 has "8a: the text receipt says the row has no relay key" "$out" "no relay key"
 has "8a: the text receipt names the key path"            "$out" "id_busrelay_"
 has "8a: the text receipt names the verb that mints one" "$out" "session-new.sh"
-out="$(run add --account acme-mac --project site --slug mutejson --repo /tmp/fixture-repo --json)"; rc=$?
+out="$(run add --account acme-mac --project p9 --slug mutejson --repo /tmp/fixture-repo --json)"; rc=$?
 is  "8b: rc 0" "$rc" "0"
 is  "8b: --json carries relay_key:false" "$(printf '%s' "$out" | jq -r '.relay_key')" "false"
 
@@ -409,5 +414,32 @@ out="$(run add --account alice-h2 --host h1 --entity alpha --slug wronghost --re
 is "9b: an explicit host differing from ACCOUNT_HOST refuses rc 78" "$rc" "78"
 is "9b: the host mismatch writes nothing" "$(sess_hash)" "$before"
 
+
+echo "== 10. THE GATES OF SPEC §3 (Task 9a): rendered uniqueness per login key, and the work rule =="
+printf 'NAME="Gate"\nPARENT="alpha"\n' > "$FX/projects.d/gate.conf"
+printf 'NAME="Gate Two"\nPARENT="alpha"\n' > "$FX/projects.d/gate2.conf"
+out="$(run add --account a-h1 --project gate --slug g1 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10a the first row on (a, gate) is written" "$rc" "0"
+out="$(run add --account a-h1 --project gate --slug g2 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10b a second row on the SAME (owner, project) is refused by the work rule (rc 70)" "$rc" "70"
+has "10c and the refusal names the rule (the rendered gate fires first: the same project renders the same display)" "$out" "spec section 3"
+n_before="$(ls "$SESS" | wc -l | tr -d ' ')"; out="$(run add --account a-h1 --project gate --slug g3 --repo /tmp/fixture-repo --json)"
+is "10d nothing was written" "$(ls "$SESS" | wc -l | tr -d ' ')" "$n_before"
+out="$(run add --account b-h1 --project gate --slug g4 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10e ANOTHER owner (another login key) on the same project renders the same display and is ALLOWED (Jon 2026-09-11: two logins may show one name)" "$rc" "0"
+out="$(run add --account a-h1 --entity gamma --slug e1 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10f a first entity-target row under a renders 'Gamma'" "$rc" "0"
+out="$(run add --account a-h1 --entity gamma --slug e2 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10g a second row rendering 'Gamma' under the SAME login key is refused (rc 70)" "$rc" "70"
+has "10h and the refusal names the display" "$out" 'Gamma'; has "10h2 and says it is already rendered" "$out" "already rendered"
+out="$(run add --account acme-mac --login alice-team --project gate2 --slug l1 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10i a login-keyed row is written" "$rc" "0"
+out="$(run add --account acme-mac --login alice-team --project gate2 --slug l2 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10j the same login on the same project is refused" "$rc" "70"
+gid="$(grep -l 'SLUG="g1"' "$SESS"/*.conf | head -1)"; printf 'LIFECYCLE="retired"\n' >> "$gid"
+out="$(run add --account a-h1 --project gate --slug g5 --repo /tmp/fixture-repo --json)"; rc=$?
+is "10k a RETIRED holder reserves nothing: the row is written" "$rc" "0"
+
+echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

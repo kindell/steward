@@ -6,7 +6,7 @@
 // are passed in as the estate's data rather than assumed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sessionScope, findProcess, findProcessByPanePid, paneState, decide, resumeStep, busAlert, malformedAlert, parseBusDump, fleetHttp, browserActivity, claudePin, unpinnedSessions, brandedBrowsers, jobAlerts, groupJobAlerts, hostAlerts, authExpired, authAlerts, browserSleep, restartIntentFresh, credentialAlerts } from '../lib.mjs'
+import { sessionScope, findProcessByPanePid, parseObserveLine, OBSERVE_US, paneState, decide, resumeStep, busAlert, malformedAlert, parseBusDump, fleetHttp, browserActivity, claudePin, unpinnedSessions, brandedBrowsers, jobAlerts, groupJobAlerts, hostAlerts, authExpired, authAlerts, browserSleep, restartIntentFresh, credentialAlerts } from '../lib.mjs'
 
 const PING = '[bus] you have mail - read your inbox (the command is in your instructions)'
 const OPTS = { pingText: PING, subjectPrefix: 'hub-one watch', attachHint: 'tmux -S ~/.tmux/hub-one.sock attach -t <session>' }
@@ -72,14 +72,6 @@ test('findProcessByPanePid: a process started with --resume says so', () => {
   assert.equal(findProcessByPanePid(ps, '124').resumed, false)
 })
 
-test('findProcess: a process started with --resume says so', () => {
-  const ps = [
-    '  123 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --resume 340eda36-1111-2222-3333-444444444444 --remote-control Alpha',
-    '  124 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --remote-control Beta',
-  ].join('\n')
-  assert.equal(findProcess(ps, 'Alpha').resumed, true)
-  assert.equal(findProcess(ps, 'Beta').resumed, false)
-})
 
 test('findProcessByPanePid: an empty or unknown pid gives null, never a guess', () => {
   const ps = '  123 Mon Aug 25 08:00:00 2026 /opt/agent/.local/bin/claude --name "Machine"'
@@ -96,12 +88,6 @@ test('findProcessByPanePid: a pid prefix does not match (12 is not 123)', () => 
   assert.equal(findProcessByPanePid(ps, '12'), null)
 })
 
-test('findProcess: pid + start time; null when the label is absent', () => {
-  const p = findProcess(PS, 'Hub: alpha')
-  assert.equal(p.pid, 123)
-  assert.equal(new Date(p.startEpoch).getFullYear(), 2026)
-  assert.equal(findProcess(PS, 'Hub: gamma'), null)
-})
 
 const BORDER = '─'.repeat(40)
 
@@ -1064,25 +1050,7 @@ test('authAlerts: several sessions at once alarm separately', () => {
   assert.deepEqual(r.alerts.map(a => a.session), ['alpha', 'hub-one'])
 })
 
-test('findProcess: finds the process in the LINUX ps format (lstart is identical)', () => {
-  // Remote sessions are read via `ssh host ps -eo pid=,lstart=,args=` - the
-  // fixture is copied from a session host's live output, not invented.
-  const ps = ' 1636587 Thu Aug  6 12:10:01 2026 /opt/agent/.local/share/claude/versions/2.1.223/claude --continue --permission-mode bypassPermissions --remote-control Hub: machine'
-  const p = findProcess(ps, 'Hub: machine')
-  assert.ok(p, 'the process was not found')
-  assert.equal(p.pid, 1636587)
-})
 
-test('findProcess: the tmux server process line NEVER matches', () => {
-  // Copied from a session host's live pgrep output: the tmux server carries the
-  // whole start command including the label. Without the binary anchor both
-  // the Linux supervision and the watch saw a "living" session whose claude
-  // was dead.
-  const tmuxOnly = ' 1637265 Thu Aug  6 12:10:01 2026 tmux new-session -d -s machine -c /opt/agent/Projects/machine /opt/agent/.local/bin/claude --continue --permission-mode bypassPermissions --remote-control "Hub: machine"; exec bash'
-  assert.equal(findProcess(tmuxOnly, 'Hub: machine'), null, 'the tmux server is not claude')
-  const both = tmuxOnly + '\n 1637301 Thu Aug  6 12:10:03 2026 /opt/agent/.local/share/claude/versions/2.1.223/claude --continue --permission-mode bypassPermissions --remote-control Hub: machine'
-  assert.equal(findProcess(both, 'Hub: machine').pid, 1637301, 'the claude line must win')
-})
 
 // --- browserSleep ------------------------------------------------------------
 const sleepN = (n, obs, prev = {}, opts = { idleCycles: 12 }) => {
@@ -1297,4 +1265,68 @@ test('credentialAlerts: takes the threshold from its caller and has a default of
   assert.equal(credentialAlerts({}, rows, NOW, { days: 3 }).alerts.length, 0)
   assert.equal(credentialAlerts({}, rows, NOW, { days: 7 }).alerts.length, 1)
   assert.equal(credentialAlerts({}, rows, NOW).alerts.length, 0)
+})
+
+// ---- the bridge adapter's line: a fifteen-field contract, read as one -------------------------------
+const US = OBSERVE_US
+const L = (f) => f.join(US) + '\n'
+const MANAGED = ['s-0000000000000001', 'identified:managed', '4243', 'boot-s:111', 's-0000000000000001:@0.%0', 'Alpha→Thing', '1789000000000', 'alive', 'live:managed', '', '4243', 'thread-4243', '1789000000000', '$7:1789000000', '777']
+const NOPROC = ['s-0000000000000001', 'no-process', '', '', '', '', '', 'gone-noreceipt', 'stale', '', '', '', '', '', '']
+test('parseObserveLine: a managed line, by position, numbers as numbers', () => {
+  const o = parseObserveLine(L(MANAGED), 's-0000000000000001')
+  assert.equal(o.answer, 'identified:managed'); assert.equal(o.pid, 4243); assert.equal(o.birth, 'boot-s:111')
+  assert.equal(o.pane, 's-0000000000000001:@0.%0'); assert.equal(o.name, 'Alpha→Thing'); assert.equal(o.nameSince, 1789000000000)
+  assert.equal(o.gen, 'alive'); assert.equal(o.procStart, 4243); assert.equal(o.sessionId, 'thread-4243'); assert.equal(o.tuple, '$7:1789000000'); assert.equal(o.inode, 777)
+})
+test('parseObserveLine: a no-process line has null numbers and empty candidate fields', () => {
+  const o = parseObserveLine(L(NOPROC), 's-0000000000000001')
+  assert.equal(o.answer, 'no-process'); assert.equal(o.pid, null); assert.equal(o.inode, null); assert.equal(o.tuple, '')
+})
+test('parseObserveLine: fourteen fields is not the contract', () => {
+  assert.throws(() => parseObserveLine(L(NOPROC.slice(0, 14)), 's-0000000000000001'), /fields/)
+})
+test('parseObserveLine: two lines is not one answer', () => {
+  assert.throws(() => parseObserveLine(L(MANAGED) + L(MANAGED), 's-0000000000000001'), /lines/)
+})
+test('parseObserveLine: the id must be the one asked about', () => {
+  assert.throws(() => parseObserveLine(L(MANAGED), 's-0000000000000002'), /id/)
+})
+test('parseObserveLine: closed vocabularies', () => {
+  const bad = [...MANAGED]; bad[1] = 'alive'
+  assert.throws(() => parseObserveLine(L(bad), 's-0000000000000001'), /vocabulary/)
+  const badGen = [...MANAGED]; badGen[7] = 'running'
+  assert.throws(() => parseObserveLine(L(badGen), 's-0000000000000001'), /vocabulary/)
+})
+test('parseObserveLine: invariants - identified needs pid, birth and pane; nothing else carries them', () => {
+  const noPid = [...MANAGED]; noPid[2] = ''
+  assert.throws(() => parseObserveLine(L(noPid), 's-0000000000000001'), /identified/)
+  const leak = [...NOPROC]; leak[2] = '4243'
+  assert.throws(() => parseObserveLine(L(leak), 's-0000000000000001'), /carries candidate fields/)
+})
+test('parseObserveLine: a non-number where a number is promised throws', () => {
+  const bad = [...MANAGED]; bad[6] = 'soon'
+  assert.throws(() => parseObserveLine(L(bad), 's-0000000000000001'), /nameSince/)
+})
+
+// ---- decide: the adapter's other answers are no decision at all --------------------------------------
+test('decide: identity unknown => no missing alarm, no action, latch untouched', () => {
+  const prev = { missingAlerted: false, startEpoch: 5 }
+  const r = decide(prev, { name: 's-1', proc: null, identity: 'unknown', pane: null }, '2026-09-11T00:00:00Z', OPTS)
+  assert.deepEqual(r.alerts, []); assert.deepEqual(r.actions, []); assert.deepEqual(r.next, prev)
+})
+for (const id of ['uninspectable', 'grace', 'wait-veto', 'identified:moved', 'identified:orphan']) {
+  test(`decide: identity ${id} => nothing`, () => {
+    const r = decide({}, { name: 's-1', proc: null, identity: id, pane: null }, '2026-09-11T00:00:00Z', OPTS)
+    assert.deepEqual(r.alerts, []); assert.deepEqual(r.actions, [])
+  })
+}
+test('decide: identity no-process => the missing alarm, once, as before', () => {
+  const r1 = decide({}, { name: 's-1', proc: null, identity: 'no-process', pane: null }, '2026-09-11T00:00:00Z', OPTS)
+  assert.equal(r1.alerts.length, 1); assert.match(r1.alerts[0].subject, /has no process/)
+  const r2 = decide(r1.next, { name: 's-1', proc: null, identity: 'no-process', pane: null }, '2026-09-11T00:00:00Z', OPTS)
+  assert.equal(r2.alerts.length, 0)
+})
+test('decide: identity managed with a process => the ordinary path (blessed)', () => {
+  const r = decide({}, { name: 's-1', proc: { pid: 4243, startEpoch: 99, resumed: false }, identity: 'identified:managed', pane: { fresh: false, busy: false, blocked: false } }, '2026-09-11T00:00:00Z', OPTS)
+  assert.equal(r.next.startEpoch, 99); assert.deepEqual(r.alerts, [])
 })

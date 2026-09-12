@@ -358,6 +358,19 @@ bodyg="$(cat "$FX/reg/$idg.conf" 2>/dev/null)"
 has "(a) no rc_label defaults to the prefix plus the derived display name" \
     "$bodyg" "$(printf 'RC_LABEL="Hub: Team%sWork"' '→')"
 
+# (a2) A SECOND REQUEST ON THE SAME RESOLVING PROJECT IN THE SAME HOME is refused. The naming convention
+# (doman-projekt-person) makes it the same slug in the same account, so the (account, slug) gate speaks
+# first; the work rule of spec §3 (one claude-code conversation per (login, project)) stands behind it in
+# enroll as defence in depth and is proven as a predicate in test/registry-session-display.test.sh.
+mk_req x G2 's|^namn=.*|namn=team-work-someone|; s|^doman=.*|doman=team|; s|^projekt=.*|projekt=work|; s|^pubkey=|rc_label=Work Again\
+pubkey=|'
+before_g2="$(ls "$FX/reg"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')"
+out2="$(run_req "$FX/mut.txt")"; rc2=$?
+if [ "$rc2" -ne 0 ]; then ok "(a2) a second row on the same (home, project) is refused by the work rule"
+else bad "(a2) a second row on the same (home, project) is refused by the work rule" "rc=$rc2 out=$out2"; fi
+has "(a2) the refusal names the slug and the account" "$out2" "slug 'team-work-someone' is already taken in account 'someone-farhost'"
+is "(a2) nothing was written" "$(ls "$FX/reg"/s-*.conf 2>/dev/null | wc -l | tr -d ' ')" "$before_g2"
+
 # (b) rc_label= IN THE REQUEST STILL WINS, UNCHANGED — today's rule takes the
 # field verbatim, with no prefix added (RC_ETIKETT="${RC_ONSKAD:-...}"), and
 # that has to stay true after this fix.
@@ -560,7 +573,7 @@ EOF2
 lreq "$LFX/l1.txt" widgetl "login=acme-team
 "
 out="$(run_lreq "$LFX/l1.txt")"; rc=$?
-is "L1: a login whose principal matches the account registers, rc 0" "$rc" "0"
+is "L1: a login whose principal matches the account registers, rc 0" "$rc" "0"; [ "$rc" = 0 ] || printf 'DBGL1 %s\n' "$out"
 id1="$(printf '%s' "$out" | sed -n 's/.*registered as \(s-[0-9a-f]\{16\}\).*/\1/p' | head -1)"
 has "L1: the row carries the LOGIN line" "$(cat "$LFX/sessions.d/$id1.conf" 2>/dev/null)" 'LOGIN="acme-team"'
 
