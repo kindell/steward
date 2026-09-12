@@ -1,4 +1,11 @@
 #!/bin/bash
+
+# PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
+# mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
+# both stat dialects; the observation queue is shortened with tail, never sed -i.
+set_mtime() { python3 -c 'import os,sys; t=int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
+inode_of() { stat -c %i "$1" 2>/dev/null || stat -f %i "$1"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # test/bridge-observe.test.sh - the one adapter: it measures, asks lib/bridge.sh, prints one
 # fifteen-field line, and WRITES NOTHING. Spec §1; plan v6 Task 4.
 #
@@ -133,7 +140,7 @@ reset; live_managed; before="$(gen_snapshot)"; obs "$ID"
 is "1a answer" "$(f 2)" "identified:managed"; is "1b fifteen fields" "$(nf)" "15"
 is "1c pid" "$(f 3)" "4243"; is "1d birth" "$(f 4)" "boot-1:111"; is "1e pane" "$(f 5)" "$ID:@0.%0"; is "1f name" "$(f 6)" "Alpha→Thing"
 is "1g procStart" "$(f 11)" "4243"; is "1h sessionId" "$(f 12)" "thread-4243"; case "$(f 13)" in ''|*[!0-9]*) bad "1i mtime numeric" "$(f 13)";; *) ok "1i mtime numeric";; esac
-is "1j inode is the candidate file's inode (F2)" "$(f 15)" "$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"
+is "1j inode is the candidate file's inode (F2)" "$(f 15)" "$(inode_of "$HOMEDIR/.claude/sessions/4243.json")"
 is "1k the observer wrote NOTHING to the generation" "$(gen_snapshot)" "$before"
 is "1l no label pgrep" "$(grep -c . "$LABEL_LOG")" "0"
 
@@ -159,13 +166,13 @@ claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 0; obs "$I
 # the mtime rule alone (claim 8); the inode matters for a file whose mtime is within the slack the
 # supervisor's seconds-granular clock needs (launch - 1000 <= mtime < launch). Measured: the first
 # version of this claim used a 2020 mtime and a mutation that dropped the inode clause survived.
-claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; ino="$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; touch -d @1788999999 "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; ino="$(inode_of "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; set_mtime "$HOMEDIR/.claude/sessions/4243.json" 1788999999; obs "$ID"
 is "7a inode in snapshot AND mtime just before launch (inside the slack) -> unknown (pre-existing)" "$(f 2)" "unknown"
-claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; touch -d @1788999999 "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; set_mtime "$HOMEDIR/.claude/sessions/4243.json" 1788999999; obs "$ID"
 is "7c inode NOT in snapshot, mtime inside the slack -> managed (the slack is honoured)" "$(f 2)" "identified:managed"
-claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; ino="$(stat -c %i "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; obs "$ID"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; ino="$(inode_of "$HOMEDIR/.claude/sessions/4243.json")"; gen launch_inodes="$ino"; obs "$ID"
 is "7b inode in snapshot but mtime fresh -> managed (inode reuse is normal)" "$(f 2)" "identified:managed"
-claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; touch -d '2020-01-01' "$HOMEDIR/.claude/sessions/4243.json"; obs "$ID"; is "8 mtime older than launch -> unknown" "$(f 2)" "unknown"
+claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; set_mtime "$HOMEDIR/.claude/sessions/4243.json" 1577836800; obs "$ID"; is "8 mtime older than launch -> unknown" "$(f 2)" "unknown"
 
 echo "== 9-12. clocks =="
 claim_setup "STEWARD_LAUNCH_NONCE=0123456789abcdef0123456789abcdef" 1 1; NOW_UP=1100000; obs "$ID"; is "9 window elapsed -> unknown" "$(f 2)" "unknown"
