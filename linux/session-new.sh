@@ -662,14 +662,14 @@ REPO_PATH="$REPO"
 # (registry_session_display: Team or Team->Project, rule of 2026-09-06); line PRESENT AND EMPTY ->
 # the session is RC-FREE, no remote-control tile at all (M14, _registry_gate_rc_free); a VALUE ->
 # verbatim. This template used to write RC_PREFIX+slug, which on a post-09-06 estate is the bare
-# slug - a verbatim label that blocked derivation until somebody ran `registry session derive`.
+# slug - a verbatim label that blocked derivation until somebody ran registry session derive.
 # Writing RC_LABEL="" instead would have made every new session RC-free. Absent is the only state
 # that means "derive", so the line is not written.
 PERMISSION_MODE="bypassPermissions"
 # OWNER IS A LOGIN. The name above carries the principal; this line says which
 # unix account runs the thing, which is the same distinction the hub makes when
 # it stamps the real row (it writes the account's USERNAME here). The value is
-# what this field has always held — `id -un` — and it must not follow PERSON.
+# what this field has always held — id -un — and it must not follow PERSON.
 OWNER="$UNIX_USER"
 DOMAIN="$DOMAN"
 CONFEOF
