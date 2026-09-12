@@ -16,7 +16,7 @@ jobstate_home() {
   if [ -n "${STEWARD_JOB_STATE_HOME:-}" ]; then
     printf '%s\n' "$STEWARD_JOB_STATE_HOME"; return 0
   fi
-  if ! command -v registry_state_dir_name >/dev/null 2>&1; then
+  if ! typeset -f registry_state_dir_name >/dev/null 2>&1; then
     local _here; _here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || { echo "jobstate: could not load the registry" >&2; return 78; }

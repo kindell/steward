@@ -121,7 +121,7 @@ done
 # contract this file has with lib/mcprender.sh and lib/mcpspawn.sh.
 if [ -z "$_mcp_lib_missing" ]; then
   for _c in mcp_spawn_prepare mcp_claude_cmd_fragment mcp_render_document; do
-    declare -F "$_c" >/dev/null 2>&1 || \
+    typeset -f "$_c" >/dev/null 2>&1 || \
       _mcp_lib_missing="$_MCP_LIB_DIR -- what is deployed there does not define $_c"
   done
 fi
@@ -1109,7 +1109,7 @@ fi
 # not resolve") and send the person debugging it into logins.d looking for a
 # line that was never there. So the library is measured by what it DEFINES, and
 # the refusal names the library.
-if ! declare -F registry_login_exec_prefix >/dev/null 2>&1; then
+if ! typeset -f registry_login_exec_prefix >/dev/null 2>&1; then
   echo "session-supervisor: $NAME — REFUSING to start: $REG_LIB does not define registry_login_exec_prefix — deploy the product first." >&2
   exit 78
 fi
@@ -1471,7 +1471,7 @@ reap_orphan_claude() {
 # together, and this way they cannot disagree.
 CLAUDE_JSON="$HOME/.claude.json"
 if [ -n "${LOGIN:-}" ]; then
-  if declare -F _registry_login_is_unnamed_default >/dev/null 2>&1 \
+  if typeset -f _registry_login_is_unnamed_default >/dev/null 2>&1 \
      && _registry_login_is_unnamed_default "$CFG_ROOT"; then
     :   # legacy row: the file beside the directory, as with no LOGIN
   else
@@ -2020,7 +2020,7 @@ fi
 # can be fooled by it. ${CLAUDE_CMD%% *} of an empty string is empty, so
 # CLAUDE_BIN becomes "$HOME/.local/bin/" and -x on a DIRECTORY is true: the
 # guard would wave through a spawn of "$HOME/.local/bin/; exec bash". The
-# declare -F check above is what should make this unreachable; this is the
+# command -v check above is what should make this unreachable; this is the
 # assertion that it stays unreachable.
 ADAPTER=""
 if [ "${RUNTIME:-claude-code}" = "opencode" ]; then

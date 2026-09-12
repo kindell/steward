@@ -21,6 +21,25 @@ printf 'HOST="host-one"\nOWNER="alfa"\nDOMAIN="d"\n'     > "$fx/sessions.d/a.con
 printf 'HOST="host-one"\nOWNER="beta"\nDOMAIN="d"\n' > "$fx/sessions.d/b.conf"
 printf 'HOST="host-one"\nOWNER="alfa"\nDOMAIN="d"\n'     > "$fx/sessions.d/c.conf"
 printf 'HOST="host-two"\nOWNER="gamma"\nDOMAIN="d"\n'      > "$fx/sessions.d/d.conf"
+# THE LOOKUP SEAM IS USED FROM HERE ON. These cases used to assert /home/<owner>
+# - the guess the function made - which meant the suite could only pass on a
+# host where the guess happened to be right, and encoded the defect as the
+# contract. The accounts below do not exist on any machine; the stub is what
+# makes that fine.
+cat > "$fx/homelookup" <<'STUB'
+#!/bin/sh
+case "$1" in
+  alfa) printf '/home/alfa
+' ;;
+  beta) printf '/home/beta
+' ;;
+  gamma) printf '/home/gamma
+' ;;
+  *)    exit 1 ;;
+esac
+STUB
+chmod +x "$fx/homelookup"
+export STEWARD_HOME_LOOKUP_CMD="$fx/homelookup"
 h="$(deploy_home_list "$fx/sessions.d" host-one)"; rc=$?
 check "home list rc 0"                      [ "$rc" -eq 0 ]
 check "two homes, not three (dedup by owner)" [ "$(printf '%s' "$h" | wc -w | tr -d ' ')" -eq 2 ]
@@ -30,6 +49,57 @@ case "$h" in *"/home/gamma"*)   bad "another host's home leaked in: $h" ;; *) ok
 
 h="$(deploy_home_list "$fx/sessions.d" doesnotexist 2>/dev/null)"; rc=$?
 check "an unknown host gives rc 78" [ "$rc" -eq 78 ]
+
+echo "== THE HOME IS LOOKED UP, NEVER SPELLED /home/<owner> =="
+# A HOST WHERE THAT GUESS IS WRONG IS NOT HYPOTHETICAL. On darwin the homes are
+# under /Users and /home is an empty autofs mount; measured 2026-09-11 on such a
+# host, this function answered `/home/jon` for an account whose home is
+# /Users/jon, and a rollout aimed there would have written into a tree that does
+# not exist while leaving the one that does untouched.
+#
+# The product already had the resolver this needed: _registry_owner_home asks
+# getent, then dscl, refuses when neither answers, and says in its own comment
+# that a directory "is joined onto this path; it is never guessed". This
+# function guessed anyway - the same shape as the listener probe that read an
+# absent tool as an empty surface, one library over.
+#
+# STEWARD_HOME_LOOKUP_CMD is the seam the resolver already exposes for suites,
+# so this case needs no second account on the machine.
+cat > "$fx/homelookup2" <<'STUB'
+#!/bin/sh
+case "$1" in
+  alfa) printf '/Users/alfa
+' ;;
+  beta) printf '/srv/homes/beta
+' ;;
+  *)    exit 1 ;;
+esac
+STUB
+chmod +x "$fx/homelookup2"
+printf 'HOST="host-three"
+OWNER="alfa"
+DOMAIN="d"
+' > "$fx/sessions.d/e.conf"
+printf 'HOST="host-three"
+OWNER="beta"
+DOMAIN="d"
+' > "$fx/sessions.d/f.conf"
+h="$(STEWARD_HOME_LOOKUP_CMD="$fx/homelookup2" deploy_home_list "$fx/sessions.d" host-three)"; rc=$?
+check "a looked-up home list is rc 0" [ "$rc" -eq 0 ]
+case "$h" in *"/Users/alfa"*)     ok ;; *) bad "the looked-up home is missing: $h" ;; esac
+case "$h" in *"/srv/homes/beta"*) ok ;; *) bad "a home outside /home is missing: $h" ;; esac
+case "$h" in *"/home/alfa"*) bad "the guessed path survived the lookup: $h" ;; *) ok ;; esac
+
+# AND AN ACCOUNT THE SYSTEM DOES NOT KNOW IS A REFUSAL, not a path. Guessing
+# here is how a rollout writes into a directory it creates itself, under a name
+# nobody has ever logged in as.
+printf 'HOST="host-four"
+OWNER="ghost"
+DOMAIN="d"
+' > "$fx/sessions.d/g.conf"
+h="$(STEWARD_HOME_LOOKUP_CMD="$fx/homelookup2" deploy_home_list "$fx/sessions.d" host-four 2>/dev/null)"; rc=$?
+check "an account with no home is rc 78, not a guess" [ "$rc" -eq 78 ]
+case "$h" in *ghost*) bad "a home was invented for an unknown account: $h" ;; *) ok ;; esac
 
 echo "== the sources from the manifest =="
 printf '# a comment\nlinux/a.sh  bin/a  755  bin\nlinux/b.sh  bin/b  644  bin\n' > "$fx/manifest"

@@ -58,20 +58,31 @@ _jobrun_reg_lib() {
 
 # PRESENCE IS NOT CONTENT: a deployed library that predates registry_login_apply
 # sources cleanly and then makes the call a command-not-found, whose rc 127 an
-# `if !` reads as a refusal. So the functions are measured with declare -F,
-# exactly as session-supervisor.sh measures the spawn libraries. Loads the
+# `if !` reads as a refusal. So the functions are measured with typeset -f,
+# exactly as session-supervisor.sh measures the spawn libraries.
+#
+# typeset -f AND NOT declare -F, measured 2026-09-11: in zsh `declare -F name`
+# is not a test at all - it declares a float and returns 0 - so the guard passes
+# for a function that does not exist. Every consumer here is bash, so this was
+# never live; a reader debugging the library from an interactive prompt meets it.
+#
+# AND NOT command -v EITHER, which is the repo's idiom for BINARIES (jq,
+# uuidgen, ss) and answers a different question: "can this name be called",
+# true for any PATH executable. What these lines ask is "did the library define
+# this", and typeset -f is the instrument for that in both shells - `typeset -f
+# ls` is rc 1 where `command -v ls` is rc 0. Loads the
 # library lazily — this is only ever called under a declared LOGIN, so a row
 # without one never touches the registry (the layer 2 requirement above).
 _jobrun_login_ready() {
   local lib
-  if ! declare -F registry_login_apply >/dev/null 2>&1; then
+  if ! typeset -f registry_login_apply >/dev/null 2>&1; then
     lib="$(_jobrun_reg_lib)" || return 1
     [ -f "$lib" ] || { echo "job-run: registry library missing: $lib" >&2; return 1; }
     # shellcheck source=/dev/null
     . "$lib" || { echo "job-run: could not load $lib" >&2; return 1; }
   fi
-  declare -F registry_login_apply >/dev/null 2>&1 || return 1
-  declare -F registry_login_config_dir >/dev/null 2>&1 || return 1
+  typeset -f registry_login_apply >/dev/null 2>&1 || return 1
+  typeset -f registry_login_config_dir >/dev/null 2>&1 || return 1
   return 0
 }
 

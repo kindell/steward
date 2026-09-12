@@ -155,9 +155,59 @@ export -f stat pgrep hostname
 # about is how this defect would be discovered rather than prevented. If any
 # name below is not a function, PATH would decide, and on a session host PATH
 # means the real X server.
+#
+# typeset -f AND NOT type -t, measured 2026-09-11. The old form was the repo's
+# only `type -t`, and under zsh it is not a test either: `type -t` is a bad
+# option there, stdout is empty, and the comparison "" != "function" holds - so
+# the gate REFUSES. It failed CLOSED, which for a gate whose failure would
+# otherwise start a real X server on somebody's display is the direction one
+# would pick on purpose.
+#
+# It was not picked on purpose, and that is the whole reason to change it. The
+# other instrument in this repo failed OPEN in the same shell for the same
+# reason, and the difference between the two was luck. A property this suite
+# relies on should not rest on which way an accident happened to fall.
+#
+# typeset -f also answers the question this gate actually asks - "is this name
+# specifically a FUNCTION, not something PATH can supply" - which is the
+# distinction the gate exists for, and it is right in both shells.
+# THE GATE ASKS A CHILD, because the child is what the property is about.
+#
+# Both earlier versions asked whether the name was a function IN THIS SHELL -
+# first `type -t`, then `typeset -f` - and that is a proxy for the thing this
+# suite depends on, not the thing itself. What it depends on is that a CHILD
+# process sees the stub: the script under test is run as `bash "$SCRIPT"`, and
+# if the stub does not reach it, PATH does, and on a session host PATH means a
+# real X server on the fixture's displays.
+#
+# The two are not the same question, and measured 2026-09-11 they give
+# different answers in the shell where it matters. zsh has no `export -f` in
+# bash's sense - there it PRINTS the function instead of exporting it:
+#   bash parent: f(){...}; export -f f; bash -c f   -> the stub runs
+#   zsh  parent: same two lines;        bash -c f   -> command not found
+# So under zsh the whole stub mechanism is inert. `type -t` refused everything
+# there by accident (it is a bad option in zsh) and the suite never ran, which
+# is why nobody had met this; `typeset -f` answers correctly that the function
+# exists HERE, the gate passes, and every child then falls through to PATH -
+# the exact hazard the gate exists to prevent, re-opened by making the gate
+# more correct about a narrower question.
+#
+# Asking a child settles it in any shell, and needs no knowledge of which one
+# is running.
+#
+# AND THE GAP IS WORST WHERE IT IS LEAST VISIBLE, which is the part that makes
+# this gate worth its lines. Put either older form back with the `export -f`
+# line removed and this suite goes RED - 16 pass, 9 fail - which looks like a
+# safety net. It is not one. It is a property of a machine with no X: with the
+# binaries absent the fall-through becomes `command not found` and shows up as
+# failing assertions. On a session host the binaries are THERE, so the same
+# fall-through runs them instead - a real X server and a real vnc on the
+# fixture's displays, silently, with the suite reporting green. Measured
+# 2026-09-11: neither Xvfb nor x11vnc nor chromium-browser exists on the
+# machine where those two control runs were made.
 for _n in Xvfb x11vnc setxkbmap xmodmap autocutsel sg stat pgrep hostname; do
-  if [ "$(type -t "$_n")" != "function" ]; then
-    echo "browser-stack.test: REFUSING TO RUN - '$_n' is not a stub function," >&2
+  if ! bash -c 'typeset -f "$1" >/dev/null 2>&1' _ "$_n"; then
+    echo "browser-stack.test: REFUSING TO RUN - a child process does not see '$_n' as a stub," >&2
     echo "  so PATH would decide, and on a host with a real X server this suite" >&2
     echo "  would start one on the fixture's displays. Fix the stub, do not run." >&2
     exit 1

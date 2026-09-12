@@ -61,7 +61,7 @@ _session_visible_to() {
   # choice is silent and total.
   [ -n "$viewer" ] && [ -n "$session" ] || return 1
 
-  if ! command -v registry_load >/dev/null 2>&1; then
+  if ! typeset -f registry_load >/dev/null 2>&1; then
     local _here; _here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # shellcheck source=registry.sh
     . "$_here/registry.sh" || { echo "visibility: could not load the registry" >&2; return 1; }

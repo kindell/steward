@@ -238,7 +238,47 @@ deploy_sources_clean() {
 }
 
 # ── HOME LIST FROM THE REGISTRY ────────────────────────────────────
+# THE RESOLVER COMES FROM THE REGISTRY LIBRARY, and this function refuses
+# rather than guessing when it is not loaded - a caller that sourced only this
+# file would otherwise get `command not found`, an empty home, and a rollout
+# aimed at nothing. Same rule as everywhere else today: a missing command is
+# not an answer.
 deploy_home_list() {
+  # THE RESOLVER COMES FROM THE REGISTRY LIBRARY, WHICH SITS BESIDE THIS FILE.
+  # Loading it here rather than demanding it of the caller keeps the standalone
+  # consumers working - this library is sourced on its own by the suites and by
+  # linux/deploy-self.sh - while still refusing if it is genuinely absent. A
+  # missing command is not an answer; it is the defect this whole change is
+  # about, one library over.
+  #
+  # `typeset -f`, AND NEITHER OF THE TWO IT REPLACED. Measured 2026-09-11.
+  #
+  # Not `declare -F`: in zsh that is not an existence test at all - it DECLARES
+  # a float and returns 0 - so the guard passes for a function that does not
+  # exist, the lazy load is skipped, and you land in exactly the `command not
+  # found` it exists to prevent. Every consumer here is bash, so it was never
+  # live; a reader sourcing this library from an interactive prompt meets it,
+  # and one did.
+  #
+  # And not `command -v`, which is this repo's idiom for BINARIES (jq, uuidgen,
+  # ss) and answers "can this name be called" - true of any PATH executable.
+  # What this asks is "did the library define it". `typeset -f ls` is rc 1
+  # where `command -v ls` is rc 0, and both are rc 1 for an absent name in both
+  # shells and in bash 3.2.
+  #
+  # This comment argued for command -v for six lines after the code had already
+  # moved to typeset -f - the mirror of a test whose heading was updated and
+  # whose subject was not, in the file whose own comment calls that shape the
+  # one it spent the day removing.
+  if ! typeset -f _registry_owner_home >/dev/null 2>&1; then
+    _dc_lib="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)/registry.sh"
+    # shellcheck source=registry.sh
+    [ -f "$_dc_lib" ] && . "$_dc_lib" 2>/dev/null
+  fi
+  if ! typeset -f _registry_owner_home >/dev/null 2>&1; then
+    echo "deploy-core: REFUSING - the registry library is not beside this one, so a home cannot be looked up" >&2
+    return 78
+  fi
   local RD="$1" HOST="$2"
   local HOMES=""
   local _f _h _o _home
@@ -248,7 +288,22 @@ deploy_home_list() {
     [ "$_h" = "$HOST" ] || continue
     _o="$(sed -n 's/^OWNER="\(.*\)"/\1/p' "$_f" | head -1)"
     [ -n "$_o" ] || continue
-    _home="/home/$_o"
+    # THE HOME IS LOOKED UP, NEVER SPELLED. `/home/$_o` is true on the Linux
+    # hosts this was written for and false on every darwin one, where homes live
+    # under /Users and /home is an empty autofs mount. Measured 2026-09-11 on
+    # such a host: this answered `/home/jon` for an account whose home is
+    # /Users/jon, so a rollout would have written into a tree that does not
+    # exist and left the one that does untouched - and nothing would have said
+    # so, because a path is not an error.
+    #
+    # The resolver already existed one library over. _registry_owner_home asks
+    # getent, then dscl, honours STEWARD_HOME_LOOKUP_CMD for the suites, and
+    # refuses when the account database has no answer - its own comment says a
+    # directory "is joined onto this path; it is never guessed". This line
+    # guessed anyway, which is the same shape as a probe reading an absent tool
+    # as an empty surface: the platform assumption was never announced, and the
+    # code answered where it should have refused.
+    _home="$(_registry_owner_home "$_o")" || return 78
     case " $HOMES " in
       *" $_home "*) ;;
       *) HOMES="$HOMES $_home" ;;
