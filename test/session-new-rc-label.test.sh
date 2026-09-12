@@ -30,6 +30,12 @@ a="$(grep -n '<<CONFEOF' "$NEW" | head -1 | cut -d: -f1)"; b="$(awk -v a="$a" 'N
 tpl="$(sed -n "$((a+1)),$((b-1))p" "$NEW")"
 is "2a template found" "$([ -n "$a" ] && [ -n "$b" ] && echo yes)" "yes"
 is "2b zero RC_LABEL= lines in the template" "$(printf '%s\n' "$tpl" | grep -cE '^\s*RC_LABEL=')" "0"
+# NO BACKTICKS IN THE TEMPLATE BODY. The heredoc is UNQUOTED (it must expand $VARD, $REPO, $NAMN),
+# so a backtick in a COMMENT is a command substitution the shell runs at conf-write time. The
+# first cut of this template said "until somebody ran `registry session derive`" and every new
+# conf read "until somebody ran ." - found by the hub 2026-09-12 in a real row. No suite can
+# read a comment, so the rule is asserted on the source: the template body carries no backtick.
+is "2c no backtick anywhere in the template body (unquoted heredoc)" "$(printf '%s\n' "$tpl" | grep -c '\x60')" "0"
 
 echo "== 3. the supervisor's three states, on the extracted branch =="
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
