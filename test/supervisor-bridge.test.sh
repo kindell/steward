@@ -208,6 +208,20 @@ run; is "4c round two: the zombie repair ran once" "$(tl kill-session)" "1"; is 
 hasnt "4f the OLD two-round block did not run (its text is absent)" "$OUT" "ZOMBIE PANE"
 is "4g the close went to the parsed \$N, not the name (E4)" "$(tl 'kill-session -t \$7')" "1"
 
+echo "== 4b. a LIVE round between two no-process rounds resets the count (measured on the deployed supervisor 2026-09-12) =="
+# The hub's P1b case B: a silent no-process round at 05:57:56 left its mark; the session lived until
+# 06:14:36; the next no-process round at 06:14:43 acted at once as "the second in a row". Same tuple (the
+# tmux session survived the process), so the key would match. A managed round in between must reset it -
+# and it does, at the live path's "the resume took" line; this section pins that (a mutation that only
+# touched the case block survived, because the reset lives there and not in the case).
+reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""
+run; is "4b1 round one: suspect keyed" "$(cat "$SUSPECT" 2>/dev/null)" 'close $7:1789000000'
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1 alive live:managed "" 4243 thread-4243 1 '$7:1789000000' 777; run
+[ -f "$SUSPECT" ] && bad "4b2 a managed round clears the suspect" "$(cat "$SUSPECT")" || ok "4b2 a managed round clears the suspect"
+line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run
+is "4b3 the next no-process round is round ONE again: nothing closed" "$(tl kill-session)$(tl new-session)" "00"
+run; is "4b4 and the one after it closes" "$(tl kill-session)" "1"
+
 echo "== 5. moved: nothing =="
 reset; touch "$T_HAS_SESSION"; line identified:moved 4243 boot-s:111 "$NAME:@0.%0" "X" 1 alive live:moved "" 4243 t 1 '$7:1' 1; before="$(gen_snapshot)"; run
 is "5a nothing" "$(tl kill-session)$(tl new-session)" "00"; is "5b no bkill" "$(grep -c . "$BKILL_LOG")" "0"; is "5c generation untouched" "$(gen_snapshot)" "$before"; has "5d says MOVED" "$OUT" "MOVED"
