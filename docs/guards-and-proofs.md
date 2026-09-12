@@ -353,3 +353,39 @@ inputs are enumerated, before saying whose it is. This is rule 11 one level
 up: the fixture that overrides `HOME` and forgets the variable that outranks
 it, and the bisection that verifies the tree and forgets the config that
 outranks the tree, are the same mistake.
+
+## 13. The field you can read and the surface a person looks at may be two objects.
+
+A session's tile in the vendor's list showed `Du har post` for seven and a
+half hours while its name was `Butler→Nav`. Two sessions measured it
+independently and both reported the right name, because both read the same
+place: the vendor's session record, which said `name=Butler→Nav,
+nameSource=user` the whole time - verified in a third tree afterwards. The
+rename had worked. What the human was reading was an AUTOTITLE the runtime
+had written over the tile when the first `[bus] du har post` ping arrived, on
+a surface neither measurement touched.
+
+Nothing here was a wrong measurement. Both were correct about the field they
+read, and the field was not the thing anyone cared about.
+
+So when a person reports that a display is wrong and the measurement says it
+is right, the disagreement is the finding, and it is resolved by asking WHICH
+SURFACE each side is looking at - not by re-running the measurement, which
+will keep agreeing with itself. Two questions settle it:
+
+- Is the thing I am reading the thing they are seeing, or a record the
+  surface is *supposed* to follow? A record and a rendering diverge whenever
+  anything else can write the rendering.
+- Can anything write that surface other than the code under test? Here it was
+  the runtime's own autotitle, triggered by an unrelated feature - a message
+  ping - which is exactly the kind of writer no fixture would think to stub.
+
+The remedy that holds is to measure the surface, not the record: read the
+tile, the rendered page, the list the operator opens. Where that is not
+reachable from a test, the honest report names the field it read and says the
+rendering was not checked, rather than answering "the name is correct" to a
+question that was about the tile.
+
+Measured 2026-09-12 by the session that owns the product's supervisor, which
+also withdrew an earlier explanation of its own - that the rename cycle never
+runs for derived sessions - when this one turned out to fit the evidence.
