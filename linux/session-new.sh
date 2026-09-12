@@ -105,7 +105,7 @@ REG_LIB="${STEWARD_REGISTRY_LIB:-$(_reg_lib_default)}"
 # tooling looked past them, refusing with "no conf" — a refusal naming the wrong
 # cause. Deployed, the root resolves to the same directory as before.
 SESS_D="${STEWARD_SESSIONS_D:-$(registry_dir)}"
-RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
+# NO RC PREFIX, AND NO RC_LABEL VALUE EITHER: see the conf template below.
 NAV="$(registry_hub_session)" || exit 78
 
 # _ar_myntat_id <candidate>: rc 0 iff s- followed by exactly 16 hex digits.
@@ -657,7 +657,14 @@ cat > "$tmpc" <<CONFEOF
 # $NAMN — created by session-new $(date -u +%Y-%m-%dT%H:%M:%SZ) from $SJALV.
 HOST="$VARD"
 REPO_PATH="$REPO"
-RC_LABEL="$RC_PREFIX$NAMN"
+# NO RC_LABEL LINE, ON PURPOSE. Three states, and the supervisor (session-supervisor-linux.sh, the
+# RC_LABEL branch) reads them differently: line ABSENT -> the tile name derives from the row
+# (registry_session_display: Team or Team->Project, rule of 2026-09-06); line PRESENT AND EMPTY ->
+# the session is RC-FREE, no remote-control tile at all (M14, _registry_gate_rc_free); a VALUE ->
+# verbatim. This template used to write RC_PREFIX+slug, which on a post-09-06 estate is the bare
+# slug - a verbatim label that blocked derivation until somebody ran `registry session derive`.
+# Writing RC_LABEL="" instead would have made every new session RC-free. Absent is the only state
+# that means "derive", so the line is not written.
 PERMISSION_MODE="bypassPermissions"
 # OWNER IS A LOGIN. The name above carries the principal; this line says which
 # unix account runs the thing, which is the same distinction the hub makes when

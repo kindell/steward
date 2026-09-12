@@ -197,7 +197,9 @@ if [ -z "$_STATE_NAME" ] || [ -z "$_PAUSED_NAME" ]; then
   echo "session-supervisor: $NAME — session would have been restarted although someone shut it down." >&2
   exit 78
 fi
-RC_PREFIX="$(registry_rc_label_prefix)" || exit 78
+# RC_PREFIX IS GONE. It was computed here and read nowhere - the tile name derives from the
+# row (registry_session_display) since 2026-09-06, and liveness matches the binary, not a label.
+# Found by the hub 2026-09-12: a variable that is set and discarded is the shape of a dropped link.
 # THE HUB'S NAME COMES FROM THE ESTATE, as in session-new and session-approve.
 # A literal here would have sent every auto-alert to a recipient that may not
 # exist.
