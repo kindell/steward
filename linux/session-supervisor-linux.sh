@@ -480,9 +480,9 @@ MY_LOGIN_KEY="$(registry_session_login_key "${LOGIN:-}" "${OWNER:-}" "${HOST:-}"
 # host_row_could_bear <row> <desired> <static display or empty> - rc 0 when the row COULD be holding the
 # desired display by any record we hold: its registry display, or its generation's applied name, pending
 # name or last seen bridge name; an unreadable display counts as "could" (fail closed). MEASURED IN
-# PRODUCTION 2026-09-12 14:05 (Jon's home on basement, eleven rows on one login): without this question the
+# PRODUCTION 2026-09-12 14:05 (the owner's home on the Linux host, eleven rows on one login): without this question the
 # first M7 refused every spawn as soon as ANY sibling failed to observe in the round - a sibling called
-# 'Point' cannot hold 'Chalmers→Innovation' whether it is observable or not, and a session Jon had asked
+# 'Studio' cannot hold 'School→Project' whether it is observable or not, and a session the owner had asked
 # to restart stayed down. Doubt is decisive only about a row that could bear the name.
 host_row_could_bear() {
   local n="$1" d="$2" disp="$3" v
