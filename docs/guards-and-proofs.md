@@ -316,3 +316,26 @@ So a bisection step owes a receipt that is not its own exit code:
 
 Systematic method does not confer correctness. It confers a shape that is
 harder to doubt, which is worse.
+
+**And a verified checkout isolates the TREE, not the HOST.** Measured the
+same day this rule was written, by the person who wrote it: a full gate on a
+worktree whose HEAD was checked before the run reported twelve red suites and
+was reported onward as "origin is red in twelve". Ten of them were one line
+in `~/.config/steward/config` on the host - a key the CLI's loader refuses,
+so every `steward` call on the machine returned 78 for an hour, whichever
+tree it ran from. A colleague's Linux run of the same commit was green in all
+ten; a colleague's direct invocation on the same darwin host was green in all
+ten; only the runs that crossed that hour on that host were red. The worktree
+was clean. The measurement was correct. The conclusion was about the code,
+and the cause was the machine.
+
+So a bisection's receipt has a fourth line: **what the host contributed**.
+`git rev-parse HEAD` says which tree ran; it says nothing about the user-level
+config, the profile's environment, the state directories and the sockets the
+code reads regardless of tree. When two runs of the same commit disagree,
+suspect the host before the commit - and when a red must be attributed to a
+change, reproduce it on a second machine, or in an environment whose host
+inputs are enumerated, before saying whose it is. This is rule 11 one level
+up: the fixture that overrides `HOME` and forgets the variable that outranks
+it, and the bisection that verifies the tree and forgets the config that
+outranks the tree, are the same mistake.
