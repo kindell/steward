@@ -189,7 +189,7 @@ run() { # [id]
   : > "$TMUX_LOG"; : > "$PGREP_LOG"; : > "$OBS_LOG"; : > "$BKILL_LOG"
   HOME="$HOMEDIR" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config" STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_BRIDGE_LIB="$LIBS/bridge.sh" \
   STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_BRIDGE_KILL="$BIN/bkill" STEWARD_NONCE_CMD="$BIN/nonce" \
-  BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 STEWARD_SELF_HOST=h1 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"   # a caller's VAR=x run reaches the supervisor: bash exports a function call's prefix assignments
+  BRIDGE_PROC_ROOT="${PROC_OVERRIDE:-$PROC}" STEWARD_KEY_SETTLE_SEC=0 STEWARD_SELF_HOST=h1 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"   # PROC_OVERRIDE: a claim that needs the REAL /proc (41o)   # a caller's VAR=x run reaches the supervisor: bash exports a function call's prefix assignments
 }
 # ISOLATION (advisor, identity-t9-review): the OTHER row's conf lives in the registry, not in STATE, so a
 # reset that left it there let a later section meet a same-key row with no observer file - which M7 now
@@ -601,6 +601,16 @@ is "39y4 and a spawn stands down on the same doubt" "$(tl new-session)" "0"
 reset; other_row; printf '%s\037identified:managed\037garbage\n' "$OTHER" > "$T/obs-other/$OTHER"; other_gen census=1; OLD; run
 is "39y5 a malformed line from the other row is doubt, not absence" "$(gget pending_for)" ""
 
+echo "== 39x. M11: a same-key row that does NOT LOAD is read strictly, never skipped =="
+other_raw() { printf 'OWNER="a"\nHOST="%s"\nDOMAIN="alpha"\nID="%s"\nRC_LABEL="Other Thing"\n%b' "${2:-h1}" "$OTHER" "${1:-}" > "$ROOT/sessions.d/$OTHER.conf"; }   # [extra] [host]; no REPO_PATH: never loads
+reset; other_raw; OLD; run
+is "39x1 an unloadable same-key claude row on this host cannot be asked: rename stands down" "$(gget pending_for)" ""; has "39x2 naming it as unproven" "$OUT" "$OTHER"
+reset; other_raw 'RUNTIME="opencode"\n'; OLD; run; is "39x3 its own words rule it out (another runtime): free" "$(gget pending_for)" "Alpha→Thing"
+reset; other_raw '' h2; OLD; run; is "39x4 another host: free" "$(gget pending_for)" "Alpha→Thing"
+reset; other_raw 'LIFECYCLE="retired"\n'; OLD; run; is "39x5 retired: free" "$(gget pending_for)" "Alpha→Thing"
+reset; other_raw 'RUNTIME="opencode"\nRUNTIME="opencode"\n'; OLD; run; is "39x6 a malformed field (duplicate RUNTIME) cannot exempt it: stands down" "$(gget pending_for)" ""
+reset; other_raw; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39x7 and a spawn stands down on the same row" "$(tl new-session)" "0"
+
 echo "== 39z. M6: a valid OPEN LAUNCH CLAIM reserves the display during the window before the bridge file exists =="
 # Between claude_claim_open and the first observation there is no bridge file, so the adapter answers
 # no-process for the other row and M3's rule ("identified:* holds the tile") sees nothing. The claim is the
@@ -665,6 +675,43 @@ mkdir -p "$STATE/.display-reservation.lock"; printf '4242 boot-s:100\n' > "$STAT
 is "41k a stale lock whose owner is ALIVE (same pid, same birth) is NOT broken" "$(tl new-session)" "0"; has "41l and alarms as held by a live holder past the limit" "$OUT" "live"
 printf '4242 boot-s:999\n' > "$STATE/.display-reservation.lock/owner"; run
 is "41m the same pid with ANOTHER birth is a reused number: dead, broken" "$(tl new-session)" "1"
+# M10: the steal is atomic. Two contenders meet the same dead lock in the same instant; exactly ONE spawns.
+# THE CONTENDERS READ THE REAL /proc HERE: under the fixture proc every real pid looks dead, so the loser
+# would judge the winner's fresh lock dead too and the claim would measure the suspect file, not the
+# lock. With the real /proc the winner's owner record (its live pid) is judged alive; the dead owner's
+# recorded birth carries the fixture boot token, so it mismatches whatever the host has and is dead.
+# The suspect is pre-confirmed so both contenders reach the spawn path in the same round.
+reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+mkdir -p "$STATE/.display-reservation.lock"; printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"
+# AND THE SECTION IS MEASURED FROM INSIDE (as in 40): a probe runs inside each contender's critical
+# section (the observer call for the other row) and reads the owner record; if it names another pid than
+# the supervisor running the probe, the other contender replaced the lock underneath a live holder.
+rm -f "$T/clobber"
+# the probe waits inside the section before reading, so the section spans the moment a late steal would land
+cat > "$OBS_SIDE_EFFECT" <<PROBE
+[ "\$1" = "$OTHER" ] || exit 0          # only the observation of the OTHER row happens inside the critical section
+sleep 0.4
+# the TOPMOST ancestor whose command line is the supervisor: a \$( ) subshell is a fork with the same
+# command line, but the owner record carries the main shell's \$\$ - so keep climbing while it matches
+p=\$PPID; sup=""; for i in 1 2 3 4 5 6 7 8; do c="\$(tr '\\0' ' ' < /proc/\$p/cmdline 2>/dev/null)"; case "\$c" in *session-supervisor-linux.sh*) sup="\$p" ;; *) [ -n "\$sup" ] && break ;; esac; p="\$(sed 's/^.*) //' /proc/\$p/stat 2>/dev/null | awk '{print \$2}')"; [ -n "\$p" ] && [ "\$p" -gt 1 ] 2>/dev/null || break; done   # ppid from /proc, never the ps shim
+own="\$(cut -d' ' -f1 "$STATE/.display-reservation.lock/owner" 2>/dev/null)"
+[ -n "\$sup" ] && [ "\$own" != "\$sup" ] && echo "CLOBBERED holder=\$sup owner=\${own:-none}" >> "$T/clobber"   # inside the section the lock must exist and be ours
+exit 0
+PROBE
+# each contender keeps its own tmux log (run truncates the shared one at start, so two runs would erase
+# each other's lines); the second starts a beat later, so both judge the dead lock before either has
+# finished replacing it - the schedule in which a non-atomic steal clobbers the first steal's new lock
+( TMUX_LOG="$T/tmux.c1.log" PROC_OVERRIDE=/proc run ) & sleep 0.15; ( TMUX_LOG="$T/tmux.c2.log" PROC_OVERRIDE=/proc run ) & wait
+rm -f "$OBS_SIDE_EFFECT"
+is "41o two contenders on a dead lock: exactly one spawn" "$(cat "$T/tmux.c1.log" "$T/tmux.c2.log" | grep -c new-session)" "1"
+[ -f "$T/clobber" ] && bad "41o2 no contender found the lock replaced under it" "$(cat "$T/clobber")" "" || ok "41o2 no contender found the lock replaced under it"
+[ -n "$(ls -d "$STATE"/.display-reservation.lock.stolen.* 2>/dev/null)" ] && bad "41p no quarantine debris left behind" "$(ls -d "$STATE"/.display-reservation.lock.stolen.*)" "" || ok "41p no quarantine debris left behind"
+[ -d "$STATE/.display-reservation.lock" ] && bad "41q and the lock is released" "" || ok "41q and the lock is released"
+# an owner that recorded "?" (could not read its own birth) is judged by its pid alone: alive = not broken
+reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+mkdir -p "$STATE/.display-reservation.lock"; printf '4242 ?\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" 1700000000; run
+is "41r owner '4242 ?' with pid 4242 alive: not broken" "$(tl new-session)" "0"
+printf '4299 ?\n' > "$STATE/.display-reservation.lock/owner"; run; is "41s owner '4299 ?' with pid gone: broken" "$(tl new-session)" "1"
 run; [ -f "$STATE/.display-reservation.lock/owner" ] && ok "41n our own lock records its owner while held (seen mid-round by the probe below)" || ok "41n (checked in 40)"
 rmdir "$STATE/.display-reservation.lock" 2>/dev/null; rm -rf "$STATE/.display-reservation.lock"
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; mkdir -p "$STATE/.display-reservation.lock"; run; run
