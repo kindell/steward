@@ -610,6 +610,15 @@ reset; other_raw '' h2; OLD; run; is "39x4 another host: free" "$(gget pending_f
 reset; other_raw 'LIFECYCLE="retired"\n'; OLD; run; is "39x5 retired: free" "$(gget pending_for)" "Alpha→Thing"
 reset; other_raw 'RUNTIME="opencode"\nRUNTIME="opencode"\n'; OLD; run; is "39x6 a malformed field (duplicate RUNTIME) cannot exempt it: stands down" "$(gget pending_for)" ""
 reset; other_raw; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39x7 and a spawn stands down on the same row" "$(tl new-session)" "0"
+# M14: RUNTIME FIRST - a valid unloadable OpenCode row with a malformed LOGIN is out of the question before
+# the LOGIN is ever read; a valid retired row likewise. M13: a duplicated RC_LABEL with one empty line is
+# not the RC-free choice - it is malformed, and malformed never exempts.
+reset; other_raw 'RUNTIME="opencode"\nLOGIN="x"\nLOGIN="y"\n'; OLD; run; is "39x8 runtime first: an unloadable OpenCode row with a duplicated LOGIN is free, not uninspectable" "$(gget pending_for)" "Alpha→Thing"
+reset; other_raw 'LIFECYCLE="retired"\nLOGIN="x"\nLOGIN="y"\n'; OLD; run; is "39x9 lifecycle before the key: a retired row with a duplicated LOGIN is free" "$(gget pending_for)" "Alpha→Thing"
+reset; printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nID="%s"\nRC_LABEL=""\nRC_LABEL="Other Thing"\n' "$OTHER" > "$ROOT/sessions.d/$OTHER.conf"; OLD; run
+is "39x10 a duplicated RC_LABEL, one of them empty, is NOT the RC-free exemption: stands down" "$(gget pending_for)" ""
+reset; printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nID="%s"\nRC_LABEL=""\n' "$OTHER" > "$ROOT/sessions.d/$OTHER.conf"; OLD; run
+is "39x11 exactly one empty RC_LABEL IS the RC-free choice: free" "$(gget pending_for)" "Alpha→Thing"
 
 echo "== 39z. M6: a valid OPEN LAUNCH CLAIM reserves the display during the window before the bridge file exists =="
 # Between claude_claim_open and the first observation there is no bridge file, so the adapter answers
@@ -675,6 +684,12 @@ mkdir -p "$STATE/.display-reservation.lock"; printf '4242 boot-s:100\n' > "$STAT
 is "41k a stale lock whose owner is ALIVE (same pid, same birth) is NOT broken" "$(tl new-session)" "0"; has "41l and alarms as held by a live holder past the limit" "$OUT" "live"
 printf '4242 boot-s:999\n' > "$STATE/.display-reservation.lock/owner"; run
 is "41m the same pid with ANOTHER birth is a reused number: dead, broken" "$(tl new-session)" "1"
+# NO /proc ON DARWIN (measured on minin 2026-09-12: 41o read 0 spawns there): the two contenders and the
+# probe below read the REAL /proc on purpose, so on a host without one the claim is SKIPPED loudly. The
+# steal itself goes through lib/bridge.sh, which has the darwin backend, and is measured on minin live.
+if [ ! -d /proc/self ]; then
+  echo "== 41o/41o2 SKIPPED: no /proc on this host (darwin); the contenders and the in-section probe need the real one =="
+else
 # M10: the steal is atomic. Two contenders meet the same dead lock in the same instant; exactly ONE spawns.
 # THE CONTENDERS READ THE REAL /proc HERE: under the fixture proc every real pid looks dead, so the loser
 # would judge the winner's fresh lock dead too and the claim would measure the suspect file, not the
@@ -705,6 +720,7 @@ PROBE
 rm -f "$OBS_SIDE_EFFECT"
 is "41o two contenders on a dead lock: exactly one spawn" "$(cat "$T/tmux.c1.log" "$T/tmux.c2.log" | grep -c new-session)" "1"
 [ -f "$T/clobber" ] && bad "41o2 no contender found the lock replaced under it" "$(cat "$T/clobber")" "" || ok "41o2 no contender found the lock replaced under it"
+fi
 [ -n "$(ls -d "$STATE"/.display-reservation.lock.stolen.* 2>/dev/null)" ] && bad "41p no quarantine debris left behind" "$(ls -d "$STATE"/.display-reservation.lock.stolen.*)" "" || ok "41p no quarantine debris left behind"
 [ -d "$STATE/.display-reservation.lock" ] && bad "41q and the lock is released" "" || ok "41q and the lock is released"
 # an owner that recorded "?" (could not read its own birth) is judged by its pid alone: alive = not broken
@@ -712,6 +728,14 @@ reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "
 mkdir -p "$STATE/.display-reservation.lock"; printf '4242 ?\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" 1700000000; run
 is "41r owner '4242 ?' with pid 4242 alive: not broken" "$(tl new-session)" "0"
 printf '4299 ?\n' > "$STATE/.display-reservation.lock/owner"; run; is "41s owner '4299 ?' with pid gone: broken" "$(tl new-session)" "1"
+# M12: the steal is a CAS. A dead lock that already carries a steal MARKER belongs to another contender's
+# steal in progress: stand down, touch nothing. A completed steal leaves no marker and no quarantine.
+reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+mkdir -p "$STATE/.display-reservation.lock/steal"; printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"; run
+is "41t a dead lock whose steal marker another contender holds: no spawn" "$(tl new-session)" "0"; has "41u and says another contender is stealing" "$OUT" "already stealing"
+[ -d "$STATE/.display-reservation.lock/steal" ] && ok "41v the lock and its marker are untouched" || bad "41v the lock and its marker are untouched" "gone" "present"
+rmdir "$STATE/.display-reservation.lock/steal"; run; is "41w without the marker the steal proceeds" "$(tl new-session)" "1"
+[ -e "$STATE/.display-reservation.lock" ] && bad "41x and leaves nothing" "" || ok "41x and leaves nothing"
 run; [ -f "$STATE/.display-reservation.lock/owner" ] && ok "41n our own lock records its owner while held (seen mid-round by the probe below)" || ok "41n (checked in 40)"
 rmdir "$STATE/.display-reservation.lock" 2>/dev/null; rm -rf "$STATE/.display-reservation.lock"
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; mkdir -p "$STATE/.display-reservation.lock"; run; run

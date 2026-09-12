@@ -3965,6 +3965,12 @@ registry_session_login_key() { local lg="${1:-}" ow="${2:-}" host="${3:-}"; if [
 # host in their shapes; RC_LABEL free data but still one line. Anything else is rc 2 - the row is
 # UNINSPECTABLE - so a row that does not load can never exempt itself with a malformed field.
 #   rc 0 value on stdout (empty when absent or KEY=""), rc 2 malformed.
+# _registry_gate_rc_free <file> - rc 0 when the row is RC-FREE by its own words: exactly ONE RC_LABEL line
+# and it is exactly RC_LABEL="". A duplicated RC_LABEL is never RC-free (advisor M13) - the caller has
+# already run the strict reader, which refuses duplicates, but the empty choice is decided here on the
+# same count so the two can never disagree.
+_registry_gate_rc_free() { [ "$(grep -c '^RC_LABEL=' "$1" 2>/dev/null)" = 1 ] && grep -q '^RC_LABEL=""$' "$1" 2>/dev/null; }
+
 _registry_gate_raw() {
   local f="$1" k="$2" n v
   n="$(grep -c "^$k=" "$f" 2>/dev/null)"; case "$n" in ''|*[!0-9]*) n=0 ;; esac
@@ -4009,11 +4015,15 @@ registry_session_rendered_unique() {
     local raw=""
     snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" \
       || { raw=1
-           # every raw field is read strictly; one malformed field makes the row uninspectable (M5)
+           # every raw field is read strictly; one malformed field makes the row uninspectable (M5) -
+           # in the gate's own order (M14): runtime first, lifecycle, RC-free, then the key and target
            rt="$(_registry_gate_raw "$f" RUNTIME)" || { printf '%s\n' "$cand"; return 2; }; rt="${rt:-claude-code}"
+           [ "$rt" = claude-code ] || continue
            lc="$(_registry_gate_raw "$f" LIFECYCLE)" || { printf '%s\n' "$cand"; return 2; }; lc="${lc:-active}"
-           fri=""; grep -q '^RC_LABEL=""$' "$f" 2>/dev/null && fri=yes
+           [ "$lc" != retired ] || continue
            _registry_gate_raw "$f" RC_LABEL >/dev/null || { printf '%s\n' "$cand"; return 2; }
+           fri=""; _registry_gate_rc_free "$f" && fri=yes
+           [ "$fri" != yes ] || continue
            # THE TARGET UNION MUST BE UNAMBIGUOUS when the display is derived (M5 precision): each of
            # TARGET_PROJECT, TARGET_ENTITY, SLUG once at most and in shape, and never both targets.
            local _tp _te; _tp="$(_registry_gate_raw "$f" TARGET_PROJECT)" || { printf '%s\n' "$cand"; return 2; }
@@ -4071,7 +4081,9 @@ registry_session_work_rule() {
     snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${TARGET_PROJECT:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" \
       || { raw=1
            rt="$(_registry_gate_raw "$f" RUNTIME)" || { printf '%s\n' "$cand"; return 2; }; rt="${rt:-claude-code}"
+           [ "$rt" = claude-code ] || continue                                   # runtime first (M14)
            lc="$(_registry_gate_raw "$f" LIFECYCLE)" || { printf '%s\n' "$cand"; return 2; }; lc="${lc:-active}"
+           [ "$lc" != retired ] || continue
            tp="$(_registry_gate_raw "$f" TARGET_PROJECT)" || { printf '%s\n' "$cand"; return 2; }
            lg="$(_registry_gate_raw "$f" LOGIN)" || { printf '%s\n' "$cand"; return 2; }
            ow="$(_registry_gate_raw "$f" OWNER)" || { printf '%s\n' "$cand"; return 2; }
