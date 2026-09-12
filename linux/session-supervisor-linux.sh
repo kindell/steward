@@ -601,56 +601,33 @@ host_gate_lock() { # rc 0 held (by us), rc 1 ANOTHER supervisor holds it, rc 2 n
       echo "session-supervisor: $NAME — the display reservation lock cannot be created in $STATE_DIR; standing down (nothing can be reserved here)." >&2
       return 2
     fi
-    # THE LOCK NAMES ITS OWNER, AND ONLY A PROVABLY DEAD OWNER IS BROKEN (advisor M8). Age alone breaks
-    # nothing: an observer call inside the section is unbounded, so an old lock may be a slow live holder.
-    # The owner record is "pid birth" (bridge_os_birth); the same pid with another birth is a reused
-    # number, a pid that is gone is gone - both dead, broken at once whatever the age. A live owner past the
-    # limit alarms with the remedy and is never broken; a lock without an owner record cannot be proven
-    # dead and is treated as live.
+    # THE LOCK IS NEVER STOLEN (advisor M8, M10, M12, M15). Age alone breaks nothing: an observer call
+    # inside the section is unbounded, so an old lock may be a slow live holder. And a lock whose owner
+    # LOOKS dead is not broken either: every automatic steal we built - rm -rf, rename into quarantine, a
+    # marker plus an inode check - left a window in which the judgement about the OLD lock was applied to
+    # a NEW one another contender had just taken, and the spec asks for mutual exclusion and fail-closed
+    # behaviour, not for automatic stale recovery. So contention stands the round down, always. The owner
+    # record is for the operator: the alarm names the owner (pid, birth), whether that process still
+    # lives, the lock's age, and the one remedy - remove the directory by hand once the holder is known
+    # to be gone. A holder that crashed mid-section therefore costs an operator one rmdir, never a
+    # duplicate display.
     now="$(date +%s)"; age="$(_mtime_of "$HOST_GATE_LOCK")"; local _agesec=""
     if _is_epoch "$age" && _is_epoch "$now"; then _agesec=$((now - age)); fi
-    local _owner _opid _obirth _cur; _owner="$(cat "$HOST_GATE_LOCK/owner" 2>/dev/null)"; _opid="${_owner%% *}"; _obirth="${_owner#* }"; [ "$_obirth" = "$_owner" ] && _obirth=""
+    local _owner _opid _obirth _cur _alive _alarm; _owner="$(cat "$HOST_GATE_LOCK/owner" 2>/dev/null)"; _opid="${_owner%% *}"; _obirth="${_owner#* }"; [ "$_obirth" = "$_owner" ] && _obirth=""
     [ "$_obirth" = "?" ] && _obirth=""        # the holder could not read its own birth: only its pid can be judged
     case "$_opid" in ''|*[!0-9]*) _opid="" ;; esac
+    _alive="unknown (no owner record)"
     if [ -n "$_opid" ]; then
       _cur="$(bridge_os_birth "$_opid" 2>/dev/null)" || _cur=""
-      if [ -z "$_cur" ] || { [ -n "$_obirth" ] && [ "$_cur" != "$_obirth" ]; }; then
-        # THE STEAL IS A COMPARE-AND-SWAP BOUND TO THE PATH INSTANCE (advisor M10, M12). A rename alone is
-        # atomic for one instance of the path but not ABA-safe: contender B, having judged the OLD lock
-        # dead, could rename away the NEW lock A had just taken. So: the contender first wins the steal
-        # MARKER - mkdir <lock>/steal, atomic, exactly one winner - and then checks that the lock is still
-        # the very directory it judged (same inode). A different inode means the path now holds a live
-        # lock taken by someone else: the marker is withdrawn and the round stands down. Only the marker's
-        # holder, on the same instance, renames it into quarantine; nobody else can move a lock without the
-        # marker, and the marker cannot be won on a lock the judge did not see.
-        local _ino0 _ino1 _q="$HOST_GATE_LOCK.stolen.$$.$RANDOM"
-        _ino0="$(stat -c %i "$HOST_GATE_LOCK" 2>/dev/null || stat -f %i "$HOST_GATE_LOCK" 2>/dev/null)"
-        if ! mkdir "$HOST_GATE_LOCK/steal" 2>/dev/null; then
-          echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid) is dead, but another contender is already stealing it; standing down this round." >&2
-          return 1
-        fi
-        _ino1="$(stat -c %i "$HOST_GATE_LOCK" 2>/dev/null || stat -f %i "$HOST_GATE_LOCK" 2>/dev/null)"
-        if [ -z "$_ino0" ] || [ "$_ino0" != "$_ino1" ]; then
-          rmdir "$HOST_GATE_LOCK/steal" 2>/dev/null
-          echo "session-supervisor: $NAME — the display reservation lock changed under the steal (another instance now holds the path); standing down this round." >&2
-          return 1
-        fi
-        if ! mv "$HOST_GATE_LOCK" "$_q" 2>/dev/null; then
-          rmdir "$HOST_GATE_LOCK/steal" 2>/dev/null
-          echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid) is dead, but it could not be moved; standing down this round." >&2
-          return 1
-        fi
-        echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid, birth ${_obirth:-unrecorded}) is dead (now ${_cur:-gone}); broken." >&2
-        rm -rf "$_q" 2>/dev/null
-        mkdir "$HOST_GATE_LOCK" 2>/dev/null || return 1
-      else
-        [ -n "$_agesec" ] && [ "$_agesec" -ge "$HOST_GATE_STALE_SEC" ] && echo "session-supervisor: $NAME — the display reservation lock has been held by a live supervisor (pid $_opid) for ${_agesec}s, past the ${HOST_GATE_STALE_SEC}s limit; not broken - if that supervisor is hung, stop it and remove $HOST_GATE_LOCK." >&2
-        return 1
-      fi
-    else
-      [ -n "$_agesec" ] && [ "$_agesec" -ge "$HOST_GATE_STALE_SEC" ] && echo "session-supervisor: $NAME — the display reservation lock is ${_agesec}s old with no owner record; its holder cannot be proven dead, so it is not broken - if no supervisor is running here, remove $HOST_GATE_LOCK." >&2
-      return 1
+      if [ -z "$_cur" ] || { [ -n "$_obirth" ] && [ "$_cur" != "$_obirth" ]; }; then _alive="DEAD (pid $_opid ${_cur:+has another birth, }${_cur:-is gone})"; else _alive="alive (pid $_opid)"; fi
     fi
+    # the alarm fires at once for a dead-looking owner (the operator has something to do now) and past
+    # the age limit for any other; a fresh lock with a live owner is plain contention and says only that
+    case "$_alive" in DEAD*) _alarm=1 ;; *) _alarm=""; [ -n "$_agesec" ] && [ "$_agesec" -ge "$HOST_GATE_STALE_SEC" ] && _alarm=1 ;; esac
+    if [ -n "$_alarm" ]; then
+      echo "session-supervisor: $NAME — the display reservation lock has been held for ${_agesec:-?}s (limit ${HOST_GATE_STALE_SEC}s); owner ${_owner:-unrecorded}: $_alive. Not broken - locks are never stolen. If the holder is gone, remove $HOST_GATE_LOCK by hand." >&2
+    fi
+    return 1
   fi
   # THE OWNER RECORD IS "pid birth", birth = <boot token>:<start> from bridge_os_birth - so the same pid
   # and start ticks after a reboot are another boot and another owner. A holder that cannot read its own
