@@ -113,7 +113,7 @@ J="s-00000000000000j1"; row "$J" ten 'RC_LABEL="Ten"' 'TARGET_ENTITY="tenth"'
 chmod 0600 "$SESS/$J.conf"; umask 022
 out="$(run "$J")"; rc=$?
 is "5a rc 0" "$rc" "0"
-is "5b the published row keeps mode 0600 even under a loose umask (P2)" "$(stat -c %a "$SESS/$J.conf")" "600"
+is "5b the published row keeps mode 0600 even under a loose umask (P2)" "$(stat -c %a "$SESS/$J.conf" 2>/dev/null || stat -f %Lp "$SESS/$J.conf" 2>/dev/null)" "600"
 is "5c no staging or backup file is left behind" "$(ls "$SESS" | grep -c 'stage\|backup\|derive')" "0"
 # THE GATE RUNS INSIDE THE LOCK (P1): a competitor that takes the same display between the pre-check and
 # the publish is caught by the staged-row validator, and the row keeps its label.
