@@ -3947,9 +3947,9 @@ registry_session_login_key() { local lg="${1:-}" ow="${2:-}" host="${3:-}"; if [
 # static, on register lifecycle: prints the id of ANOTHER row under the SAME login key that renders
 # the same display and returns 0 (a collision), or returns 1 when the display is free for that login.
 #
-# SCOPED PER LOGIN, NOT PER ESTATE - Jon's decision 2026-09-11 (point 4): two project accounts logged
+# SCOPED PER LOGIN, NOT PER ESTATE - the owner's decision 2026-09-11 (point 4): two project accounts logged
 # in under DIFFERENT Claude logins may show the same RC name, because each login has its own tile
-# list and the names never meet; "Chalmers→Innovation" needs no suffix for that. Within ONE login two
+# list and the names never meet; "Parent→Project" needs no suffix for that. Within ONE login two
 # identical names are two tiles a human cannot tell apart, and that is what is refused. Every host
 # and owner counts within the key; a claude-code row only (RUNTIME first: OpenCode and Codex are
 # exempt), RC-enabled (not the deliberate RC_LABEL=""), and not retired. A row never conflicts with

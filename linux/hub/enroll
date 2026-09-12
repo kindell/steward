@@ -697,7 +697,7 @@ _RC_INNEHAVARE="$(registry_session_rc_label_holder "$ID" "$ACCOUNT_LOGIN" "$VARD
 # one Claude login two identical displays are two tiles nobody can tell apart - on any host. An enroll row
 # carries no LOGIN yet, so its key is the HOME (owner@host) - the same scope as the gate above, which
 # this one extends from the verbatim label to the rendered display. (Two DIFFERENT logins may show the
-# same name: Jon's decision 2026-09-11.)
+# same name: the owner's decision 2026-09-11.)
 if [ -n "$RC_ETIKETT" ] && declare -F registry_session_rendered_unique >/dev/null 2>&1; then
   _RC_RENDERED="$(registry_session_rendered_unique "$ID" "owner:$ACCOUNT_LOGIN@$VARD" "$RC_ETIKETT" 2>/dev/null)"; _RC_RC=$?
   [ "$_RC_RC" -eq 2 ] && \
