@@ -641,6 +641,45 @@ is "10d the login's own trust file was written"     "$trust10d" "true"
 [ -e "$HOMEDIR/.claude.json" ] && bad "10d and \$HOME/.claude.json was left alone" "it exists" \
                                || ok "10d and \$HOME/.claude.json was left alone"
 
+echo "== 10f. the BYPASS dialog is pre-accepted in the login's settings.json, like the trust dialog =="
+# MEASURED ON SKEPPSBRON 2026-09-12: every claude row starts with --permission-mode bypassPermissions
+# (lib/mcpspawn.sh), and the runtime then asks "Yes, I accept" once per config directory unless
+# settings.json carries skipDangerousModePermissionPrompt=true. A fresh login directory has no such
+# line, so the hub there sat at that dialog through every round while the journal looked healthy -
+# the trust-prompt hazard once more, one dialog later. The supervisor seeds it beside the trust file.
+reset_projects
+write_login_conf acme-team
+mkdir -p "$CFG"; printf '{"projects":{}}\n' > "$CFG/.claude.json"; printf '{"theme":"dark"}\n' > "$CFG/settings.json"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login; rc10f=$?
+is "10f rc 0" "$rc10f" "0"
+is "10f the login's settings.json carries the acceptance" "$(jq -r '.skipDangerousModePermissionPrompt // false' "$CFG/settings.json" 2>/dev/null)" "true"
+is "10f and keeps what was there" "$(jq -r '.theme // "gone"' "$CFG/settings.json" 2>/dev/null)" "dark"
+has "10f the journal says so" "$(cat "$T/out")" "bypass"
+[ -e "$HOMEDIR/.claude/settings.json" ] && bad "10f and the legacy settings file was left alone" "it exists" "" || ok "10f and the legacy settings file was left alone"
+reset_projects
+write_login_conf acme-team
+mkdir -p "$CFG"; printf '{"projects":{}}\n' > "$CFG/.claude.json"; rm -f "$CFG/settings.json"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login
+is "10f2 an ABSENT settings.json is created with the acceptance (a human would write that file)" "$(jq -r '.skipDangerousModePermissionPrompt // false' "$CFG/settings.json" 2>/dev/null)" "true"
+is "10f3 with private mode" "$(stat -c %a "$CFG/settings.json" 2>/dev/null || stat -f %Lp "$CFG/settings.json")" "600"
+reset_projects
+write_login_conf
+mkdir -p "$HOMEDIR/.claude"; printf '{"projects":{}}\n' > "$HOMEDIR/.claude.json"; rm -f "$HOMEDIR/.claude/settings.json"
+rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login
+is "10f4 without LOGIN the unnamed default directory's settings.json is the one written" "$(jq -r '.skipDangerousModePermissionPrompt // false' "$HOMEDIR/.claude/settings.json" 2>/dev/null)" "true"
+# AN ABSENT LOGIN DIRECTORY IS NEVER CREATED (measured: a mkdir -p here left a 775 directory in the
+# tester's real home - the login resolves ~ against the account's real home by design - and the registry
+# then refused that login as group-writable). Only a file, and only into a directory that exists.
+reset_projects
+write_login_conf acme-team
+rm -rf "$CFG"; rm -f "$T_HAS_SESSION" "$T_CLAUDE_ALIVE"
+run_login
+[ -e "$CFG" ] && bad "10f5 an absent login directory is NOT created by the pre-seed" "created" "" || ok "10f5 an absent login directory is NOT created by the pre-seed"
+has "10f6 and the journal says the dialog could not be pre-accepted" "$(cat "$T/out")" "does not exist"
+
 echo "== 10d-ctrl. no-LOGIN control: the legacy trust file is still the one written =="
 reset_projects
 write_login_conf
