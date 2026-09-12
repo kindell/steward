@@ -181,6 +181,24 @@ run() {  # run <hostname answer> <host argument>
     bash "$SF" "$2" 2>&1 )
 }
 
+echo "== the estate from the CONFIG FILE: STEWARD_ESTATE= is read, the old bare ESTATE= is not =="
+# deploy-self.sh reads ~/.config/steward/config when STEWARD_ESTATE is unset. The key it reads
+# must be one the steward CLI's loader ACCEPTS, or the file that makes the deploy work breaks
+# every other steward command (measured on butler 2026-09-12: "unknown key 'ESTATE'", rc 78,
+# and the desk snapshot died). So the key is STEWARD_ESTATE - the same name as the env var.
+run_cfg() {  # run_cfg <config body>
+  ( export PATH="$FX/binsys:$FX/bin:$PATH" HOME="$FX/home" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_DEPLOY_HOSTNAME=testhost SUDO_RC=0 SYSTEMCTL_RC=0
+    unset STEWARD_ESTATE; mkdir -p "$FX/home/.config/steward"; printf '%s\n' "$1" > "$FX/home/.config/steward/config"; chmod 0600 "$FX/home/.config/steward/config"
+    bash "$SF" testhost 2>&1 ) ; }
+u="$(run_cfg "FORMAT=1
+STEWARD_ESTATE=$FX/repo")"; rc=$?
+case "$u" in *"no estate is designated"*) bad "STEWARD_ESTATE= in the config was NOT read: $u" ;; *) ok ;; esac
+u="$(run_cfg "FORMAT=1
+ESTATE=$FX/repo")"; rc=$?
+check "the old bare ESTATE= key no longer designates an estate (rc 78)" [ "$rc" -eq 78 ]
+case "$u" in *"STEWARD_ESTATE=<path> in ~/.config/steward/config"*) ok ;; *) bad "the remedy does not name the key the loader accepts: $u" ;; esac
+rm -f "$FX/home/.config/steward/config"
+
 echo "== the wrong machine is a REFUSAL, not a detour =="
 u="$(run othermachine testhost)"; rc=$?
 check "rc 65 when hostname is not the host" [ "$rc" -eq 65 ]

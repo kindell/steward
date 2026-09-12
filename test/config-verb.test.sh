@@ -103,6 +103,14 @@ has "set: unrelated key (tmux socket) preserved" "$content" "STEWARD_TMUX_SOCKET
 has "set: hand-written comment preserved" "$content" "hand-written comment, kept as-is"
 is "set: file mode still 0600" "$(mode_of "$FX/setverb/cfgdir/config")" "600"
 
+echo "== 3b. STEWARD_ESTATE is an ACCEPTED key: the one linux/deploy-self.sh reads from this file =="
+# The loader once refused exactly the key deploy-self told the operator to write (butler
+# 2026-09-12). Two readers of one file share one vocabulary, and this pins the shared half.
+acc_out="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_CONFIG_FILE="$FX/setverb/accepts-estate" \
+  bash -c 'printf "FORMAT=1\nSTEWARD_ESTATE=/x\n" > "$1"; chmod 0600 "$1"; exec bash "$2" ls' _ \
+  "$FX/setverb/accepts-estate" "$STEWARD" 2>&1)"
+case "$acc_out" in *"unknown key 'STEWARD_ESTATE'"*) bad "3b STEWARD_ESTATE refused by the parser: $acc_out" ;; *) ok "3b STEWARD_ESTATE= loads without an unknown-key refusal" ;; esac
+
 echo "== 4. set with an unknown key: refuses via THE SHARED allowlist =="
 out="$(run "$FX/setverb/cfgdir/config" set NOT_A_REAL_KEY "$FX/setverb/x")"; rc=$?
 nonzero "set unknown key: non-zero rc" "$rc"
