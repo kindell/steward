@@ -1602,6 +1602,44 @@ ensure_workspace_trusted() {
   fi
 }
 
+# THE BYPASS DIALOG, PRE-ACCEPTED (measured on Skeppsbron 2026-09-12). Every claude row is launched with
+# --permission-mode bypassPermissions (lib/mcpspawn.sh), and the runtime then asks "Yes, I accept" once
+# per config directory unless the directory's settings.json says skipDangerousModePermissionPrompt=true.
+# A fresh login directory has no such line, so a hub there sat at that dialog through every round while
+# the journal looked healthy - the trust-prompt hazard one dialog later. The settings file lives in the
+# same directory as the trust file's state: <cfg>/settings.json for a named login, ~/.claude/settings.json
+# for the unnamed default. Unlike .claude.json it is a settings file a human would create, so an absent
+# one is created (mode 600); an existing one is merged, never replaced.
+SETTINGS_JSON="$HOME/.claude/settings.json"
+case "$CLAUDE_JSON" in "$HOME/.claude.json") : ;; *) SETTINGS_JSON="$(dirname "$CLAUDE_JSON")/settings.json" ;; esac
+ensure_bypass_accepted() {
+  command -v jq >/dev/null 2>&1 || { echo "session-supervisor: $NAME — jq is missing, cannot pre-accept the bypass dialog" >&2; return 0; }
+  local cur tmp
+  if [ -f "$SETTINGS_JSON" ]; then
+    cur="$(jq -r '.skipDangerousModePermissionPrompt // false' "$SETTINGS_JSON" 2>/dev/null)"
+    [ "$cur" = "true" ] && return 0
+    tmp="$(mktemp "${SETTINGS_JSON}.XXXXXX")" || return 0
+    if jq '.skipDangerousModePermissionPrompt = true' "$SETTINGS_JSON" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+      _mode="$(stat -c %a "$SETTINGS_JSON" 2>/dev/null || stat -f %Lp "$SETTINGS_JSON" 2>/dev/null)"
+      case "$_mode" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) chmod "$_mode" "$tmp" 2>/dev/null ;; esac
+      mv -f "$tmp" "$SETTINGS_JSON"
+      echo "session-supervisor: $NAME — bypass-permissions dialog pre-accepted in $SETTINGS_JSON (otherwise the start sticks at 'Yes, I accept')" >&2
+    else
+      rm -f "$tmp"; echo "session-supervisor: $NAME — could not write $SETTINGS_JSON, the start may stick at the bypass dialog" >&2
+    fi
+  else
+    # THE DIRECTORY IS NEVER CREATED HERE: a login directory that does not exist is a login the runtime
+    # cannot start anyway, and a supervisor that mkdir'd it would leave a stray, wrongly-moded directory
+    # (measured in the suite: the registry then refused the login as group-writable). Only the file.
+    [ -d "$(dirname "$SETTINGS_JSON")" ] || { echo "session-supervisor: $NAME — $(dirname "$SETTINGS_JSON") does not exist; the bypass dialog cannot be pre-accepted (the start may stick at it)" >&2; return 0; }
+    if ( umask 077; printf '{\n  "skipDangerousModePermissionPrompt": true\n}\n' > "$SETTINGS_JSON" ) 2>/dev/null; then
+      echo "session-supervisor: $NAME — bypass-permissions dialog pre-accepted in a new $SETTINGS_JSON (otherwise the start sticks at 'Yes, I accept')" >&2
+    else
+      echo "session-supervisor: $NAME — could not create $SETTINGS_JSON, the start may stick at the bypass dialog" >&2
+    fi
+  fi
+}
+
 # A SIGN OF LIFE IS NOT ABILITY TO WORK. Backstop for the case above: if
 # claude runs while the workspace is UNTRUSTED it is almost certainly sitting
 # at the prompt. That is a STATE we can read, not a guess about what the pane
@@ -2159,6 +2197,7 @@ fi
 # whichever branch a test did not exercise.
 spawn_session() {
   ensure_workspace_trusted
+  [ "$IS_CLAUDE" = 1 ] && ensure_bypass_accepted      # the second dialog a fresh login directory asks
   # THE ADAPTER OWNS ORPHANS FOR CLAUDE ROWS (identified:orphan, keyed, killed on the pin);
   # the pattern reap is the OpenCode path's, which finds its process by port.
   [ "$IS_CLAUDE" = 1 ] || reap_orphan_claude   # a killed tmux session may have left an orphaned adapter
