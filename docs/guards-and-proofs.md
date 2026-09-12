@@ -449,6 +449,70 @@ the estate's list. The list is the estate's to grow; a name added there can
 turn a product PR red without a line of product changing, and that is the
 design working, not a collision.
 
+**A gate number names a COMMIT, and a rewritten commit voids it.** Rebase,
+amend and squash all produce a hash nobody has gated, however small the
+change - and the smaller it is, the stronger the pull to carry the old number
+over. Measured the evening this rule was written, twice within an hour: a
+docs-only rebase (another session appended to this very file while the PR was
+open) moved the branch, and the honest move was to discard the number and
+re-run - first mine, then, an hour later, a colleague's Linux number on the
+same superseded hash. The second one was the real test: the rule held because
+the author remembered the precedent he had just set for himself, not because
+the text said so. It says so now.
+
+And the exception that will be reached for first - **"no suite reads this
+file"** - is not an exception at all. It is a CLAIM, and the person making it
+is the person who wants to skip the run. Measured on this very file the same
+evening, by the colleague who had no incentive to: `test/language.test.sh`
+sweeps `git ls-files '*.md'`, so a Swedish letter appended to
+`docs/guards-and-proofs.md` turns the suite red and names the file
+(`pass=16 fail=1`, restored `17/0`). The author's own search had been
+`grep -rln guards-and-proofs test/` - which finds a suite that names the file
+and misses every suite that globs it. A docs-only change to a `.md` in this
+repo can fail a suite, so the re-run that was demanded on precedent turned
+out to be necessary on the merits too. Right conclusion, wrong reason, and
+the next `.md` would have had the same reason and no such luck.
+
+There is a second reason, and it is the load-bearing one: a number that names
+a commit nobody can fetch **cannot be checked afterwards**. That is the same
+reason we send each other hashes instead of "the branch is green" - a receipt
+whose subject has been rewritten is a claim about a thing that no longer
+exists. It holds even when the diff looks like it touches only files no suite
+reads, which, per rule 15, is usually an unverified claim as well.
+
+The cost of the strict reading is one gate run on a machine that was idle
+anyway. The cost of the lenient reading is that "gated" stops meaning
+anything, one defensible exception at a time.
+
 Rule 10 says a double must be able to say both things. This is rule 10 for
 the gate itself: a summary that can only say "everything ran" is a summary
 that cannot warn you.
+
+## 15. Searching for references does not answer whether anything reads the file.
+
+"Does any suite read this file?" was answered with `grep -rln <filename>
+test/`. That finds every suite which NAMES the file and misses every suite
+which GLOBS it - and the one that globbed was the one that mattered:
+`git ls-files '*.md'` at `test/language.test.sh:254`, under a line 102 that
+skips `*.md` in the code sweep precisely because prose files are swept
+separately below. The query could not match half the answer, so its empty
+result was read as "none", and a rebase was reported to a colleague as
+"docs-only, nothing reads it".
+
+**The reliable way to answer "does X affect anything" is to change X and
+measure.** Plant, run, restore, confirm the tree is clean: one Swedish letter (U+00E5, spelled here as a code point for the
+reason this very suite exists) appended to `docs/guards-and-proofs.md` gave `pass=16 fail=1` with the file named, and
+the restore gave `17/0`. Thirty seconds, and it answers the question asked
+instead of a question about how somebody else happened to write their suite.
+Measured 2026-09-12 on both platforms, the Linux half in a worktree with the
+deployed tree untouched.
+
+The shape is rule 5's relative one level up: an expression that cannot match
+what you are looking for returns zero, and **zero looks like an answer**.
+Rule 5 is about a test that says yes when it should say no; this is about a
+search that says no when it cannot say yes. Both are read as measurements.
+
+The finding was the searcher's own - the flaw was in the question, not in the
+tree - and it was measured by the colleague who ran the suite out of habit
+after editing the same file, which is also how most of this document was
+found.
