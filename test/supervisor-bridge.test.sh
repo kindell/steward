@@ -105,8 +105,12 @@ case "${argv[0]:-}" in
              #   full    -> bridge name = desired, nameSince + 1, receipt in the pane
              #   receipt -> the pane shows the receipt and nameSince advances, but the bridge still says the OLD name
              #   noadvance -> bridge name = desired but nameSince unchanged
+             #   vendor  -> MEASURED 2026-09-12 08:44 on the live host: a /rename to the name the bridge ALREADY carries
+             #              leaves nameSince exactly where it was (five renames, nameSince unmoved); a rename to
+             #              another name sets it and advances nameSince. The pane shows the receipt either way.
              case "$txt" in "/rename "*) d="${txt#/rename }"; printf '%s\n' "$d" > "$T_RECEIPT"
                 case "$(cat "$T_RENAME_EFFECT" 2>/dev/null)" in
+                  vendor) awk -v US="$(printf '\037')" -v d="$d" 'BEGIN{FS=OFS=US} {if ($6!=d) {$6=d; $7=$7+1}; print}' "$OBSLINE" > "$OBSLINE.n" && mv "$OBSLINE.n" "$OBSLINE" ;;
                   full) awk -v US="$(printf '\037')" -v d="$d" 'BEGIN{FS=OFS=US} {$6=d; $7=$7+1; print}' "$OBSLINE" > "$OBSLINE.n" && mv "$OBSLINE.n" "$OBSLINE" ;;
                   receipt) awk -v US="$(printf '\037')" 'BEGIN{FS=OFS=US} {$7=$7+1; print}' "$OBSLINE" > "$OBSLINE.n" && mv "$OBSLINE.n" "$OBSLINE" ;;
                   noadvance) awk -v US="$(printf '\037')" -v d="$d" 'BEGIN{FS=OFS=US} {$6=d; print}' "$OBSLINE" > "$OBSLINE.n" && mv "$OBSLINE.n" "$OBSLINE" ;;
@@ -330,18 +334,32 @@ is "23a pane receipt and nameSince advanced, but the bridge still says Old -> ap
 reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run; run
 is "23b bridge says desired but nameSince unchanged -> applied stays empty" "$(gget applied)" ""
 
-echo "== 23b. P1b case B, MEASURED 2026-09-12: a resumed process whose bridge ALREADY reports the desired name is not a receipt =="
-# The deployed supervisor resumed the hub's thread with --remote-control 'Steward→Basement (P1b-B)'; the
-# bridge file reported that name with a fresh nameSince; the tile in claude.ai stayed on the OLD name for
-# five minutes and longer. So a bridge that reads desired from the start proves nothing about the tile:
-# the cycle must still type /rename and take the pane's own receipt line.
+echo "== 23b. P1b case B and its receipt, MEASURED 2026-09-12: a resumed process whose bridge ALREADY reports the desired name =="
+# 07:58: the deployed supervisor resumed the hub's thread with --remote-control 'Steward→Basement (P1b-B)';
+# the bridge reported that name with a fresh nameSince; the tile stayed on the OLD name for minutes. So a
+# bridge that reads desired from the start proves nothing about the tile: the cycle must type /rename.
+# 08:44: it did - and the receipt then FAILED five times, because the vendor does not move nameSince for a
+# rename to the name it already carries. The tile had followed the first /rename. So when the bridge
+# already read desired at the baseline, the third leg is "typed in THIS cycle", not "nameSince advanced".
 RESUMED() { line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000005 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; }
-reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; RESUMED; run
+reset; touch "$T_HAS_SESSION"; echo vendor > "$T_RENAME_EFFECT"; RESUMED; run
 is "23b1 baseline seeded from the resumed bridge's own nameSince" "$(gget pending_since)" "1789000000005"
-is "23b2 nothing receipted from the bridge alone" "$(gget applied)" ""
+is "23b2 the baseline remembers that the bridge already read desired" "$(gget pending_name)" "Alpha→Thing"
+is "23b3 nothing receipted from the bridge alone" "$(gget applied)" ""
 run; run
-is "23b3 /rename IS typed although the bridge already read desired" "$(sk "$NAME:@0.%0")" "2"
-run; is "23b4 applied only after the pane's receipt line and an advanced nameSince" "$(gget applied)" "Alpha→Thing"
+is "23b4 /rename IS typed although the bridge already read desired" "$(sk "$NAME:@0.%0")" "2"
+run; is "23b5 applied after the pane's receipt line, with nameSince UNMOVED (the vendor's behaviour)" "$(gget applied)" "Alpha→Thing"
+is "23b6 one attempt, not five" "$(gget rename_tries)" "0"; is "23b6b nameSince is still the baseline" "$(gget applied_nameSince)" "1789000000005"
+run; is "23b7 a further round types nothing" "$(sk "$NAME:@0.%0")" "2"
+# THE GUARD THE THIRD LEG EXISTS FOR (J4): a stale receipt line in the pane and a bridge that reads desired,
+# but NOTHING typed in this cycle, is not a receipt.
+reset; touch "$T_HAS_SESSION"; echo vendor > "$T_RENAME_EFFECT"; RESUMED; printf 'Alpha→Thing\n' > "$T_RECEIPT"; run; run
+is "23b8 stale pane line + bridge reads desired + nothing typed this cycle -> NOT applied" "$(gget applied)" ""
+is "23b9 and nothing typed yet (round two is the suspect's first sighting)" "$(sk "$NAME:@0.%0")" "0"
+run; is "23b10 round three types" "$(sk "$NAME:@0.%0")" "2"; run; is "23b11 then receipts" "$(gget applied)" "Alpha→Thing"
+# THE OTHER BRANCH IS UNCHANGED: a bridge that read another name at the baseline still needs nameSince to advance.
+reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run; run
+is "23b12 bridge read Old at the baseline, rename leaves nameSince unmoved -> not applied (as 23b)" "$(gget applied)" ""
 
 echo "== 24-25. the foreground is measured on the tty, never by the command's name =="
 # THE PRODUCTION SHAPE, MEASURED ON THE LIVE HOST 2026-09-11: the launch string ends "; exec bash" in a

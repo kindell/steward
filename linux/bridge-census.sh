@@ -60,7 +60,7 @@ census_clear() {
   bridge_gen_write "$SD" "$1" pid= birth= procStart= sessionId= uid= \
     bridge_name= bridge_nameSince= bridge_mtime= bridge_inode= \
     launch_ms= launch_uptime_ms= launch_boot_id= launch_nonce= launch_pane_pid= launch_pane_birth= launch_inodes= \
-    spawn_state= grace_rounds= applied= applied_at= applied_nameSince= pending_for= pending_since= rename_tries= \
+    spawn_state= grace_rounds= applied= applied_at= applied_nameSince= pending_for= pending_since= pending_name= rename_tries= \
     stop_intent= stop_receipt= census= >/dev/null 2>&1
 }
 

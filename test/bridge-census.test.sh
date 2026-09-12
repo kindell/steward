@@ -113,12 +113,12 @@ rm -f "$ROOT/sessions.d/s-0000000000000008.conf" "$ROOT/sessions.d/s-00000000000
 echo "== 5c. N3: --force is a complete census, not a merge onto stale identity =="
 line s-0000000000000002 identified:managed 4500 boot-c:500 "s-0000000000000002:@0.%0" "Was Live" 1 bootstrap live:managed "" 4500 t2 1 '$5:1' 780
 run --force s-0000000000000002; is "5n first: a live row is seeded" "$(gget s-0000000000000002 pid)" "4500"
-bash -c ". '$LIBS/bridge.sh'; bridge_gen_write '$SD' 's-0000000000000002' launch_ms=1789 launch_nonce=0123456789abcdef0123456789abcdef pending_for='Old Name' applied='Older Name' spawn_state=pending"
+bash -c ". '$LIBS/bridge.sh'; bridge_gen_write '$SD' 's-0000000000000002' launch_ms=1789 launch_nonce=0123456789abcdef0123456789abcdef pending_for='Old Name' pending_name='Old Name' applied='Older Name' spawn_state=pending"
 line s-0000000000000002 no-process "" "" "" "" "" bootstrap "" "" "" "" "" "" ""
 run --force s-0000000000000002; is "5o then: the row is gone and re-censused" "$RC" "0"
 is "5p no stale pid survives" "$(gget s-0000000000000002 pid)" ""; is "5q no stale birth" "$(gget s-0000000000000002 birth)" ""
 is "5r no stale launch claim" "$(gget s-0000000000000002 launch_nonce)$(gget s-0000000000000002 launch_ms)$(gget s-0000000000000002 spawn_state)" ""
-is "5s no stale name reservation" "$(gget s-0000000000000002 pending_for)$(gget s-0000000000000002 applied)" ""
+is "5s no stale name reservation" "$(gget s-0000000000000002 pending_for)$(gget s-0000000000000002 applied)$(gget s-0000000000000002 pending_name)" ""
 case "$(gget s-0000000000000002 stop_receipt)" in census-[0-9]*) ok "5t and the receipt it DOES state is the new one";; *) bad "5t and the receipt it DOES state is the new one" "$(gget s-0000000000000002 stop_receipt)";; esac
 is "5u the history of earlier processes is kept - a KILL -9 file must stay recognisable" "$(grep -c '^history=' "$SD/s-0000000000000002.generation")" "1"
 

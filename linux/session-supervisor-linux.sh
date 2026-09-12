@@ -1722,7 +1722,7 @@ if runtime_identified; then
       if [ -n "$_reseed" ]; then
         rm -f "$RENAME_SUSPECT"
         # THE BASELINE IS THE RESERVATION (M4): it is written inside the same lock the gate ran under.
-        if bridge_gen_write "$STATE_DIR" "$NAME" pending_for="$DESIRED" pending_since="$B_SINCE" rename_tries=0; then
+        if bridge_gen_write "$STATE_DIR" "$NAME" pending_for="$DESIRED" pending_since="$B_SINCE" pending_name="$B_NAME" rename_tries=0; then
           echo "session-supervisor: $NAME — rename pending for '$DESIRED' (baseline nameSince $B_SINCE); the cycle starts." >&2
         else
           echo "session-supervisor: $NAME — the rename baseline could not be written; no rename step this round." >&2
@@ -1745,9 +1745,21 @@ if runtime_identified; then
         rm -f "$RENAME_SUSPECT"; echo "session-supervisor: $NAME — the managed process changed between the round's observation and the rename step ($B_ANS, pid ${B_PID:-none}, procStart ${B_PS:-none}); nothing typed, nothing receipted." >&2
       else
         _rn_pane="$(tmuxc capture-pane -p -t "$PANE_TARGET" 2>/dev/null)"
-        if rename_receipt_seen "$_rn_pane" "$DESIRED" && [ "$B_NAME" = "$DESIRED" ] && case "$B_SINCE" in ''|*[!0-9]*) false ;; *) [ "$B_SINCE" -gt "$PENDING_SINCE" ] ;; esac; then
+        # THE THIRD LEG HAS TWO SHAPES, MEASURED 2026-09-12 08:44 on the live host. The vendor moves
+        # nameSince when a /rename CHANGES the name - and leaves it exactly where it was when the name is
+        # the one the bridge already carries (five renames, nameSince unmoved, the tile long since right).
+        # So when the bridge already read desired at the baseline (pending_name), "advanced" can never
+        # hold and the leg is "typed in THIS cycle" instead: rename_tries was reset with the baseline, and
+        # a stale receipt line in the pane with nothing typed since is still not a receipt (J4).
+        _rn_pname="$(bridge_gen_get "$STATE_DIR" "$NAME" pending_name 2>/dev/null)"
+        rename_third_leg() {
+          case "$B_SINCE" in ''|*[!0-9]*) return 1 ;; esac
+          [ "$B_SINCE" -gt "$PENDING_SINCE" ] && return 0
+          [ -n "$_rn_pname" ] && [ "$_rn_pname" = "$DESIRED" ] && [ "$_rn_tries" -ge 1 ]
+        }
+        if rename_receipt_seen "$_rn_pane" "$DESIRED" && [ "$B_NAME" = "$DESIRED" ] && rename_third_leg; then
           _now_s="$(date +%s 2>/dev/null)"; case "$_now_s" in ''|*[!0-9]*) _now_s="" ;; esac
-          if [ -n "$_now_s" ] && bridge_gen_write "$STATE_DIR" "$NAME" applied="$DESIRED" applied_at="${_now_s}000" applied_nameSince="$B_SINCE" rename_tries=0 pending_for= pending_since=; then
+          if [ -n "$_now_s" ] && bridge_gen_write "$STATE_DIR" "$NAME" applied="$DESIRED" applied_at="${_now_s}000" applied_nameSince="$B_SINCE" rename_tries=0 pending_for= pending_since= pending_name=; then
             rm -f "$RENAME_PENDING" "$RENAME_SUSPECT"
             echo "session-supervisor: $NAME — rename receipted: pane and bridge both report '$DESIRED', nameSince advanced ($PENDING_SINCE -> $B_SINCE)." >&2
           else
