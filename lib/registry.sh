@@ -4106,9 +4106,40 @@ registry_session_gate_fields() {
 # concurrent add or derive can pass the same check and publish the same rendered name). It lives here,
 # beside the rule it applies, so it can be proven without starting the CLI. REGISTRY_DERIVE_ID names the
 # row being republished; it is excluded from its own comparison.
+# registry_row_fingerprint <file> -> "<size>:<cksum>" of the bytes now on disk; rc 1 and empty when
+# unreadable. cksum(1) is POSIX and spells the same on both systems.
+registry_row_fingerprint() {
+  local f="$1" c
+  [ -r "$f" ] && [ -f "$f" ] || return 1
+  c="$(cksum < "$f" 2>/dev/null)" || return 1
+  set -- $c; [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  printf '%s:%s' "$2" "$1"
+}
+
+# registry_derive_content <conf> <label> -> the replacement row: every line but RC_LABEL, then one comment
+# naming what the label was. FAILS CLOSED (advisor R2): a read failure prints NOTHING and returns 70 - the
+# old form tested printf's status, so an unreadable source would have published a comment-only row; and a
+# body that is nothing but the comment is refused too, because a row without its fields is not a row.
+registry_derive_content() {
+  local conf="$1" label="$2" body rc
+  body="$(grep -v '^RC_LABEL=' "$conf" 2>/dev/null)"; rc=$?
+  [ "$rc" -le 1 ] || { echo "registry: could not read $conf" >&2; return 70; }
+  [ -n "$body" ] || { echo "registry: $conf would be left with nothing but the comment; refusing" >&2; return 70; }
+  printf '%s\n# display derived from the target (was RC_LABEL="%s")' "$body" "$label"
+}
+
 registry_derive_validate_stage() {
   local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
         HOST="" REPO_PATH="" OWNER="" LOGIN="" RUNTIME="" RC_LABEL=""
+  # THE SOURCE MUST STILL BE THE ROW THE CONTENT WAS BUILT FROM (advisor R1). The caller built the
+  # replacement before this lock was held; a concurrent writer that changed the same row in between would
+  # otherwise be overwritten with stale content. It hands us the source's fingerprint; a source that
+  # differs, or is gone, refuses. A caller that gives no fingerprint gets the display rule alone.
+  if [ -n "${REGISTRY_DERIVE_SOURCE_FP:-}" ]; then
+    local _src _now_fp; _src="$(registry_dir)/${REGISTRY_DERIVE_ID:-}.conf"
+    _now_fp="$(registry_row_fingerprint "$_src" 2>/dev/null)" || _now_fp=""
+    [ "$_now_fp" = "$REGISTRY_DERIVE_SOURCE_FP" ] || { echo "registry: the row ${REGISTRY_DERIVE_ID:-} changed between the content build and the lock (was $REGISTRY_DERIVE_SOURCE_FP, is ${_now_fp:-gone}); refusing to publish stale content" >&2; return 70; }
+  fi
   # shellcheck source=/dev/null
   source "$file" || { echo "registry: the staged row did not source: $file" >&2; return 70; }
   local rcfree=""; grep -q '^RC_LABEL=""$' "$file" 2>/dev/null && rcfree=1

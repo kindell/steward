@@ -56,12 +56,15 @@ NOW="$(date +%s)"; case "$NOW" in ''|*[!0-9]*) echo "bridge-census: the clock co
 # launch claim or pending name behind, dressed up as "seeded". Everything the census does not itself
 # write is cleared first; the history the generation keeps of earlier (pid, procStart, birth) triples is
 # not touched, because that is what makes a KILL -9 file recognisable later.
-census_clear() {
-  bridge_gen_write "$SD" "$1" pid= birth= procStart= sessionId= uid= \
+# ONE WRITE (advisor Q1): the clears and the seed go into the SAME bridge_gen_write, so there is no
+# boundary at which a half state can exist - no "cleared but not seeded", no "seeded over stale fields".
+# census_clear_fields prints the clears; the caller appends what it seeds.
+census_clear_fields() {
+  printf '%s ' pid= birth= procStart= sessionId= uid= \
     bridge_name= bridge_nameSince= bridge_mtime= bridge_inode= \
     launch_ms= launch_uptime_ms= launch_boot_id= launch_nonce= launch_pane_pid= launch_pane_birth= launch_inodes= \
     spawn_state= grace_rounds= applied= applied_at= applied_nameSince= pending_for= pending_since= pending_name= rename_tries= \
-    stop_intent= stop_receipt= census= >/dev/null 2>&1
+    stop_intent= stop_receipt= census=
 }
 
 seeded=0; blocked=0; prereq=0; listed=0
@@ -83,13 +86,15 @@ census_row() { # <id>
   case "$ans" in
     identified:managed|identified:orphan|identified:moved)
       report "$id" seeded "${ans#identified:}: pid $BL_PID birth $BL_BIRTH procStart $BL_PS name '$BL_NAME'"
-      [ -n "$DRY" ] || { census_clear "$id"; bridge_gen_write "$SD" "$id" pid="$BL_PID" birth="$BL_BIRTH" procStart="$BL_PS" sessionId="$BL_SID" uid="$(id -u)" \
-          bridge_name="$BL_NAME" bridge_nameSince="$BL_SINCE" bridge_mtime="$BL_MTIME" bridge_inode="$BL_INODE" stop_receipt= census=1; } \
+      # shellcheck disable=SC2046  # the clears are single words by construction
+      [ -n "$DRY" ] || bridge_gen_write "$SD" "$id" $(census_clear_fields) pid="$BL_PID" birth="$BL_BIRTH" procStart="$BL_PS" sessionId="$BL_SID" uid="$(id -u)" \
+          bridge_name="$BL_NAME" bridge_nameSince="$BL_SINCE" bridge_mtime="$BL_MTIME" bridge_inode="$BL_INODE" stop_receipt= census=1 >/dev/null 2>&1 \
         || { report "$id" blocked:write-failed "the generation could not be written to $SD"; blocked=$((blocked+1)); return 0; }
       seeded=$((seeded+1)) ;;
     no-process)
       report "$id" seeded "no process; stop receipt census-$NOW, the first spawn is planned"
-      [ -n "$DRY" ] || { census_clear "$id"; bridge_gen_write "$SD" "$id" stop_receipt="census-$NOW" census=1; } \
+      # shellcheck disable=SC2046
+      [ -n "$DRY" ] || bridge_gen_write "$SD" "$id" $(census_clear_fields) stop_receipt="census-$NOW" census=1 >/dev/null 2>&1 \
         || { report "$id" blocked:write-failed "the generation could not be written to $SD"; blocked=$((blocked+1)); return 0; }
       seeded=$((seeded+1)) ;;
     not-applicable)

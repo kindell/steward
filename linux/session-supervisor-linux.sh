@@ -510,15 +510,31 @@ host_display_reserved() {
       continue
     fi
     # OURS TO ASK. identified:* proves a live bridge file; anything else holds no tile.
-    line="$(STEWARD_STATE_DIR="$STATE_DIR" STEWARD_TMUX_SOCKET="$SOCK" STEWARD_REGISTRY_LIB="$REG_LIB" STEWARD_BRIDGE_LIB="$BRIDGE_LIB" bash "$OBSERVE" "$n" 2>/dev/null)" || continue
-    bridge_line_valid "$line" "$n" || continue
-    case "$BL_ANS" in identified:*) : ;; *) continue ;; esac
-    applied="$(bridge_gen_get "$STATE_DIR" "$n" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$n" pending_for 2>/dev/null)"
-    if [ "$BL_NAME" = "$desired" ] || [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ]; then
-      printf '%s\n' "$n"; return 0
+    line="$(STEWARD_STATE_DIR="$STATE_DIR" STEWARD_TMUX_SOCKET="$SOCK" STEWARD_REGISTRY_LIB="$REG_LIB" STEWARD_BRIDGE_LIB="$BRIDGE_LIB" bash "$OBSERVE" "$n" 2>/dev/null)" || line=""
+    if [ -n "$line" ] && bridge_line_valid "$line" "$n" && case "$BL_ANS" in identified:*) true ;; *) false ;; esac; then
+      applied="$(bridge_gen_get "$STATE_DIR" "$n" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$n" pending_for 2>/dev/null)"
+      if [ "$BL_NAME" = "$desired" ] || [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ]; then
+        printf '%s\n' "$n"; return 0
+      fi
+      continue
     fi
+    # NO BRIDGE FILE YET, BUT AN OPEN LAUNCH CLAIM (advisor M6): between claude_claim_open and the first
+    # observation the other row has no bridge file, so "identified:* holds the tile" sees nothing - and a
+    # second supervisor could take the same display. The claim IS the reservation in that window:
+    # spawn_state=pending, pending_for=display, launch_ms within the bound. An older claim is a spawn that
+    # never produced a bridge file, and holds nothing.
+    if host_claim_reserves "$n" "$desired"; then printf '%s\n' "$n"; return 0; fi
   done
   return 1
+}
+HOST_CLAIM_BOUND_MS="$(( ${STEWARD_RESERVATION_CLAIM_SEC:-300} * 1000 ))"
+host_claim_reserves() { # <row> <display>
+  local st pf lm now
+  st="$(bridge_gen_get "$STATE_DIR" "$1" spawn_state 2>/dev/null)"; [ "$st" = pending ] || return 1
+  pf="$(bridge_gen_get "$STATE_DIR" "$1" pending_for 2>/dev/null)"; [ -n "$pf" ] && [ "$pf" = "$2" ] || return 1
+  lm="$(bridge_gen_get "$STATE_DIR" "$1" launch_ms 2>/dev/null)"; case "$lm" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(( $(date +%s) * 1000 ))"; [ "$now" -ge "$lm" ] || return 1
+  [ $(( now - lm )) -le "$HOST_CLAIM_BOUND_MS" ]
 }
 
 # ---- the critical section (advisor M4) -----------------------------------------------------------

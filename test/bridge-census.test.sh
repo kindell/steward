@@ -122,6 +122,32 @@ is "5s no stale name reservation" "$(gget s-0000000000000002 pending_for)$(gget 
 case "$(gget s-0000000000000002 stop_receipt)" in census-[0-9]*) ok "5t and the receipt it DOES state is the new one";; *) bad "5t and the receipt it DOES state is the new one" "$(gget s-0000000000000002 stop_receipt)";; esac
 is "5u the history of earlier processes is kept - a KILL -9 file must stay recognisable" "$(grep -c '^history=' "$SD/s-0000000000000002.generation")" "1"
 
+echo "== 5d. Q1: the force path is ONE atomic write - a failed write leaves the OLD generation byte-identical =="
+# Advisor Q1: clear-then-seed as two writes could leave a half state (clear ok, seed failed: generation
+# emptied and census gone; or clear failed, seed ok: stale fields under a fresh census=1). One write, or
+# nothing. The failure is injected at the directory: the generation cannot be replaced.
+line s-0000000000000002 identified:managed 4600 boot-c:600 "s-0000000000000002:@0.%0" "Live Again" 1 bootstrap live:managed "" 4600 t2 1 '$5:1' 781
+run --force s-0000000000000002; is "5v a live row is seeded first" "$(gget s-0000000000000002 pid)" "4600"
+before="$(cat "$SD/s-0000000000000002.generation")"
+chmod 500 "$SD"; run --force s-0000000000000002; chmod 700 "$SD"
+is "5w the census reports the write failure" "$RC" "1"; has "5x and says so for the row" "$OUT" "write-failed"
+is "5y the OLD generation is byte-identical - no half state" "$(cat "$SD/s-0000000000000002.generation")" "$before"
+is "5z pid still there" "$(gget s-0000000000000002 pid)" "4600"; is "5z2 census still 1" "$(gget s-0000000000000002 census)" "1"
+# THE SHARPER INJECTION: a wrapper library counts bridge_gen_write calls and fails the Nth. With two
+# writes (clear, then seed) failing the SECOND destroys the generation and reports write-failed over an
+# emptied row; with ONE write there is no second call, and the count says so.
+WRAP="$T/libwrap.sh"; CTR="$T/gen-writes"
+cat > "$WRAP" <<WEOF
+. "$LIBS/bridge.sh"
+eval "\$(declare -f bridge_gen_write | sed '1s/^bridge_gen_write/_real_bridge_gen_write/')"
+bridge_gen_write() { local n; n="\$(cat "$CTR" 2>/dev/null || echo 0)"; n=\$((n+1)); printf '%s' "\$n" > "$CTR"; [ "\$n" = "\${FAIL_AT:-0}" ] && return 1; _real_bridge_gen_write "\$@"; }
+WEOF
+runw() { : > "$OBS_LOG"; printf 0 > "$CTR"; OUT="$(FAIL_AT="$1" HOME="$T/home" STEWARD_ESTATE_ROOT="$ROOT" STEWARD_REGISTRY_LIB="$LIBS/registry.sh" STEWARD_BRIDGE_LIB="$WRAP" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_STATE_DIR="$SD" STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_SELF_HOST=h1 bash "$CENSUS" --force s-0000000000000002 2>"$T/err")"; RC=$?; }
+runw 0; is "5aa the force path makes exactly ONE generation write" "$(cat "$CTR")" "1"; is "5ab and seeds" "$(gget s-0000000000000002 pid)" "4600"
+runw 2; is "5ac failing a hypothetical SECOND write changes nothing - there is none (rc 0, seeded)" "$RC:$(gget s-0000000000000002 pid):$(cat "$CTR")" "0:4600:1"
+before="$(cat "$SD/s-0000000000000002.generation")"
+runw 1; is "5ad failing the one write: reported" "$RC" "1"; is "5ae and the old generation is byte-identical" "$(cat "$SD/s-0000000000000002.generation")" "$before"
+
 echo "== 6. usage and environment =="
 run --bogus; is "6a unknown flag rc 64" "$RC" "64"
 run a b; is "6b two ids rc 64" "$RC" "64"
