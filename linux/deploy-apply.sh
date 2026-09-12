@@ -108,7 +108,7 @@ apply_registry_row() { # <home root> <stage-dir> <target-dir> <mode>
     # STEWARD_DEPLOY_INSTALL_OWNER=off the same way `ensure_dir` and the file
     # branch's `install -o/-g` do, so the unprivileged fixture keeps working.
     if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" != "off" ]; then
-      chown "$USERNAME:$USERNAME" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot set owner on $DSTD/$base" >&2; return 70; }
+      chown "$USERNAME:$GROUPNAME" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot set owner on $DSTD/$base" >&2; return 70; }
     fi
     chmod "$MODE" "$tmp" || { rm -f "$tmp"; echo "deploy: cannot set mode on $DSTD/$base" >&2; return 70; }
     mv -f "$tmp" "$DSTD/$base" || { rm -f "$tmp"; echo "deploy: cannot install $base into $DSTD" >&2; return 70; }
@@ -223,7 +223,7 @@ ensure_dir() {
     if [ ! -e "$sofar" ]; then
       mkdir "$sofar" || return 70
       if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" != "off" ]; then
-        chown "$USERNAME:$USERNAME" "$sofar" || return 70
+        chown "$USERNAME:$GROUPNAME" "$sofar" || return 70
       fi
       chmod 755 "$sofar" || return 70
     elif [ ! -d "$sofar" ]; then
@@ -239,6 +239,19 @@ UNTOUCHED=""
 
 for HOME_ROOT in $HOMES; do
   USERNAME="$(basename "$HOME_ROOT")"
+  # THE GROUP IS LOOKED UP, NEVER SPELLED AS THE USERNAME. Linux gives every account a
+  # user-private group of the same name, so "jon:jon" worked on every host this ran on until
+  # the first darwin home: macOS puts users in "staff" (gid 20) and has no group "jon", so
+  # install(1) died on the very first row - `install: unknown group jon` - and the home was
+  # refused whole. Measured 2026-09-12, first live root deploy on a darwin host. id -gn is
+  # the same call on both systems; an account without a primary group is not a home to write.
+  GROUPNAME="$(id -gn "$USERNAME" 2>/dev/null)" || GROUPNAME=""
+  if [ -z "$GROUPNAME" ]; then
+    echo "HOME $HOME_ROOT RESULT=REFUSED COMPARED=0 INSTALLED=0"
+    echo "REFUSAL $HOME_ROOT the primary group of '$USERNAME' cannot be resolved (id -gn) — not an account this host knows; nothing written"
+    TOTAL_RC=70
+    continue
+  fi
   LG="$STATE/$USERNAME.last-good"
   COMPARED=0; INSTALLED=0
   REFUSED=""
@@ -448,7 +461,7 @@ ROWS
     if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" = "off" ]; then
       install -m "$mode" "$srcfile" "$tmp_dst" || { rm -f "$tmp_dst"; INSTALL_ERROR="$target"; break; }
     else
-      install -o "$USERNAME" -g "$USERNAME" -m "$mode" "$srcfile" "$tmp_dst" \
+      install -o "$USERNAME" -g "$GROUPNAME" -m "$mode" "$srcfile" "$tmp_dst" \
         || { rm -f "$tmp_dst"; INSTALL_ERROR="$target"; break; }
     fi
     mv -f "$tmp_dst" "$dst" || { rm -f "$tmp_dst"; INSTALL_ERROR="$target (rename failed)"; break; }
