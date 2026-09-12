@@ -426,6 +426,15 @@ mk_raw raw-both 'RUNTIME="claude-code"\nTARGET_PROJECT="p"\nTARGET_ENTITY="e"\n'
 in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9v both targets named is ambiguous: uninspectable" "$RC:$OUT" "2:raw-both"; rm -f "$SESS/raw-both.conf"
 mk_raw raw-dups 'SLUG="one"\nSLUG="two"\n'
 in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9w a duplicated SLUG is uninspectable" "$RC:$OUT" "2:raw-dups"; rm -f "$SESS/raw-dups.conf"
+# M14: runtime first - an unloadable OpenCode row with a duplicated LOGIN is out of the question before the
+# LOGIN is read; M13: a duplicated RC_LABEL with one empty line is malformed, never the RC-free choice.
+mk_raw raw-ocdup 'RUNTIME="opencode"\nLOGIN="x"\nLOGIN="y"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9x runtime first: OpenCode with a duplicated LOGIN is free, not uninspectable" "$RC" "1"; rm -f "$SESS/raw-ocdup.conf"
+printf 'OWNER="a"\nHOST="h1"\nRC_LABEL=""\nRC_LABEL="Strict"\n' > "$SESS/raw-rcdup.conf"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9y a duplicated RC_LABEL with one empty line is uninspectable, not RC-free" "$RC:$OUT" "2:raw-rcdup"; rm -f "$SESS/raw-rcdup.conf"
+in_fixture registry_session_work_rule wr-new "owner:a@h1" work; rc_wr="$RC"
+mk_raw raw-ocwr 'RUNTIME="codex"\nLOGIN="x"\nLOGIN="y"\nTARGET_PROJECT="work"\n'
+in_fixture registry_session_work_rule wr-new "owner:a@h1" work; is "9z the work rule too: a Codex row with a duplicated LOGIN does not block (same answer as without it)" "$RC" "$rc_wr"; rm -f "$SESS/raw-ocwr.conf"
 mk_raw raw-dupl 'LOGIN="x"\nLOGIN="y"\n'
 in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9u a duplicated LOGIN is uninspectable (the key cannot be read)" "$RC:$OUT" "2:raw-dupl"; rm -f "$SESS/raw-dupl.conf"
 

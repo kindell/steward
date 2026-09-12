@@ -492,15 +492,20 @@ host_display_reserved() {
       # reader (M5). If its own words rule it out - another runtime, retired, RC-free, another host or
       # login key - it holds nothing. Otherwise it is a same-key claude row on this host that cannot be
       # asked (no account, no adapter answer) - uninspectable, and the gate refuses, naming it.
+      # RUNTIME FIRST (spec section 3, advisor M14): a valid OpenCode or Codex row is out of the question
+      # before any other field is read, so a malformed LOGIN on such a row cannot block. Then lifecycle,
+      # then RC-free - decided by the STRICT reader (advisor M13: a duplicated RC_LABEL with one empty line
+      # must not exempt) - and only then the host and key fields.
       local _rf="$(registry_dir 2>/dev/null)/$n.conf" r_rt r_lc r_lg r_ow r_hs
       r_rt="$(_registry_gate_raw "$_rf" RUNTIME)"   || { printf '%s\n' "$n"; return 2; }; r_rt="${r_rt:-claude-code}"
+      [ "$r_rt" = claude-code ] || continue
       r_lc="$(_registry_gate_raw "$_rf" LIFECYCLE)" || { printf '%s\n' "$n"; return 2; }; r_lc="${r_lc:-active}"
+      [ "$r_lc" != retired ] || continue
+      _registry_gate_raw "$_rf" RC_LABEL >/dev/null || { printf '%s\n' "$n"; return 2; }
+      _registry_gate_rc_free "$_rf" && continue
       r_lg="$(_registry_gate_raw "$_rf" LOGIN)"     || { printf '%s\n' "$n"; return 2; }
       r_ow="$(_registry_gate_raw "$_rf" OWNER)"     || { printf '%s\n' "$n"; return 2; }
       r_hs="$(_registry_gate_raw "$_rf" HOST)"      || { printf '%s\n' "$n"; return 2; }; [ -n "$r_hs" ] || r_hs="$(registry_hub_host 2>/dev/null)"
-      [ "$r_rt" = claude-code ] || continue
-      [ "$r_lc" != retired ] || continue
-      grep -q '^RC_LABEL=""$' "$_rf" 2>/dev/null && continue
       [ "$r_hs" = "${STEWARD_SELF_HOST:-$(hostname -s)}" ] || continue
       [ "$(registry_session_login_key "$r_lg" "$r_ow" "$r_hs")" = "$MY_LOGIN_KEY" ] || continue
       printf '%s\n' "$n"; return 2
@@ -610,12 +615,29 @@ host_gate_lock() { # rc 0 held (by us), rc 1 ANOTHER supervisor holds it, rc 2 n
     if [ -n "$_opid" ]; then
       _cur="$(bridge_os_birth "$_opid" 2>/dev/null)" || _cur=""
       if [ -z "$_cur" ] || { [ -n "$_obirth" ] && [ "$_cur" != "$_obirth" ]; }; then
-        # THE STEAL IS ATOMIC (advisor M10): the dead lock is RENAMED into quarantine - rename(2) lets
-        # exactly one contender succeed - and only the one that moved it goes on to mkdir a new lock. Two
-        # contenders that both rm -rf'd and mkdir'd could each have replaced the other's new lock.
-        local _q="$HOST_GATE_LOCK.stolen.$$.$RANDOM"
+        # THE STEAL IS A COMPARE-AND-SWAP BOUND TO THE PATH INSTANCE (advisor M10, M12). A rename alone is
+        # atomic for one instance of the path but not ABA-safe: contender B, having judged the OLD lock
+        # dead, could rename away the NEW lock A had just taken. So: the contender first wins the steal
+        # MARKER - mkdir <lock>/steal, atomic, exactly one winner - and then checks that the lock is still
+        # the very directory it judged (same inode). A different inode means the path now holds a live
+        # lock taken by someone else: the marker is withdrawn and the round stands down. Only the marker's
+        # holder, on the same instance, renames it into quarantine; nobody else can move a lock without the
+        # marker, and the marker cannot be won on a lock the judge did not see.
+        local _ino0 _ino1 _q="$HOST_GATE_LOCK.stolen.$$.$RANDOM"
+        _ino0="$(stat -c %i "$HOST_GATE_LOCK" 2>/dev/null || stat -f %i "$HOST_GATE_LOCK" 2>/dev/null)"
+        if ! mkdir "$HOST_GATE_LOCK/steal" 2>/dev/null; then
+          echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid) is dead, but another contender is already stealing it; standing down this round." >&2
+          return 1
+        fi
+        _ino1="$(stat -c %i "$HOST_GATE_LOCK" 2>/dev/null || stat -f %i "$HOST_GATE_LOCK" 2>/dev/null)"
+        if [ -z "$_ino0" ] || [ "$_ino0" != "$_ino1" ]; then
+          rmdir "$HOST_GATE_LOCK/steal" 2>/dev/null
+          echo "session-supervisor: $NAME — the display reservation lock changed under the steal (another instance now holds the path); standing down this round." >&2
+          return 1
+        fi
         if ! mv "$HOST_GATE_LOCK" "$_q" 2>/dev/null; then
-          echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid) is dead, but another contender took it first; standing down this round." >&2
+          rmdir "$HOST_GATE_LOCK/steal" 2>/dev/null
+          echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid) is dead, but it could not be moved; standing down this round." >&2
           return 1
         fi
         echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid, birth ${_obirth:-unrecorded}) is dead (now ${_cur:-gone}); broken." >&2
