@@ -477,6 +477,22 @@ _steward_nonce() { od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
 # (its home is 0750): under STEWARD_RESERVATION_STRICT=1 a colliding rendered display is refused - manual
 # census - otherwise it is named once and the write proceeds.
 MY_LOGIN_KEY="$(registry_session_login_key "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" 2>/dev/null)"
+# host_row_could_bear <row> <desired> <static display or empty> - rc 0 when the row COULD be holding the
+# desired display by any record we hold: its registry display, or its generation's applied name, pending
+# name or last seen bridge name; an unreadable display counts as "could" (fail closed). MEASURED IN
+# PRODUCTION 2026-09-12 14:05 (Jon's home on basement, eleven rows on one login): without this question the
+# first M7 refused every spawn as soon as ANY sibling failed to observe in the round - a sibling called
+# 'Point' cannot hold 'Chalmers→Innovation' whether it is observable or not, and a session Jon had asked
+# to restart stayed down. Doubt is decisive only about a row that could bear the name.
+host_row_could_bear() {
+  local n="$1" d="$2" disp="$3" v
+  [ -n "$disp" ] || return 0
+  [ "$disp" = "$d" ] && return 0
+  for v in applied pending_for bridge_name; do
+    [ "$(bridge_gen_get "$STATE_DIR" "$n" "$v" 2>/dev/null)" = "$d" ] && return 0
+  done
+  return 1
+}
 host_display_reserved() {
   local desired="$1" n f_owner f_host f_rt f_fri f_lc f_key line applied pending
   [ -n "$desired" ] || return 1
@@ -510,7 +526,12 @@ host_display_reserved() {
       r_hs="$(_registry_gate_raw "$_rf" HOST)"      || { printf '%s\n' "$n"; return 2; }; [ -n "$r_hs" ] || r_hs="$(registry_hub_host 2>/dev/null)"
       [ "$r_hs" = "${STEWARD_SELF_HOST:-$(hostname -s)}" ] || continue
       [ "$(registry_session_login_key "$r_lg" "$r_ow" "$r_hs")" = "$MY_LOGIN_KEY" ] || continue
-      printf '%s\n' "$n"; return 2
+      # a same-key row we cannot ask: its doubt counts only if it could bear the display (raw display, or
+      # the display its raw target renders, or its generation's names)
+      local r_disp; r_disp="$(_registry_gate_raw "$_rf" RC_LABEL)" || { printf '%s\n' "$n"; return 2; }
+      [ -n "$r_disp" ] || r_disp="$(registry_display_of_fields "" "$(_registry_gate_raw "$_rf" TARGET_PROJECT 2>/dev/null)" "$(_registry_gate_raw "$_rf" TARGET_ENTITY 2>/dev/null)" "$(_registry_gate_raw "$_rf" SLUG 2>/dev/null)" 2>/dev/null)" || r_disp=""
+      if host_row_could_bear "$n" "$desired" "$r_disp"; then printf '%s\n' "$n"; return 2; fi
+      continue
     fi
     f_rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; f_lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
     f_fri="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; local f_login="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
@@ -539,7 +560,9 @@ host_display_reserved() {
     # A ROW THAT CANNOT BE PROVEN INACTIVE IS UNINSPECTABLE (advisor M7): an observer failure, a line that
     # breaks the contract, unknown (split-brain live bridge files), grace, wait-veto - none of these proves
     # the row holds nothing, and a write on top of them is a write on unknown. rc 2, the row on stdout.
-    if [ -z "$line" ] || ! bridge_line_valid "$line" "$n"; then printf '%s\n' "$n"; return 2; fi
+    # an observer failure or a line that breaks the contract is a NON-IDENTIFIED answer: it goes the same way
+    # as unknown - the live claim first, then relevance, then doubt (rc 2) - never a shortcut to refusal
+    if [ -z "$line" ] || ! bridge_line_valid "$line" "$n"; then BL_ANS="observer-failed"; fi
     case "$BL_ANS" in
       identified:*)
         applied="$(bridge_gen_get "$STATE_DIR" "$n" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$n" pending_for 2>/dev/null)"
@@ -556,6 +579,8 @@ host_display_reserved() {
     _hcr=0; host_claim_reserves "$n" "$desired"; _hcr=$?
     if [ "$_hcr" -eq 0 ]; then printf '%s\n' "$n"; return 0; fi
     if [ "$_hcr" -eq 2 ]; then printf '%s\n' "$n"; return 2; fi        # a bound or clock that cannot be read: fail closed
+    # NOT IDENTIFIED AND NO LIVE CLAIM: the row's doubt is decisive only if it could bear this display
+    host_row_could_bear "$n" "$desired" "$(registry_session_display "$n" 2>/dev/null)" || continue
     case "$BL_ANS" in
       no-process) continue ;;                                          # no process, no live claim: free
       *) printf '%s\n' "$n"; return 2 ;;                              # unknown, grace without a claim, wait-veto, uninspectable: doubt

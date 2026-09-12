@@ -588,28 +588,55 @@ STEWARD_RESERVATION_STRICT=1 run; STEWARD_RESERVATION_STRICT=1 run
 is "39q a row under ANOTHER login key is not blocked, even in strict mode (two tile lists)" "$(tl new-session)" "1"
 rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf" "$ROOT/logins.d/shared-login.conf"
 
-echo "== 39y. M7: a same-key row that cannot be PROVEN inactive makes the gate uninspectable - rename and spawn stand down =="
-# Observer failure, a malformed line, unknown (split-brain live bridge files), grace, wait-veto: none of
-# these proves the other row holds nothing, and a write on top of them would violate no-writes-on-unknown.
+echo "== 39y. M7, scoped: doubt about a same-key row stands the round down ONLY when that row could bear the display =="
+# MEASURED IN PRODUCTION 2026-09-12 14:05 (basement, Jon's home, eleven rows on one login): the first M7
+# refused every spawn as soon as ANY sibling failed to observe in the round - two different siblings in
+# two rounds, both plainly alive by hand - and a session Jon had asked to restart stayed down. A sibling
+# whose registry display, applied name, pending name and last bridge name are all OTHER than the desired
+# display cannot be holding it, observable or not; only a sibling that COULD bear the display makes its
+# liveness decisive, and then observer failure, a malformed line, unknown, grace, wait-veto stand down.
 other_unknown() { printf '%s\037unknown\037\037\037\037\037\037alive\037split-brain\037\037\037\037\037\037\n' "$OTHER" > "$T/obs-other/$OTHER"; }
+other_same() { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="%s"\nACCOUNT="a-h1"\nRC_LABEL="Alpha→Thing"\n' "$HOMEDIR" "$OTHER" > "$ROOT/sessions.d/$OTHER.conf"; }   # a sibling that renders the SAME display
 reset; other_row; other_unknown; other_gen census=1; OLD; run
-is "39y1 the other row answers unknown -> no rename baseline written" "$(gget pending_for)" ""; has "39y2 and says it cannot be proven inactive, naming it" "$OUT" "$OTHER"; has "39y2b with the word" "$OUT" "proven"
+is "39y0 an IRRELEVANT sibling (renders 'Other Thing') answering unknown blocks nothing: the baseline is seeded" "$(gget pending_for)" "Alpha→Thing"
+reset; other_same; other_unknown; other_gen census=1; OLD; run
+is "39y1 a sibling that renders the SAME display and answers unknown -> no rename baseline written" "$(gget pending_for)" ""; has "39y2 and says it cannot be proven inactive, naming it" "$OUT" "$OTHER"; has "39y2b with the word" "$OUT" "proven"
 reset; other_row; touch "$T/obs-other/$OTHER.fail"; other_gen census=1; OLD; run
-is "39y3 the observer FAILS for the other row -> no baseline either" "$(gget pending_for)" ""; has "39y3b and it is named" "$OUT" "$OTHER"
-reset; other_row; other_unknown; other_gen census=1; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "39y3 the observer FAILS for an irrelevant sibling -> still free" "$(gget pending_for)" "Alpha→Thing"
+reset; other_same; touch "$T/obs-other/$OTHER.fail"; other_gen census=1; OLD; run
+is "39y3b the observer FAILS for a sibling that could bear the display -> stands down, named" "$(gget pending_for):$(printf '%s' "$OUT" | grep -c "$OTHER")" ":1"
+reset; other_same; other_unknown; other_gen census=1; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
 is "39y4 and a spawn stands down on the same doubt" "$(tl new-session)" "0"
-reset; other_row; printf '%s\037identified:managed\037garbage\n' "$OTHER" > "$T/obs-other/$OTHER"; other_gen census=1; OLD; run
-is "39y5 a malformed line from the other row is doubt, not absence" "$(gget pending_for)" ""
+reset; other_row; other_unknown; other_gen census=1; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "39y4b while an irrelevant sibling's doubt lets the spawn through" "$(tl new-session)" "1"
+reset; other_same; printf '%s\037identified:managed\037garbage\n' "$OTHER" > "$T/obs-other/$OTHER"; other_gen census=1; OLD; run
+is "39y5 a malformed line from a relevant sibling is doubt, not absence" "$(gget pending_for)" ""
+# RELEVANCE IS EVERY RECORD WE HOLD, not the registry alone: a sibling whose registry says 'Other Thing' but
+# whose generation says it was RENAMED to the desired display (applied), or is pending it, or whose last
+# seen bridge name is it, could be holding the tile - its doubt counts.
+reset; other_row; other_unknown; other_gen applied="Alpha→Thing" census=1; OLD; run
+is "39y6 registry 'Other Thing' but generation applied=desired -> relevant, stands down" "$(gget pending_for)" ""
+reset; other_row; other_unknown; other_gen pending_for="Alpha→Thing" census=1; OLD; run
+is "39y7 ... or pending_for=desired -> relevant, stands down" "$(gget pending_for)" ""
+reset; other_row; other_unknown; other_gen bridge_name="Alpha→Thing" census=1; OLD; run
+is "39y8 ... or the last seen bridge name = desired -> relevant, stands down" "$(gget pending_for)" ""
+reset; other_row; other_unknown; other_gen applied="Something Else" pending_for="Third" bridge_name="Fourth" census=1; OLD; run
+is "39y9 every record other than desired -> irrelevant, free" "$(gget pending_for)" "Alpha→Thing"
 
 echo "== 39x. M11: a same-key row that does NOT LOAD is read strictly, never skipped =="
 other_raw() { printf 'OWNER="a"\nHOST="%s"\nDOMAIN="alpha"\nID="%s"\nRC_LABEL="Other Thing"\n%b' "${2:-h1}" "$OTHER" "${1:-}" > "$ROOT/sessions.d/$OTHER.conf"; }   # [extra] [host]; no REPO_PATH: never loads
 reset; other_raw; OLD; run
-is "39x1 an unloadable same-key claude row on this host cannot be asked: rename stands down" "$(gget pending_for)" ""; has "39x2 naming it as unproven" "$OUT" "$OTHER"
+is "39x0 an unloadable same-key row whose raw display is OTHER and whose generation names nothing: irrelevant, free" "$(gget pending_for)" "Alpha→Thing"
+other_raw_same() { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nID="%s"\nRC_LABEL="Alpha→Thing"\n' "$OTHER" > "$ROOT/sessions.d/$OTHER.conf"; }
+reset; other_raw_same; OLD; run
+is "39x1 an unloadable same-key row that RENDERS the desired display cannot be asked: rename stands down" "$(gget pending_for)" ""; has "39x2 naming it as unproven" "$OUT" "$OTHER"
+reset; other_raw; other_gen applied="Alpha→Thing" census=1; OLD; run
+is "39x1b unloadable, raw display other, but generation applied=desired -> relevant, stands down" "$(gget pending_for)" ""
 reset; other_raw 'RUNTIME="opencode"\n'; OLD; run; is "39x3 its own words rule it out (another runtime): free" "$(gget pending_for)" "Alpha→Thing"
 reset; other_raw '' h2; OLD; run; is "39x4 another host: free" "$(gget pending_for)" "Alpha→Thing"
 reset; other_raw 'LIFECYCLE="retired"\n'; OLD; run; is "39x5 retired: free" "$(gget pending_for)" "Alpha→Thing"
-reset; other_raw 'RUNTIME="opencode"\nRUNTIME="opencode"\n'; OLD; run; is "39x6 a malformed field (duplicate RUNTIME) cannot exempt it: stands down" "$(gget pending_for)" ""
-reset; other_raw; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39x7 and a spawn stands down on the same row" "$(tl new-session)" "0"
+reset; other_raw 'RUNTIME="opencode"\nRUNTIME="opencode"\n'; OLD; run; is "39x6 a malformed field (duplicate RUNTIME) cannot exempt it: stands down (its display cannot be trusted either)" "$(gget pending_for)" ""
+reset; other_raw_same; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run; is "39x7 and a spawn stands down on a relevant unloadable row" "$(tl new-session)" "0"
 # M14: RUNTIME FIRST - a valid unloadable OpenCode row with a malformed LOGIN is out of the question before
 # the LOGIN is ever read; a valid retired row likewise. M13: a duplicated RC_LABEL with one empty line is
 # not the RC-free choice - it is malformed, and malformed never exempts.
@@ -640,8 +667,9 @@ OLD; run; is "39z5 an open claim on ANOTHER display holds nothing here" "$(gget 
 other_grace() { printf '%s\037grace\037\037\037\037\037\037grace\037\037\037\037\037\037\037\n' "$OTHER" > "$T/obs-other/$OTHER"; }
 reset; other_row; other_grace; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$now_ms" census=1
 OLD; run; is "39z6 started + fresh claim + grace -> reserved (no baseline)" "$(gget pending_for)" ""; has "39z7 named as the holder, not as a doubt" "$OUT" "reserved on this host"
-reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 + 5000 ))" census=1
-OLD; run; is "39z8 still reserved at the last seconds of the 600000 ms grace window" "$(gget pending_for)" ""
+now_ms="$(( $(date +%s) * 1000 ))"   # fresh: the section is long, and a stale stamp made this claim flaky
+reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 + 60000 ))" census=1
+OLD; run; is "39z8 still reserved in the last minute of the 600000 ms grace window" "$(gget pending_for)" ""
 reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 - 5000 ))" census=1
 OLD; run; is "39z9 released once the grace window has passed (no bridge ever came)" "$(gget pending_for)" "Alpha→Thing"
 reset; other_row; other_grace; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 - 5000 ))" census=1
