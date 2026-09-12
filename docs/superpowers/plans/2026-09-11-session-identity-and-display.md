@@ -235,6 +235,12 @@ A row stops carrying a typed `RC_LABEL` and starts deriving its display from its
 
 **Live gate (not a code step):** P1b cases A and B with a human, and P3 census for any login on more than one host or estate, **before** `derive` is run on a live row. Then derive one work row, watch two rounds, confirm `applied` in its generation.
 
+**P1b case A — PASSED 2026-09-12 07:26 (basement, Point login, Jon's eyes).** Run against the hub's own live row `s-6dbf0fa397e613a1` with the new supervisor by hand (timer stopped, three rounds: baseline, keyed suspect, type). The vault refused to type while the pane was busy (four rounds skipped); it typed once the pane fell idle, to the exact pane, receipt from pane + bridge (`nameSince` 1789130235168 → 1789190816338). Jon's screenshots: 07:26 (seconds before the type) `Steward→Basement (Point)`; 07:45 **`Steward→Basement (P1b)` — one tile, no duplicate, no stale tile**. The process argv still says `(Point)`: **the tile follows the bridge's name, not argv** (corrects the 2026-09-11 probe's reading that the tile is `--remote-control`; that probe only showed which of two *start-time* flags the tile takes). A first attempt on `s-68413113933455e1` (canary window in front, shell foreground) typed correctly and receipted, but that session has **no tile at all** in the app — search finds nothing under either name — although its argv carries `--remote-control` and its bridge file is valid. Level 3 is not measurable for every row; this is exactly why identity never hangs on the tile. Cause of the missing tile unmeasured.
+
+**Three defects the live host found while arming P1b** (9bf699e, a87cfb6): tmux 3.4 answers nothing to `display-message -t "=name"` for session formats (tuple now read via `list-sessions -f`); the vendor writes `procStart` as a STRING on 2.1.267/268 (both shapes read, digits only); the foreground canary required `pane_current_command=claude`, which is `bash` in production (launch is `claude; exec bash`, one process group) — the tty facts alone are the rule now. All three passed every fixture and would have failed every live row.
+
+**P1b case B — OPEN.** Needs a session with a tile, a clean exit, and a resume with a new `--remote-control`; the hub cannot observe its own restart. Candidate: a work row that is idle, with Jon watching the tile.
+
 ### Task 12 — OUTLINE (legacy removal last: `registry_session_display`'s label branch becomes a warning, then a refusal, only when no row in any estate carries a non-empty `RC_LABEL`). 9c (retarget refusal) is outlined under Task 9.
 
 ---
