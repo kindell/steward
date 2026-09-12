@@ -486,7 +486,25 @@ host_display_reserved() {
     # which is a person, not a login on this machine. The adapter resolves it the same way.
     local snap; snap="$( registry_load "$n" >/dev/null 2>&1 || exit 1
                          _u="$OWNER"; [ -z "${ACCOUNT:-}" ] || { registry_account_load "$ACCOUNT" >/dev/null 2>&1 && _u="$ACCOUNT_USERNAME"; }
-                         printf '%s\n%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" "$_u" )" || continue
+                         printf '%s\n%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" "$_u" )" || snap=""
+    if [ -z "$snap" ]; then
+      # A ROW THAT DOES NOT LOAD IS NOT ABSENT (advisor M11): it is read with the strict non-executing
+      # reader (M5). If its own words rule it out - another runtime, retired, RC-free, another host or
+      # login key - it holds nothing. Otherwise it is a same-key claude row on this host that cannot be
+      # asked (no account, no adapter answer) - uninspectable, and the gate refuses, naming it.
+      local _rf="$(registry_dir 2>/dev/null)/$n.conf" r_rt r_lc r_lg r_ow r_hs
+      r_rt="$(_registry_gate_raw "$_rf" RUNTIME)"   || { printf '%s\n' "$n"; return 2; }; r_rt="${r_rt:-claude-code}"
+      r_lc="$(_registry_gate_raw "$_rf" LIFECYCLE)" || { printf '%s\n' "$n"; return 2; }; r_lc="${r_lc:-active}"
+      r_lg="$(_registry_gate_raw "$_rf" LOGIN)"     || { printf '%s\n' "$n"; return 2; }
+      r_ow="$(_registry_gate_raw "$_rf" OWNER)"     || { printf '%s\n' "$n"; return 2; }
+      r_hs="$(_registry_gate_raw "$_rf" HOST)"      || { printf '%s\n' "$n"; return 2; }; [ -n "$r_hs" ] || r_hs="$(registry_hub_host 2>/dev/null)"
+      [ "$r_rt" = claude-code ] || continue
+      [ "$r_lc" != retired ] || continue
+      grep -q '^RC_LABEL=""$' "$_rf" 2>/dev/null && continue
+      [ "$r_hs" = "${STEWARD_SELF_HOST:-$(hostname -s)}" ] || continue
+      [ "$(registry_session_login_key "$r_lg" "$r_ow" "$r_hs")" = "$MY_LOGIN_KEY" ] || continue
+      printf '%s\n' "$n"; return 2
+    fi
     f_rt="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; f_lc="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
     f_fri="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; local f_login="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"
     f_owner="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; f_host="${snap%%$'\n'*}"; snap="${snap#*$'\n'}"; local f_user="${snap}"
@@ -587,12 +605,21 @@ host_gate_lock() { # rc 0 held (by us), rc 1 ANOTHER supervisor holds it, rc 2 n
     now="$(date +%s)"; age="$(_mtime_of "$HOST_GATE_LOCK")"; local _agesec=""
     if _is_epoch "$age" && _is_epoch "$now"; then _agesec=$((now - age)); fi
     local _owner _opid _obirth _cur; _owner="$(cat "$HOST_GATE_LOCK/owner" 2>/dev/null)"; _opid="${_owner%% *}"; _obirth="${_owner#* }"; [ "$_obirth" = "$_owner" ] && _obirth=""
+    [ "$_obirth" = "?" ] && _obirth=""        # the holder could not read its own birth: only its pid can be judged
     case "$_opid" in ''|*[!0-9]*) _opid="" ;; esac
     if [ -n "$_opid" ]; then
       _cur="$(bridge_os_birth "$_opid" 2>/dev/null)" || _cur=""
       if [ -z "$_cur" ] || { [ -n "$_obirth" ] && [ "$_cur" != "$_obirth" ]; }; then
-        echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid, birth ${_obirth:-unrecorded}) is dead (now ${_cur:-gone}); breaking it." >&2
-        rm -rf "$HOST_GATE_LOCK" 2>/dev/null
+        # THE STEAL IS ATOMIC (advisor M10): the dead lock is RENAMED into quarantine - rename(2) lets
+        # exactly one contender succeed - and only the one that moved it goes on to mkdir a new lock. Two
+        # contenders that both rm -rf'd and mkdir'd could each have replaced the other's new lock.
+        local _q="$HOST_GATE_LOCK.stolen.$$.$RANDOM"
+        if ! mv "$HOST_GATE_LOCK" "$_q" 2>/dev/null; then
+          echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid) is dead, but another contender took it first; standing down this round." >&2
+          return 1
+        fi
+        echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid, birth ${_obirth:-unrecorded}) is dead (now ${_cur:-gone}); broken." >&2
+        rm -rf "$_q" 2>/dev/null
         mkdir "$HOST_GATE_LOCK" 2>/dev/null || return 1
       else
         [ -n "$_agesec" ] && [ "$_agesec" -ge "$HOST_GATE_STALE_SEC" ] && echo "session-supervisor: $NAME — the display reservation lock has been held by a live supervisor (pid $_opid) for ${_agesec}s, past the ${HOST_GATE_STALE_SEC}s limit; not broken - if that supervisor is hung, stop it and remove $HOST_GATE_LOCK." >&2
@@ -603,7 +630,16 @@ host_gate_lock() { # rc 0 held (by us), rc 1 ANOTHER supervisor holds it, rc 2 n
       return 1
     fi
   fi
-  printf '%s %s\n' "$$" "$(bridge_os_birth "$$" 2>/dev/null)" > "$HOST_GATE_LOCK/owner" 2>/dev/null
+  # THE OWNER RECORD IS "pid birth", birth = <boot token>:<start> from bridge_os_birth - so the same pid
+  # and start ticks after a reboot are another boot and another owner. A holder that cannot read its own
+  # birth records "?": readers then judge it by its pid alone and never steal it while that pid lives. A
+  # record that cannot be WRITTEN is a lock nobody can judge: it is released and the round stands down.
+  local _me_birth; _me_birth="$(bridge_os_birth "$$" 2>/dev/null)" || _me_birth=""; [ -n "$_me_birth" ] || _me_birth="?"
+  if ! printf '%s %s\n' "$$" "$_me_birth" > "$HOST_GATE_LOCK/owner" 2>/dev/null; then
+    rm -rf "$HOST_GATE_LOCK" 2>/dev/null
+    echo "session-supervisor: $NAME — the display reservation lock was taken but its owner record could not be written; released, standing down." >&2
+    return 2
+  fi
   HOST_GATE_DEPTH=1
   return 0
 }
