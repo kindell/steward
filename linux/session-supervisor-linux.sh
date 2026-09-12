@@ -386,7 +386,6 @@ fi
 # the process before it signals. Both sit beside this script, deployed or in a checkout.
 OBSERVE="${STEWARD_BRIDGE_OBSERVE:-$(dirname "$0")/bridge-observe.sh}"
 BKILL="${STEWARD_BRIDGE_KILL:-$(dirname "$0")/bridge-kill.py}"
-PROCR="${BRIDGE_PROC_ROOT:-/proc}"
 if [ "$IS_CLAUDE" = 1 ]; then
   if [ "$_bridge_ok" != 1 ]; then
     echo "session-supervisor: $NAME — REFUSING: $BRIDGE_LIB does not define bridge_answer; a claude row cannot be identified without it." >&2
@@ -592,8 +591,8 @@ claude_claim_open() {
   nonce="$(${STEWARD_NONCE_CMD:-_steward_nonce} 2>/dev/null)"
   [ "${#nonce}" -eq 32 ] || nonce=""; case "$nonce" in *[!0-9a-f]*) nonce="" ;; esac
   wall="$(date +%s 2>/dev/null)"; case "$wall" in ''|*[!0-9]*) wall="" ;; *) wall="${wall}000" ;; esac
-  up="$(awk '{printf "%d", $1*1000}' "$PROCR/uptime" 2>/dev/null)"; case "$up" in ''|*[!0-9]*) up="" ;; esac
-  boot="$(cat "$PROCR/sys/kernel/random/boot_id" 2>/dev/null)"; case "$boot" in ''|*[!0-9A-Za-z-]*) boot="" ;; esac   # compared for equality only; one token, no spaces
+  up="$(bridge_uptime_ms 2>/dev/null)"; case "$up" in ''|*[!0-9]*) up="" ;; esac                # both OS backends: lib/bridge.sh
+  boot="$(bridge_boot_id 2>/dev/null)"; case "$boot" in ''|*[!0-9A-Za-z-]*) boot="" ;; esac   # compared for equality only; one token, no spaces
   [ -n "$nonce" ] && [ -n "$wall" ] && [ -n "$up" ] && [ -n "$boot" ] \
     || { _claim_fail "the launch claim cannot be written (nonce ${nonce:-invalid}, wall ${wall:-unreadable}, uptime ${up:-unreadable}, boot id ${boot:-unreadable})"; return 1; }
   inodes=""
@@ -1592,13 +1591,13 @@ type_line() { # <pane-target> <text> - EVERY keystroke names its pane. For a cla
 # those three readings changes. A pane whose claude has died never reaches this branch at all: the adapter
 # does not answer identified:managed for it.
 pane_foreground_is_managed() {
-  local pane_pid root="${BRIDGE_PROC_ROOT:-/proc}" a b
+  local pane_pid a b
   pane_pid="$(tmuxc display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)"; case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
-  a="$(sed 's/^.*) //' "$root/$pane_pid/stat" 2>/dev/null)"; b="$(sed 's/^.*) //' "$root/$2/stat" 2>/dev/null)"
-  [ -n "$a" ] && [ -n "$b" ] || return 1
-  set -- $a; local p_tty="${5:-}" p_tpgid="${6:-}"
-  set -- $b; local m_pgrp="${3:-}" m_tty="${5:-}" m_tpgid="${6:-}"
-  case "$p_tty" in ''|0|*[!0-9]*) return 1 ;; esac
+  # "state pgrp tty tpgid" from the OS facts layer (lib/bridge.sh) - /proc on Linux, ps on darwin.
+  a="$(bridge_proc_facts "$pane_pid" 2>/dev/null)" || return 1; b="$(bridge_proc_facts "$2" 2>/dev/null)" || return 1
+  set -- $a; local p_tty="${3:-}" p_tpgid="${4:-}"
+  set -- $b; local m_pgrp="${2:-}" m_tty="${3:-}" m_tpgid="${4:-}"
+  bridge_proc_has_tty "$p_tty" || return 1
   [ "$p_tty" = "$m_tty" ] && [ "$p_tpgid" = "$m_tpgid" ] && [ "$p_tpgid" = "$m_pgrp" ]
 }
 same_nonempty_sv() { [ -n "${1:-}" ] && [ "$1" = "${2:-}" ]; }

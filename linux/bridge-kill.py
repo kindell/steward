@@ -63,6 +63,57 @@ def birth_of(pid):
     return "%s:%s" % (boot, rest[19]), rest[0]
 
 
+def birth_of_darwin(pid):
+    """(boot_sec:start_epoch, state) from ps(1) and sysctl(8) - MEASURED on minin 2026-09-12: darwin has
+    no /proc and no pidfd. The same words lib/bridge.sh's darwin backend produces. None when gone."""
+    try:
+        bt = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, check=False).stdout
+        ps = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(pid)], capture_output=True, text=True, check=False).stdout
+    except OSError:
+        return None
+    import re, time
+    m = re.search(r"sec = (\d+)", bt)
+    line = ps.strip().splitlines()
+    if not m or not line:
+        return None
+    parts = line[0].split(None, 1)
+    if len(parts) < 2:
+        return None
+    state, lstart = parts[0], parts[1].strip()
+    try:
+        epoch = int(time.mktime(time.strptime(lstart, "%a %b %d %H:%M:%S %Y")))
+    except ValueError:
+        return None
+    return "%s:%d" % (m.group(1), epoch), state[:1]
+
+
+def main_darwin(pid, birth, sig, sig_name):
+    """NO PIN EXISTS HERE. The birth is re-read immediately before the signal and must equal the caller's;
+    the window between that read and kill(2) is the one a reused pid could slip through, and a reused pid
+    would also need the same start second. That is the best darwin offers, and it is said in the receipt."""
+    if not birth:
+        return refuse("empty birth token; an empty key matches nothing")
+    seen = birth_of_darwin(pid)
+    if seen is None:
+        return refuse("pid %d is gone (no ps line)" % pid)
+    token, state = seen
+    if state in ("Z", "X"):
+        return refuse("pid %d is a zombie (state %s); it is dead, not ours to signal" % (pid, state))
+    if token != birth:
+        return refuse("pid %d birth is %s, caller saw %s; the number was reused" % (pid, token, birth))
+    recorder = os.environ.get("STEWARD_KILL")
+    if recorder:
+        if subprocess.run([recorder, str(pid), sig_name], check=False).returncode != 0:
+            return refuse("the signal recorder %r returned non-zero; nothing is claimed delivered" % recorder)
+    else:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return refuse("pid %d died between its ps line and the signal" % pid)
+    print("killed %d %s %s (darwin: birth re-read before the signal, no pin)" % (pid, birth, sig_name))
+    return 0
+
+
 def main(argv):
     if len(argv) < 2 or len(argv) > 3:
         return usage("two or three arguments")
@@ -75,6 +126,9 @@ def main(argv):
     if parsed is None:
         return usage("unknown signal %r" % sig_s)
     sig, sig_name = parsed
+    os_name = os.environ.get("BRIDGE_OS") or sys.platform
+    if os_name.startswith("darwin"):
+        return main_darwin(pid, birth, sig, sig_name)
     if os.environ.get("STEWARD_FORCE_NO_PIDFD") == "1" or not hasattr(os, "pidfd_open"):
         sys.stderr.write("bridge-kill: pidfd unavailable on this python/kernel; nothing sent (no fallback to kill)\n")
         return 69
