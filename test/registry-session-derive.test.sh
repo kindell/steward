@@ -179,11 +179,15 @@ in_fp ""; is "7d no fingerprint given (another caller) - the gate does not inven
 in_fp "$(fp_of "$SRC")"; is "7e the fresh fingerprint passes again" "$RC" "0"
 rm -f "$SRC"; in_fp "$FP"; is "7f a source that vanished is refused too" "$RC" "70"; rm -f "$ROOT/projects.d/seventeen.conf"
 
-echo "== 8. R2: the content build fails closed - a read failure or an empty body never publishes a comment-only row =="
-in_content() { OUT="$( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"; . "$here/lib/registry.sh"; registry_derive_content "$1" "$2" 2>"$T/c.err" )"; RC=$?; CERR="$(cat "$T/c.err")"; }
+echo "== 8. R2 + R3: ONE read yields the content AND the fingerprint; the build fails closed =="
+in_content() { OUT="$( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"; . "$here/lib/registry.sh"; registry_derive_snapshot "$1" "$2" 2>"$T/c.err" )"; RC=$?; CERR="$(cat "$T/c.err")"; }
 printf 'ID="s-00000000000000r2"\nRC_LABEL="Old"\nOWNER="a"\n' > "$T/c1.conf"
-in_content "$T/c1.conf" "Old"; is "8a body without the label line, plus the comment" "$OUT" "$(printf 'ID="s-00000000000000r2"\nOWNER="a"\n# display derived from the target (was RC_LABEL="Old")')"
+in_content "$T/c1.conf" "Old"; is "8a line one is the fingerprint of the bytes read, then the body without the label line, plus the comment" "$OUT" "$(printf '%s\nID="s-00000000000000r2"\nOWNER="a"\n# display derived from the target (was RC_LABEL="Old")' "$(fp_of "$T/c1.conf")")"
 is "8b rc 0" "$RC" "0"
+# R3, structurally: the fingerprint and the content are derived from ONE read, so a writer cannot land
+# between them - there is no between. The fingerprint on line one is the one the in-lock gate compares.
+printf 'ID="s-00000000000000r2"\nRC_LABEL="Old"\nOWNER="b"\n' > "$T/c1.conf"
+in_content "$T/c1.conf" "Old"; is "8a2 a changed source gives a changed fingerprint WITH its own content, never the old content under the new print" "$(printf '%s' "$OUT" | head -1):$(printf '%s' "$OUT" | grep -c 'OWNER="b"')" "$(fp_of "$T/c1.conf"):1"
 in_content "$T/no-such.conf" "Old"; is "8c an unreadable source is rc 70" "$RC" "70"; is "8d and prints NOTHING (nothing to publish)" "$OUT" ""
 has "8c2 and says it could not READ - the read failure is its own refusal, not the empty-body one" "$CERR" "could not read"
 printf 'RC_LABEL="Only"\n' > "$T/c2.conf"

@@ -1,4 +1,7 @@
 #!/bin/bash
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
+export BRIDGE_OS=linux
 
 # PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
 # mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
@@ -48,6 +51,14 @@ ME="$(id -un)"
 printf 'NAME="Alpha"\nMEMBERS="a"\n' > "$ROOT/entities.d/alpha.conf"
 printf 'PRINCIPAL="a"\nHOST="h1"\nUSERNAME="%s"\n' "$ME" > "$ROOT/accounts.d/a-h1.conf"
 cp "$here/lib/registry.sh" "$here/lib/bridge.sh" "$here/lib/mcprender.sh" "$here/lib/mcpspawn.sh" "$LIBS/"
+# A WRITE-FAILURE INJECTION THAT DOES NOT TOUCH THE DIRECTORY: with the lock standing a round down whenever
+# the state directory is unwritable (M8), a generation write can no longer be made to fail by permissions
+# alone. The copied library's bridge_gen_write refuses any write carrying a field that starts with
+# T_GEN_FAIL_KEY - the claim (spawn_state=pending), the stop intent - and nothing else changes.
+cat >> "$LIBS/bridge.sh" <<'WEOF'
+eval "$(declare -f bridge_gen_write | sed '1s/^bridge_gen_write/_real_bridge_gen_write/')"
+bridge_gen_write() { local _a; if [ -n "${T_GEN_FAIL_KEY:-}" ]; then for _a in "$@"; do case "$_a" in "$T_GEN_FAIL_KEY"*) return 1 ;; esac; done; fi; _real_bridge_gen_write "$@"; }
+WEOF
 printf '#!/bin/sh\nexit 0\n' > "$HOMEDIR/.local/bin/claude"; chmod 755 "$HOMEDIR/.local/bin/claude"
 ADAPTER="$HOMEDIR/scripts/runtime/opencode-session.sh"; printf '#!/bin/sh\nexit 0\n' > "$ADAPTER"; chmod 755 "$ADAPTER"
 NAME="s-0000000000000001"; OC="s-0000000000000002"; PORT=4097
@@ -149,6 +160,7 @@ cat > "$BIN/observe" <<'EOF'
 printf '%s\n' "$*" >> "$OBS_LOG"
 id="$1"; [ "$id" = --bootstrap ] && id="$2"
 if [ "$id" != "$OBS_SELF" ]; then
+  [ -f "$OBS_DIR/$id.fail" ] && exit 1                                   # the observer itself fails for this row
   if [ -f "$OBS_DIR/$id" ]; then cat "$OBS_DIR/$id"; else printf '%s\037unknown\037\037\037\037\037\037none\037\037\037\037\037\037\037\n' "$id"; fi
   [ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT" "$id"; exit 0
 fi
@@ -179,7 +191,10 @@ run() { # [id]
   STEWARD_TMUX_SOCKET="$T/fixture.sock" STEWARD_BRIDGE_OBSERVE="$BIN/observe" STEWARD_BRIDGE_KILL="$BIN/bkill" STEWARD_NONCE_CMD="$BIN/nonce" \
   BRIDGE_PROC_ROOT="$PROC" STEWARD_KEY_SETTLE_SEC=0 STEWARD_SELF_HOST=h1 PATH="$BIN:$PATH" bash "$SUP" "${1:-$NAME}" >"$T/out" 2>&1; RC=$?; OUT="$(cat "$T/out")"   # a caller's VAR=x run reaches the supervisor: bash exports a function call's prefix assignments
 }
-reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE" "$T/obs-other"; mkdir -p "$STATE" "$T/obs-other"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL" "$OBS_SIDE_EFFECT"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
+# ISOLATION (advisor, identity-t9-review): the OTHER row's conf lives in the registry, not in STATE, so a
+# reset that left it there let a later section meet a same-key row with no observer file - which M7 now
+# rightly calls uninspectable. Every reset removes it; sections that need it call other_row again.
+reset() { chmod 700 "$STATE" 2>/dev/null; rm -rf "$STATE" "$T/obs-other"; rm -f "$ROOT/sessions.d/s-0000000000000003.conf"; mkdir -p "$STATE" "$T/obs-other"; : > "$OBSQUEUE"; rm -f "$T_KILL_LOCKS_STATE" "$T_SENDKEYS_FAIL" "$T_ENTER_FAIL" "$OBS_SIDE_EFFECT"; rm -f "$T_HAS_SESSION" "$T_KILL_FAILS" "$T_NEW_FAILS" "$T_GEN_AT_SPAWN" "$T_FG_CMD" "$T_RECEIPT" "$T_BUSY" "$T_RENAME_EFFECT"; : > "$T_SENDKEYS"
   printf '4242 1 -bash\n' > "$PROCTAB"; printf '$7:1789000000\n' > "$TUPLE"; gen census=1; pstat 4242 bash 1 4242 34816 4243 100; pstat 4243 claude 4242 4243 34816 4243 111; row_claude; }
 row_claude() { # [extra KEY="v" lines...] - the claude row, RC_LABEL="Alpha→Thing" unless overridden
   { printf 'OWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="%s/Projects/repo"\nID="%s"\nACCOUNT="a-h1"\nCLAUDE_MEMORY_ROOT="%s/memory"\n' "$HOMEDIR" "$NAME" "$T"
@@ -474,10 +489,13 @@ reset; ORPHAN; run; run; is "31a the helper ran (a bash shim with a shebang, exe
 chmod 644 "$BIN/bkill"; reset; ORPHAN; run; run; is "31b not executable -> nothing signalled" "$(grep -c . "$BKILL_LOG")" "0"; has "31c says the helper is missing" "$OUT" "kill helper"; chmod 755 "$BIN/bkill"
 
 echo "== 32. H3: a generation write that fails gates the action =="
-reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; T_GEN_FAIL_KEY='spawn_state=pending' run
 is "32a pending claim unwritable -> no new-session" "$(tl new-session)" "0"; has "32b says the claim could not be written" "$OUT" "could not be written"
-reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
+reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run; T_GEN_FAIL_KEY='stop_intent=' run
 is "32c stop_intent unwritable -> no kill" "$(tl kill-session)" "0"; has "32d says so" "$OUT" "stop intent could not be written"
+# and the directory-permission injection now measures M8: the lock cannot be created, the round stands down
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
+is "32a2 unwritable state directory -> no new-session either" "$(tl new-session)" "0"; has "32b2 because the lock stands the round down (M8)" "$OUT" "standing down"
 reset; touch "$T_HAS_SESSION"; gen pid=4243 birth=boot-s:111; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" '$7:1789000000' ""; run; touch "$T_KILL_LOCKS_STATE"; run; chmod 700 "$STATE"
 is "32e closed, but the receipt unwritable -> NO spawn" "$(tl new-session)" "0"; is "32f the kill did happen" "$(tl kill-session)" "1"; has "32g says: no spawn without a receipt" "$OUT" "NO spawn without a receipt"
 
@@ -570,6 +588,19 @@ STEWARD_RESERVATION_STRICT=1 run; STEWARD_RESERVATION_STRICT=1 run
 is "39q a row under ANOTHER login key is not blocked, even in strict mode (two tile lists)" "$(tl new-session)" "1"
 rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf" "$ROOT/logins.d/shared-login.conf"
 
+echo "== 39y. M7: a same-key row that cannot be PROVEN inactive makes the gate uninspectable - rename and spawn stand down =="
+# Observer failure, a malformed line, unknown (split-brain live bridge files), grace, wait-veto: none of
+# these proves the other row holds nothing, and a write on top of them would violate no-writes-on-unknown.
+other_unknown() { printf '%s\037unknown\037\037\037\037\037\037alive\037split-brain\037\037\037\037\037\037\n' "$OTHER" > "$T/obs-other/$OTHER"; }
+reset; other_row; other_unknown; other_gen census=1; OLD; run
+is "39y1 the other row answers unknown -> no rename baseline written" "$(gget pending_for)" ""; has "39y2 and says it cannot be proven inactive, naming it" "$OUT" "$OTHER"; has "39y2b with the word" "$OUT" "proven"
+reset; other_row; touch "$T/obs-other/$OTHER.fail"; other_gen census=1; OLD; run
+is "39y3 the observer FAILS for the other row -> no baseline either" "$(gget pending_for)" ""; has "39y3b and it is named" "$OUT" "$OTHER"
+reset; other_row; other_unknown; other_gen census=1; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "39y4 and a spawn stands down on the same doubt" "$(tl new-session)" "0"
+reset; other_row; printf '%s\037identified:managed\037garbage\n' "$OTHER" > "$T/obs-other/$OTHER"; other_gen census=1; OLD; run
+is "39y5 a malformed line from the other row is doubt, not absence" "$(gget pending_for)" ""
+
 echo "== 39z. M6: a valid OPEN LAUNCH CLAIM reserves the display during the window before the bridge file exists =="
 # Between claude_claim_open and the first observation there is no bridge file, so the adapter answers
 # no-process for the other row and M3's rule ("identified:* holds the tile") sees nothing. The claim is the
@@ -585,6 +616,23 @@ reset; other_row; other_dead; other_gen spawn_state= pending_for="Alpha→Thing"
 OLD; run; is "39z4 pending_for without an open spawn is not a claim" "$(gget pending_for)" "Alpha→Thing"
 reset; other_row; other_dead; other_gen spawn_state=pending pending_for="Something Else" launch_ms="$now_ms" census=1
 OLD; run; is "39z5 an open claim on ANOTHER display holds nothing here" "$(gget pending_for)" "Alpha→Thing"
+# M9: after new-session the claim is spawn_state=started and the adapter answers GRACE until the bridge
+# file appears; that is the normal window, reserved for the whole of the observer's grace bound.
+other_grace() { printf '%s\037grace\037\037\037\037\037\037grace\037\037\037\037\037\037\037\n' "$OTHER" > "$T/obs-other/$OTHER"; }
+reset; other_row; other_grace; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$now_ms" census=1
+OLD; run; is "39z6 started + fresh claim + grace -> reserved (no baseline)" "$(gget pending_for)" ""; has "39z7 named as the holder, not as a doubt" "$OUT" "reserved on this host"
+reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 + 5000 ))" census=1
+OLD; run; is "39z8 still reserved at the last seconds of the 600000 ms grace window" "$(gget pending_for)" ""
+reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 - 5000 ))" census=1
+OLD; run; is "39z9 released once the grace window has passed (no bridge ever came)" "$(gget pending_for)" "Alpha→Thing"
+reset; other_row; other_grace; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 600000 - 5000 ))" census=1
+OLD; run; is "39z10 grace WITHOUT a live claim is doubt: stands down" "$(gget pending_for)" ""; has "39z11 as uninspectable" "$OUT" "proven"
+# the malformed bound is tested with a claim OLDER than the default: a bound that quietly fell back to
+# 600000 would release it (baseline written); fail-closed must stand down and say why
+reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 700000 ))" census=1
+STEWARD_BRIDGE_GRACE_MS=abc OLD; STEWARD_BRIDGE_GRACE_MS=abc run; is "39z12 a malformed grace bound fails closed (not a silent default)" "$(gget pending_for)" ""; has "39z12b as uninspectable" "$OUT" "proven"
+reset; other_row; other_dead; other_gen spawn_state=started pending_for="Alpha→Thing" launch_ms="$(( now_ms - 400000 ))" census=1
+STEWARD_BRIDGE_GRACE_MS=300000 OLD; STEWARD_BRIDGE_GRACE_MS=300000 run; is "39z13 the bound is the observer's own variable" "$(gget pending_for)" "Alpha→Thing"
 
 echo "== 40. Task 9b, advisor M4: the check and the write it authorises are ONE critical section =="
 # THE LOCK IS HELD WHILE THE GATE RUNS. The observer is called from inside the gate, so a shim that tries
@@ -605,18 +653,38 @@ echo "== 41. a lock another supervisor holds stands the round down; a stale one 
 reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 mkdir -p "$STATE/.display-reservation.lock"; run
 is "41a a held lock: no spawn" "$(tl new-session)" "0"; has "41b and says why" "$OUT" "another supervisor holds the display reservation lock"
+# AGE ALONE BREAKS NOTHING (advisor M8): a lock is broken only when its recorded owner is PROVABLY dead.
 set_mtime "$STATE/.display-reservation.lock" 1700000000; run
-is "41c a lock older than the limit is broken and the round proceeds" "$(tl new-session)" "1"; has "41d loudly" "$OUT" "breaking it"
-[ -d "$STATE/.display-reservation.lock" ] && bad "41e and released again" "" || ok "41e and released again"
+is "41c a stale lock WITHOUT an owner record is not broken (nothing proves the holder dead)" "$(tl new-session)" "0"; has "41d and it alarms with the age and the remedy" "$OUT" "cannot be proven dead"
+[ -d "$STATE/.display-reservation.lock" ] && ok "41e and the lock stands" || bad "41e and the lock stands" "gone" "present"
+printf '4299 boot-s:1\n' > "$STATE/.display-reservation.lock/owner"; run
+is "41h a lock whose owner pid is GONE is broken at once, whatever its age" "$(tl new-session)" "1"; has "41i saying the owner is dead" "$OUT" "owner"
+[ -d "$STATE/.display-reservation.lock" ] && bad "41j and released again" "" || ok "41j and released again"
+reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+mkdir -p "$STATE/.display-reservation.lock"; printf '4242 boot-s:100\n' > "$STATE/.display-reservation.lock/owner"; set_mtime "$STATE/.display-reservation.lock" 1700000000; run
+is "41k a stale lock whose owner is ALIVE (same pid, same birth) is NOT broken" "$(tl new-session)" "0"; has "41l and alarms as held by a live holder past the limit" "$OUT" "live"
+printf '4242 boot-s:999\n' > "$STATE/.display-reservation.lock/owner"; run
+is "41m the same pid with ANOTHER birth is a reused number: dead, broken" "$(tl new-session)" "1"
+run; [ -f "$STATE/.display-reservation.lock/owner" ] && ok "41n our own lock records its owner while held (seen mid-round by the probe below)" || ok "41n (checked in 40)"
+rmdir "$STATE/.display-reservation.lock" 2>/dev/null; rm -rf "$STATE/.display-reservation.lock"
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; mkdir -p "$STATE/.display-reservation.lock"; run; run
 is "41f a held lock stops the rename step too" "$(grep -c . "$T_SENDKEYS")" "0"; has "41g and says so" "$OUT" "no rename step this round"
 rmdir "$STATE/.display-reservation.lock"
 
-echo "== 42. an unwritable state directory is NOT contention =="
+echo "== 42. an unwritable state directory is NOT contention - and it is NOT a licence to proceed unlocked (M8) =="
 reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; chmod 500 "$STATE"; run; chmod 700 "$STATE"
 hasnt "42a it never claims another supervisor holds the lock" "$OUT" "another supervisor holds"
 has "42b it says the lock cannot be created there" "$OUT" "cannot be created"
-is "42c and nothing was spawned (the claim write refuses on the same directory)" "$(tl new-session)" "0"
+has "42b2 and that the round stands down" "$OUT" "standing down"; hasnt "42b3 never 'proceeding unlocked'" "$OUT" "proceeding unlocked"
+is "42c and nothing was spawned" "$(tl new-session)" "0"
+# M8, the advisor's sharper case: mkdir ALONE fails (the lock path is a plain file) while every generation
+# write would succeed - the old reasoning "every write fails on the same directory" does not hold here.
+reset; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; : > "$STATE/.display-reservation.lock"; run; rm -f "$STATE/.display-reservation.lock"
+is "42d a lock path that is a FILE: no spawn" "$(tl new-session)" "0"; has "42e standing down" "$OUT" "standing down"
+# and the spawn function's OWN lock (re-entrant, the second gate) is reached by an RC-FREE row, which the
+# earlier gate lets through because it holds no display - the lock still stands it down
+reset; row_claude 'RC_LABEL=""'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; : > "$STATE/.display-reservation.lock"; run; rm -f "$STATE/.display-reservation.lock"; row_claude
+is "42f an RC-free row reaches spawn_session's lock; a lock that cannot be created: no spawn" "$(tl new-session)" "0"; has "42g standing down" "$OUT" "standing down"
 
 echo "== 21. the bridge library missing on a claude row is a refusal; an OpenCode row does not care =="
 reset; mv "$LIBS/bridge.sh" "$LIBS/bridge.sh.away"; touch "$T_HAS_SESSION"; MANAGED; run; is "21a rc 78" "$RC" "78"; has "21b names the library" "$OUT" "bridge"

@@ -148,6 +148,21 @@ runw 2; is "5ac failing a hypothetical SECOND write changes nothing - there is n
 before="$(cat "$SD/s-0000000000000002.generation")"
 runw 1; is "5ad failing the one write: reported" "$RC" "1"; is "5ae and the old generation is byte-identical" "$(cat "$SD/s-0000000000000002.generation")" "$before"
 
+echo "== 5e. Q2: history takes the old process ONCE per force, never a live process into its own history, eight distinct at most =="
+hist_of() { sed -n 's/^history=//p' "$SD/$1.generation" | head -1; }
+count_in_hist() { hist_of "$1" | tr ' ' '\n' | grep -c "^$2:"; }
+line s-0000000000000002 identified:managed 4600 boot-c:600 "s-0000000000000002:@0.%0" "Live" 1 bootstrap live:managed "" 4600 t2 1 '$5:1' 781
+run --force s-0000000000000002; h0="$(hist_of s-0000000000000002)"
+run --force s-0000000000000002; is "5af re-censusing the SAME live process adds nothing to history" "$(hist_of s-0000000000000002)" "$h0"
+line s-0000000000000002 identified:managed 4601 boot-c:601 "s-0000000000000002:@0.%0" "Live" 1 bootstrap live:managed "" 4601 t2 1 '$5:1' 782
+run --force s-0000000000000002; is "5ag a new pid puts the old one into history exactly ONCE (the clear and the seed are one change)" "$(count_in_hist s-0000000000000002 4600)" "1"
+for p in 4602 4603 4604 4605 4606 4607 4608 4609 4610; do
+  line s-0000000000000002 identified:managed $p boot-c:$p "s-0000000000000002:@0.%0" "Live" 1 bootstrap live:managed "" $p t2 1 '$5:1' 790; run --force s-0000000000000002
+done
+is "5ah eight entries at most" "$(hist_of s-0000000000000002 | wc -w | tr -d ' ')" "8"
+is "5ai all distinct" "$(hist_of s-0000000000000002 | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')" "8"
+is "5aj the most recent old process is there, the oldest evicted" "$(count_in_hist s-0000000000000002 4609):$(count_in_hist s-0000000000000002 4600)" "1:0"
+
 echo "== 6. usage and environment =="
 run --bogus; is "6a unknown flag rc 64" "$RC" "64"
 run a b; is "6b two ids rc 64" "$RC" "64"

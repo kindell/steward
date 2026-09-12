@@ -511,29 +511,49 @@ host_display_reserved() {
     fi
     # OURS TO ASK. identified:* proves a live bridge file; anything else holds no tile.
     line="$(STEWARD_STATE_DIR="$STATE_DIR" STEWARD_TMUX_SOCKET="$SOCK" STEWARD_REGISTRY_LIB="$REG_LIB" STEWARD_BRIDGE_LIB="$BRIDGE_LIB" bash "$OBSERVE" "$n" 2>/dev/null)" || line=""
-    if [ -n "$line" ] && bridge_line_valid "$line" "$n" && case "$BL_ANS" in identified:*) true ;; *) false ;; esac; then
-      applied="$(bridge_gen_get "$STATE_DIR" "$n" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$n" pending_for 2>/dev/null)"
-      if [ "$BL_NAME" = "$desired" ] || [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ]; then
-        printf '%s\n' "$n"; return 0
-      fi
-      continue
-    fi
-    # NO BRIDGE FILE YET, BUT AN OPEN LAUNCH CLAIM (advisor M6): between claude_claim_open and the first
-    # observation the other row has no bridge file, so "identified:* holds the tile" sees nothing - and a
-    # second supervisor could take the same display. The claim IS the reservation in that window:
-    # spawn_state=pending, pending_for=display, launch_ms within the bound. An older claim is a spawn that
-    # never produced a bridge file, and holds nothing.
-    if host_claim_reserves "$n" "$desired"; then printf '%s\n' "$n"; return 0; fi
+    # A ROW THAT CANNOT BE PROVEN INACTIVE IS UNINSPECTABLE (advisor M7): an observer failure, a line that
+    # breaks the contract, unknown (split-brain live bridge files), grace, wait-veto - none of these proves
+    # the row holds nothing, and a write on top of them is a write on unknown. rc 2, the row on stdout.
+    if [ -z "$line" ] || ! bridge_line_valid "$line" "$n"; then printf '%s\n' "$n"; return 2; fi
+    case "$BL_ANS" in
+      identified:*)
+        applied="$(bridge_gen_get "$STATE_DIR" "$n" applied 2>/dev/null)"; pending="$(bridge_gen_get "$STATE_DIR" "$n" pending_for 2>/dev/null)"
+        if [ "$BL_NAME" = "$desired" ] || [ "$applied" = "$desired" ] || [ "$pending" = "$desired" ]; then
+          printf '%s\n' "$n"; return 0
+        fi
+        continue ;;
+    esac
+    # NOT IDENTIFIED. THE OPEN LAUNCH CLAIM IS TRIED FIRST (advisor M6, M9, M7 precision): from
+    # claude_claim_open (spawn_state=pending) through new-session (started) until the vendor's bridge
+    # file appears, the other row has no bridge file and the adapter answers no-process or grace - the
+    # normal window after a spawn, not a doubt. The claim IS the reservation for the whole adapter grace
+    # window: pending_for=display and launch_ms within STEWARD_BRIDGE_GRACE_MS (the observer's own bound).
+    _hcr=0; host_claim_reserves "$n" "$desired"; _hcr=$?
+    if [ "$_hcr" -eq 0 ]; then printf '%s\n' "$n"; return 0; fi
+    if [ "$_hcr" -eq 2 ]; then printf '%s\n' "$n"; return 2; fi        # a bound or clock that cannot be read: fail closed
+    case "$BL_ANS" in
+      no-process) continue ;;                                          # no process, no live claim: free
+      *) printf '%s\n' "$n"; return 2 ;;                              # unknown, grace without a claim, wait-veto, uninspectable: doubt
+    esac
   done
   return 1
 }
-HOST_CLAIM_BOUND_MS="$(( ${STEWARD_RESERVATION_CLAIM_SEC:-300} * 1000 ))"
+# host_claim_reserves <row> <display> - rc 0 the row's open launch claim reserves the display; rc 1 it does
+# not (no claim, another display, closed spawn, or a claim older than the grace window); rc 2 the bound or
+# the clock cannot be read - and an unreadable bound is not a licence (fail closed at the caller).
+# THE BOUND IS THE OBSERVER'S GRACE (advisor M9): STEWARD_BRIDGE_GRACE_MS, default 600000 - the same
+# number the adapter uses to keep answering grace after a launch. A shorter bound left minutes of the
+# window unreserved. spawn_state pending (before new-session) and started (after it, bridge file not yet
+# seen) are both the open claim; anything else is closed.
+HOST_CLAIM_BOUND_MS="${STEWARD_BRIDGE_GRACE_MS:-600000}"
 host_claim_reserves() { # <row> <display>
   local st pf lm now
-  st="$(bridge_gen_get "$STATE_DIR" "$1" spawn_state 2>/dev/null)"; [ "$st" = pending ] || return 1
+  case "$HOST_CLAIM_BOUND_MS" in ''|*[!0-9]*) return 2 ;; esac
+  st="$(bridge_gen_get "$STATE_DIR" "$1" spawn_state 2>/dev/null)"; case "$st" in pending|started) : ;; *) return 1 ;; esac
   pf="$(bridge_gen_get "$STATE_DIR" "$1" pending_for 2>/dev/null)"; [ -n "$pf" ] && [ "$pf" = "$2" ] || return 1
   lm="$(bridge_gen_get "$STATE_DIR" "$1" launch_ms 2>/dev/null)"; case "$lm" in ''|*[!0-9]*) return 1 ;; esac
-  now="$(( $(date +%s) * 1000 ))"; [ "$now" -ge "$lm" ] || return 1
+  now="$(date +%s 2>/dev/null)"; case "$now" in ''|*[!0-9]*) return 2 ;; esac; now=$(( now * 1000 ))
+  [ "$now" -ge "$lm" ] || return 1
   [ $(( now - lm )) -le "$HOST_CLAIM_BOUND_MS" ]
 }
 
@@ -554,33 +574,60 @@ host_gate_lock() { # rc 0 held (by us), rc 1 ANOTHER supervisor holds it, rc 2 n
     # diagnosis; and nothing can be reserved anyway, because every write below fails on the same
     # directory. Proceed unlocked and let those writes refuse with their own reason.
     if [ ! -d "$HOST_GATE_LOCK" ]; then
-      echo "session-supervisor: $NAME — the display reservation lock cannot be created in $STATE_DIR; proceeding unlocked (every write below fails on the same directory)." >&2
+      # ...but neither is it a licence (advisor M8): one critical section means no write without the lock.
+      echo "session-supervisor: $NAME — the display reservation lock cannot be created in $STATE_DIR; standing down (nothing can be reserved here)." >&2
       return 2
     fi
-    now="$(date +%s)"; age="$(_mtime_of "$HOST_GATE_LOCK")"
-    if _is_epoch "$age" && _is_epoch "$now" && [ $((now - age)) -ge "$HOST_GATE_STALE_SEC" ]; then
-      echo "session-supervisor: $NAME — the display reservation lock is $((now - age))s old (limit ${HOST_GATE_STALE_SEC}s); breaking it." >&2
-      rmdir "$HOST_GATE_LOCK" 2>/dev/null
-      mkdir "$HOST_GATE_LOCK" 2>/dev/null || return 1
+    # THE LOCK NAMES ITS OWNER, AND ONLY A PROVABLY DEAD OWNER IS BROKEN (advisor M8). Age alone breaks
+    # nothing: an observer call inside the section is unbounded, so an old lock may be a slow live holder.
+    # The owner record is "pid birth" (bridge_os_birth); the same pid with another birth is a reused
+    # number, a pid that is gone is gone - both dead, broken at once whatever the age. A live owner past the
+    # limit alarms with the remedy and is never broken; a lock without an owner record cannot be proven
+    # dead and is treated as live.
+    now="$(date +%s)"; age="$(_mtime_of "$HOST_GATE_LOCK")"; local _agesec=""
+    if _is_epoch "$age" && _is_epoch "$now"; then _agesec=$((now - age)); fi
+    local _owner _opid _obirth _cur; _owner="$(cat "$HOST_GATE_LOCK/owner" 2>/dev/null)"; _opid="${_owner%% *}"; _obirth="${_owner#* }"; [ "$_obirth" = "$_owner" ] && _obirth=""
+    case "$_opid" in ''|*[!0-9]*) _opid="" ;; esac
+    if [ -n "$_opid" ]; then
+      _cur="$(bridge_os_birth "$_opid" 2>/dev/null)" || _cur=""
+      if [ -z "$_cur" ] || { [ -n "$_obirth" ] && [ "$_cur" != "$_obirth" ]; }; then
+        echo "session-supervisor: $NAME — the display reservation lock's owner (pid $_opid, birth ${_obirth:-unrecorded}) is dead (now ${_cur:-gone}); breaking it." >&2
+        rm -rf "$HOST_GATE_LOCK" 2>/dev/null
+        mkdir "$HOST_GATE_LOCK" 2>/dev/null || return 1
+      else
+        [ -n "$_agesec" ] && [ "$_agesec" -ge "$HOST_GATE_STALE_SEC" ] && echo "session-supervisor: $NAME — the display reservation lock has been held by a live supervisor (pid $_opid) for ${_agesec}s, past the ${HOST_GATE_STALE_SEC}s limit; not broken - if that supervisor is hung, stop it and remove $HOST_GATE_LOCK." >&2
+        return 1
+      fi
     else
+      [ -n "$_agesec" ] && [ "$_agesec" -ge "$HOST_GATE_STALE_SEC" ] && echo "session-supervisor: $NAME — the display reservation lock is ${_agesec}s old with no owner record; its holder cannot be proven dead, so it is not broken - if no supervisor is running here, remove $HOST_GATE_LOCK." >&2
       return 1
     fi
   fi
+  printf '%s %s\n' "$$" "$(bridge_os_birth "$$" 2>/dev/null)" > "$HOST_GATE_LOCK/owner" 2>/dev/null
   HOST_GATE_DEPTH=1
   return 0
 }
 host_gate_unlock() {
   [ "$HOST_GATE_DEPTH" -gt 0 ] || return 0
   HOST_GATE_DEPTH=$((HOST_GATE_DEPTH-1))
-  [ "$HOST_GATE_DEPTH" -eq 0 ] && rmdir "$HOST_GATE_LOCK" 2>/dev/null
+  [ "$HOST_GATE_DEPTH" -eq 0 ] && rm -rf "$HOST_GATE_LOCK" 2>/dev/null
   return 0
 }
 
 # host_gate_refuses <desired> <where> - the gate applied with its alarm-once marker; rc 0 when the write
 # must NOT happen (reserved), rc 1 when it may. The marker (.display-reserved) is cleared when free.
 host_gate_refuses() {
-  local desired="$1" where="$2" holder
-  if holder="$(host_display_reserved "$desired")"; then
+  local desired="$1" where="$2" holder _hr
+  holder="$(host_display_reserved "$desired")"; _hr=$?
+  if [ "$_hr" -eq 2 ]; then
+    # UNINSPECTABLE (M7): the write is refused, and the marker carries the row so the alarm is said once.
+    if [ ! -f "$STATE_DIR/$NAME.display-reserved" ] || [ "$(cat "$STATE_DIR/$NAME.display-reserved" 2>/dev/null)" != "?$holder" ]; then
+      printf '?%s\n' "$holder" > "$STATE_DIR/$NAME.display-reserved"
+      echo "session-supervisor: $NAME — REFUSING to $where: the same-login row '$holder' on this host cannot be proven inactive (observer failed, or answered unknown/grace/wait-veto), so '$desired' cannot be shown free (spec §3 host gate, fail closed). Nothing written." >&2
+    fi
+    return 0
+  fi
+  if [ "$_hr" -eq 0 ]; then
     if [ ! -f "$STATE_DIR/$NAME.display-reserved" ] || [ "$(cat "$STATE_DIR/$NAME.display-reserved" 2>/dev/null)" != "$holder" ]; then
       printf '%s\n' "$holder" > "$STATE_DIR/$NAME.display-reserved"
       echo "session-supervisor: $NAME — REFUSING to $where: the display '$desired' is reserved on this host by the live row '$holder' (spec §3 host gate). Nothing written; retire or rename '$holder' first." >&2
@@ -1725,6 +1772,8 @@ if runtime_identified; then
     if [ "$_hg" -eq 1 ]; then
       rm -f "$RENAME_SUSPECT"
       echo "session-supervisor: $NAME — another supervisor holds the display reservation lock; no rename step this round." >&2
+    elif [ "$_hg" -eq 2 ]; then
+      rm -f "$RENAME_SUSPECT"            # M8: no lock, no step; the lock function said why
     elif [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ] && host_gate_refuses "$DESIRED" "rename"; then
       host_gate_unlock; rm -f "$RENAME_SUSPECT"                                            # spec §3 host gate (Task 9b): no baseline, no keys
     elif [ -n "$DESIRED" ] && [ "$DESIRED" != "$APPLIED" ]; then
@@ -2082,6 +2131,7 @@ spawn_session() {
       echo "session-supervisor: $NAME — another supervisor holds the display reservation lock; not spawning this round." >&2
       return 0
     fi
+    [ "$_hg" -eq 2 ] && return 0          # M8: no lock, no spawn
     if [ -n "$RC_LABEL" ] && host_gate_refuses "$RC_LABEL" "spawn"; then host_gate_unlock; return 0; fi
     claude_claim_open || { host_gate_unlock; return 0; }
     host_gate_unlock
@@ -2182,6 +2232,7 @@ if [ "$IS_CLAUDE" = 1 ]; then
       if [ -n "$RC_LABEL" ]; then                                    # spec §3 host gate (Task 9b), before the suspect is even keyed
         host_gate_lock; _hg=$?
         if [ "$_hg" -eq 1 ]; then echo "session-supervisor: $NAME — another supervisor holds the display reservation lock; nothing decided this round." >&2; exit 0; fi
+        [ "$_hg" -eq 2 ] && exit 0          # M8: no lock, nothing decided
         if host_gate_refuses "$RC_LABEL" "spawn"; then host_gate_unlock; rm -f "$SUSPECT"; exit 78; fi
         host_gate_unlock
       fi
