@@ -488,6 +488,29 @@ Rule 10 says a double must be able to say both things. This is rule 10 for
 the gate itself: a summary that can only say "everything ran" is a summary
 that cannot warn you.
 
+**And the rule has a practical floor: a number bound to a commit is only
+worth something if the commit outlives the gate.** Measured the evening this
+rule was written, by its author, on this file. Every suggestion taken in gave
+a new hash, and a new hash means a new run - four gates in a row were thrown
+away by their own author before they finished, each invalidated by the next
+improvement to the text they were measuring. Nothing was wrong with any of
+them. The rule was applied correctly four times and produced no usable number
+at all.
+
+That is a measurement of one's own cadence, and the response is not to relax
+the rule - it is to stop editing. A file under active revision gets closed
+for the session at a named commit, and further suggestions go into the NEXT
+change rather than into the one being gated. Otherwise the gate becomes
+ceremony: it runs, it is honest, and it never finishes in time to mean
+anything.
+
+The generalisation is worth stating plainly, because it is the one thing on
+this page that is about pace rather than about proof: **a verification that
+cannot complete before its subject changes is not a slow verification, it is
+an absent one.** Any process that re-verifies on every edit has a rate above
+which it measures nothing - and that rate is discoverable, by counting the
+runs you discarded.
+
 ## 15. Searching for references does not answer whether anything reads the file.
 
 "Does any suite read this file?" was answered with `grep -rln <filename>
