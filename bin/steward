@@ -5560,49 +5560,6 @@ _realign_login_registered() { # <login>
 # uniqueness gate skips it. A migration that emptied the line would take every migrated session out of
 # Remote Control silently. Absence is what "rendered" looks like in a conf.
 #
-# EVERY REFUSAL LEAVES THE ROW BYTE-IDENTICAL, and they come before anything is written: a row must never
-# lose the only name it has. The rendered display must resolve (the target exists) and must be free under
-# this row's login key (the same gate `session add` applies at write time).
-# cmd_registry_session_derive <handle> [--dry-run] [--json] - THE MIGRATION VERB of spec section 4: a row
-# stops carrying a typed RC_LABEL and starts DERIVING its display from its target.
-#
-# THE LINE IS DELETED, NEVER EMPTIED. `RC_LABEL=""` is not "no label": it is the RC-FREE choice, and both
-# readers honour it - the supervisor starts such a session with no --remote-control at all, and the
-# uniqueness gate skips it. A migration that emptied the line would take every migrated session out of
-# Remote Control silently. Absence is what "rendered" looks like in a conf.
-#
-# EVERY REFUSAL LEAVES THE ROW BYTE-IDENTICAL, and they come before anything is written: a row must never
-# lose the only name it has. The rendered display must resolve (the target exists) and must be free under
-# this row's login key (the same gate `session add` applies at write time).
-# _registry_validate_derive_stage <staged-file> - the gates of spec section 3, run INSIDE the writer's
-# lock on the row as it will be published (advisor P1: a check outside the transaction is not a gate -
-# a concurrent add or derive can pass the same check and publish the same rendered name).
-_registry_validate_derive_stage() {
-  local file="$1" ID="" ACCOUNT="" SLUG="" TARGET_ENTITY="" TARGET_PROJECT="" \
-        HOST="" REPO_PATH="" OWNER="" LOGIN="" RUNTIME="" RC_LABEL=""
-  # shellcheck source=/dev/null
-  source "$file" || { echo "registry: the staged row did not source: $file" >&2; return 70; }
-  local rcfree=""; grep -q '^RC_LABEL=""$' "$file" 2>/dev/null && rcfree=1
-  registry_session_gate_fields "${ID:-$_DERIVE_ID}" "${RUNTIME:-claude-code}" "$rcfree" "${RC_LABEL:-}" \
-    "$TARGET_PROJECT" "$TARGET_ENTITY" "$SLUG" "$LOGIN" "$OWNER" "$HOST" || return 70
-  return 0
-}
-# _registry_derive_readback <slug> - the published row must LOAD and render exactly what was promised.
-_registry_derive_readback() {
-  registry_load "$1" >/dev/null || return 1
-  local got; got="$(registry_session_display "$1" 2>/dev/null)"
-  [ "$got" = "$_DERIVE_EXPECT" ] || { echo "registry: the row renders '${got:-nothing}', not '$_DERIVE_EXPECT'" >&2; return 1; }
-  return 0
-}
-
-# cmd_registry_session_derive <handle> [--dry-run] [--json] - THE MIGRATION VERB of spec section 4: a row
-# stops carrying a typed RC_LABEL and starts DERIVING its display from its target.
-#
-# THE LINE IS DELETED, NEVER EMPTIED. `RC_LABEL=""` is not "no label": it is the RC-FREE choice, and both
-# readers honour it - the supervisor starts such a session with no --remote-control at all, and the
-# uniqueness gate skips it. A migration that emptied the line would take every migrated session out of
-# Remote Control silently. Absence is what "rendered" looks like in a conf.
-#
 # THE WRITE IS THE REGISTRY'S OWN TRANSACTION (advisor P1, P2, P5): registry_row_replace takes the
 # sessions lock, stages, validates the staged row - which is where the uniqueness gate runs, inside the
 # lock - publishes with mode 0600, reads back through the loader, and restores the previous row (loudly,
@@ -5705,10 +5662,16 @@ cmd_registry_session_derive() {
     return 0
   fi
 
-  local content rw_err rw_rc
-  content="$(grep -v '^RC_LABEL=' "$conf"; printf '# display derived from the target (was RC_LABEL="%s")\n' "$label")" || {
-    _reg_fail "$want_json" "steward registry session derive: could not read $conf" 70; return 70; }
-  REGISTRY_DERIVE_ID="$key"; REGISTRY_DERIVE_EXPECT="$desired"
+  local T_DERIVE_ERR; T_DERIVE_ERR="$(mktemp)" || { _reg_fail "$want_json" "steward registry session derive: could not create a temporary file" 70; return 70; }
+  local content rw_err rw_rc src_fp
+  # THE CONTENT AND THE SOURCE'S FINGERPRINT ARE TAKEN TOGETHER (advisor R1, R2): the lib builds the
+  # content and fails closed; the fingerprint travels into the in-lock validator, which refuses when the
+  # row on disk is no longer the one this content came from.
+  content="$(registry_derive_content "$conf" "$label" 2>"$T_DERIVE_ERR")" || {
+    _reg_fail "$want_json" "steward registry session derive: $(tr '\n' ' ' < "$T_DERIVE_ERR" 2>/dev/null)" 70; return 70; }
+  src_fp="$(registry_row_fingerprint "$conf")" || { _reg_fail "$want_json" "steward registry session derive: could not fingerprint $conf" 70; return 70; }
+  REGISTRY_DERIVE_ID="$key"; REGISTRY_DERIVE_EXPECT="$desired"; REGISTRY_DERIVE_SOURCE_FP="$src_fp"
+  rm -f "$T_DERIVE_ERR"
   rw_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry session derive: could not create a temporary file" 70; return 70; }
   registry_row_replace "$(registry_dir)" "$key" "$content" registry_derive_validate_stage registry_derive_readback "session" 2>"$rw_err"
   rw_rc=$?

@@ -161,4 +161,33 @@ in_lib s-00000000000000q1 registry_derive_readback "Something Else" s-0000000000
 has "6f naming what it found" "$OUT" "Alpha→Contest"
 rm -f "$SESS/s-00000000000000q1.conf" "$ROOT/projects.d/contest.conf"
 
+echo "== 7. R1: the row the content was built from must still be the row under the lock =="
+# Advisor R1: the content is built before registry_row_replace takes the lock; a concurrent writer that
+# changes the SAME row in between would be overwritten with stale content. The in-lock validator now also
+# compares the source row's fingerprint (size + cksum, captured when the content was built).
+SRC="$SESS/s-00000000000000r1.conf"
+printf 'NAME="Seventeen"\nPARENT="alpha"\n' > "$ROOT/projects.d/seventeen.conf"   # a target of its own: the display rule must pass on its own
+printf 'ID="s-00000000000000r1"\nACCOUNT="a-h1"\nSLUG="seventeen"\nOWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_PROJECT="seventeen"\nRC_LABEL="Old"\n' > "$SRC"
+printf 'ID="s-00000000000000r1"\nACCOUNT="a-h1"\nSLUG="seventeen"\nOWNER="a"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_PROJECT="seventeen"\n' > "$STAGED"
+fp_of() { ( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"; . "$here/lib/registry.sh"; registry_row_fingerprint "$1" ); }
+FP="$(fp_of "$SRC")"
+in_fp() { OUT="$( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"; . "$here/lib/registry.sh"; REGISTRY_DERIVE_ID="s-00000000000000r1"; REGISTRY_DERIVE_SOURCE_FP="$1"; registry_derive_validate_stage "$STAGED" 2>&1 )"; RC=$?; }
+in_fp "$FP"; is "7a the same source passes" "$RC" "0"
+printf 'REPO_PATH="/tmp/other"\n' >> "$SRC"
+in_fp "$FP"; is "7b a source that changed between the build and the lock is REFUSED" "$RC" "70"; has "7c and the refusal says the row changed" "$OUT" "changed"
+in_fp ""; is "7d no fingerprint given (another caller) - the gate does not invent one; rc 0 on the display rule alone" "$RC" "0"
+in_fp "$(fp_of "$SRC")"; is "7e the fresh fingerprint passes again" "$RC" "0"
+rm -f "$SRC"; in_fp "$FP"; is "7f a source that vanished is refused too" "$RC" "70"; rm -f "$ROOT/projects.d/seventeen.conf"
+
+echo "== 8. R2: the content build fails closed - a read failure or an empty body never publishes a comment-only row =="
+in_content() { OUT="$( export STEWARD_ESTATE_ROOT="$ROOT" STEWARD_CONFIG_FILE="$T/no-such-config"; . "$here/lib/registry.sh"; registry_derive_content "$1" "$2" 2>"$T/c.err" )"; RC=$?; CERR="$(cat "$T/c.err")"; }
+printf 'ID="s-00000000000000r2"\nRC_LABEL="Old"\nOWNER="a"\n' > "$T/c1.conf"
+in_content "$T/c1.conf" "Old"; is "8a body without the label line, plus the comment" "$OUT" "$(printf 'ID="s-00000000000000r2"\nOWNER="a"\n# display derived from the target (was RC_LABEL="Old")')"
+is "8b rc 0" "$RC" "0"
+in_content "$T/no-such.conf" "Old"; is "8c an unreadable source is rc 70" "$RC" "70"; is "8d and prints NOTHING (nothing to publish)" "$OUT" ""
+has "8c2 and says it could not READ - the read failure is its own refusal, not the empty-body one" "$CERR" "could not read"
+printf 'RC_LABEL="Only"\n' > "$T/c2.conf"
+in_content "$T/c2.conf" "Only"; is "8e a row that would be left with only the comment is rc 70" "$RC" "70"; is "8f and prints nothing" "$OUT" ""
+has "8g saying why" "$CERR" "nothing but"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]

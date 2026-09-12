@@ -570,6 +570,22 @@ STEWARD_RESERVATION_STRICT=1 run; STEWARD_RESERVATION_STRICT=1 run
 is "39q a row under ANOTHER login key is not blocked, even in strict mode (two tile lists)" "$(tl new-session)" "1"
 rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf" "$ROOT/logins.d/shared-login.conf"
 
+echo "== 39z. M6: a valid OPEN LAUNCH CLAIM reserves the display during the window before the bridge file exists =="
+# Between claude_claim_open and the first observation there is no bridge file, so the adapter answers
+# no-process for the other row and M3's rule ("identified:* holds the tile") sees nothing. The claim is the
+# reservation then: spawn_state=pending, pending_for=display, launch_ms within the bound. Older claims
+# are stale and hold nothing.
+now_ms="$(( $(date +%s) * 1000 ))"
+reset; other_row; other_dead; other_gen spawn_state=pending pending_for="Alpha→Thing" launch_ms="$now_ms" census=1
+OLD; run; is "39z1 the other row's OPEN claim stands this row down: no baseline written" "$(gget pending_for)" ""
+has "39z2 and says who holds it" "$OUT" "$OTHER"
+reset; other_row; other_dead; other_gen spawn_state=pending pending_for="Alpha→Thing" launch_ms="$(( now_ms - 3600000 ))" census=1
+OLD; run; is "39z3 a STALE claim (an hour old) holds nothing: the baseline is seeded" "$(gget pending_for)" "Alpha→Thing"
+reset; other_row; other_dead; other_gen spawn_state= pending_for="Alpha→Thing" launch_ms="$now_ms" census=1
+OLD; run; is "39z4 pending_for without an open spawn is not a claim" "$(gget pending_for)" "Alpha→Thing"
+reset; other_row; other_dead; other_gen spawn_state=pending pending_for="Something Else" launch_ms="$now_ms" census=1
+OLD; run; is "39z5 an open claim on ANOTHER display holds nothing here" "$(gget pending_for)" "Alpha→Thing"
+
 echo "== 40. Task 9b, advisor M4: the check and the write it authorises are ONE critical section =="
 # THE LOCK IS HELD WHILE THE GATE RUNS. The observer is called from inside the gate, so a shim that tries
 # to take the same lock measures the critical section from within it - no timing, no sleep.
