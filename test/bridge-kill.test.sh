@@ -23,6 +23,11 @@ sleep 300 & SLEEPER=$!
 stat_for() { mkdir -p "$PROC/$1"; printf '%s (sleep) %s 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0 0\n' "$1" "${3:-S}" "$2" > "$PROC/$1/stat"; }
 run() { : > "$REC"; OUT="$(BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder" python3 "$K" "$@" 2>"$T/err")"; RC=$?; ERR="$(cat "$T/err")"; }
 
+# NO PIDFD ON DARWIN (measured on minin 2026-09-12: python 3.14, hasattr(os,'pidfd_open')=False). The helper
+# then refuses everything with rc 69 by design, so the positive sections cannot run there - they are SKIPPED
+# and said so, instead of inverting seventeen claims. Section 4 measures the refusal itself on every platform.
+HAVE_PIDFD=0; python3 -c 'import os,sys; sys.exit(0 if hasattr(os,"pidfd_open") else 1)' 2>/dev/null && HAVE_PIDFD=1
+if [ "$HAVE_PIDFD" = 1 ]; then
 echo "== 1. match: pinned, birth equal, recorder receives pid and signal =="
 stat_for "$SLEEPER" 4242
 run "$SLEEPER" boot-k:4242; is "1a rc 0" "$RC" "0"; is "1b recorder got <pid> TERM" "$(cat "$REC")" "$SLEEPER TERM"
@@ -46,6 +51,10 @@ echo "== 2b. a recorder that fails is not a delivery =="
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"; exit 3\n' "$REC" > "$T/recorder-fails"; chmod 755 "$T/recorder-fails"
 : > "$REC"; OUT="$(BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder-fails" python3 "$K" "$SLEEPER" boot-k:4242 2>"$T/err")"; RC=$?
 is "2p recorder rc 3 -> 65" "$RC" "65"; is "2q no 'killed' receipt printed" "$OUT" ""; has "2r says why" "$(cat "$T/err")" "non-zero"
+
+else
+echo "== 1-2b SKIPPED: this python has no pidfd_open (darwin); the helper refuses with 69 here, measured in section 4 =="
+fi
 
 echo "== 3. usage: rc 64 =="
 run "$SLEEPER" boot-k:4242 BOGUS; is "3a bad signal name -> 64" "$RC" "64"; is "3b not signalled" "$(cat "$REC")" ""

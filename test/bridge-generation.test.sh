@@ -1,4 +1,11 @@
 #!/bin/bash
+
+# PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
+# mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
+# both stat dialects; the observation queue is shortened with tail, never sed -i.
+set_mtime() { python3 -c 'import os,sys; t=int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
+inode_of() { stat -c %i "$1" 2>/dev/null || stat -f %i "$1"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # test/bridge-generation.test.sh - the generation is history and bootstrap, never a
 # second truth; a DEAD file is matched on pid:procStart; a birth with a colon in it
 # round-trips (B2); an EMPTY birth never matches anything (third pass 3); and a suspect
@@ -95,7 +102,7 @@ bridge_suspect_confirmed "$S" "$K1"; bridge_suspect_confirmed "$S" "$K3"; is "7e
 K4="$(bridge_suspect_key close - - session_created=1789000000)"; K5="$(bridge_suspect_key close - - session_created=1789000005)"
 bridge_suspect_confirmed "$S" "$K4"; bridge_suspect_confirmed "$S" "$K5"; is "7f same action, different tmux identity, not confirmed" "$?" "1"
 is "7g key carries every argument" "$K4" "close - - session_created=1789000000"
-touch -d @1700000000 "$S"; bridge_suspect_confirmed "$S" "$K5"; is "7h a confirmed key does not rewrite the file: its mtime is the FIRST sighting" "$(stat -c %Y "$S")" "1700000000"
-bridge_suspect_confirmed "$S" "$K4"; [ "$(stat -c %Y "$S")" != "1700000000" ] && ok "7i a different key does rewrite it" || bad "7i a different key does rewrite it" "mtime unchanged"
+set_mtime "$S" 1700000000; bridge_suspect_confirmed "$S" "$K5"; is "7h a confirmed key does not rewrite the file: its mtime is the FIRST sighting" "$(mtime_of "$S")" "1700000000"
+bridge_suspect_confirmed "$S" "$K4"; [ "$(mtime_of "$S")" != "1700000000" ] && ok "7i a different key does rewrite it" || bad "7i a different key does rewrite it" "mtime unchanged"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]

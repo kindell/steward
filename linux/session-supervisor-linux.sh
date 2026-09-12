@@ -1488,7 +1488,8 @@ ensure_workspace_trusted() {
   local tmp; tmp="$(mktemp "${CLAUDE_JSON}.XXXXXX")" || return 0
   if jq --arg p "$REPO" '.projects[$p].hasTrustDialogAccepted = true' "$CLAUDE_JSON" > "$tmp" 2>/dev/null \
      && [ -s "$tmp" ]; then
-    chmod --reference="$CLAUDE_JSON" "$tmp" 2>/dev/null
+    _mode="$(stat -c %a "$CLAUDE_JSON" 2>/dev/null || stat -f %Lp "$CLAUDE_JSON" 2>/dev/null)"   # both stat dialects; chmod --reference is GNU-only
+    case "$_mode" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) chmod "$_mode" "$tmp" 2>/dev/null ;; esac
     mv -f "$tmp" "$CLAUDE_JSON"
     echo "session-supervisor: $NAME — workspace $REPO pre-trusted (otherwise the start sticks at the trust prompt)" >&2
   else

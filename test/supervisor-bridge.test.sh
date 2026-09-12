@@ -1,4 +1,11 @@
 #!/bin/bash
+
+# PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
+# mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
+# both stat dialects; the observation queue is shortened with tail, never sed -i.
+set_mtime() { python3 -c 'import os,sys; t=int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
+inode_of() { stat -c %i "$1" 2>/dev/null || stat -f %i "$1"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 # test/supervisor-bridge.test.sh - claude rows are supervised through the adapter's answer;
 # every destructive step is a KEYED two-round suspect; a spawn writes its claim before
 # new-session; the close goes to the parsed $N after re-reading the tuple; and an OpenCode
@@ -145,7 +152,7 @@ if [ "$id" != "$OBS_SELF" ]; then
   if [ -f "$OBS_DIR/$id" ]; then cat "$OBS_DIR/$id"; else printf '%s\037unknown\037\037\037\037\037\037none\037\037\037\037\037\037\037\n' "$id"; fi
   [ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT" "$id"; exit 0
 fi
-if [ -s "$OBSQUEUE" ]; then head -1 "$OBSQUEUE"; sed -i 1d "$OBSQUEUE"; else cat "$OBSLINE"; fi
+if [ -s "$OBSQUEUE" ]; then head -1 "$OBSQUEUE"; tail -n +2 "$OBSQUEUE" > "$OBSQUEUE.n" && mv "$OBSQUEUE.n" "$OBSQUEUE"; else cat "$OBSLINE"; fi
 [ -f "$OBS_SIDE_EFFECT" ] && bash "$OBS_SIDE_EFFECT" "$id"; exit 0
 EOF
 cat > "$BIN/bkill" <<'EOF'
@@ -277,7 +284,7 @@ reset; touch "$T_HAS_SESSION"; gen launch_ms=1 launch_uptime_ms=1; line grace ""
 is "14a nothing" "$(tl kill-session)$(tl new-session)" "00"; is "14b generation untouched over two rounds" "$(gen_snapshot)" "$before"
 
 echo "== 15. the spawn writes its claim BEFORE new-session and closes it AFTER (D7) =="
-reset; printf '{"pid":9,"tmux":"x"}\n' > "$HOMEDIR/.claude/sessions/9.json"; ino9="$(stat -c %i "$HOMEDIR/.claude/sessions/9.json")"
+reset; printf '{"pid":9,"tmux":"x"}\n' > "$HOMEDIR/.claude/sessions/9.json"; ino9="$(inode_of "$HOMEDIR/.claude/sessions/9.json")"
 line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
 is "15a one new-session" "$(tl new-session)" "1"
 g="$(cat "$T_GEN_AT_SPAWN" 2>/dev/null)"
@@ -582,7 +589,7 @@ echo "== 41. a lock another supervisor holds stands the round down; a stale one 
 reset; other_row; other_dead; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 mkdir -p "$STATE/.display-reservation.lock"; run
 is "41a a held lock: no spawn" "$(tl new-session)" "0"; has "41b and says why" "$OUT" "another supervisor holds the display reservation lock"
-touch -d @1700000000 "$STATE/.display-reservation.lock"; run
+set_mtime "$STATE/.display-reservation.lock" 1700000000; run
 is "41c a lock older than the limit is broken and the round proceeds" "$(tl new-session)" "1"; has "41d loudly" "$OUT" "breaking it"
 [ -d "$STATE/.display-reservation.lock" ] && bad "41e and released again" "" || ok "41e and released again"
 reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; OLD; run; mkdir -p "$STATE/.display-reservation.lock"; run; run
