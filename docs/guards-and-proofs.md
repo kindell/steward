@@ -460,6 +460,19 @@ same superseded hash. The second one was the real test: the rule held because
 the author remembered the precedent he had just set for himself, not because
 the text said so. It says so now.
 
+And the exception that will be reached for first - **"no suite reads this
+file"** - is not an exception at all. It is a CLAIM, and the person making it
+is the person who wants to skip the run. Measured on this very file the same
+evening, by the colleague who had no incentive to: `test/language.test.sh`
+sweeps `git ls-files '*.md'`, so a Swedish letter appended to
+`docs/guards-and-proofs.md` turns the suite red and names the file
+(`pass=16 fail=1`, restored `17/0`). The author's own search had been
+`grep -rln guards-and-proofs test/` - which finds a suite that names the file
+and misses every suite that globs it. A docs-only change to a `.md` in this
+repo can fail a suite, so the re-run that was demanded on precedent turned
+out to be necessary on the merits too. Right conclusion, wrong reason, and
+the next `.md` would have had the same reason and no such luck.
+
 The cost of the strict reading is one gate run on a machine that was idle
 anyway. The cost of the lenient reading is that "gated" stops meaning
 anything, one defensible exception at a time.
