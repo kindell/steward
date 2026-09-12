@@ -473,6 +473,13 @@ repo can fail a suite, so the re-run that was demanded on precedent turned
 out to be necessary on the merits too. Right conclusion, wrong reason, and
 the next `.md` would have had the same reason and no such luck.
 
+There is a second reason, and it is the load-bearing one: a number that names
+a commit nobody can fetch **cannot be checked afterwards**. That is the same
+reason we send each other hashes instead of "the branch is green" - a receipt
+whose subject has been rewritten is a claim about a thing that no longer
+exists. It holds even when the diff looks like it touches only files no suite
+reads, which, per rule 15, is usually an unverified claim as well.
+
 The cost of the strict reading is one gate run on a machine that was idle
 anyway. The cost of the lenient reading is that "gated" stops meaning
 anything, one defensible exception at a time.
