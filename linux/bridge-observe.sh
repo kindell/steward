@@ -155,6 +155,9 @@ CANDIDATES
   if [ "$boot" = 1 ]; then ans="$(bridge_answer "$classes" none "$tmux_present" "$veto" 1)"        # D3: the census ignores the generation
   else ans="$(bridge_answer "$classes" "$gen_state" "$tmux_present" "$veto" "$census")"; fi
   case "$ans" in identified:*) : ;; *) L_PID=""; L_BIRTH=""; L_PANE=""; L_NAME=""; L_SINCE=""; L_PS=""; L_SID=""; L_MTIME=""; L_INODE="" ;; esac   # D9
+  # AN UNCENSUSED ROW SAYS SO (measured 2026-09-12: ten live rows without a generation read as a broken
+  # observer). Live candidates, no generation, no census: the cure is bridge-census, and the reason names it.
+  if [ "$ans" = unknown ] && [ "$boot" != 1 ] && [ "$gen_state" = none ] && [ "$census" != 1 ] && [ -n "${classes# }" ]; then classes=" uncensused${classes}"; fi
   line "$id" "$ans" "$L_PID" "$L_BIRTH" "$L_PANE" "$L_NAME" "$L_SINCE" "$gen_state" "${classes# }" "$child" "$L_PS" "$L_SID" "$L_MTIME" "$tuple" "$L_INODE"
 }
 case "${1:-}" in

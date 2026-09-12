@@ -229,6 +229,10 @@ reset; grep -v '^ACCOUNT=' "$ROOT/sessions.d/$ID.conf" > "$T/r" && mv "$T/r" "$R
 
 echo "== 25. bootstrap: the census sees what the plain call refuses =="
 reset; live_managed; rm -f "$SD"/*; obs "$ID"; is "25a plain, no generation -> unknown" "$(f 2)" "unknown"
+# MEASURED IN PRODUCTION 2026-09-12 (basement, Jon's home): ten live rows without a generation answered
+# unknown/unclassifiable and read as a broken observer; the difference was visible only in the generation
+# directory. A live candidate with NO generation and no census is an UNCENSUSED row, and the reason says so.
+has "25a2 the reason names the cause: uncensused, run the census" "$(f 9)" "uncensused"
 obs --bootstrap "$ID"; is "25b bootstrap -> managed" "$(f 2)" "identified:managed"; is "25c gen_state says bootstrap" "$(f 8)" "bootstrap"
 reset; rm -f "$SD"/*; obs --bootstrap "$ID"; is "25d bootstrap, empty row -> no-process" "$(f 2)" "no-process"
 
@@ -276,6 +280,7 @@ is "35h no diagnostics on stderr across the invalid-state claims" "$(grep -c 'sy
 echo "== 36. K4: a live candidate whose procStart contradicts the generation is not identified =="
 reset; live_managed; gen procStart=4243; bridge 4243 "$ID:@0.%0" "Alpha→Thing" 1789000000000 9999; obs "$ID"
 is "36a same pid+birth, vendor procStart 9999 vs recorded 4243 -> unknown" "$(f 2)" "unknown"; has "36b unclassifiable" "$(f 9)" "unclassifiable"
+hasnt "36b2 a row WITH a generation is never called uncensused" "$(f 9)" "uncensused"
 reset; live_managed; gen procStart=; bridge 4243 "$ID:@0.%0" "Alpha→Thing" 1789000000000 9999; obs "$ID"
 is "36c a generation without a procStart (first bind) still identifies" "$(f 2)" "identified:managed"
 
