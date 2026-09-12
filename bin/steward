@@ -5662,16 +5662,17 @@ cmd_registry_session_derive() {
     return 0
   fi
 
-  local T_DERIVE_ERR; T_DERIVE_ERR="$(mktemp)" || { _reg_fail "$want_json" "steward registry session derive: could not create a temporary file" 70; return 70; }
-  local content rw_err rw_rc src_fp
-  # THE CONTENT AND THE SOURCE'S FINGERPRINT ARE TAKEN TOGETHER (advisor R1, R2): the lib builds the
-  # content and fails closed; the fingerprint travels into the in-lock validator, which refuses when the
-  # row on disk is no longer the one this content came from.
-  content="$(registry_derive_content "$conf" "$label" 2>"$T_DERIVE_ERR")" || {
-    _reg_fail "$want_json" "steward registry session derive: $(tr '\n' ' ' < "$T_DERIVE_ERR" 2>/dev/null)" 70; return 70; }
-  src_fp="$(registry_row_fingerprint "$conf")" || { _reg_fail "$want_json" "steward registry session derive: could not fingerprint $conf" 70; return 70; }
+  local content rw_err rw_rc src_fp snap_out snap_err
+  # THE CONTENT AND THE SOURCE'S FINGERPRINT COME FROM ONE READ (advisor R1, R3): registry_derive_snapshot
+  # reads the bytes once and derives both, fails closed (R2), and the fingerprint travels into the in-lock
+  # validator, which refuses when the row on disk is no longer the one this content came from.
+  snap_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry session derive: could not create a temporary file" 70; return 70; }
+  snap_out="$(registry_derive_snapshot "$conf" "$label" 2>"$snap_err")" || {
+    _reg_fail "$want_json" "steward registry session derive: $(tr '\n' ' ' < "$snap_err" 2>/dev/null)" 70; rm -f "$snap_err"; return 70; }
+  rm -f "$snap_err"
+  src_fp="${snap_out%%$'\n'*}"; content="${snap_out#*$'\n'}"
+  case "$src_fp" in [0-9]*:[0-9a-f]*) : ;; *) _reg_fail "$want_json" "steward registry session derive: the snapshot carried no fingerprint" 70; return 70 ;; esac
   REGISTRY_DERIVE_ID="$key"; REGISTRY_DERIVE_EXPECT="$desired"; REGISTRY_DERIVE_SOURCE_FP="$src_fp"
-  rm -f "$T_DERIVE_ERR"
   rw_err="$(mktemp)" || { _reg_fail "$want_json" "steward registry session derive: could not create a temporary file" 70; return 70; }
   registry_row_replace "$(registry_dir)" "$key" "$content" registry_derive_validate_stage registry_derive_readback "session" 2>"$rw_err"
   rw_rc=$?

@@ -1,4 +1,7 @@
 #!/bin/bash
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
+export BRIDGE_OS=linux
 # test/supervisor-mcp-guard.test.sh -- what a HALF-DEPLOYED host does.
 #
 # linux/session-supervisor-linux.sh gained two libraries (lib/mcprender.sh,

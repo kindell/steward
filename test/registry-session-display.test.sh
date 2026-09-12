@@ -399,9 +399,36 @@ in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Nobody Renders 
 # gate refuses - it cannot be established by omitting the row.
 printf 'garbage\n' > "$SESS/unreadable.conf"
 in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Anything"; is "9n a row that yields neither key nor display is UNINSPECTABLE (rc 2)" "$RC" "2"
+
 is "9o and is named" "$OUT" "unreadable"
 in_fixture registry_session_work_rule wr-new "owner:a@h1" work; is "9p the work rule fails closed the same way" "$RC" "2"
 rm -f "$SESS/bad-account.conf" "$SESS/unreadable.conf"
+# STRICT, NOT PERMISSIVE (advisor M5): a row that does not load is read raw, but the raw reader is a parser
+# with a vocabulary, not a grep. A malformed gate field cannot exempt the row - it makes it UNINSPECTABLE.
+mk_raw() { printf 'OWNER="a"\nHOST="h1"\nRC_LABEL="Strict"\n%b' "$2" > "$SESS/$1.conf"; }   # no REPO_PATH: never loads; a display of its own
+mk_raw raw-dup 'RUNTIME="opencode"\nRUNTIME="opencode"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9o a duplicated RUNTIME line is uninspectable, not an exemption" "$RC:$OUT" "2:raw-dup"; rm -f "$SESS/raw-dup.conf"
+mk_raw raw-unq 'RUNTIME=opencode\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9p an unquoted RUNTIME is uninspectable" "$RC:$OUT" "2:raw-unq"; rm -f "$SESS/raw-unq.conf"
+mk_raw raw-voc 'LIFECYCLE="dormant"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9q a LIFECYCLE outside the vocabulary is uninspectable" "$RC:$OUT" "2:raw-voc"; rm -f "$SESS/raw-voc.conf"
+mk_raw raw-tick 'RUNTIME="`touch '"$SESS"'/executed.marker`"\n'
+# THE RAW READER ITSELF NEVER EXECUTES (the loader does source a row - that is what loading is - so the
+# reader is proven on its own, before the gate's load attempt touches the file).
+in_fixture _registry_gate_raw "$SESS/raw-tick.conf" RUNTIME; is "9r the raw reader refuses a value with a backtick (rc 2)" "$RC" "2"
+[ -e "$SESS/executed.marker" ] && bad "9r2 and the raw reader NEVER executed it" "executed" "" || ok "9r2 and the raw reader NEVER executed it"
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9r3 and through the gate the row is uninspectable" "$RC:$OUT" "2:raw-tick"; rm -f "$SESS/raw-tick.conf" "$SESS/executed.marker"
+mk_raw raw-ok 'RUNTIME="opencode"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9s a well-formed unloadable OpenCode row still exempts itself (free)" "$RC" "1"; rm -f "$SESS/raw-ok.conf"
+mk_raw raw-ret 'LIFECYCLE="retired"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9t a well-formed retired row holds nothing" "$RC" "1"; rm -f "$SESS/raw-ret.conf"
+mk_raw raw-both 'RUNTIME="claude-code"\nTARGET_PROJECT="p"\nTARGET_ENTITY="e"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9v both targets named is ambiguous: uninspectable" "$RC:$OUT" "2:raw-both"; rm -f "$SESS/raw-both.conf"
+mk_raw raw-dups 'SLUG="one"\nSLUG="two"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9w a duplicated SLUG is uninspectable" "$RC:$OUT" "2:raw-dups"; rm -f "$SESS/raw-dups.conf"
+mk_raw raw-dupl 'LOGIN="x"\nLOGIN="y"\n'
+in_fixture registry_session_rendered_unique wr-new "owner:a@h1" "Strict"; is "9u a duplicated LOGIN is uninspectable (the key cannot be read)" "$RC:$OUT" "2:raw-dupl"; rm -f "$SESS/raw-dupl.conf"
+
 rm -f "$SESS"/wr-*.conf "$PROJ/work.conf"
 
 echo "== 10. THE STAGED-ROW RULE (advisor M2): RUNTIME first, RC-free exempt from the rendered gate =="

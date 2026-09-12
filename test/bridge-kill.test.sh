@@ -1,4 +1,7 @@
 #!/bin/bash
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
+export BRIDGE_OS=linux
 # test/bridge-kill.test.sh - the process is PINNED before its birth is read, and the signal goes
 # to the pin (D6). A bare `kill <pid>` races: between our check and our signal the pid can be
 # reused, and the signal lands on a stranger. pidfd_open pins one process incarnation; the
@@ -64,7 +67,9 @@ run -1 boot-k:4242; is "3e negative pid -> 64" "$RC" "64"
 run; is "3f no args -> 64" "$RC" "64"
 
 echo "== 4. no pidfd -> rc 69, NO fallback to kill =="
-OUT="$(BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder" STEWARD_FORCE_NO_PIDFD=1 python3 "$K" "$SLEEPER" boot-k:4242 2>"$T/err")"; RC=$?
+# LINUX WITHOUT PIDFD is what this section measures (the darwin branch answers 65/0 on its own facts and
+# is proven in test/bridge-darwin.test.sh); measured on minin: without BRIDGE_OS=linux this read 65.
+OUT="$(BRIDGE_OS=linux BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder" STEWARD_FORCE_NO_PIDFD=1 python3 "$K" "$SLEEPER" boot-k:4242 2>"$T/err")"; RC=$?
 is "4a rc 69" "$RC" "69"; has "4b says pidfd unavailable" "$(cat "$T/err")" "pidfd unavailable"; is "4c not signalled" "$(cat "$REC")" ""
 is "4d the sleeper is still alive (nothing was ever really signalled)" "$(kill -0 "$SLEEPER" 2>/dev/null && echo alive)" "alive"
 

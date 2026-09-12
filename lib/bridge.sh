@@ -399,8 +399,13 @@ bridge_gen_write() {
     k="${kv%%=*}"; v="${kv#*=}"
     _bridge_gen_key_ok "$k" || { echo "bridge: generation key '$k' is not in the vocabulary; nothing written" >&2; rm -f "$tmp"; return 64; }
     grep -v "^$k=" "$tmp" > "$tmp.2"; mv "$tmp.2" "$tmp"; printf '%s=%s\n' "$k" "$v" >> "$tmp"
-    if [ "$k" = pid ] && [ -n "$old_pid" ] && [ "$v" != "$old_pid" ]; then hist="$hist $old_pid:${old_ps:--}:${old_b:--}"; fi
   done
+  # THE OLD TRIPLE GOES INTO HISTORY ONCE PER TRANSACTION, AND ONLY WHEN THE FINAL PID DIFFERS (advisor
+  # Q2): a write that says "pid=" and then "pid=<new>" is one change of process, not two; a write that
+  # clears and re-seeds the SAME pid is no change at all, and must not push a live process into its own
+  # history. Judged on the file as it will be published, not per key.
+  local new_pid; new_pid="$(sed -n 's/^pid=//p' "$tmp" | head -1)"
+  if [ -n "$old_pid" ] && [ "$new_pid" != "$old_pid" ]; then hist="$hist $old_pid:${old_ps:--}:${old_b:--}"; fi
   hist="$(printf '%s\n' $hist | grep . | tail -8 | tr '\n' ' ')"; hist="${hist% }"
   [ -n "$hist" ] && printf 'history=%s\n' "$hist" >> "$tmp"
   mv -f "$tmp" "$f"

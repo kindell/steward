@@ -1,4 +1,7 @@
 #!/bin/bash
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
+export BRIDGE_OS=linux
 # test/supervisor-reap.test.sh - the orphan reap kills what belongs to NO pane.
 #
 # THE GAP, measured on a live Linux host 2026-09-09. reap_orphan_claude ran on

@@ -1,4 +1,7 @@
 #!/bin/bash
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
+export BRIDGE_OS=linux
 # test/bridge-classify.test.sh - candidates by name never by order; poison is a LINE;
 # a missing field is schema, not foreign; empty fields survive framing (US, not tab).
 #

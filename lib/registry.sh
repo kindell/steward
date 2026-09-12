@@ -3960,7 +3960,32 @@ registry_session_login_key() { local lg="${1:-}" ow="${2:-}" host="${3:-}"; if [
 # of the migration this feature exists for is FULL of rows that do not load - and a gate that refused
 # every write while one of them lay there would stop the migration it is meant to protect. Reading the
 # fields without executing the file is not trusting the row; it is refusing to pretend the row is absent.
-_registry_gate_raw() { sed -n "s/^$2=\"\(.*\)\"\$/\1/p" "$1" 2>/dev/null | head -1; }
+# STRICT (advisor M5): a parser with a vocabulary, not a grep. Each key at most ONCE; the line is exactly
+# KEY="value" with no $ ` or backslash inside; RUNTIME and LIFECYCLE from their vocabularies; slugs and the
+# host in their shapes; RC_LABEL free data but still one line. Anything else is rc 2 - the row is
+# UNINSPECTABLE - so a row that does not load can never exempt itself with a malformed field.
+#   rc 0 value on stdout (empty when absent or KEY=""), rc 2 malformed.
+_registry_gate_raw() {
+  local f="$1" k="$2" n v
+  n="$(grep -c "^$k=" "$f" 2>/dev/null)"; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  [ "$n" -le 1 ] || return 2
+  [ "$n" -eq 1 ] || return 0
+  if [ "$k" = RC_LABEL ]; then
+    v="$(sed -n 's/^RC_LABEL="\(.*\)"$/\1/p' "$f" 2>/dev/null)"; grep -q '^RC_LABEL=".*"$' "$f" 2>/dev/null || return 2
+    case "$v" in *'`'*) return 2 ;; esac
+    printf '%s' "$v"; return 0
+  fi
+  grep -q "^$k=\"[^\"\$\`\\\\]*\"\$" "$f" 2>/dev/null || return 2
+  v="$(sed -n "s/^$k=\"\([^\"]*\)\"\$/\1/p" "$f" 2>/dev/null)"
+  [ -n "$v" ] || return 0
+  case "$k" in
+    RUNTIME)   case "$v" in claude-code|opencode|codex) ;; *) return 2 ;; esac ;;
+    LIFECYCLE) case "$v" in active|retired|stopped) ;; *) return 2 ;; esac ;;
+    LOGIN|OWNER|SLUG|TARGET_PROJECT|TARGET_ENTITY) case "$v" in [a-z0-9]*) [ -z "${v//[a-z0-9-]/}" ] || return 2 ;; *) return 2 ;; esac ;;
+    HOST)      case "$v" in [A-Za-z0-9]*) [ -z "${v//[A-Za-z0-9.-]/}" ] || return 2 ;; *) return 2 ;; esac ;;
+  esac
+  printf '%s' "$v"
+}
 
 # REGISTRY_GATE_EXCLUDE: space-separated slugs the caller is about to CONSUME - the old row of a
 # migration, which may be exactly the row that does not load. Everything else counts.
@@ -3984,10 +4009,20 @@ registry_session_rendered_unique() {
     local raw=""
     snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${RC_FRI:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" \
       || { raw=1
-           rt="$(_registry_gate_raw "$f" RUNTIME)"; rt="${rt:-claude-code}"
-           lc="$(_registry_gate_raw "$f" LIFECYCLE)"; lc="${lc:-active}"
+           # every raw field is read strictly; one malformed field makes the row uninspectable (M5)
+           rt="$(_registry_gate_raw "$f" RUNTIME)" || { printf '%s\n' "$cand"; return 2; }; rt="${rt:-claude-code}"
+           lc="$(_registry_gate_raw "$f" LIFECYCLE)" || { printf '%s\n' "$cand"; return 2; }; lc="${lc:-active}"
            fri=""; grep -q '^RC_LABEL=""$' "$f" 2>/dev/null && fri=yes
-           lg="$(_registry_gate_raw "$f" LOGIN)"; ow="$(_registry_gate_raw "$f" OWNER)"; local hsr; hsr="$(_registry_gate_raw "$f" HOST)"
+           _registry_gate_raw "$f" RC_LABEL >/dev/null || { printf '%s\n' "$cand"; return 2; }
+           # THE TARGET UNION MUST BE UNAMBIGUOUS when the display is derived (M5 precision): each of
+           # TARGET_PROJECT, TARGET_ENTITY, SLUG once at most and in shape, and never both targets.
+           local _tp _te; _tp="$(_registry_gate_raw "$f" TARGET_PROJECT)" || { printf '%s\n' "$cand"; return 2; }
+           _te="$(_registry_gate_raw "$f" TARGET_ENTITY)" || { printf '%s\n' "$cand"; return 2; }
+           _registry_gate_raw "$f" SLUG >/dev/null || { printf '%s\n' "$cand"; return 2; }
+           [ -n "$_tp" ] && [ -n "$_te" ] && { printf '%s\n' "$cand"; return 2; }
+           lg="$(_registry_gate_raw "$f" LOGIN)" || { printf '%s\n' "$cand"; return 2; }
+           ow="$(_registry_gate_raw "$f" OWNER)" || { printf '%s\n' "$cand"; return 2; }
+           local hsr; hsr="$(_registry_gate_raw "$f" HOST)" || { printf '%s\n' "$cand"; return 2; }
            # THE SAME DEFAULT THE LOADER APPLIES: a row that names no HOST lives on the estate's hub host.
            [ -n "$hsr" ] || hsr="$(registry_hub_host 2>/dev/null)"
            [ -n "$lg$ow" ] || { printf '%s\n' "$cand"; return 2; }
@@ -4035,10 +4070,12 @@ registry_session_work_rule() {
     local raw=""
     snap="$( registry_load "$cand" >/dev/null 2>&1 || exit 1; printf '%s\n%s\n%s\n%s\n%s\n%s' "${RUNTIME:-claude-code}" "${LIFECYCLE:-active}" "${TARGET_PROJECT:-}" "${LOGIN:-}" "${OWNER:-}" "${HOST:-}" )" \
       || { raw=1
-           rt="$(_registry_gate_raw "$f" RUNTIME)"; rt="${rt:-claude-code}"
-           lc="$(_registry_gate_raw "$f" LIFECYCLE)"; lc="${lc:-active}"
-           tp="$(_registry_gate_raw "$f" TARGET_PROJECT)"
-           lg="$(_registry_gate_raw "$f" LOGIN)"; ow="$(_registry_gate_raw "$f" OWNER)"; local hsr; hsr="$(_registry_gate_raw "$f" HOST)"
+           rt="$(_registry_gate_raw "$f" RUNTIME)" || { printf '%s\n' "$cand"; return 2; }; rt="${rt:-claude-code}"
+           lc="$(_registry_gate_raw "$f" LIFECYCLE)" || { printf '%s\n' "$cand"; return 2; }; lc="${lc:-active}"
+           tp="$(_registry_gate_raw "$f" TARGET_PROJECT)" || { printf '%s\n' "$cand"; return 2; }
+           lg="$(_registry_gate_raw "$f" LOGIN)" || { printf '%s\n' "$cand"; return 2; }
+           ow="$(_registry_gate_raw "$f" OWNER)" || { printf '%s\n' "$cand"; return 2; }
+           local hsr; hsr="$(_registry_gate_raw "$f" HOST)" || { printf '%s\n' "$cand"; return 2; }
            # THE SAME DEFAULT THE LOADER APPLIES: a row that names no HOST lives on the estate's hub host.
            [ -n "$hsr" ] || hsr="$(registry_hub_host 2>/dev/null)"
            [ -n "$lg$ow" ] || { printf '%s\n' "$cand"; return 2; }
@@ -4109,11 +4146,38 @@ registry_session_gate_fields() {
 # registry_row_fingerprint <file> -> "<size>:<cksum>" of the bytes now on disk; rc 1 and empty when
 # unreadable. cksum(1) is POSIX and spells the same on both systems.
 registry_row_fingerprint() {
-  local f="$1" c
+  local f="$1"
   [ -r "$f" ] && [ -f "$f" ] || return 1
-  c="$(cksum < "$f" 2>/dev/null)" || return 1
-  set -- $c; [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
-  printf '%s:%s' "$2" "$1"
+  python3 - "$f" <<'PYFP' 2>/dev/null
+import hashlib, sys
+b = open(sys.argv[1], 'rb').read()
+sys.stdout.write('%d:%s' % (len(b), hashlib.sha256(b).hexdigest()))
+PYFP
+}
+
+# registry_derive_snapshot <conf> <label> -> line 1: the fingerprint of the bytes read; then the content
+# derived from THOSE SAME BYTES (advisor R3: content and fingerprint from two reads can straddle a
+# concurrent writer - content A, fingerprint B - and stale A then passes the in-lock check for B). One
+# read, both answers. Fails closed like registry_derive_content: unreadable prints nothing (rc 70); a
+# body that would be only the comment is refused (rc 70).
+registry_derive_snapshot() {
+  local conf="$1" label="$2" out rc
+  out="$(python3 - "$conf" "$label" <<'PYSNAP' 2>&1
+import hashlib, sys
+try:
+    b = open(sys.argv[1], 'rb').read()
+except OSError:
+    sys.stderr.write('registry: could not read %s\n' % sys.argv[1]); sys.exit(70)
+lines = [l for l in b.decode('utf-8', 'surrogateescape').split('\n') if not l.startswith('RC_LABEL=')]
+body = '\n'.join(lines).rstrip('\n')
+if not body.strip():
+    sys.stderr.write('registry: %s would be left with nothing but the comment; refusing\n' % sys.argv[1]); sys.exit(70)
+sys.stdout.write('%d:%s\n' % (len(b), hashlib.sha256(b).hexdigest()))
+sys.stdout.write(body + '\n# display derived from the target (was RC_LABEL="%s")' % sys.argv[2])
+PYSNAP
+)"; rc=$?
+  [ "$rc" -eq 0 ] || { printf '%s\n' "$out" >&2; return 70; }
+  printf '%s' "$out"
 }
 
 # registry_derive_content <conf> <label> -> the replacement row: every line but RC_LABEL, then one comment

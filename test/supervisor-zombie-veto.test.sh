@@ -1,4 +1,7 @@
 #!/bin/bash
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
+export BRIDGE_OS=linux
 # test/supervisor-zombie-veto.test.sh - the zombie repair's veto must measure a
 # HUMAN, not the existence of a tmux client - and it must measure IDLENESS
 # AGAINST NOW, not the ordering of a client against a frozen marker.
