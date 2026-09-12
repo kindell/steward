@@ -65,7 +65,12 @@ echo "== 1. neither tool present: a criterion that cannot be measured is not a p
 # variable below would read as whatever it was before the call. The credential
 # seam documents this trap at length; the first version of this suite walked
 # into it anyway.
-run_probe() { PATH="$1" listeners_probe 2>"$FX/err"; rc=$?; out="$(cat "$FX/err")"; }
+# hash -r FIRST. bash remembers where it found a command; section 2 ran the ss stub, section 3
+# deletes it, and a stale hash entry would let `command -v ss` answer with a path that no longer
+# exists - or, when bash then re-searches, with a REAL ss on a host that has one outside this
+# PATH. Measured 2026-09-12 on a Linux host: the darwin section chose ss and counted the host's
+# own 42 listeners. The fixture PATH is the whole world for the probe, and the hash is not in it.
+run_probe() { hash -r; PATH="$1" listeners_probe 2>"$FX/err"; rc=$?; out="$(cat "$FX/err")"; }
 run_probe "$FX/bin"
 is  "1a rc is 70, not 0"                    "$rc" "70"
 is  "1b LISTENERS_TOOL says so"             "$LISTENERS_TOOL" "none"
@@ -93,6 +98,9 @@ has "2e the rows carry their pids"   "$LISTENERS_ROWS" "pid=111"
 
 echo "== 3. lsof present and ss absent (the darwin path) =="
 rm -f "$FX/bin/ss"
+# THE PRECONDITION IS ASSERTED, NOT ASSUMED: with this PATH there must be no ss at all, or every
+# assertion below measures the host instead of the fixture and the numbers look like a bug in the lib.
+hash -r; is "3a0 no ss reachable on the fixture PATH" "$(PATH="$PATH_FX" command -v ss 2>/dev/null)" ""
 # THE STUB MODELS lsof's REAL SELECTION SEMANTICS, not the ones I assumed. lsof
 # ORs its selections unless -a is given, so `-u <uid>` WITHOUT `-a` means
 # "(TCP listeners) OR (that uid's files)" - every account's listener comes back.
