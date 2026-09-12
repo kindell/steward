@@ -480,3 +480,32 @@ anything, one defensible exception at a time.
 Rule 10 says a double must be able to say both things. This is rule 10 for
 the gate itself: a summary that can only say "everything ran" is a summary
 that cannot warn you.
+
+## 15. Searching for references does not answer whether anything reads the file.
+
+"Does any suite read this file?" was answered with `grep -rln <filename>
+test/`. That finds every suite which NAMES the file and misses every suite
+which GLOBS it - and the one that globbed was the one that mattered:
+`git ls-files '*.md'` at `test/language.test.sh:254`, under a line 102 that
+skips `*.md` in the code sweep precisely because prose files are swept
+separately below. The query could not match half the answer, so its empty
+result was read as "none", and a rebase was reported to a colleague as
+"docs-only, nothing reads it".
+
+**The reliable way to answer "does X affect anything" is to change X and
+measure.** Plant, run, restore, confirm the tree is clean: one Swedish letter (U+00E5, spelled here as a code point for the
+reason this very suite exists) appended to `docs/guards-and-proofs.md` gave `pass=16 fail=1` with the file named, and
+the restore gave `17/0`. Thirty seconds, and it answers the question asked
+instead of a question about how somebody else happened to write their suite.
+Measured 2026-09-12 on both platforms, the Linux half in a worktree with the
+deployed tree untouched.
+
+The shape is rule 5's relative one level up: an expression that cannot match
+what you are looking for returns zero, and **zero looks like an answer**.
+Rule 5 is about a test that says yes when it should say no; this is about a
+search that says no when it cannot say yes. Both are read as measurements.
+
+The finding was the searcher's own - the flaw was in the question, not in the
+tree - and it was measured by the colleague who ran the suite out of habit
+after editing the same file, which is also how most of this document was
+found.
