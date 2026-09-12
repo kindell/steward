@@ -408,3 +408,47 @@ re-application at that moment, and the cost is stated rather than hidden: one
 rename too many costs a line in the pane, one too few costs a name nobody can
 see is wrong. That trade is written into the code beside it. A guard that
 cannot observe its subject can still be correct about when to act.
+
+## 14. A guard that was NOT RUN is not a guard that passed - and somebody must be obliged to read the line that says so.
+
+The runner says, on its summary line, which guards it could not run:
+
+```
+suites found=125 ran=125 red=0 silent=0 rust=not-run estate-guard=not-run
+```
+
+Both words are honest. `rust=not-run` means no cargo on this host;
+`estate-guard=not-run` means the designated estate has no name list to run.
+Neither is a failure, and neither is a pass. The line is loud on purpose:
+the first draft of both hooks counted a missing measurement as RED, and a
+summary that can never read `red=0` stops being read at all.
+
+But a signal nobody is obliged to read is a signal, not a mechanism.
+Measured 2026-09-12, the day the estate hook landed: the name guard lives in
+the estate, so it only runs where the gate runs with that estate designated.
+Our Linux steward's gate reported `estate-guard=not-run` - correct, that
+estate carries no list - and the same run was, by our own practice, enough to
+merge. So a change gated only there passes no name guard at all: the hook
+closed a hole on one host and left one exactly its size on the other. The
+peer who spotted it did so by taking our own receipt literally instead of
+taking our summary of it, and asked which of three workflows was real rather
+than asserting one. Both halves of that are the point.
+
+There is no CI in this repo - `.github/workflows/` does not exist. Every gate
+is a practice between the people who merge, which means the obligation has to
+be written down where they read it:
+
+> **A merge to `main` requires a gate run with `estate-guard=ok`.**
+> `not-run` is not `ok`; it is "the name guard did not run". A gate run on a
+> host whose estate carries no list satisfies the suites and not this rule.
+
+And the corollary that keeps the rule from being resented: when the estate's
+list makes a product PR red, the product's line is what changes - a comment
+that says `(a darwin host, 2026-09-12)` instead of naming the machine - not
+the estate's list. The list is the estate's to grow; a name added there can
+turn a product PR red without a line of product changing, and that is the
+design working, not a collision.
+
+Rule 10 says a double must be able to say both things. This is rule 10 for
+the gate itself: a summary that can only say "everything ran" is a summary
+that cannot warn you.
