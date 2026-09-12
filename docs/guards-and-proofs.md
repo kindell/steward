@@ -268,8 +268,20 @@ Both halves of the remedy are needed and the second is the one that is easy
 to skip:
 
 - Clear or pin every variable in the resolver's precedence chain, not just
-  the one at the bottom of it. Reading the resolver is the only way to know
-  what the chain is.
+  the one at the bottom of it. **DERIVE that list from the resolver; do not
+  type it.** Measured the same day, twice. This rule's author wrote four
+  names by hand and shipped them to five suites. Another estate ran the same
+  two-way measurement on their own three suites and found one infected - by a
+  FIFTH variable, `STEWARD_ACCOUNT_DIR` alone, `26/0` against `17/9`, while
+  the three that had bitten here changed nothing there. Counting what the
+  library actually reads gave FIFTEEN overrides that bypass `$HOME`. The
+  person who writes the list from memory writes the variables they personally
+  ran into; a fixture that clears four of fifteen is fixed against today's
+  symptom, not against the class. A helper that greps the list out of the
+  library carries the sixteenth for free - and it must REFUSE when the grep
+  finds fewer names than it expects, because a rewritten expression would
+  otherwise silence the whole protection without turning a single test red.
+  Silently clearing nothing looks exactly like having cleared everything.
 - A suite whose result depends on the author's profile should say so out
   loud. The receipt to require is the same suite passing under `env -i` plus
   an explicit environment - otherwise a green run on the machine that wrote
