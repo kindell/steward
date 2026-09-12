@@ -449,6 +449,21 @@ the estate's list. The list is the estate's to grow; a name added there can
 turn a product PR red without a line of product changing, and that is the
 design working, not a collision.
 
+**A gate number names a COMMIT, and a rewritten commit voids it.** Rebase,
+amend and squash all produce a hash nobody has gated, however small the
+change - and the smaller it is, the stronger the pull to carry the old number
+over. Measured the evening this rule was written, twice within an hour: a
+docs-only rebase (another session appended to this very file while the PR was
+open) moved the branch, and the honest move was to discard the number and
+re-run - first mine, then, an hour later, a colleague's Linux number on the
+same superseded hash. The second one was the real test: the rule held because
+the author remembered the precedent he had just set for himself, not because
+the text said so. It says so now.
+
+The cost of the strict reading is one gate run on a machine that was idle
+anyway. The cost of the lenient reading is that "gated" stops meaning
+anything, one defensible exception at a time.
+
 Rule 10 says a double must be able to say both things. This is rule 10 for
 the gate itself: a summary that can only say "everything ran" is a summary
 that cannot warn you.
