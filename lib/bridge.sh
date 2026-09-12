@@ -99,24 +99,102 @@ bridge_candidates() {
   return 0
 }
 
-# bridge_os_birth <pid> -> "<boot_id>:<start_ticks>" ; rc 1 and empty when the pid is gone.
-# Field 22 of /proc/<pid>/stat is starttime in clock ticks since boot; with the boot id in
-# front it names one process for the life of the machine, which a bare pid does not.
-# The comm field (2) may contain spaces and parentheses, so the line is split AFTER the
-# last ")" - never on whitespace from the start. Honors BRIDGE_PROC_ROOT for fixtures.
-bridge_os_birth() {
-  local pid="${1:-}" root="${BRIDGE_PROC_ROOT:-/proc}" boot stat rest
+# ---- OS facts: two backends, one vocabulary --------------------------------------------------
+# MEASURED ON MININ 2026-09-12 (macOS arm64): there is no /proc and no pidfd. Every process fact the
+# identity rests on - boot token, birth, state, process group, tty, foreground group, environment -
+# is read here and nowhere else, from /proc on Linux and from ps(1)+sysctl(8) on darwin. Callers see
+# the same words on both. BRIDGE_OS overrides uname for fixtures; BRIDGE_PROC_ROOT replaces /proc.
+bridge_os() { case "${BRIDGE_OS:-$(uname -s 2>/dev/null)}" in Darwin|darwin) printf darwin ;; *) printf linux ;; esac; }
+
+# bridge_boot_id -> one token that names this boot; compared for equality only. Linux: the kernel's
+# boot_id. darwin: kern.boottime's seconds - stable for the life of the boot, different after one.
+bridge_boot_id() {
+  local root="${BRIDGE_PROC_ROOT:-/proc}" b
+  case "$(bridge_os)" in
+    darwin) b="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*{[[:space:]]*sec = \([0-9][0-9]*\).*/\1/p' | head -1)" ;;   # anchored on "{ sec": "usec" contains "sec" too
+    *)      b="$(cat "$root/sys/kernel/random/boot_id" 2>/dev/null)" ;;
+  esac
+  case "$b" in ''|*[!0-9A-Za-z-]*) return 1 ;; esac
+  printf '%s' "$b"
+}
+
+# bridge_uptime_ms -> milliseconds since boot (digits), rc 1 when unreadable.
+bridge_uptime_ms() {
+  local root="${BRIDGE_PROC_ROOT:-/proc}" u b
+  case "$(bridge_os)" in
+    darwin) b="$(bridge_boot_id)" || return 1; u="$(( ($(date +%s) - b) * 1000 ))" ;;
+    *)      u="$(awk '{printf "%d", $1*1000}' "$root/uptime" 2>/dev/null)" ;;
+  esac
+  case "$u" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$u"
+}
+
+# _bridge_darwin_ps <pid> -> "state pgid tty tpgid start_epoch" from ps(1); rc 1 when the pid is gone.
+# lstart is local time in ps's own words; python3 (required on darwin for the kill helper anyway) turns
+# it into seconds. Seconds are the birth's resolution there: a pid reused within the same second as
+# its predecessor's start is the one thing this cannot tell apart, and pids do not wrap that fast.
+_bridge_darwin_ps() {
+  local line st pg tty tp rest epoch
+  line="$(ps -o stat=,pgid=,tty=,tpgid=,lstart= -p "$1" 2>/dev/null | head -1)"
+  [ -n "$line" ] || return 1
+  set -- $line; st="${1:-}"; pg="${2:-}"; tty="${3:-}"; tp="${4:-}"; shift 4 2>/dev/null || return 1; rest="$*"
+  epoch="$(python3 -c 'import sys,time; print(int(time.mktime(time.strptime(sys.argv[1], "%a %b %d %H:%M:%S %Y"))))' "$rest" 2>/dev/null)" || return 1
+  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s %s %s %s %s' "${st%%[!A-Za-z]*}" "$pg" "$tty" "$tp" "$epoch"
+}
+
+# bridge_proc_facts <pid> -> "state pgrp tty tpgid" ; rc 1 when the pid is gone. Linux: /proc stat
+# fields 3, 5, 7, 8 (split AFTER the last ")" - comm may hold spaces). darwin: ps. tty is a name on
+# darwin ("ttys003", "??" for none) and a number on Linux ("0" for none): compared for equality only.
+bridge_proc_facts() {
+  local pid="${1:-}" root="${BRIDGE_PROC_ROOT:-/proc}" stat rest f
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ -r "$root/$pid/stat" ] || return 1
-  boot="$(cat "$root/sys/kernel/random/boot_id" 2>/dev/null)" || return 1
-  stat="$(cat "$root/$pid/stat" 2>/dev/null)" || return 1
-  rest="${stat##*) }"        # $1 of rest = field 3 (state) ... starttime = field 22 = ${20}
-  set -- $rest
-  [ "$#" -ge 20 ] || return 1
-  # A ZOMBIE IS NOT ALIVE. State Z keeps its birth token until it is reaped, so a dead but
-  # unreaped Claude would have read as live forever (fifth pass E6). Field 3 is the state.
-  case "$1" in Z|X) return 1 ;; esac
-  printf '%s:%s' "$boot" "${20}"
+  case "$(bridge_os)" in
+    darwin) f="$(_bridge_darwin_ps "$pid")" || return 1; set -- $f; printf '%s %s %s %s' "$1" "$2" "$3" "$4" ;;
+    *)
+      stat="$(cat "$root/$pid/stat" 2>/dev/null)" || return 1
+      rest="${stat##*) }"; set -- $rest; [ "$#" -ge 6 ] || return 1
+      printf '%s %s %s %s' "$1" "$3" "$5" "$6" ;;
+  esac
+}
+
+# bridge_proc_has_tty <tty> - rc 0 when the value names a terminal on this OS.
+bridge_proc_has_tty() { case "${1:-}" in ''|0|'??'|'-') return 1 ;; esac; return 0; }
+
+# bridge_os_birth <pid> -> "<boot_token>:<start>" ; rc 1 and empty when the pid is gone or a zombie.
+# Linux: field 22 of /proc/<pid>/stat is starttime in clock ticks since boot. darwin: lstart in
+# seconds. With the boot token in front it names one process for the life of the machine, which a
+# bare pid does not. A ZOMBIE IS NOT ALIVE: state Z keeps its token until reaped, so a dead but
+# unreaped Claude would have read as live forever (fifth pass E6).
+bridge_os_birth() {
+  local pid="${1:-}" root="${BRIDGE_PROC_ROOT:-/proc}" boot stat rest f
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  boot="$(bridge_boot_id)" || return 1
+  case "$(bridge_os)" in
+    darwin)
+      f="$(_bridge_darwin_ps "$pid")" || return 1; set -- $f
+      case "$1" in Z*|X*) return 1 ;; esac
+      printf '%s:%s' "$boot" "$5" ;;
+    *)
+      [ -r "$root/$pid/stat" ] || return 1
+      stat="$(cat "$root/$pid/stat" 2>/dev/null)" || return 1
+      rest="${stat##*) }"; set -- $rest
+      [ "$#" -ge 20 ] || return 1
+      case "$1" in Z|X) return 1 ;; esac
+      printf '%s:%s' "$boot" "${20}" ;;
+  esac
+}
+
+# bridge_env_has <pid> <NAME=value> - rc 0 when the process environment carries exactly that entry.
+# Linux: /proc/<pid>/environ. darwin: ps -Eww appends the environment to the command line, one word
+# per entry, so an entry whose value carries spaces cannot be matched there - the nonce is hex.
+bridge_env_has() {
+  local pid="${1:-}" entry="${2:-}" root="${BRIDGE_PROC_ROOT:-/proc}"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac; [ -n "$entry" ] || return 1
+  case "$(bridge_os)" in
+    darwin) ps -Eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' | grep -qxF -- "$entry" ;;
+    *)      LC_ALL=C tr '\0' '\n' < "$root/$pid/environ" 2>/dev/null | grep -qxF -- "$entry" ;;   # -F: state text is never a pattern
+  esac
 }
 
 # bridge_is_descendant <pid> <ancestor> - rc 0 when <ancestor> is on <pid>'s parent chain.

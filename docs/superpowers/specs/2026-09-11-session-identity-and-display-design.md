@@ -426,3 +426,13 @@ with a tmux shell left; the exact-pane canary through the production
 ## Out of scope
 
 Spec B. Seat rotation. Federated uniqueness. A vendor API for tiles.
+
+## Amendment 2026-09-12 — the OS facts layer and darwin
+
+**Measured on minin (macOS arm64) by the Point butler session:** no `/proc`, no `pidfd_open`. Every process fact this design rests on — boot token, birth, state, process group, tty, foreground group, environment — was read from `/proc`, so on darwin the adapter would have answered *uninspectable* for every row and the supervisor would have supervised nothing; the kill helper refused everything with 69.
+
+**Decision (Jon, 2026-09-12 "kör"):** one OS facts layer in `lib/bridge.sh` with two backends and one vocabulary — `/proc` on Linux, `ps(1)` + `sysctl(8)` on darwin — behind `bridge_os`, `bridge_boot_id`, `bridge_uptime_ms`, `bridge_os_birth`, `bridge_proc_facts`, `bridge_proc_has_tty`, `bridge_env_has`. Callers (adapter, supervisor, kill helper) read no `/proc` path themselves. On darwin the boot token is `kern.boottime`'s seconds and the birth is `lstart` in seconds (a pid reused within the same second as its predecessor's start is the one case this cannot tell apart); tty is a name (`ttys003`, `??` for none) and compared for equality only; the environment is read through `ps -Eww`, so an entry whose value carries spaces cannot be matched there — the nonce is hex.
+
+**The kill rule's darwin shape.** Linux keeps the pin: `pidfd_open` → stat read after the pin → birth compare → `pidfd_send_signal`; without pidfd, 69 and nothing sent. Darwin has no pin: the birth is re-read immediately before `kill(2)` and must equal the caller's; a zombie, a mismatch, a gone pid, an empty token, a failing recorder all refuse with 65; the receipt says *no pin*. The window between that read and the signal is the one a reused pid could slip through, and it would also need the same start second. This is the best darwin offers, and the alternative measured was no supervision at all.
+
+**Fixtures:** `test/bridge-darwin.test.sh` runs the darwin backend on any host through `ps`/`sysctl`/`uname` shims and `BRIDGE_OS=darwin`; five mutations bite. `bridge-kill.test.sh`'s positive sections are Linux-shaped and skip loudly where pidfd is absent. The real measurement on minin — the adapter answering `identified:managed` for a live row — is P2's remaining step and is run by the Point butler session after this lands.

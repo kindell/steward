@@ -38,7 +38,7 @@ PROC="${BRIDGE_PROC_ROOT:-/proc}"
 RUNTIME_VETO_PAT='(^|[ /])(claude|opencode)'
 tmuxc() { command tmux -S "$SOCK" "$@"; }
 line() { local first=1 a; for a in "$@"; do [ "$first" = 1 ] && first=0 || printf '%s' "$US"; printf '%s' "$a"; done; printf '\n'; }
-env_has_nonce() { [ -n "${2:-}" ] && LC_ALL=C tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | grep -qxF "STEWARD_LAUNCH_NONCE=$2"; }   # -F: state text is never a pattern
+env_has_nonce() { [ -n "${2:-}" ] && bridge_env_has "$1" "STEWARD_LAUNCH_NONCE=$2"; }   # both OS backends live in lib/bridge.sh
 is_nonce() { [ "${#1}" -eq 32 ] && case "$1" in *[!0-9a-f]*) return 1 ;; esac; }
 # is_birth: "<boot id>:<ticks>", the boot id one token without spaces, the ticks digits (H6).
 is_birth() { case "${1:-}" in *:*) : ;; *) return 1 ;; esac; [ -n "${1%%:*}" ] && case "${1%%:*}" in *[[:space:]]*) return 1 ;; esac && is_digits "${1##*:}"; }
@@ -76,8 +76,8 @@ observe() { # <id> <bootstrap 0|1>
   if [ -d "$cfg/sessions" ] && ! { [ -r "$cfg/sessions" ] && [ -x "$cfg/sessions" ]; }; then refuse "$id" unknown none sessions-dir-unreadable; return; fi
   # ---- clocks and /proc, read only now, and validated before any arithmetic (G1, G4) ----
   now_ms="${STEWARD_NOW_MS:-$(( $(date +%s) * 1000 ))}"
-  now_up="${STEWARD_NOW_UPTIME_MS:-$(awk '{printf "%d", $1*1000}' "$PROC/uptime" 2>/dev/null)}"
-  boot_id="$(cat "$PROC/sys/kernel/random/boot_id" 2>/dev/null)"
+  now_up="${STEWARD_NOW_UPTIME_MS:-$(bridge_uptime_ms 2>/dev/null)}"
+  boot_id="$(bridge_boot_id 2>/dev/null)"
   is_digits "$now_ms" && is_digits "$now_up" && is_digits "$GRACE_MS" && [ -n "$boot_id" ] || { refuse "$id" unknown none clock-invalid; return; }
   # ---- the tmux census (G2): presence, tuple, this session's panes, every pane on the socket ----
   if tmuxc has-session -t "=$id" 2>/dev/null; then
