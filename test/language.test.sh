@@ -171,11 +171,24 @@ n_exempt=0; for _e in $DIA_EXEMPT; do n_exempt=$((n_exempt+1)); done
 [ "$n_exempt" -eq 2 ] && ok || bad "the diacritic exemption list has grown to $n_exempt — each entry needs a structural reason, not a convenience"
 
 echo "== diacritics =="
+# THE DETECTOR IS MEASURED BEFORE IT MEASURES: a line with only U+2265 must not count, a line with
+# a-ring must - through the exact pattern the loop uses.
+_dia_fx="$(mktemp)"; printf 'x \xe2\x89\xa5 y\n' > "$_dia_fx"
+[ "$(LC_ALL=C grep -c $'\xc3[\xa5\xa4\xb6\x85\x84\x96]' "$_dia_fx")" = 0 ] && ok || bad "the detector counts U+2265 as a Swedish letter"
+printf 'x \xc3\xa5 y\n' > "$_dia_fx"
+[ "$(LC_ALL=C grep -c $'\xc3[\xa5\xa4\xb6\x85\x84\x96]' "$_dia_fx")" = 1 ] && ok || bad "the detector misses a real a-ring"
+rm -f "$_dia_fx"
 dia_dirty=0; dia_total=0
 for f in $(git ls-files 2>/dev/null | grep -v '^LICENSE$'); do
   [ -f "$f" ] || continue
   case " $DIA_EXEMPT " in *" $f "*) continue ;; esac
-  n="$(grep -c '[åäöÅÄÖ]' "$f" 2>/dev/null || true)"
+  # THE SIX LETTERS AS UTF-8 BYTES, UNDER LC_ALL=C. A bracket expression of multibyte characters is a
+  # CHARACTER class only in a UTF-8 locale; under C/POSIX (launchd, tmux, a bare ssh) BSD grep reads
+  # it as the BYTE class {C3,A5,A4,B6,85,84,96}, so any UTF-8 character sharing one of those bytes
+  # matches - and these docs are full of U+2265 (E2 89 A5), whose last byte is the second byte of
+  # a-ring. Measured 2026-09-12: 7 lines flagged on darwin in a file with zero Swedish letters, 0 on
+  # Linux/GNU. The pattern names the exact byte pairs and pins the locale, so both greps agree.
+  n="$(LC_ALL=C grep -c $'\xc3[\xa5\xa4\xb6\x85\x84\x96]' "$f" 2>/dev/null || true)"
   [ "${n:-0}" -gt 0 ] && {
     printf '  DIACRITIC %-30s %s line(s)\n' "$f" "$n"
     dia_dirty=$((dia_dirty+1)); dia_total=$((dia_total+n))
