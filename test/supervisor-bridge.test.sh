@@ -316,6 +316,19 @@ is "23a pane receipt and nameSince advanced, but the bridge still says Old -> ap
 reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run; run
 is "23b bridge says desired but nameSince unchanged -> applied stays empty" "$(gget applied)" ""
 
+echo "== 23b. P1b case B, MEASURED 2026-09-12: a resumed process whose bridge ALREADY reports the desired name is not a receipt =="
+# The deployed supervisor resumed the hub's thread with --remote-control 'Steward→Basement (P1b-B)'; the
+# bridge file reported that name with a fresh nameSince; the tile in claude.ai stayed on the OLD name for
+# five minutes and longer. So a bridge that reads desired from the start proves nothing about the tile:
+# the cycle must still type /rename and take the pane's own receipt line.
+RESUMED() { line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Alpha→Thing" 1789000000005 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777; }
+reset; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"; RESUMED; run
+is "23b1 baseline seeded from the resumed bridge's own nameSince" "$(gget pending_since)" "1789000000005"
+is "23b2 nothing receipted from the bridge alone" "$(gget applied)" ""
+run; run
+is "23b3 /rename IS typed although the bridge already read desired" "$(sk "$NAME:@0.%0")" "2"
+run; is "23b4 applied only after the pane's receipt line and an advanced nameSince" "$(gget applied)" "Alpha→Thing"
+
 echo "== 24-25. the foreground is measured on the tty, never by the command's name =="
 # THE PRODUCTION SHAPE, MEASURED ON THE LIVE HOST 2026-09-11: the launch string ends "; exec bash" in a
 # non-interactive shell, so claude never gets a process group of its own - pane shell and claude share
