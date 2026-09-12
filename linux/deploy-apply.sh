@@ -245,12 +245,20 @@ for HOME_ROOT in $HOMES; do
   # install(1) died on the very first row - `install: unknown group jon` - and the home was
   # refused whole. Measured 2026-09-12, first live root deploy on a darwin host. id -gn is
   # the same call on both systems; an account without a primary group is not a home to write.
-  GROUPNAME="$(id -gn "$USERNAME" 2>/dev/null)" || GROUPNAME=""
-  if [ -z "$GROUPNAME" ]; then
-    echo "HOME $HOME_ROOT RESULT=REFUSED COMPARED=0 INSTALLED=0"
-    echo "REFUSAL $HOME_ROOT the primary group of '$USERNAME' cannot be resolved (id -gn) — not an account this host knows; nothing written"
-    TOTAL_RC=70
-    continue
+  # ...AND ONLY ON THE OWNER-INSTALL PATH. The fixture suites run apply with
+  # STEWARD_DEPLOY_INSTALL_OWNER=off against homes whose accounts do not exist; resolving the
+  # group there refused every fixture home (deploy-apply 42/55 on Linux, found by basement
+  # 2026-09-12 within the hour). With owner-install off, the three sites that use GROUPNAME are
+  # never reached, so the lookup is skipped and GROUPNAME stays empty by design.
+  GROUPNAME=""
+  if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" != "off" ]; then
+    GROUPNAME="$(id -gn "$USERNAME" 2>/dev/null)" || GROUPNAME=""
+    if [ -z "$GROUPNAME" ]; then
+      echo "HOME $HOME_ROOT RESULT=REFUSED COMPARED=0 INSTALLED=0"
+      echo "REFUSAL $HOME_ROOT the primary group of '$USERNAME' cannot be resolved (id -gn) — not an account this host knows; nothing written"
+      TOTAL_RC=70
+      continue
+    fi
   fi
   LG="$STATE/$USERNAME.last-good"
   COMPARED=0; INSTALLED=0
