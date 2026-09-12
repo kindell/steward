@@ -108,7 +108,7 @@ _CFG_ALLOWED_KEY() { # <key> - true iff key is one of the writable operator-conf
   case "$1" in
     # STEWARD_ESTATE IS THE ESTATE CHECKOUT (a git repo), read by linux/deploy-self.sh from this
     # same file; STEWARD_ESTATE_ROOT is the deployed home. Both keys, one vocabulary - the loader
-    # once refused the very key deploy-self told the operator to write (butler 2026-09-12).
+    # once refused the very key deploy-self told the operator to write (a darwin host, 2026-09-12).
     STEWARD_ESTATE_ROOT|STEWARD_ESTATE|STEWARD_TMUX_SOCKET|STEWARD_LIVENESS_CMD|STEWARD_USAGE_CMD|STEWARD_CREDENTIAL_CMD) return 0 ;;
     *) return 1 ;;
   esac

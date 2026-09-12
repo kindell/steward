@@ -79,7 +79,7 @@ is "3e the rendered display is already held under this login key: refused" "$rc"
 is "3g byte-identical" "$(cksum < "$SESS/$E.conf")" "$sum"
 F="s-00000000000000f1"; { printf 'ID="%s"\nACCOUNT="b-h1"\nSLUG="six"\nOWNER="b"\nHOST="h1"\nDOMAIN="alpha"\nREPO_PATH="/tmp/repo"\nTARGET_PROJECT="site"\nRC_LABEL="Theirs"\n' "$F"; } > "$SESS/$F.conf"
 out="$(run "$F")"; rc=$?
-is "3h another login key may render the same display (Jon 2026-09-11): rc 0" "$rc" "0"
+is "3h another login key may render the same display (the owner, 2026-09-11): rc 0" "$rc" "0"
 is "3i and its line is gone too" "$(grep -c '^RC_LABEL=' "$SESS/$F.conf")" "0"
 out="$(run s-0000000000000099)"; rc=$?; is "3j an unknown session is refused" "$rc" "78"
 printf 'garbage\n' > "$SESS/s-00000000000000a9.conf"

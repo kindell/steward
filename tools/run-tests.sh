@@ -65,6 +65,16 @@ HERE="$(CDPATH= cd -- "$HERE" && pwd)" || exit 70
 cd "$HERE" || exit 70
 
 TIMEOUT_S="${RUN_TESTS_TIMEOUT:-200}"
+
+# The operator config (~/.config/steward/config) is the one file OUTSIDE the tree that every
+# steward invocation reads. One operator line there (ESTATE=, 2026-09-12) turned ten suites red on
+# a verified HEAD, on both platforms, with the tree itself green. A gate that claims to isolate the
+# host points the loader at a path that does not exist - MEASURED: a missing file is "no config"
+# (rc 0), while an empty file and /dev/null are both refused with rc 78 - so no host line can reach
+# a suite. Suites that test the loader set their own STEWARD_CONFIG_FILE and override this.
+_rt_iso="$(mktemp -d 2>/dev/null || mktemp -d -t run-tests)" || exit 70
+export STEWARD_CONFIG_FILE="$_rt_iso/no-operator-config"
+trap 'rm -rf "$_rt_iso"' EXIT
 ONLY="${2:-}"           # optional: run only suites whose name matches
 
 red=0
@@ -177,7 +187,32 @@ for d in cockpit; do
 done
 
 echo
-echo "suites found=$found ran=$ran red=$red silent=$silent"
+echo "== estate guard =="
+# THE NAME GUARD LIVES WHERE THE NAME LIST LIVES - in the estate - and the product's gate RUNS it
+# when an estate is designated, so a PR carrying a customer's or a machine's name falls here, on
+# the host it is merged from, and not in the estate's own gate afterwards (twice in one afternoon,
+# 2026-09-12). STEWARD_ESTATE_ROOT is the estate CHECKOUT when the gate is run as CLAUDE.md
+# prescribes; a deployed home has no test/ and the guard is not run there. A guard that was not
+# run is SAID so, in the summary line, and never looks like one that passed.
+estate_guard="not-run"
+eg_reason=""
+if [ -z "${STEWARD_ESTATE_ROOT:-}" ]; then
+  eg_reason="no estate designated (STEWARD_ESTATE_ROOT unset)"
+elif [ ! -f "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" ]; then
+  eg_reason="no estate test dir at $STEWARD_ESTATE_ROOT/test, not run"
+else
+  # STEWARD_PRODUCT_REPO IS THIS TREE - the one being gated - never a sibling checkout: the guard
+  # derives the product surface from it, and a PR must be measured against its own files.
+  eg_out="$(run_with_timeout env STEWARD_PRODUCT_REPO="$HERE" bash "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" 2>&1)"; eg_rc=$?
+  eg_n="$(counts "$eg_out")"; [ -n "$eg_n" ] || eg_n="?/?"
+  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok"; printf '  ok     %-34s %s\n' "estate leak-guard" "$eg_n"
+  else estate_guard="RED"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard" "$eg_n"
+       printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
+  fi
+fi
+[ -n "$eg_reason" ] && printf '  NOT RUN estate leak-guard: %s\n' "$eg_reason"
+echo
+echo "suites found=$found ran=$ran red=$red silent=$silent estate-guard=$estate_guard"
 [ -n "$ONLY" ] && echo "NOTE: filter '$ONLY' is active — this is NOT a full run."
 if [ "$ran" -ne "$found" ] && [ -z "$ONLY" ]; then
   echo "REFUSED: $ran of $found suites ran with no filter — the sweep skipped something." >&2

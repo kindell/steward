@@ -104,7 +104,7 @@ has "set: hand-written comment preserved" "$content" "hand-written comment, kept
 is "set: file mode still 0600" "$(mode_of "$FX/setverb/cfgdir/config")" "600"
 
 echo "== 3b. STEWARD_ESTATE is an ACCEPTED key: the one linux/deploy-self.sh reads from this file =="
-# The loader once refused exactly the key deploy-self told the operator to write (butler
+# The loader once refused exactly the key deploy-self told the operator to write (a darwin host,
 # 2026-09-12). Two readers of one file share one vocabulary, and this pins the shared half.
 acc_out="$(env -i PATH="$PATH" HOME="$FX/home" STEWARD_CONFIG_FILE="$FX/setverb/accepts-estate" \
   bash -c 'printf "FORMAT=1\nSTEWARD_ESTATE=/x\n" > "$1"; chmod 0600 "$1"; exec bash "$2" ls' _ \
