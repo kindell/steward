@@ -2424,8 +2424,21 @@ cmd_registry_login_add() {
 # directory on disk is about to be written. A row that does not resolve prints
 # its refusal in place of the path rather than being skipped.
 cmd_registry_login_ls() {
-  local want_json="" a slug dir account_username cred _login_row _why first=1
-  for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
+  local want_json="" account="" a slug dir account_username cred _login_row _why first=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) want_json=1; shift ;;
+      # THE SAME ANSWER THE SHELL VERB TAKES, and it belongs here too: `ls` is
+      # where a person looks BEFORE typing `shell`, so a listing that cannot
+      # resolve the very row it is about to recommend sends them to accounts.d
+      # to add a row that is already there.
+      --account) shift; [ $# -ge 1 ] || fel "steward registry login ls: --account needs a value" 64
+                 [ -z "$account" ] || fel "steward registry login ls: one account at a time" 64
+                 account="$1"; shift ;;
+      -*) fel "steward registry login ls: unknown flag '$1'" 64 ;;
+      *)  fel "steward registry login ls: unexpected argument '$1'" 64 ;;
+    esac
+  done
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
   local slugs; slugs="$(registry_login_list)" || return 78
@@ -2473,7 +2486,7 @@ cmd_registry_login_ls() {
     # registry_login_state ran with IFS=TAB and every space-separated list it
     # touched stopped splitting. Two lines, and the substitution keeps a normal
     # IFS. The same "capture first" shape this file already uses elsewhere.
-    _login_row="$(registry_login_state "$slug")"
+    _login_row="$(registry_login_state "$slug" "$account")"
     IFS=$'\t' read -r account_username dir cred <<<"$_login_row"
     if [ -n "$want_json" ]; then
       [ "$first" = 1 ] || printf ','
@@ -2509,24 +2522,42 @@ cmd_registry_login_ls() {
 # EXEC, NOT A SUBSHELL: what follows is the caller's own session, so ^C, job
 # control and the exit status all belong to them.
 cmd_registry_login_shell() {
-  local slug="" a
+  local slug="" account="" a
   while [ $# -gt 0 ]; do
     case "$1" in
       --) shift; break ;;
+      # --account NAMES A HOME WHEN THE PERSON HAS MORE THAN ONE. A login row
+      # says which human's credentials it holds, never which of that human's
+      # unix accounts they sit under; where the person has two on one host the
+      # join refuses rather than pick by glob order, and this is how the
+      # operator answers it. Measured 2026-09-13: without it, a person owning
+      # both a personal home and a machine account on the same host could not
+      # open ANY of their own login directories through this verb.
+      --account) shift; [ $# -ge 1 ] || fel "steward registry login shell: --account needs a value" 64
+                 [ -z "$account" ] || fel "steward registry login shell: one account at a time" 64
+                 account="$1"; shift ;;
       -*) fel "steward registry login shell: unknown flag '$1'" 64 ;;
       *) [ -z "$slug" ] || fel "steward registry login shell: one login at a time" 64; slug="$1"; shift ;;
     esac
   done
-  [ -n "$slug" ] || fel "usage: steward registry login shell <login> [-- command...]" 64
+  [ -n "$slug" ] || fel "usage: steward registry login shell <login> [--account <account>] [-- command...]" 64
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
   registry_login_load "$slug" >/dev/null || fel "login '$slug' does not resolve" 78
   local user dir cred _login_row
   # Capture first - see cmd_registry_login_ls for the bash 3.2 reason.
-  _login_row="$(registry_login_state "$slug")"
+  _login_row="$(registry_login_state "$slug" "$account")"
   IFS=$'\t' read -r user dir cred <<<"$_login_row"
   case "$dir" in
-    '('*) fel "login '$slug': $dir" 78 ;;
+    # THE REASON IS ALREADY A SENTENCE, so it is printed as one. When the join
+    # refused for want of an account, the way out is the flag - and a refusal
+    # that stops without naming the way out is how this verb spent a day looking
+    # like a broken register.
+    '('*) case "$dir" in
+            *"more than one account"*)
+              fel "login '$slug': $dir. Name one with: steward registry login shell $slug --account <account>" 78 ;;
+            *) fel "login '$slug': $dir" 78 ;;
+          esac ;;
   esac
   local me; me="$(id -un)"
   if [ "$user" != "$me" ]; then
