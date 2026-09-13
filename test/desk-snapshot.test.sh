@@ -39,7 +39,10 @@ printf 'PRINCIPAL="b"\nHOST="h1"\n' > "$ROOT/accounts.d/b-h1.conf"
 for m in shared tool mail; do
   printf 'MCP_COMMAND="/usr/bin/%s"\nMCP_ARGS="--token SENTINEL_ARG"\nMCP_ENV_FILE="~/SENTINEL_ENV"\n' "$m" > "$ROOT/mcp.d/$m.conf"
 done
-printf 'NAME="Ann"\nTAILSCALE_LOGIN="a@example.com"\nDESK_READ_ALL="yes"\n' > "$ROOT/principals.d/a.conf"
+# ANN CARRIES BOTH IDENTITY SOURCES AND TWO WORDS OF ONE OF THEM, because the
+# cross-estate join reads this field and a single-word fixture would pass a
+# producer that emitted only the first.
+printf 'NAME="Ann"\nTAILSCALE_LOGIN="a@example.com a@other.example"\nOIDC_LOGIN="google:1234567890"\nDESK_READ_ALL="yes"\n' > "$ROOT/principals.d/a.conf"
 printf 'NAME="Ben"\nTAILSCALE_LOGIN="b@example.com"\n'                      > "$ROOT/principals.d/b.conf"
 printf 'NAME="Cy"\nTAILSCALE_LOGIN="c@example.com"\n'                       > "$ROOT/principals.d/c.conf"
 
@@ -819,6 +822,42 @@ is  "desk without a verb is a usage error" "$rc" "64"
 has "and names the verbs it has" "$(cat "$T/err")" "snapshot"
 out="$(bash "$here/bin/steward" desk bogus 2>"$T/err")"; rc=$?
 is  "an unknown desk verb is a usage error" "$rc" "64"
+
+
+# ── viewerIdentity: the word a second estate joins on ───────────────────────
+#
+# WHY THE FILE CARRIES IT AT ALL. A Desk that shows several estates has to
+# decide whether estate A's `jon` and estate B's `jon` are one person. Today
+# nothing says so but the fact that we spelled them alike, and the failure mode
+# of that assumption is showing one human another human's sessions. The register
+# already holds words that are unique per person - TAILSCALE_LOGIN and
+# OIDC_LOGIN, both enforced unique across all rows - so the producer states them
+# and the consumer joins on them. The slug becomes a label; the identity is the
+# key.
+#
+# THE SOURCE IS PREFIXED. `a@example.com` and `google:1234567890` are different
+# kinds of word, and a third source added later must not be able to collide with
+# either by looking like it.
+is "viewerIdentity is an array" "$(jq -r '.viewerIdentity|type' "$D/a.json")" "array"
+is "it carries every tailnet word, prefixed" \
+   "$(jq -r '.viewerIdentity|map(select(startswith("tailscale:")))|sort|join(" ")' "$D/a.json")" \
+   "tailscale:a@example.com tailscale:a@other.example"
+is "and the OIDC word, prefixed" \
+   "$(jq -r '.viewerIdentity|map(select(startswith("oidc:")))|join(" ")' "$D/a.json")" \
+   "oidc:google:1234567890"
+is "a principal with one word gets one word" \
+   "$(jq -r '.viewerIdentity|join(" ")' "$D/b.json")" "tailscale:b@example.com"
+# ONE FILE NAMES ONE PERSON. A viewer file that carried the whole estate's
+# identities would let any consuming estate join every row to every person -
+# which is the opposite of what the field is for.
+is "a's file does not name b" "$(jq -r '.viewerIdentity|map(select(contains("b@")))|length' "$D/a.json")" "0"
+is "b's file does not name a" "$(jq -r '.viewerIdentity|map(select(contains("a@")))|length' "$D/b.json")" "0"
+# THE OPERATOR FILE NAMES NOBODY. `_operator` is not a principal; it is the
+# unfiltered view. If it carried an identity it could be joined to a person on
+# another estate, and that person would receive the whole estate.
+is "the operator file names no identity" "$(jq -r '.viewerIdentity|length' "$D/_operator.json")" "0"
+is "...and still has the field, rather than omitting it" \
+   "$(jq -r 'has("viewerIdentity")' "$D/_operator.json")" "true"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

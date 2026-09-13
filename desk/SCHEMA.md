@@ -27,9 +27,10 @@ the code ever disagree the code is right.
 | `schemaVersion` | number | `1`. Bumped when a key changes meaning or leaves. |
 | `host` | string | the machine that produced the snapshot. |
 | `generatedAt` | string | UTC, `YYYY-MM-DDTHH:MM:SSZ`, when the run started. |
-| `registryRevision` | string | short git revision of the estate checkout, or `"unknown"`. |
+| `registryRevision` | string | short git revision of **the directory this producer read the register from**, or `"unknown"` when that directory is not a checkout. It names provenance, not content: a producer pointed at a deployed copy rather than at the estate's checkout answers `"unknown"` truthfully, and the repair is to point it at the checkout rather than to invent a value for the field. |
 | `viewer` | string | the principal id this file belongs to; `"_operator"` for the operator file. |
 | `readAll` | boolean | true when this viewer's row carries `DESK_READ_ALL`. |
+| `viewerIdentity` | array | the viewer's own identity words, each prefixed with its source: `tailscale:<login>` from `TAILSCALE_LOGIN`, `oidc:<issuer>:<subject>` from `OIDC_LOGIN`. Empty for `_operator`, which is not a principal. **This is the key a second estate joins on**, and the reason it exists: a Desk that shows several estates must decide whether estate A's `jon` and estate B's `jon` are one person, and until this field there was nothing to answer with but the fact that both were spelled alike. The slug is a label; these are the keys. The register enforces both fields unique across all rows, which is what makes them safe to join on. The words travel in the clear: a digest of a short known string suggests a protection it does not provide, and the file already names this person's sessions, projects and teams. |
 | `entities` | array | see below. |
 | `projects` | array | see below. |
 | `sessions` | array | see below. |

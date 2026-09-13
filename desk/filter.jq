@@ -79,6 +79,13 @@ def keepAsset($sight; $own; $parentOf; $managerOf):
   ] as $sessions
 | {schemaVersion: 1, host, generatedAt, registryRevision,
    viewer: $viewer, readAll: $readAll,
+   # THE VIEWER'S OWN IDENTITY WORDS, AND ONLY THE VIEWER'S. A consuming estate
+   # joins this file to one of its own principals on these; a file that carried
+   # the whole estate's identities would let it join every row to every person.
+   # `_operator` is not a principal, so the lookup finds nothing and the field is
+   # an empty array - which is what keeps the unfiltered view from ever being
+   # claimed by a human on another estate.
+   viewerIdentity: [.principals[]? | select(.id == $viewer) | .identity[]?],
    entities: [(.entities // [])[]
      | select($readAll or isVisibleEntity(.id; $managerOf))
      | {id, name, managedBy, members, member: isMember(.id)}],
