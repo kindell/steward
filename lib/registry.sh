@@ -5435,9 +5435,23 @@ registry_mandate_write() {
   registry_row_write "$dir" "$id" "$content" "$validate_fn" registry_mandate_load "mandate"
 }
 
-# registry_login_unix_account <login-slug> - the UNIX ACCOUNT on THIS host that
-# a login's credentials live under, resolved through accounts.d by PRINCIPAL.
-# Empty output and rc 1 when this host has no account for that person.
+# registry_login_unix_account <login-slug> [account-slug] - the UNIX ACCOUNT on
+# THIS host that a login's credentials live under, resolved through accounts.d
+# by PRINCIPAL. Empty output and rc 1 when this host has no account for that
+# person, or when the join is ambiguous and no account was named.
+#
+# THE OPTIONAL SECOND ARGUMENT ANSWERS THE AMBIGUITY THIS FUNCTION REFUSES.
+# When a person has two accounts on one host the join below refuses and ends its
+# own message with "ask with an account" - and until 2026-09-13 there was nothing
+# to ask with. Measured that day on a live host: one human owned both the
+# personal home and the machine account, both rows carrying that human's
+# PRINCIPAL, so EVERY login row for them answered "(no account ...)" and
+# `registry login shell <slug>` exited 78. The verb could not open any of that
+# person's credential directories, which is the one thing it exists to do.
+#
+# THE NAMED ACCOUNT IS CHECKED, NOT TRUSTED - same human, same host. An argument
+# that merely widened the join would put this function back where the ambiguity
+# refusal found it, only with a flag to blame.
 #
 # WHY THIS EXISTS AT ALL. `registry_login_config_dir` needs a unix account to
 # resolve `~` against, and the only field a login row carries is ACCOUNT - which
@@ -5454,8 +5468,20 @@ registry_mandate_write() {
 #
 # SUBSHELLED PER ROW, so ACCOUNT_* never leaks into the caller's frame - the
 # same isolation registry_login_principal_gate documents.
-registry_login_unix_account() {
-  local login="${1:-}" principal host f cand user _hits="" _answer="" _n=0
+# registry_login_unix_account_resolve <login> [account] - the same question,
+# answered into REGISTRY_LOGIN_UNIX_ACCOUNT / _WHY instead of onto stdout.
+#
+# WHY BOTH FORMS EXIST. A caller that needs the REASON cannot use the printing
+# form: `user="$(registry_login_unix_account "$x")"` is a command substitution,
+# and a subshell cannot hand a variable back to the frame that spawned it. That
+# is exactly how registry_login_state came to print the FALLBACK sentence ("no
+# account for this login's principal on this host") while stderr carried the true
+# one - a reader who trusted the column went to accounts.d looking for a row that
+# was not missing. The join's own comment already describes this defect one frame
+# further in: "a message the code had already produced and thrown away".
+registry_login_unix_account_resolve() {
+  local login="${1:-}" account="${2:-}" principal host f cand user _hits="" _answer="" _n=0
+  REGISTRY_LOGIN_UNIX_ACCOUNT=""
   # THE ROW'S OWN REFUSAL IS KEPT, NOT DISCARDED. This line used to end in
   # `>/dev/null 2>&1` and return a bare 1, so a row that failed to LOAD was
   # reported by the caller as "no account for this principal on this host" - a
@@ -5471,6 +5497,42 @@ registry_login_unix_account() {
     return 1
   fi
   host="$(_registry_self_host)"
+
+  # ── THE CALLER NAMED A HOME. One load, three fields, captured together: a
+  # field-per-subshell would load the row three times and let two of the answers
+  # come from different reads of the same file.
+  if [ -n "$account" ]; then
+    local _arow a_principal a_host a_user
+    _arow="$( registry_account_load "$account" >/dev/null 2>&1 \
+              && printf '%s\t%s\t%s' "$ACCOUNT_PRINCIPAL" "$ACCOUNT_HOST" "$ACCOUNT_USERNAME" )"
+    if [ -z "$_arow" ]; then
+      REGISTRY_LOGIN_UNIX_ACCOUNT_WHY="account '$account' does not resolve to a known account"
+      echo "registry: $REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" >&2
+      return 1
+    fi
+    IFS=$'\t' read -r a_principal a_host a_user <<<"$_arow"
+    # THE PAIR RULE, THE SAME ONE registry_login_principal_gate ENFORCES: a login
+    # names the directory holding ONE human's credentials, so an account
+    # belonging to somebody else can never be the home it lives in. Refusing here
+    # rather than resolving is the difference between a flag that answers a
+    # question and a flag that overrides an answer.
+    if [ "$a_principal" != "$principal" ]; then
+      REGISTRY_LOGIN_UNIX_ACCOUNT_WHY="login '$login' belongs to principal '$principal', but account '$account' belongs to '$a_principal'"
+      echo "registry: $REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" >&2
+      return 1
+    fi
+    # THE HOST MATTERS for the same reason it matters in the scan below: only the
+    # account on THIS host has the home the credentials sit in. A row for the
+    # right person on another machine names a directory that is not here, and
+    # every later check would pass while measuring nothing.
+    if [ "$a_host" != "$host" ]; then
+      REGISTRY_LOGIN_UNIX_ACCOUNT_WHY="account '$account' is on host '$a_host', not on '$host'"
+      echo "registry: $REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" >&2
+      return 1
+    fi
+    REGISTRY_LOGIN_UNIX_ACCOUNT="$a_user"
+    return 0
+  fi
   # ONE LOAD PER CANDIDATE, IN A PLAIN COMMAND SUBSTITUTION - not a pipeline into
   # `grep -q` with a second load behind it. The pipeline form loaded every row
   # twice and made the answer depend on SIGPIPE and on a pipeline's exit status,
@@ -5514,11 +5576,24 @@ registry_login_unix_account() {
     echo "registry: $REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" >&2
     return 1
   fi
-  [ "$_n" -eq 1 ] && { printf '%s\n' "$_answer"; return 0; }
+  [ "$_n" -eq 1 ] && { REGISTRY_LOGIN_UNIX_ACCOUNT="$_answer"; return 0; }
+  # NO ACCOUNT AT ALL IS ALSO A NAMED FACT. This path used to return a bare 1
+  # with the reason left empty, and an empty reason is what made the caller reach
+  # for its fallback sentence - the one that described this case and got printed
+  # for the ambiguous one too.
+  REGISTRY_LOGIN_UNIX_ACCOUNT_WHY="the principal '$principal' has no account on '$host'"
   return 1
 }
 
-# registry_login_state <login-slug> - one line: `<unix-account> <dir> <credential>`
+# The printing form every existing caller and probe already uses. It adds one
+# thing to the resolver: the answer on stdout.
+registry_login_unix_account() {
+  registry_login_unix_account_resolve "$@" || return 1
+  printf '%s\n' "$REGISTRY_LOGIN_UNIX_ACCOUNT"
+}
+
+# registry_login_state <login-slug> [account-slug] - one line:
+# `<unix-account> <dir> <credential>`
 # where credential is `yes`, `no`, `unreadable` (another person's home, which
 # this account may not look into) or `-` when the directory did not resolve.
 #
@@ -5528,17 +5603,33 @@ registry_login_unix_account() {
 # verb is read from a terminal by someone about to log in. So the default asks
 # the filesystem, and the vendor is only asked when the caller says so.
 registry_login_state() {
-  local login="${1:-}" user dir cred="-"
-  user="$(registry_login_unix_account "$login")" || {
-    # WHICH OF THE TWO FAILURES IT WAS. A row that does not LOAD and a principal
-    # with no account on this host are different facts with different repairs,
-    # and the second sentence was being printed for both.
+  local login="${1:-}" account="${2:-}" user dir cred="-"
+  # CALLED DIRECTLY, NOT IN `$( )`. The reason for a failure is carried in a
+  # global the resolver sets, and a command substitution is a subshell - the
+  # variable could not cross back, so this function read an EMPTY reason and
+  # printed its fallback sentence for every failure, including the ones the
+  # resolver had described precisely. Measured 2026-09-13: an ambiguous join
+  # printed "no account for this login's principal on this host" while stderr
+  # said the principal had TWO. The column sent the reader to accounts.d to add
+  # a row that was already there.
+  if ! registry_login_unix_account_resolve "$login" "$account" 2>/dev/null; then
+    # WHICH OF THE FAILURES IT WAS. A row that does not LOAD, a principal with no
+    # account on this host, an ambiguous join and a named account that does not
+    # fit are different facts with different repairs, and one sentence was being
+    # printed for all of them.
     if [ -n "${REGISTRY_LOGIN_UNIX_ACCOUNT_WHY:-}" ]; then
       printf '%s\t(%s)\t%s\n' "-" "$REGISTRY_LOGIN_UNIX_ACCOUNT_WHY" "-"
     else
-      printf '%s\t%s\t%s\n' "-" "(no account for this login's principal on this host)" "-"
+      # EVERY failure path in the resolver names itself, so this line is
+      # unreachable by construction. It stands because the day one stops doing
+      # so, a blank reason is the symptom - and a sentence that says which
+      # function owes the explanation is worth more than a blank pair of
+      # parentheses.
+      printf '%s\t%s\t%s\n' "-" "(the join failed without naming a reason - registry_login_unix_account_resolve owes one)" "-"
     fi
-    return 1; }
+    return 1
+  fi
+  user="$REGISTRY_LOGIN_UNIX_ACCOUNT"
   if ! dir="$(registry_login_config_dir "$login" "$user" 2>/dev/null)"; then
     printf '%s\t%s\t%s\n' "$user" "(does not resolve)" "-"; return 1
   fi

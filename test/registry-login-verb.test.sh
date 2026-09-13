@@ -433,14 +433,24 @@ echo "-- 10f. a login whose PRINCIPAL has no account on this host names the refu
 # The genuinely unresolvable case is a login whose PRINCIPAL has no account on
 # THIS host - the person's credentials live on another machine - and that is
 # what is asserted now.
+#
+# THE SENTENCE CHANGED 2026-09-13 and the claim did not. It used to read "no
+# account for this login's principal on this host" - a fallback the caller
+# printed whenever the reason it was handed came back EMPTY, which made it the
+# sentence for THIS case and, wrongly, for an ambiguous join as well. Every
+# refusal now names itself, so this case says which principal and which host.
+# Asserting the specific words is the point: a refusal that names neither is how
+# one case came to wear another's explanation.
 run3 add r2 --principal nobody --account somebody@example.test --provider claude-team \
   --config-dir '~/.claude-logins/r2' --legal-owner 'Acme Corp' --json >/dev/null
 out="$(run3 ls)"; rc=$?
 is "10f: rc 0" "$rc" "0"
-has "10f: the row names the refusal, not a path" "$out" "no account for this login's principal on this host"
+has "10f: the row names the refusal, not a path" "$out" "has no account on"
+has "10f: ...and names WHICH principal"                "$out" "nobody"
+has "10f: ...and WHICH host"                           "$out" "h1"
 has "10f: and the resolvable row beside it is unaffected" "$out" "/srv/homes/a-user/.claude-logins/r1"
 is  "10f: --json carries the same refusal in config_dir" \
-  "$(printf '%s' "$(run3 ls --json)" | jq -r '.logins[] | select(.login=="r2") | .config_dir' | grep -c "no account for")" "1"
+  "$(printf '%s' "$(run3 ls --json)" | jq -r '.logins[] | select(.login=="r2") | .config_dir' | grep -c "has no account on")" "1"
 is  "10f: and its credential column is a dash, never a no" \
   "$(printf '%s' "$(run3 ls --json)" | jq -r '.logins[] | select(.login=="r2") | .credential')" "-"
 
@@ -663,7 +673,191 @@ out="$( STEWARD_ESTATE_ROOT="$FX5" STEWARD_SELF_HOST="h1" bash -c '
   registry_login_unix_account two-homes' 2>/dev/null )"; rc=$?
 is "12e one account still answers" "$out" "alice"
 is "12f and it is rc 0"            "$rc" "0"
+# ── 13. THE AMBIGUITY IS ANSWERABLE — `--account` names the home ────────────
+#
+# Section 12 proved the refusal: a principal with two accounts on one host does
+# not name a home, so the join refuses instead of picking by glob order. That is
+# right, and it left the caller with no way to answer. The refusal's own last
+# words are "ask with an account" — and until this section there was nothing to
+# ask with.
+#
+# MEASURED IN PRODUCTION 2026-09-13, not imagined: one human owns both the
+# personal home and the machine account on the same host, so EVERY login row for
+# that person answered "(no account for this login's principal on this host)" and
+# `registry login shell <slug>` exited 78. The verb could not open any of that
+# person's credential directories — the one thing it exists to do.
+#
+# THE ACCOUNT IS CHECKED, NOT TRUSTED. An account slug that names another human
+# is the pair rule registry_login_principal_gate already enforces, and a slug on
+# another host names a home that is not here. Both are refused BY NAME: an
+# argument that silently widened the join would put this function back where
+# section 12 found it, only with a flag to blame.
+FX6="$(mktemp -d)"
+mkdir -p "$FX6/estate" "$FX6/logins.d" "$FX6/accounts.d"
+chmod 700 "$FX6/logins.d"
+cp "$FX/estate/steward.conf" "$FX6/estate/steward.conf"
+cat > "$FX6/logins.d/two-homes.conf" <<'EOF'
+PRINCIPAL="alice"
+ACCOUNT="alice@example.invalid"
+PROVIDER="claude-max"
+CONFIG_DIR="~/.claude-logins/two-homes"
+LEGAL_OWNER="Acme"
+EOF
+chmod 600 "$FX6/logins.d/two-homes.conf"
+for triple in "alice-h1 alice h1 alice" "zz-worker-h1 worker h1 alice" "bob-h1 bob h1 bob" "alice-h2 alice h2 alice"; do
+  set -- $triple
+  printf 'PRINCIPAL="%s"\nHOST="%s"\nUSERNAME="%s"\n' "$4" "$3" "$2" > "$FX6/accounts.d/$1.conf"
+  chmod 600 "$FX6/accounts.d/$1.conf"
+done
+ua() { # <account-or-empty> -> OUT/RC/ERR, the join asked with an account
+  OUT="$( STEWARD_ESTATE_ROOT="$FX6" STEWARD_SELF_HOST="h1" bash -c '
+    . '"$here"'/lib/registry.sh
+    registry_login_unix_account two-homes '"${1:-}" 2>"$FX6/err" )"; RC=$?
+  ERR="$(cat "$FX6/err")"
+}
+
+ua "";              is  "13a with no account the ambiguity still refuses" "$RC" "1"
+ua "zz-worker-h1";  is  "13b the machine account answers its own username" "$OUT" "worker"
+                    is  "13c ...and it is rc 0"                            "$RC" "0"
+ua "alice-h1";      is  "13d the personal account answers the other one"   "$OUT" "alice"
+# THE TWO ANSWERS DIFFER. If they did not, this section would pass on a function
+# that ignored the argument entirely — which is exactly how section 12's defect
+# survived: every answer was defensible on its own.
+ua "bob-h1";        is  "13e another human's account is REFUSED, not joined"  "$RC" "1"
+                    is  "13f ...and prints no username"                       "$OUT" ""
+                    has "13g ...and the refusal names both principals"        "$ERR" "bob"
+ua "alice-h2";      is  "13h the same human on ANOTHER host is refused"       "$RC" "1"
+                    has "13i ...and the refusal names the host"               "$ERR" "h2"
+ua "no-such-acct";  is  "13j an account slug that names nothing is refused"   "$RC" "1"
+                    has "13k ...and the refusal names the slug"               "$ERR" "no-such-acct"
+
+# ── 13m. THE REASON REACHES THE CALLER ──────────────────────────────────────
+#
+# registry_login_state read REGISTRY_LOGIN_UNIX_ACCOUNT_WHY after calling the
+# join inside `$( )`. A command substitution is a subshell, so the variable the
+# join set could never cross back — the column printed the FALLBACK sentence
+# ("no account for this login's principal on this host") while stderr carried the
+# true one ("more than one account on ..."). A reader who trusts the column goes
+# to accounts.d looking for a missing row that is not missing.
+#
+# This is the same defect the join's own comment says it fixed once already: "a
+# message the code had already produced and thrown away". It was produced, and
+# thrown away one frame further out.
+# THE HOMES ARE THE FIXTURE'S, NOT THE MACHINE'S. `alice` and `worker` are not
+# unix accounts on any host that runs this suite, so the directory half of the
+# state line is resolved through STEWARD_HOME_LOOKUP_CMD - the same seam
+# _registry_owner_home already offers - and the suite stays hermetic.
+cat > "$FX6/homes.sh" <<'EOF'
+#!/bin/bash
+printf '/home/%s\n' "$1"
+EOF
+chmod 755 "$FX6/homes.sh"
+st() { # <account-or-empty> -> OUT/RC, one tab-separated state line
+  OUT="$( STEWARD_ESTATE_ROOT="$FX6" STEWARD_SELF_HOST="h1" STEWARD_HOME_LOOKUP_CMD="$FX6/homes.sh" bash -c '
+    . '"$here"'/lib/registry.sh
+    registry_login_state two-homes '"${1:-}"' | tr "\t" " "' 2>/dev/null )"; RC=$?
+}
+st "";  has "13m the state line carries the REAL reason"        "$OUT" "more than one account"
+# The fallback sentence must be GONE, not merely accompanied. Two sentences for
+# one fact is how a reader learns to ignore both.
+case "$OUT" in
+  *"no account for this login's principal on this host"*)
+    bad "13n ...and not the fallback sentence" "still printed: $OUT" ;;
+  *) ok "13n ...and not the fallback sentence" ;;
+esac
+st "zz-worker-h1"
+has "13o asked with an account, the state line resolves a directory" "$OUT" "/home/worker/.claude-logins/two-homes"
+st "alice-h1"
+has "13p ...and the OTHER account resolves the OTHER home"           "$OUT" "/home/alice/.claude-logins/two-homes"
+rm -rf "$FX6"
+
+
 rm -rf "$FX5"
+
+# ── 14. THE VERB CAN ASK WITH AN ACCOUNT ────────────────────────────────────
+#
+# Section 13 gave the LIBRARY a way to answer the ambiguity. This section is
+# about the two verbs an operator actually types, and about the thing that made
+# the gap matter: `registry login shell` stops on the parenthesised reason, so
+# for a person with two accounts on one host it could not open ANY of their
+# login directories - which is the one thing the verb exists to do.
+#
+# `--account` NAMES A HOME; IT DOES NOT GRANT ONE. The "run it as that user"
+# refusal still stands behind it: naming somebody else's account resolves their
+# directory and then refuses to open it, exactly as before. A flag that answered
+# the join AND waived the ownership rule would be a way to point a shell at
+# another person's credentials with one extra word.
+FX7="$(mktemp -d)"
+mkdir -p "$FX7/estate" "$FX7/logins.d" "$FX7/accounts.d" "$FX7/home/.claude-logins/mine"
+chmod 700 "$FX7/logins.d"
+chmod 755 "$FX7/home/.claude-logins" "$FX7/home/.claude-logins/mine"
+cp "$FX/estate/steward.conf" "$FX7/estate/steward.conf"
+ME7="$(id -un)"
+# TWO ACCOUNTS, ONE HUMAN, ONE HOST - the production shape: a personal home and
+# a machine account, both genuinely that person's, so neither row is wrong.
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="%s"\n' "$ME7"      > "$FX7/accounts.d/a-me.conf"
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="machine"\n'        > "$FX7/accounts.d/a-machine.conf"
+printf 'PRINCIPAL="them"\nHOST="h1"\nUSERNAME="someone-else"\n' > "$FX7/accounts.d/a-them.conf"
+chmod 600 "$FX7/accounts.d"/*.conf
+cat > "$FX7/homelookup7" <<STUB
+case "\$1" in
+  $ME7) printf '$FX7/home\n' ;;
+  machine) printf '/srv/homes/machine\n' ;;
+  someone-else) printf '/srv/homes/someone-else\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX7/homelookup7"
+run7() { STEWARD_ESTATE_ROOT="$FX7" STEWARD_CONFIG_FILE="$FX7/no-such-config" \
+         STEWARD_SELF_HOST=h1 STEWARD_HOME_LOOKUP_CMD="$FX7/homelookup7" \
+         bash "$STEWARD" registry login "$@"; }
+run7 add mine --principal me --account me@example.test --provider claude-team \
+     --config-dir '~/.claude-logins/mine' --legal-owner 'Acme' --json >/dev/null 2>&1
+
+# THE REGRESSION ITSELF, PINNED. Without an account the verb must still refuse -
+# and the refusal must be the AMBIGUITY, not the sentence for a missing row.
+err="$(run7 shell mine -- true 2>&1)"; rc=$?
+is  "14a two accounts, no --account: the verb refuses rc 78" "$rc" "78"
+has "14b ...and the refusal names the ambiguity"             "$err" "more than one account"
+case "$err" in
+  *"no account for this login's principal on this host"*)
+    bad "14c ...and not the missing-row sentence" "still printed: $err" ;;
+  *) ok "14c ...and not the missing-row sentence" ;;
+esac
+
+# ASKED WITH THE ACCOUNT, IT OPENS.
+out="$(run7 shell mine --account a-me -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null)"
+is "14d --account resolves the home and runs there" "$out" "$FX7/home/.claude-logins/mine"
+err="$(run7 shell mine --account a-me -- true 2>&1 >/dev/null)"
+has "14e ...and the banner still names the directory" "$err" "dir      $FX7/home/.claude-logins/mine"
+
+# THE OWNERSHIP RULE SURVIVES THE FLAG. a-machine is the same human, so the join
+# accepts it - and the shell still refuses, because that home is not this
+# account's to open. Same refusal, same rc, reached through the new argument.
+err="$(run7 shell mine --account a-machine -- true 2>&1)"; rc=$?
+is  "14f a same-human account on another home still refuses rc 77" "$rc" "77"
+has "14g ...and names the directory it would have opened"          "$err" "/srv/homes/machine/.claude-logins/mine"
+# ANOTHER HUMAN'S ACCOUNT IS REFUSED BY THE JOIN, one step earlier and for a
+# different reason - the pair rule, not the ownership rule.
+err="$(run7 shell mine --account a-them -- true 2>&1)"; rc=$?
+is  "14h another human's account refuses"            "$rc" "78"
+has "14i ...and the refusal names both principals"   "$err" "them"
+err="$(run7 shell mine --account no-such -- true 2>&1)"; rc=$?
+is  "14j an account slug that names nothing refuses" "$rc" "78"
+has "14k ...and names the slug"                      "$err" "no-such"
+err="$(run7 shell mine --account 2>&1)"; rc=$?
+is  "14m --account with no value is a usage error"   "$rc" "64"
+
+# THE LISTING TAKES IT TOO, because `ls` is where a person looks BEFORE typing
+# shell, and a listing that cannot resolve the row it is about to recommend is
+# the state this whole section removes.
+out="$(run7 ls 2>/dev/null)"
+has "14n ls without an account names the ambiguity"  "$out" "more than one account"
+out="$(run7 ls --account a-me 2>/dev/null)"
+has "14o ls --account resolves the directory"        "$out" "$FX7/home/.claude-logins/mine"
+out="$(run7 ls --account a-me --json 2>/dev/null | jq -r '.logins[] | select(.login=="mine") | .unix_account')"
+is  "14p --json carries the named account's username" "$out" "$ME7"
+rm -rf "$FX7"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
