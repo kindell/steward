@@ -346,6 +346,21 @@ if ! ( registry_load "$NAME" >/dev/null 2>&1 ); then
   exit 78
 fi
 
+# ---- LIFECYCLE IS A GATE, BEFORE ANYTHING ACTS -------------------------------
+# Until 2026-09-13 the field was recorded and acted on nowhere: retiring a row
+# changed a word in a file and the next round started it again. Read STRICTLY,
+# through the non-executing reader, so a malformed value refuses instead of
+# defaulting to "active" - the whole point of a gate is that doubt closes it.
+# An absent line is the live estate's normal shape and runs.
+_lc="$(_registry_gate_raw "$CONF" LIFECYCLE)" || {
+  echo "session-supervisor: $NAME — REFUSING: LIFECYCLE in $CONF cannot be read (duplicated, unquoted or outside the set)." >&2
+  echo "session-supervisor: $NAME — nothing started. A gate that guesses is not a gate." >&2
+  exit 78; }
+if ! registry_lifecycle_runs "$_lc"; then
+  echo "session-supervisor: $NAME — LIFECYCLE=\"$_lc\": this row does not run. Nothing started, nothing written, no keys typed." >&2
+  exit 0
+fi
+
 if [ -z "${DOMAIN:-}" ]; then
   echo "session-supervisor: $NAME — REFUSING: DOMAIN is missing from the conf ($CONF)." >&2
   echo "session-supervisor: $NAME — without DOMAIN the credential directory falls back to" >&2

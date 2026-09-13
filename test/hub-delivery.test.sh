@@ -233,6 +233,24 @@ t1=$(date +%s)
 is "the stalled delivery fails" "$([ "$rc" -ne 0 ] && echo nonzero)" "nonzero"
 is "...within the timeout, not after the producer" "$([ $((t1-t0)) -le 3 ] && echo quick || echo slow)" "quick"
 
+echo "9. LIFECYCLE: no letter is delivered to a row that does not run"
+# A queue in a retired row's home is read by nobody, and the sender's archive
+# would record a delivery that never reached a reader. Measured 2026-09-13: the
+# field was recorded and acted on nowhere, so mail kept arriving for rows that
+# had been retired.
+printf 'ID="s-00000000000000dd"\nSLUG="dormant"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nLIFECYCLE="retired"\n' > "$FX/reg/dormant.conf"
+: > "$SSH_CALLS"; : > "$TMUX_CALLS"
+out9="$(bus_send dormant legacy "DRIFT topic: to a retired row" 2>&1)"; rc9=$?
+is  "9: a retired recipient is refused" "$rc9" "65"
+has "9: and the refusal names the value" "$out9" 'does not run'
+is  "9: nothing was queued for it" "$(count_json "$FX/bus-home/s-00000000000000dd/inbox")" "0"
+is  "9: and nothing was archived as sent" "$(ls "$FX/bus-home/legacy/sent" 2>/dev/null | grep -c dormant | tr -d ' \n')" "0"
+# a value outside the closed set is doubt, not a default
+printf 'ID="s-00000000000000dd"\nSLUG="dormant"\nACCOUNT="operator-a-hub"\nOWNER="operator-a"\nDOMAIN="entity-one"\nHOST="host-one"\nRC_LABEL="L"\nREPO_PATH="/tmp/x"\nLIFECYCLE="stopped"\n' > "$FX/reg/dormant.conf"
+out9b="$(bus_send dormant legacy "DRIFT topic: outside the set" 2>&1)"; rc9b=$?
+is  "9: a value outside the set is refused too" "$rc9b" "65"
+rm -f "$FX/reg/dormant.conf"
+
 echo
 printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$pass" "$fail"
 [ "$fail" -eq 0 ]

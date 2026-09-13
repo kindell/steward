@@ -383,6 +383,24 @@ run; is "23b10 round three types" "$(sk "$NAME:@0.%0")" "2"; run; is "23b11 then
 reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; run; run; run
 is "23b12 bridge read Old at the baseline, rename leaves nameSince unmoved -> not applied (as 23b)" "$(gget applied)" ""
 
+echo "== 4c. LIFECYCLE: a row that does not run is not started, and doubt closes the gate =="
+# Until 2026-09-13 the field was recorded and acted on nowhere: a retired row was
+# started exactly like a live one. Read strictly, so a malformed value refuses
+# rather than defaulting to active.
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="retired"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "4c1 retired: nothing spawned" "$(tl new-session)" "0"; has "4c2 and it says which value" "$OUT" 'LIFECYCLE="retired"'
+is "4c3 nothing bound to the generation" "$(gget pid)$(gget birth)$(gget pending_for)" ""
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="suspended"'; touch "$T_HAS_SESSION"; echo full > "$T_RENAME_EFFECT"
+line identified:managed 4243 boot-s:111 "$NAME:@0.%0" "Old" 1789000000000 alive live:managed "" 4243 thread-4243 1789000000000 '$7:1789000000' 777
+run; run; run
+is "4c4 suspended: no rename typed either" "$(grep -c . "$T_SENDKEYS")" "0"
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="stopped"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+is "4c5 a value outside the set refuses the row (the loader will not load it)" "$RC" "78"; is "4c6 and spawns nothing" "$(tl new-session)" "0"
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="active"' 'LIFECYCLE="active"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+is "4c7 a DUPLICATED line is doubt, not a default: rc 78" "$RC" "78"; has "4c8 and says the gate cannot read it" "$OUT" "cannot be read"
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="active"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
+is "4c9 an explicit active is the control: it spawns" "$(tl new-session)" "1"; row_claude
+
 echo "== 24-25. the foreground is measured on the tty, never by the command's name =="
 # THE PRODUCTION SHAPE, MEASURED ON THE LIVE HOST 2026-09-11: the launch string ends "; exec bash" in a
 # non-interactive shell, so claude never gets a process group of its own - pane shell and claude share

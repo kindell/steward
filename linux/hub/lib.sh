@@ -1374,6 +1374,20 @@ bus_send() {
   bus_resolve_recipient "$to" || _rrc=$?
   # A refusal (ambiguous slug, broken ID) has already explained itself on stderr.
   [ "$_rrc" -eq 65 ] && return 65
+  # A LETTER TO A ROW THAT DOES NOT RUN IS NOT DELIVERED. A queue in a retired
+  # row's home is read by nobody, and the sender's own archive would record a
+  # delivery that never reached a reader. Read strictly: a LIFECYCLE nobody can
+  # parse is a recipient nobody can vouch for.
+  local _bs_lc=""
+  if [ -n "${BUS_RES_CONF:-}" ]; then
+    _bs_lc="$(_registry_gate_raw "$BUS_RES_CONF" LIFECYCLE)" || {
+      echo "bus: '$to' has a LIFECYCLE that cannot be read (duplicated, unquoted or outside the set) — refusing to deliver" >&2
+      return 65; }
+    if ! registry_lifecycle_runs "$_bs_lc"; then
+      echo "bus: '$to' is LIFECYCLE=\"$_bs_lc\" and does not run — no letter is delivered to a row that is not there" >&2
+      return 65
+    fi
+  fi
   # A FRAGA GOES TO THE HUB ONLY. The class means "answered by machinery", and
   # the only machinery is the hub's catalogue answerer; a session has none. A
   # FRAGA delivered to a session arrives as an ordinary letter and sits there:

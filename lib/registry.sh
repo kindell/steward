@@ -3342,6 +3342,32 @@ _registry_source_row() { # <conf path>
   source "$1"
 }
 
+# ---- LIFECYCLE: ONE CLOSED SET, ONE RULE -------------------------------------
+# The field records what a row IS; exactly one of its values means "run me".
+#
+# IT USED TO RECORD AND NOTHING MORE. The comment inside registry_load said so
+# in as many words - "RECORDED HERE, ACTED ON NOWHERE" - and no start path
+# asked: a retired row was started by the supervisor exactly like a live one.
+# That was a deliberate pause, not an oversight, and this is the plan that moves
+# the boundary.
+#
+# AND THE READERS HAD DRIFTED APART. The loader knew active|suspended|retired;
+# the strict non-executing reader written for the host gate knew
+# active|retired|stopped. Two vocabularies for one field, each authoritative
+# somewhere, so "suspended" loaded but was uninspectable and "stopped" passed the
+# gate but could never load. The set lives here now, once, and both read it.
+#
+# WHAT IS NOT IN THE SET IS NOT IN THE SET. A value the product does not
+# implement - "stopped", "moving", "moved" - belongs here the day its behaviour
+# does, in the same commit as the tests that prove it, and not before.
+REGISTRY_LIFECYCLE_SET="active suspended retired"
+registry_lifecycle_valid() { case " $REGISTRY_LIFECYCLE_SET " in *" ${1-} "*) return 0 ;; *) return 1 ;; esac; }
+# THE ABSENT VALUE RUNS, AND THAT IS THE POINT: every row written before the
+# field existed carries no LIFECYCLE line, and those rows are the live estate.
+# An empty value is the same case in the loader (: "${LIFECYCLE:=active}") and is
+# read the same way here, so the two can never disagree about a blank.
+registry_lifecycle_runs() { [ "${1:-active}" = active ]; }
+
 registry_load() {
   # THE ESTATE GATES, WIRED. Until 2026-08-25 registry_schema_check existed and
   # nothing called it: the estate declared a version, the library knew how to
@@ -3700,10 +3726,8 @@ registry_load() {
   # behaviour change arriving without anyone choosing it, with live
   # conversations in the room. A later plan moves that boundary deliberately.
   : "${LIFECYCLE:=active}"
-  case "$LIFECYCLE" in
-    active|suspended|retired) ;;
-    *) echo "registry: $project.conf invalid LIFECYCLE '$LIFECYCLE' (active, suspended or retired)" >&2; return 1 ;;
-  esac
+  registry_lifecycle_valid "$LIFECYCLE" || {
+    echo "registry: $project.conf invalid LIFECYCLE '$LIFECYCLE' (one of: $REGISTRY_LIFECYCLE_SET)" >&2; return 1; }
   # OWNER: the macOS user the session runs as. Required and validated because the
   # installer runs as root and renders it into UserName and every path — never guess.
   if ! [[ "$OWNER" =~ ^[a-z][a-z0-9-]*$ ]]; then
@@ -3986,7 +4010,7 @@ _registry_gate_raw() {
   [ -n "$v" ] || return 0
   case "$k" in
     RUNTIME)   case "$v" in claude-code|opencode|codex) ;; *) return 2 ;; esac ;;
-    LIFECYCLE) case "$v" in active|retired|stopped) ;; *) return 2 ;; esac ;;
+    LIFECYCLE) registry_lifecycle_valid "$v" || return 2 ;;   # the loader's set, read once (registry_lifecycle_valid)
     LOGIN|OWNER|SLUG|TARGET_PROJECT|TARGET_ENTITY) case "$v" in [a-z0-9]*) [ -z "${v//[a-z0-9-]/}" ] || return 2 ;; *) return 2 ;; esac ;;
     HOST)      case "$v" in [A-Za-z0-9]*) [ -z "${v//[A-Za-z0-9.-]/}" ] || return 2 ;; *) return 2 ;; esac ;;
   esac
