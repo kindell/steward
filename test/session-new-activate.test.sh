@@ -118,6 +118,24 @@ activate() { # <id> <slug>  (extra env via the caller)
 }
 UNITS="$FX/config/systemd/user"
 
+# ── A0. LIFECYCLE: supervision is not enabled for a row that does not run ───
+# Enabling the timer for a retired row installs a unit that fires every period
+# and is refused every time. Measured 2026-09-13: nothing asked.
+echo "session-new --activate — the lifecycle gate"
+reset_logs
+row "$ID_DEF" "$SLUG_DEF" 'LIFECYCLE="retired"'
+out0="$(activate "$ID_DEF" "$SLUG_DEF")"; rc0=$?
+is  "A0: a retired row is refused" "$rc0" "65"
+case "$out0" in *'LIFECYCLE="retired"'*) ok "A0: and the refusal names the value" ;; *) bad "A0: and the refusal names the value" "$out0" 'LIFECYCLE="retired"' ;; esac
+is  "A0: nothing was enabled" "$(grep -c 'enable' "$FX/systemctl.log" 2>/dev/null || echo 0)" "0"
+reset_logs
+row "$ID_DEF" "$SLUG_DEF" 'LIFECYCLE="stopped"'
+out0b="$(activate "$ID_DEF" "$SLUG_DEF")"; rc0b=$?
+is  "A0: a value outside the set is refused too" "$rc0b" "65"
+is  "A0: and still nothing enabled" "$(grep -c 'enable' "$FX/systemctl.log" 2>/dev/null || echo 0)" "0"
+row "$ID_DEF" "$SLUG_DEF"   # back to the plain row for everything below
+reset_logs
+
 # ── A1. THE DEFAULT ROW: agent-session@, exactly as before ──────────────────
 echo "session-new --activate — the default row"
 reset_logs

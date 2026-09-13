@@ -262,6 +262,13 @@ if [ "${1:-}" = "--activate" ]; then
   # the first codex row was born by hand: key, units and daemon all hand-made).
   # Anything else refuses: guessing agent-session@ for a runtime the register
   # would not load is a timer failing forever, announced at the wrong end.
+  # SUPERVISION IS NOT ENABLED FOR A ROW THAT DOES NOT RUN. Enabling the timer
+  # for a retired row is the same fault as the supervisor starting it: the unit
+  # would be installed, fire every period, and be refused every time.
+  _lc="$(_registry_gate_raw "$SESS_D/$INSTANCE.conf" LIFECYCLE)" \
+    || fel "row '$INSTANCE' has a LIFECYCLE this activation cannot read (duplicated, unquoted or outside the set) — nothing enabled" 65
+  registry_lifecycle_runs "$_lc" \
+    || fel "row '$INSTANCE' has LIFECYCLE=\"$_lc\" — only an active row is supervised; nothing enabled" 65
   _runtime="$(sed -n 's/^RUNTIME="\(.*\)"/\1/p' "$SESS_D/$INSTANCE.conf" 2>/dev/null | head -1)"
   case "${_runtime:-claude-code}" in
     claude-code) _unit="agent-session" ;;
