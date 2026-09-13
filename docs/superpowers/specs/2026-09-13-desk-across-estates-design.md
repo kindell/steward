@@ -12,7 +12,7 @@ unchanged.
 
 ## The measurement that starts it
 
-Three estates run the product: basement (Linux), minin (macOS), skeppsbron
+Three estates run the product: basement (Linux), butler (macOS), skeppsbron
 (Linux). Each produces a correct per-principal snapshot. One of them serves a
 Desk, and that Desk can see exactly one estate — its own. A person with
 sessions on two machines has no page that shows them both, and the operator has
@@ -25,10 +25,18 @@ Measured 2026-09-13: skeppsbron's producer runs and answers
 
 **One Desk. Three producers. The consumer pulls.**
 
+An estate is named after its machine — `basement`, `skeppsbron`, `butler` —
+and this spec spells them that way throughout. The third was called `minin` in
+conversation for a year, after the hardware it runs on, and that nickname does
+not appear in any estate's own `ESTATE_NAME`. A composed view is exactly where
+such a habit becomes a defect: two estates would answer with the name their
+register holds and one with the name people happened to use, and nothing in the
+document would say they were the same kind of word.
+
 ```
   skeppsbron ──┐
                │  (pull, ssh + forced command)
-  minin ───────┼─────────────▶  basement: desk/remote/<estate>/
+  butler ──────┼─────────────▶  basement: desk/remote/<estate>/
                │                          desk/current/          (its own)
   basement ────┘                              │
                                               ▼
@@ -44,7 +52,7 @@ it:
 2. **A dead estate is a stale snapshot, not a broken Desk.** The Desk reads
    files. If a fetch fails, the previous generation is still on disk and the
    estate is marked — the page renders.
-3. **Only one machine needs the server.** minin and skeppsbron need `bash` and
+3. **Only one machine needs the server.** butler and skeppsbron need `bash` and
    `jq`, which they have. `node` stays on basement alone. Measured: skeppsbron
    has no node installed, and under this design it never needs one.
 
