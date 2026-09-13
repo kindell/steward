@@ -1,0 +1,64 @@
+#!/bin/bash
+# desk/bin/desk-snapshot-serve - hand THIS estate's current desk generation to a
+# reader, as a tar stream on stdout. The producer's half of a cross-estate read
+# (spec: docs/superpowers/specs/2026-09-13-desk-across-estates-design.md).
+#
+# IT RUNS BEHIND AN SSH FORCED COMMAND, which is the whole reason it is shaped
+# this way:
+#
+#   command="/bin/bash <scripts>/desk/bin/desk-snapshot-serve",restrict <key>
+#
+# Everything this process is ever handed is therefore an input it did not
+# choose. So it takes NO ARGUMENT and reads NO SSH_ORIGINAL_COMMAND. A forced
+# command that parses a client-supplied word is a parser on the far side of a
+# trust boundary; this one has nothing to parse, and an argument is refused
+# rather than ignored so a misconfigured `command=` is loud instead of subtle.
+#
+# IT SENDS THE CURRENT GENERATION, NOT THE DESK DIRECTORY. Those differ, and the
+# difference matters more every time this estate also CONSUMES one: `remote/`
+# then holds other estates' viewer files, and previous generations sit beside
+# `current` until they are pruned. A `tar -C "$dir"` instead of
+# `tar -C "$dir/current"` would relay estate A's files to estate B, silently,
+# with nothing in either register recording that it happened. That is one
+# argument's difference, which is why the suite asserts it directly.
+#
+# THE BYTES ARE ALREADY FILTERED. Every file in a generation was written for one
+# named viewer by desk/snapshot.sh, which did the filtering at write time and
+# never let the raw document leave its own process. This script adds no filter
+# and needs none: it hands over files that were already decided.
+#
+# Exit: 0 a generation was written - 64 an argument was given - 69 there is no
+# current generation to send - 78 the estate or the registry would not load.
+set -u
+
+if [ "$#" -ne 0 ]; then
+  echo "desk-snapshot-serve: takes no argument (got $#); it sends this estate's current generation and nothing else" >&2
+  exit 64
+fi
+
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# THE DESK'S LOCATION COMES FROM desk-paths AND NOWHERE ELSE - the same bridge
+# the producer and the Node server already share, so three readers cannot form
+# two opinions about where the desk lives. Its own rc is kept: an estate that
+# will not load (78) and an estate that has never produced (69) are different
+# facts with different repairs, and collapsing them would send the reader to set
+# up a home that is already set up.
+paths="$("$here/desk-paths" 2>/dev/null)" || exit 78
+dir="$(printf '%s\n' "$paths" | sed -n 's/^dir=//p' | head -1)"
+[ -n "$dir" ] || {
+  echo "desk-snapshot-serve: desk-paths named no directory" >&2
+  exit 78
+}
+
+gen="$dir/current"
+# -d FOLLOWS THE SYMLINK, which is what is wanted: `current` is a symlink onto a
+# generation, and a DANGLING one is exactly the state a half-finished swap
+# leaves behind. It must read as "nothing to send", never as an empty tar that a
+# consumer would mistake for an estate with no sessions.
+[ -d "$gen" ] || {
+  echo "desk-snapshot-serve: no current generation in $dir" >&2
+  exit 69
+}
+
+exec tar -C "$gen" -cf - .
