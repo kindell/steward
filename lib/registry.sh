@@ -3361,7 +3361,17 @@ _registry_source_row() { # <conf path>
 # implement - "stopped", "moving", "moved" - belongs here the day its behaviour
 # does, in the same commit as the tests that prove it, and not before.
 REGISTRY_LIFECYCLE_SET="active suspended retired"
-registry_lifecycle_valid() { case " $REGISTRY_LIFECYCLE_SET " in *" ${1-} "*) return 0 ;; *) return 1 ;; esac; }
+# EXACT MEMBERSHIP, NOT A SUBSTRING. The first version asked whether the set
+# string CONTAINED " $value " - and " active suspended retired " contains
+# " active suspended ", so any ADJACENT PAIR in writing order passed as one
+# valid value while a non-adjacent pair ("active retired") failed. The suite
+# tested the non-adjacent pair and stayed green straight through the hole.
+# Nothing started either way, but the classification was wrong where it matters:
+# a spanning value is not a deliberate one, and it would have been given the
+# quiet "this row does not run" treatment instead of the loud refusal a conf
+# nobody can parse deserves. Found by the minin steward, measured through these
+# functions rather than through a copy of their shape, 2026-09-13.
+registry_lifecycle_valid() { local _x; for _x in $REGISTRY_LIFECYCLE_SET; do [ "$_x" = "${1-}" ] && return 0; done; return 1; }
 # THE ABSENT VALUE RUNS, AND THAT IS THE POINT: every row written before the
 # field existed carries no LIFECYCLE line, and those rows are the live estate.
 # An empty value is the same case in the loader (: "${LIFECYCLE:=active}") and is

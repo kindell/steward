@@ -398,6 +398,11 @@ reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="stopped"'; line no-proc
 is "4c5 a value outside the set refuses the row (the loader will not load it)" "$RC" "78"; is "4c6 and spawns nothing" "$(tl new-session)" "0"
 reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="active"' 'LIFECYCLE="active"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
 is "4c7 a DUPLICATED line is doubt, not a default: rc 78" "$RC" "78"; has "4c8 and says the gate cannot read it" "$OUT" "cannot be read"
+# A VALUE THAT SPANS TWO OF THE SET IS DOUBT, NOT A DELIBERATE REST STATE: it
+# must get the loud 78, never the quiet exit 0 a retired row gets. (The first
+# registry_lifecycle_valid was a substring test and would have called this valid.)
+reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="active suspended"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run
+is "4c7b a value spanning two of the set: rc 78, not a silent 0" "$RC" "78"; is "4c7c and nothing spawned" "$(tl new-session)" "0"
 reset; row_claude 'RC_LABEL="Alpha→Thing"' 'LIFECYCLE="active"'; line no-process "" "" "" "" "" gone-noreceipt "" "" "" "" "" "" ""; run; run
 is "4c9 an explicit active is the control: it spawns" "$(tl new-session)" "1"; row_claude
 

@@ -67,7 +67,13 @@ echo "== 1. one closed set =="
 for v in active suspended retired; do
   in_fixture registry_lifecycle_valid "$v"; is "1a '$v' is in the set" "$RC" "0"
 done
-for v in stopped moving moved Active ACTIVE "act ive" "" "-" "active retired"; do
+# THE PAIRS ARE THE POINT. The first version of this function asked whether the
+# set string contained " $value ", so ADJACENT pairs in writing order passed and
+# non-adjacent ones did not. This list carries both kinds, in both orders, so a
+# substring test can never pass this section again.
+for v in stopped moving moved Active ACTIVE "act ive" "" "-" \
+         "active suspended" "suspended retired" "active retired" "retired suspended" \
+         "active suspended retired" " active" "active "; do
   in_fixture registry_lifecycle_valid "$v"; is "1b '$v' is not" "$RC" "1"
 done
 
@@ -81,11 +87,12 @@ in_fixture registry_lifecycle_runs retired;   is "2c retired does not" "$RC" "1"
 in_fixture registry_lifecycle_runs "";        is "2d an absent/empty value is the active default" "$RC" "0"
 in_fixture registry_lifecycle_runs;           is "2e no argument at all is the same default" "$RC" "0"
 in_fixture registry_lifecycle_runs stopped;   is "2f a value outside the set never runs" "$RC" "1"
+in_fixture registry_lifecycle_runs "active suspended"; is "2g nor does a value that SPANS two of them" "$RC" "1"
 
 echo "== 3. the two readers are the SAME reader =="
 # For every value, the loader's verdict and the strict non-executing reader's
 # verdict must agree. This is the claim the drift walked through.
-for v in active suspended retired stopped moving Active "act ive"; do
+for v in active suspended retired stopped moving Active "act ive" "active suspended" "suspended retired"; do
   row "LIFECYCLE=\"$v\""
   in_fixture registry_load one >/dev/null; loader=$RC
   in_fixture _registry_gate_raw "$SESS/one.conf" LIFECYCLE; raw=$RC
