@@ -747,10 +747,16 @@ ua "no-such-acct";  is  "13j an account slug that names nothing is refused"   "$
 # unix accounts on any host that runs this suite, so the directory half of the
 # state line is resolved through STEWARD_HOME_LOOKUP_CMD - the same seam
 # _registry_owner_home already offers - and the suite stays hermetic.
-cat > "$FX6/homes.sh" <<'EOF'
+# `homes`, NOT `home`: the estate's own leak-guard forbids a literal
+# /home/<account> anywhere in the product surface, because such a path carries
+# an ACCOUNT LAYOUT - the host state's business, never the product's. A fixture
+# path that merely CONTAINS that shape is the same string to a reader and to a
+# grep, so the shape is absent rather than merely relocated. Sections 12 and 14
+# already answer with /srv/homes/<account> for the same reason.
+cat > "$FX6/homes.sh" <<STUB
 #!/bin/bash
-printf '/home/%s\n' "$1"
-EOF
+printf '$FX6/homes/%s\n' "\$1"
+STUB
 chmod 755 "$FX6/homes.sh"
 st() { # <account-or-empty> -> OUT/RC, one tab-separated state line
   OUT="$( STEWARD_ESTATE_ROOT="$FX6" STEWARD_SELF_HOST="h1" STEWARD_HOME_LOOKUP_CMD="$FX6/homes.sh" bash -c '
@@ -766,9 +772,9 @@ case "$OUT" in
   *) ok "13n ...and not the fallback sentence" ;;
 esac
 st "zz-worker-h1"
-has "13o asked with an account, the state line resolves a directory" "$OUT" "/home/worker/.claude-logins/two-homes"
+has "13o asked with an account, the state line resolves a directory" "$OUT" "$FX6/homes/worker/.claude-logins/two-homes"
 st "alice-h1"
-has "13p ...and the OTHER account resolves the OTHER home"           "$OUT" "/home/alice/.claude-logins/two-homes"
+has "13p ...and the OTHER account resolves the OTHER home"           "$OUT" "$FX6/homes/alice/.claude-logins/two-homes"
 rm -rf "$FX6"
 
 
@@ -853,6 +859,14 @@ is  "14m --account with no value is a usage error"   "$rc" "64"
 # the state this whole section removes.
 out="$(run7 ls 2>/dev/null)"
 has "14n ls without an account names the ambiguity"  "$out" "more than one account"
+# BOTH HALVES, because the positive alone would pass while the old fallback was
+# printed BESIDE the true sentence. One fact wearing two explanations is how a
+# reader learns to trust neither - the same pairing 14c makes for the shell verb.
+case "$out" in
+  *"has no account on"*)
+    bad "14n2 ...and not the missing-row sentence" "still printed: $out" ;;
+  *) ok "14n2 ...and not the missing-row sentence" ;;
+esac
 out="$(run7 ls --account a-me 2>/dev/null)"
 has "14o ls --account resolves the directory"        "$out" "$FX7/home/.claude-logins/mine"
 out="$(run7 ls --account a-me --json 2>/dev/null | jq -r '.logins[] | select(.login=="mine") | .unix_account')"
