@@ -185,6 +185,16 @@ watch/bin/restart-session.sh     scripts/watch/bin/restart-session.sh 755  scrip
 #
 # NOT desk/test/ - see test/deploy-manifest.test.sh, which guards that.
 #
+# THE CROSS-ESTATE THREE. desk/remote.mjs is IMPORTED BY serve.mjs, so a home
+# that got one without the other has a desk that cannot start at all - the
+# manifest suite caught exactly that omission when these rows were first
+# forgotten, which is what that check is for. desk/fetch.sh runs only on the
+# machine that consumes, and desk/bin/desk-snapshot-serve only on the ones that
+# are read; both are deployed everywhere regardless, because which role a host
+# plays is a fact about its register and its keys, not about which files exist
+# in its home. A file that is present and never invoked costs nothing; one that
+# is missing the day a host changes role costs a deploy.
+#
 # BIN/STEWARD SHIPS WITH THE DESK because the producer calls it: snapshot.sh
 # runs `steward mcp surface` for the mcp section of every principal's file. A
 # home without this row serves a desk whose mcp section is quietly null - the
@@ -204,7 +214,10 @@ desk/serve.mjs                   scripts/desk/serve.mjs               644  scrip
 desk/render.mjs                  scripts/desk/render.mjs              644  scripts
 desk/bridge.mjs                  scripts/desk/bridge.mjs              644  scripts
 desk/SCHEMA.md                   scripts/desk/SCHEMA.md               644  scripts
+desk/remote.mjs                  scripts/desk/remote.mjs              644  scripts
+desk/fetch.sh                    scripts/desk/fetch.sh                755  scripts
 desk/bin/desk-paths              scripts/desk/bin/desk-paths          755  scripts
+desk/bin/desk-snapshot-serve     scripts/desk/bin/desk-snapshot-serve 755  scripts
 desk/bin/principal-for-login     scripts/desk/bin/principal-for-login 755  scripts
 desk/front.mjs                   scripts/desk/front.mjs               644  scripts
 desk/cookie.mjs                  scripts/desk/cookie.mjs              644  scripts
