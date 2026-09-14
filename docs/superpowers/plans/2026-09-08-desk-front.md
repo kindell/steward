@@ -85,7 +85,7 @@ import { normalizeAddr, isCgnat, isLoopback, parseFrontListen, parseFrontPeer, v
 test('normalizeAddr strips brackets, ports, zones and the v4-in-v6 prefix', () => {
   assert.equal(normalizeAddr('[::1]:443'), '::1');
   assert.equal(normalizeAddr('127.0.0.1:8080'), '127.0.0.1');
-  assert.equal(normalizeAddr('::ffff:100.64.0.9'), '100.64.0.9');
+  assert.equal(normalizeAddr('::ffff:100.64.0.1'), '100.64.0.1');
   assert.equal(normalizeAddr('FE80::1%eth0'), 'fe80::1');
 });
 
@@ -118,7 +118,7 @@ test('parseFrontListen refuses any other bind', () => {
 });
 
 test('parseFrontPeer normalizes and refuses a non-tailnet peer', () => {
-  assert.equal(parseFrontPeer('100.98.0.8'), '100.98.0.8');
+  assert.equal(parseFrontPeer('100.64.0.1'), '100.64.0.1');
   assert.equal(parseFrontPeer('::ffff:127.0.0.1'), '127.0.0.1');
   assert.throws(() => parseFrontPeer('203.0.113.7'), /^Error: STEWARD_DESK_FRONT_PEER/);
   assert.throws(() => parseFrontPeer(''), /^Error: STEWARD_DESK_FRONT_PEER/);
@@ -127,10 +127,10 @@ test('parseFrontPeer normalizes and refuses a non-tailnet peer', () => {
 const fakeReq = (remote, realIp) => ({ socket: { remoteAddress: remote }, headers: realIp === undefined ? {} : { 'x-real-ip': realIp } });
 
 test('visitorAddress trusts x-real-ip only from the configured peer', () => {
-  assert.equal(visitorAddress(fakeReq('100.98.0.8', '203.0.113.9'), '100.98.0.8'), '203.0.113.9');
-  assert.equal(visitorAddress(fakeReq('::ffff:100.98.0.8', '203.0.113.9, 10.0.0.1'), '100.98.0.8'), '203.0.113.9');
-  assert.equal(visitorAddress(fakeReq('100.98.0.8'), '100.98.0.8'), '100.98.0.8');
-  assert.equal(visitorAddress(fakeReq('100.98.0.9', '203.0.113.9'), '100.98.0.8'), null);
+  assert.equal(visitorAddress(fakeReq('100.64.0.1', '203.0.113.9'), '100.64.0.1'), '203.0.113.9');
+  assert.equal(visitorAddress(fakeReq('::ffff:100.64.0.1', '203.0.113.9, 10.0.0.1'), '100.64.0.1'), '203.0.113.9');
+  assert.equal(visitorAddress(fakeReq('100.64.0.1'), '100.64.0.1'), '100.64.0.1');
+  assert.equal(visitorAddress(fakeReq('100.127.255.255', '203.0.113.9'), '100.64.0.1'), null);
 });
 
 test('RateLimiter allows limit hits per window and forgets old ones', () => {
@@ -1306,7 +1306,7 @@ describe('the front peer gate', () => {
   it('refuses a socket peer other than the configured box', async () => {
     const port = await freePort();
     const h = await spawnUpTcp(childEnv({
-      STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_FRONT_PEER: '100.64.0.9'
+      STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port, STEWARD_DESK_FRONT_PEER: '100.64.0.1'
     }), '127.0.0.1', port, 5000);
     const r = await reqHttp('127.0.0.1', port, 'GET', '/desk/auth/login');
     assert.equal(r.status, 403);
