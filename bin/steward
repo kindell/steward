@@ -2544,6 +2544,15 @@ cmd_registry_login_shell() {
   # shellcheck source=lib/registry.sh
   . "$HERE/lib/registry.sh"
   registry_login_load "$slug" >/dev/null || fel "login '$slug' does not resolve" 78
+  # THE ACCOUNT IS DERIVED WHEN IT WAS NOT NAMED. This verb can only ever succeed
+  # for the account this process already runs as - the ownership check below
+  # refuses every other - so the flag was ceremony: it asked the operator to look
+  # up a slug in order to be allowed to do the one permitted thing. Deriving it
+  # widens nothing. A silent failure here is fine: the state line then produces
+  # the same refusal it produced before, naming what is missing.
+  if [ -z "$account" ]; then
+    account="$(registry_account_here "$LOGIN_PRINCIPAL" 2>/dev/null)" || account=""
+  fi
   local user dir cred _login_row
   # Capture first - see cmd_registry_login_ls for the bash 3.2 reason.
   _login_row="$(registry_login_state "$slug" "$account")"
@@ -7805,6 +7814,178 @@ cmd_doctor() {
 # their own credentials go through. STEWARD_LOGIN_CMD_CLAUDE and
 # STEWARD_LOGIN_CMD_OPENCODE are test seams only; production always resolves
 # the bare runtime name on PATH.
+# cmd_auth [<name>] [--reauth] - sign a Claude account in, or show which ones
+# are signed in already. The one verb a person uses for their own credentials.
+#
+# WHY IT EXISTS, and it is an ergonomics measurement rather than a defect. The
+# same act used to read:
+#
+#   STEWARD_ESTATE_ROOT=$HOME/Projects/<estate> \
+#     ~/scripts/bin/steward registry login shell <login-slug> --account <account-slug>
+#   claude auth login
+#
+# Six things to know for one act - a variable, a path, the word `registry`
+# (which is where logins are STORED, not what one is DOING), two slugs to look
+# up, and a second command inside the first. Every one is a place to get it
+# wrong, and getting it wrong puts credentials in the wrong directory, which is
+# the incident this register exists to prevent. A tool unpleasant enough gets
+# worked around, and the workaround is a bare sign-in in whatever directory one
+# is standing in.
+#
+# NOT NAMED `login`: `steward login [session]` already signs in a SESSION's
+# runtime on the machine that session lives on. Two acts under one word would be
+# worse than a long command.
+#
+# WITH NO ARGUMENT IT ONLY SHOWS. It is the command someone runs when they do
+# not yet know what they want, and the one most likely to be typed by accident.
+#
+# STEWARD_AUTH_CMD is a test seam. Production resolves `claude auth login`.
+cmd_auth() {
+  local want="" reauth=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --reauth) reauth=1; shift ;;
+      -h|--help) echo "usage: steward auth [<login>] [--reauth]" >&2; return 64 ;;
+      -*) fel "steward auth: unknown flag '$1'" 64 ;;
+      *) [ -z "$want" ] || fel "steward auth: one login at a time" 64; want="$1"; shift ;;
+    esac
+  done
+  # shellcheck source=lib/registry.sh
+  . "$HERE/lib/registry.sh"
+  local slugs; slugs="$(registry_login_list)" || return 78
+
+  # ── one pass over the register, so the listing and the resolution cannot
+  # disagree about what is available. Each row becomes one line of four fields.
+  local rows="" slug principal acct owner dir state acctslug
+  for slug in $slugs; do
+    registry_login_load "$slug" >/dev/null 2>&1 || {
+      rows="$rows$slug	?	?	unreadable	\n"; continue; }
+    principal="$LOGIN_PRINCIPAL"; acct="$LOGIN_ACCOUNT"; owner="$LOGIN_LEGAL_OWNER"
+    acctslug="$(registry_account_here "$principal" 2>/dev/null)" || acctslug=""
+    if [ -z "$acctslug" ]; then
+      # NOT YOURS IS A LISTED FACT, NEVER A HIDDEN ROW. A register that holds a
+      # login must not look like one that does not, or the operator goes looking
+      # for a row that is already there.
+      local otheruser; otheruser="$(registry_login_unix_account "$slug" 2>/dev/null)" || otheruser=""
+      if [ -n "$otheruser" ]; then
+        dir="$(registry_login_config_dir "$slug" "$otheruser" 2>/dev/null)" || dir=""
+        state="not yours (${otheruser}'s home)"
+      else
+        dir=""; state="not yours (no account here)"
+      fi
+    else
+      local _why; _why="$(registry_login_config_dir "$slug" "$(id -un)" 2>&1 >/dev/null)"
+      dir="$(registry_login_config_dir "$slug" "$(id -un)" 2>/dev/null)" || dir=""
+      if [ -z "$dir" ]; then
+        # A STATE THAT CANNOT SAY WHY is the silence this estate keeps removing -
+        # `uncensused` on a row, `unavailable` on a neighbour, `(does not
+        # resolve)` on a login. The resolver already wrote a sentence; printing
+        # the word without it throws the sentence away one frame out.
+        # THE PREFIX IS DROPPED BECAUSE THE ROW ALREADY CARRIES IT: the resolver
+        # names the login and the word REFUSING, and both are noise beside a slug
+        # in the first column. What is left is the sentence a reader can act on.
+        state="does not resolve: $(printf '%s' "$_why" | tr '\n' ' ' \
+          | sed -e 's/^registry: *//' -e "s/^login '[^']*': *//" -e 's/^REFUSING *[-\xe2\x80\x94]* *//' -e 's/  */ /g' \
+          | cut -c1-72)"
+      elif [ ! -r "$dir" ] && [ -e "$dir" ]; then state="unreadable"
+      elif [ -s "$dir/.credentials.json" ]; then state="signed in"
+      else state="no credential"
+      fi
+    fi
+    rows="$rows$slug	$acct	$owner	$state	$dir\n"
+  done
+
+  # ── the listing ───────────────────────────────────────────────────────────
+  if [ -z "$want" ]; then
+    printf '\n  %-22s %-29s %-13s %s\n' "login" "account" "pays" "state"
+    printf '%b' "$rows" | while IFS=$'\t' read -r slug acct owner state dir; do
+      [ -n "$slug" ] || continue
+      local mark=""
+      [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" = "$dir" ] && mark="  <- current"
+      printf '  %-22s %-29s %-13s %s%s\n' "$slug" "$acct" "$owner" "$state" "$mark"
+    done
+    printf '\n  steward auth <login>   to sign in\n\n'
+    return 0
+  fi
+
+  # ── resolving a name ──────────────────────────────────────────────────────
+  # THE SLUG IS THE REGISTER'S WORD, NOT THE OPERATOR'S. Requiring it exactly is
+  # what sent people to a listing first, every single time. An exact match wins
+  # outright; otherwise a prefix, and only when it names exactly one row.
+  local exact="" pref="" n=0
+  for slug in $slugs; do
+    [ "$slug" = "$want" ] && exact="$slug"
+    case "$slug" in "$want"*|*"$want"*) pref="$pref $slug"; n=$(( n + 1 )) ;; esac
+  done
+  if [ -n "$exact" ]; then slug="$exact"
+  elif [ "$n" -eq 1 ]; then slug="${pref# }"
+  elif [ "$n" -gt 1 ]; then
+    echo "steward auth: '$want' names more than one login:$pref" >&2
+    echo "steward auth: say which one." >&2
+    return 65
+  else
+    echo "steward auth: no login here is called '$want'. Available:$(printf ' %s' $slugs)" >&2
+    return 65
+  fi
+
+  registry_login_load "$slug" >/dev/null || fel "login '$slug' does not resolve" 78
+  local me; me="$(id -un)"
+  acctslug="$(registry_account_here "$LOGIN_PRINCIPAL" 2>/dev/null)" || acctslug=""
+  if [ -z "$acctslug" ]; then
+    # THE OWNERSHIP RULE, SAID BEFORE ANYTHING IS TOUCHED. Credentials belong to
+    # the human whose home they sit in; a sign-in aimed at another person's
+    # directory is not this account's to run even when the filesystem would let
+    # it. rc 77 is the same refusal `registry login shell` gives.
+    local other; other="$(registry_login_unix_account "$slug" 2>/dev/null)" || other=""
+    local otherdir=""; [ -n "$other" ] && otherdir="$(registry_login_config_dir "$slug" "$other" 2>/dev/null)"
+    # BUILT IN STEPS, NOT IN ONE ${var:+...}. An apostrophe inside that word form
+    # is NOT literal - bash parses quoting there - so "${other}'s home" opened a
+    # string the rest of the file never closed, and the syntax error surfaced
+    # eight hundred lines later in an unrelated case statement.
+    local whose=""
+    [ -n "$other" ] && whose=" and lives in ${other}'s home"
+    [ -n "$otherdir" ] && whose="$whose ($otherdir)"
+    echo "steward auth: '$slug' belongs to $LOGIN_PRINCIPAL$whose." >&2
+    echo "steward auth: it is not this account's to sign in. Run it as ${other:-its owner}." >&2
+    return 77
+  fi
+  dir="$(registry_login_config_dir "$slug" "$me")" || return 78
+
+  printf '\n  login   %s (%s, paid by %s)\n' "$slug" "$LOGIN_ACCOUNT" "$LOGIN_LEGAL_OWNER"
+  printf '  dir     %s\n' "$dir"
+  if [ -s "$dir/.credentials.json" ] && [ -z "$reauth" ]; then
+    # ALREADY SIGNED IN IS NOT AN ERROR AND NOT A SILENT NO-OP. Re-authenticating
+    # is a real thing to want and a bad thing to do by accident: it can switch
+    # the account under every session already running on this directory.
+    printf '  state   already signed in\n\n'
+    printf '  Nothing to do. Use --reauth to sign in again.\n\n'
+    return 0
+  fi
+  printf '  state   %s\n\n' "$([ -n "$reauth" ] && echo 're-authenticating' || echo 'no credential yet')"
+
+  # THE DIRECTORY IS MADE HERE, 0700, BY THIS PROCESS. A first sign-in has
+  # nowhere to put credentials otherwise, and a mode inherited from the
+  # operator's umask is the one thing the login register refuses to trust.
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir" || fel "steward auth: cannot create $dir" 73
+  fi
+  chmod 700 "$dir" 2>/dev/null
+
+  local authcmd; authcmd="${STEWARD_AUTH_CMD:-}"
+  if [ -n "$authcmd" ]; then
+    CLAUDE_CONFIG_DIR="$dir" STEWARD_LOGIN="$slug" "$authcmd" auth login
+  else
+    CLAUDE_CONFIG_DIR="$dir" STEWARD_LOGIN="$slug" claude auth login
+  fi
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "steward auth: the sign-in did not complete (rc $rc); nothing is claimed." >&2
+    return "$rc"
+  fi
+  printf '\n  signed in — %s\n\n' "$LOGIN_ACCOUNT"
+  return 0
+}
+
 cmd_login() {
   if [ $# -gt 1 ]; then
     echo "steward: login takes at most one session name" >&2
@@ -8480,6 +8661,7 @@ case "${1:-}" in
   sessions) shift; cmd_sessions "$@"; exit $? ;;
   mcp)      shift; cmd_mcp "$@"; exit $? ;;
   desk)     shift; cmd_desk "$@"; exit $? ;;
+  auth)     shift; cmd_auth "$@"; exit $? ;;
   login)    shift; cmd_login "$@"; exit $? ;;
   job)      shift; cmd_job "$@"; exit $? ;;
   jobs)     shift; cmd_jobs "$@"; exit $? ;;
