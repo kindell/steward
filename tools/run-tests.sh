@@ -223,10 +223,16 @@ elif [ ! -f "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" ]; then
 else
   # STEWARD_PRODUCT_REPO IS THIS TREE - the one being gated - never a sibling checkout: the guard
   # derives the product surface from it, and a PR must be measured against its own files.
+  # WHOSE list ran is part of the answer. Each estate's guard knows only its OWN names, and the
+  # lists are disjoint by construction - a name in one estate's register is absent from the others
+  # (measured 2026-09-13: two people appear in the product and in no list on this host). A bare
+  # 'ok' would read as "no names anywhere", which no single run can establish. The estate's name is
+  # DERIVED from the designated root, never written down twice. Rule 14, second corollary.
+  eg_who="$(basename "$STEWARD_ESTATE_ROOT")"
   eg_out="$(run_with_timeout env STEWARD_PRODUCT_REPO="$HERE" bash "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" 2>&1)"; eg_rc=$?
   eg_n="$(counts "$eg_out")"; [ -n "$eg_n" ] || eg_n="?/?"
-  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok"; printf '  ok     %-34s %s\n' "estate leak-guard" "$eg_n"
-  else estate_guard="RED"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard" "$eg_n"
+  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok($eg_who)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
+  else estate_guard="RED($eg_who)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
   fi
 fi

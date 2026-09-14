@@ -26,12 +26,21 @@ echo "== 2. designated but no test dir (a deployed home): said, with the path ==
 out="$(STEWARD_ESTATE_ROOT="$FX/nothing" run)"
 has "2a NOT RUN line names the missing dir"    "$out" "no estate test dir at $FX/nothing/test"
 has "2b summary carries estate-guard=not-run"  "$out" "estate-guard=not-run"
+# (control) the not-run word stays bare: naming an estate there would claim a list that is absent
+case "$out" in *"estate-guard=not-run("*) bad "2c not-run names no estate" "it did: $(printf '%s' "$out" | grep -o 'estate-guard=[^ ]*')" ;; *) ok "2c not-run names no estate" ;; esac
 echo "== 3. designated with a guard: it runs against THIS tree =="
 out="$(STEWARD_ESTATE_ROOT="$FX/estate" run)"
 has "3a the guard ran"                          "$out" "estate leak-guard"
 has "3b summary carries estate-guard=ok"       "$out" "estate-guard=ok"
+# WHICH estate's list ran is part of the word. 'ok' alone reads as "no names found anywhere",
+# and that is a claim no single run can make: each estate's guard sees only its OWN list, and the
+# lists are disjoint by design (measured 2026-09-13: two people appear in the product and in no
+# list on this host). A gate run on two estates leaves the third's people unguarded, so the
+# summary names the estate whose list actually ran.
+has "3b2 and names the estate whose list ran"  "$out" "estate-guard=ok(estate)"
 out="$(STUB_RC=1 STEWARD_ESTATE_ROOT="$FX/estate" run)"
 has "3c a red guard is RED in the summary"     "$out" "estate-guard=RED"
+has "3c2 the red word names the estate too"    "$out" "estate-guard=RED(estate)"
 has "3d and counted among the red suites"      "$out" "red=1"
 # STEWARD_PRODUCT_REPO must be the gated tree, not a sibling: the stub echoes what it got.
 printf '#!/bin/bash\necho "FAIL: repo=${STEWARD_PRODUCT_REPO:-unset}"\necho "pass=1 fail=1"\nexit 1\n' > "$FX/estate/test/leak-guard.test.sh"

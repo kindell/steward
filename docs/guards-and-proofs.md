@@ -449,6 +449,28 @@ the estate's list. The list is the estate's to grow; a name added there can
 turn a product PR red without a line of product changing, and that is the
 design working, not a collision.
 
+And the second corollary, which is about what `ok` is allowed to mean.
+`estate-guard=ok` says one estate's list ran clean. It does not say the
+product carries no names. The lists are disjoint by construction - each
+estate holds the people and machines it actually knows, and an estate may not
+write another estate's people into its own register - so a run is blind to
+every other estate's names exactly the way it is meant to be.
+
+Measured 2026-09-13, by the two estates comparing counts of the same tree:
+two people appear in the product and in no list on this host, and this host's
+list was the only one any gate had ever run. The asymmetry runs both ways.
+The peer estate counted 137 lines to rewrite where this one counted 63, and
+the entire difference was two machine names that do not exist on this host.
+Each side had searched for what it could see, and neither could have
+discovered that by looking harder at its own surface.
+
+So the summary names the estate whose list ran - `estate-guard=ok(<estate>)`,
+never a bare `ok`. `not-run` stays bare, because there is no list to name. A
+PR gated on two estates has been measured against two registers and no
+others, and the word is now precise enough to say which. That is the most a
+partial guard can honestly claim, and more than a complete-looking one ever
+could.
+
 **A gate number names a COMMIT, and a rewritten commit voids it.** Rebase,
 amend and squash all produce a hash nobody has gated, however small the
 change - and the smaller it is, the stronger the pull to carry the old number
