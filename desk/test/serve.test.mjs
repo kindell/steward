@@ -1586,7 +1586,7 @@ describe('the front peer gate', () => {
     const h = await spawnUpTcp(childEnv({
       STEWARD_DESK_SOCK: join(T, 'peer-gate.sock'),
       STEWARD_DESK_FRONT_LISTEN: '127.0.0.1:' + port,
-      STEWARD_DESK_FRONT_PEER: '100.64.0.9'
+      STEWARD_DESK_FRONT_PEER: '100.64.0.1'
     }), '127.0.0.1', port, UP_CAP_MS);
     try {
       const r = await reqHttp('127.0.0.1', port, 'GET', '/desk/auth/login');

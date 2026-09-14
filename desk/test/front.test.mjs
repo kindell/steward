@@ -2,10 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeAddr, isCgnat, isLoopback, parseFrontListen, parseFrontPeer, visitorAddress, RateLimiter } from '../front.mjs';
 
+// CGNAT FIXTURES ARE THE RANGE'S OWN BOUNDARIES, NEVER A PLAUSIBLE HOST.
+// 100.64.0.0 (the base), 100.64.0.1 (its first host) and 100.127.255.255
+// (the last address) are the only CGNAT values this repo uses. They are the
+// subject of the range check, and they can be recognised by anyone as such
+// without asking the author. An arbitrary-looking host address in the range
+// reads as a real peer, points at nothing today, and can point at a real
+// machine tomorrow without anyone touching this line - the guard cannot tell
+// a fixture from a leak, so we do not ask it to.
+
 test('normalizeAddr strips brackets, ports, zones and the v4-in-v6 prefix', () => {
   assert.equal(normalizeAddr('[::1]:443'), '::1');
   assert.equal(normalizeAddr('127.0.0.1:8080'), '127.0.0.1');
-  assert.equal(normalizeAddr('::ffff:100.64.0.9'), '100.64.0.9');
+  assert.equal(normalizeAddr('::ffff:100.64.0.1'), '100.64.0.1');
   assert.equal(normalizeAddr('FE80::1%eth0'), 'fe80::1');
 });
 
@@ -66,7 +75,7 @@ test('parseFrontListen refuses any other bind', () => {
 });
 
 test('parseFrontPeer normalizes and refuses a non-tailnet peer', () => {
-  assert.equal(parseFrontPeer('100.98.0.8'), '100.98.0.8');
+  assert.equal(parseFrontPeer('100.64.0.1'), '100.64.0.1');
   assert.equal(parseFrontPeer('::ffff:127.0.0.1'), '127.0.0.1');
   assert.throws(() => parseFrontPeer('203.0.113.7'), /^Error: STEWARD_DESK_FRONT_PEER/);
   assert.throws(() => parseFrontPeer(''), /^Error: STEWARD_DESK_FRONT_PEER/);
@@ -75,17 +84,17 @@ test('parseFrontPeer normalizes and refuses a non-tailnet peer', () => {
 const fakeReq = (remote, realIp) => ({ socket: { remoteAddress: remote }, headers: realIp === undefined ? {} : { 'x-real-ip': realIp } });
 
 test('visitorAddress trusts x-real-ip only from the configured peer, and only as one IP literal', () => {
-  assert.equal(visitorAddress(fakeReq('100.98.0.8', '203.0.113.9'), '100.98.0.8'), '203.0.113.9');
-  assert.equal(visitorAddress(fakeReq('::ffff:100.98.0.8', '[2001:db8::9]:443'), '100.98.0.8'), '2001:db8::9');
+  assert.equal(visitorAddress(fakeReq('100.64.0.1', '203.0.113.9'), '100.64.0.1'), '203.0.113.9');
+  assert.equal(visitorAddress(fakeReq('::ffff:100.64.0.1', '[2001:db8::9]:443'), '100.64.0.1'), '2001:db8::9');
   // A list is not what the box writes, so it is not believed at all: the
   // budget falls back to the box rather than keying on a visitor-chosen half.
-  assert.equal(visitorAddress(fakeReq('100.98.0.8', '203.0.113.9, 10.0.0.1'), '100.98.0.8'), '100.98.0.8');
+  assert.equal(visitorAddress(fakeReq('100.64.0.1', '203.0.113.9, 10.0.0.1'), '100.64.0.1'), '100.64.0.1');
   // Neither is anything that is not an address.
-  assert.equal(visitorAddress(fakeReq('100.98.0.8', 'example.test'), '100.98.0.8'), '100.98.0.8');
-  assert.equal(visitorAddress(fakeReq('100.98.0.8', '999.1.1.1'), '100.98.0.8'), '100.98.0.8');
-  assert.equal(visitorAddress(fakeReq('100.98.0.8', '../../etc/passwd'), '100.98.0.8'), '100.98.0.8');
-  assert.equal(visitorAddress(fakeReq('100.98.0.8'), '100.98.0.8'), '100.98.0.8');
-  assert.equal(visitorAddress(fakeReq('100.98.0.9', '203.0.113.9'), '100.98.0.8'), null);
+  assert.equal(visitorAddress(fakeReq('100.64.0.1', 'example.test'), '100.64.0.1'), '100.64.0.1');
+  assert.equal(visitorAddress(fakeReq('100.64.0.1', '999.1.1.1'), '100.64.0.1'), '100.64.0.1');
+  assert.equal(visitorAddress(fakeReq('100.64.0.1', '../../etc/passwd'), '100.64.0.1'), '100.64.0.1');
+  assert.equal(visitorAddress(fakeReq('100.64.0.1'), '100.64.0.1'), '100.64.0.1');
+  assert.equal(visitorAddress(fakeReq('100.127.255.255', '203.0.113.9'), '100.64.0.1'), null);
 });
 
 test('RateLimiter allows limit hits per window and forgets old ones', () => {
