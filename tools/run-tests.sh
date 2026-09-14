@@ -66,6 +66,12 @@ cd "$HERE" || exit 70
 
 TIMEOUT_S="${RUN_TESTS_TIMEOUT:-200}"
 
+# WHERE A RED SUITE'S OUTPUT IS KEPT. Outside the repo under test, because the
+# checkout must stay clean: rule 14 binds a run to a commit and verifies HEAD
+# and `git status` around it, and a runner that dropped files into the tree
+# would fail the very check it exists to serve.
+RED_DIR="${RUN_TESTS_RED_DIR:-${TMPDIR:-/tmp}/run-tests-red.$$}"
+
 # The operator config (~/.config/steward/config) is the one file OUTSIDE the tree that every
 # steward invocation reads. One operator line there (ESTATE=, 2026-09-12) turned ten suites red on
 # a verified HEAD, on both platforms, with the tree itself green. A gate that claims to isolate the
@@ -149,17 +155,62 @@ for t in test/*.test.sh; do
   # expected". The error handling destroyed the value it was meant to protect.
   n_syntax="$(grep -ciE 'syntax error|unexpected token' "$errfile" 2>/dev/null)"
   [ -n "$n_syntax" ] || n_syntax=0
-  rm -f "$errfile"
 
   if [ "$rc" -ne 0 ]; then
     printf '  RED    %-34s %s\n' "$name" "$n"
     red=$((red+1))
+    # A RED SUITE'S OUTPUT IS KEPT AND SHOWN. It used to be thrown away: the
+    # suite's stdout went into `out`, which nothing printed, and `errfile` was
+    # deleted one line above this branch -- so a red suite reported a COUNT and
+    # destroyed the evidence behind it. The one moment the output is needed is
+    # the one moment it was discarded, in a runner whose whole purpose is to
+    # "say what happened".
+    #
+    # Measured: a suite came back 54/45 in a full run and green on every run
+    # after, and the question that would have settled it -- WHICH 45 claims fell,
+    # clustered (leaked state) or scattered (something global) -- could not be
+    # asked at all, because nothing had kept them.
+    #
+    # The failing lines go to the terminal, capped, so a sweep of 128 suites
+    # stays readable; the whole thing goes to a file that OUTLIVES the run,
+    # outside the repo under test so the checkout stays clean for rule 14.
+    mkdir -p "$RED_DIR" 2>/dev/null
+    { printf '%s\n' "$out"; printf '\n--- stderr ---\n'; cat "$errfile" 2>/dev/null; } > "$RED_DIR/$name.out" 2>/dev/null
+    _rt_lines="$(printf '%s\n' "$out" | grep -nE '^[[:space:]]*(FAIL|not ok|✗|x )' | head -20)"
+    if [ -n "$_rt_lines" ]; then
+      printf '%s\n' "$_rt_lines" | sed 's/^/         /'
+      _rt_tot="$(printf '%s\n' "$out" | grep -cE '^[[:space:]]*(FAIL|not ok|✗|x )')"
+      [ "$_rt_tot" -gt 20 ] && printf '         ... and %s more\n' "$((_rt_tot-20))"
+    else
+      # NO RECOGNISED FAILURE MARKER is itself worth saying. A suite can exit
+      # non-zero without printing a claim at all, and silence here would read
+      # as "no failures" -- the same equivalence between absence and emptiness
+      # this product keeps paying for.
+      printf '         (no recognised failure line; the suite exited %s)\n' "$rc"
+    fi
+    printf '         full output: %s\n' "$RED_DIR/$name.out"
+    rm -f "$errfile"
   elif [ "$n_syntax" -gt 0 ]; then
     printf '  SILENT %-34s %s — %s syntax error(s) on stderr WITHOUT a test failure: the measurement did not run\n' \
       "$name" "$n" "$n_syntax"
     silent=$((silent+1))
+    # THE SAME RULE AS THE RED BRANCH, AND THIS ONE NEEDS IT MORE. The line says
+    # a measurement did NOT run, and then deleted the only text that said WHICH:
+    # the syntax error, and the line it was on, went out with errfile. A reader
+    # of that line is left knowing something broke and unable to find out what -
+    # which is the state this whole branch exists to prevent.
+    #
+    # Only stderr is kept here. stdout is the suite's ordinary chatter and the
+    # counter already summarises it; the evidence for a SILENT verdict is what
+    # was written to stderr WITHOUT being counted.
+    mkdir -p "$RED_DIR" 2>/dev/null
+    cp "$errfile" "$RED_DIR/$name.stderr" 2>/dev/null
+    grep -nE 'syntax error|unexpected token' "$errfile" 2>/dev/null | head -10 | sed 's/^/         /'
+    printf '         full stderr: %s\n' "$RED_DIR/$name.stderr"
+    rm -f "$errfile"
   else
     printf '  ok     %-34s %s\n' "$name" "$n"
+    rm -f "$errfile"
   fi
 done
 
