@@ -134,13 +134,33 @@ destroys something which exists nowhere else.
 The rule was right for the case it was written for and destructive for this one,
 which is worse than merely insufficient. So, before step 4:
 
-> **Compare source and target per FILE, not per directory. Copy only where the
-> source is newer. Never count — compare.**
+> **Decide per directory type, against measurement — and copy a file when the
+> source is newer OR when the target does not have it at all.**
 
-The direction is not constant inside one directory, so a per-directory rule is
-wrong in one direction whichever way it is written. This is not the opencode
-exception above: nothing here is pinned outside a tree. It is a *merge*, and the
-plan knew only about moves.
+Measured on the estate in question, the direction is constant *within* each
+directory and opposite *between* them: the transcripts wanted source→target
+(one file 13 MB newer there, two present only there, four identical), while
+memory had thirty-eight files in the target, none in the source, and **zero
+filenames in common**. What varies is the directory's kind, not the individual
+file — so this needs no file-by-file machine, only a decision per kind.
+
+**"Newer OR missing" and not merely "newer."** Two transcripts existed only in
+the source; a plain newer-wins rule drops them silently, because a file that is
+absent on one side has no timestamp to lose a comparison with.
+
+**Leave identical files alone.** Copying them anyway is harmless and hides which
+files actually moved — and that list is the only receipt of what the step did.
+
+This is not the opencode exception above: nothing here is pinned outside a tree.
+It is a *merge*, and the plan knew only about moves.
+
+**A caution earned twice while writing this section.** Both readers who measured
+it first got it wrong in opposite directions, from the same data. One of the
+errors is worth naming: `stat` on a *directory* returns the size of the
+directory's own entry table, so an empty directory and one holding thirty-eight
+files differ by exactly that — 64 against 1280 — and it reads like content. The
+number was true and answered a question nobody had asked. **Compare directories
+by their entries, never by their size.**
 
 **And the onboarding fields can be missing from an old, heavily used target
 too.** One `~/.claude` lacked `hasCompletedOnboarding` after two years of use.
