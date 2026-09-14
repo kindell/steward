@@ -68,6 +68,32 @@ that an earlier draft of this plan left open.
    reference measures the copy instead of the session.
 5. **Respawn**, and let the witness measure.
 
+### 4b. The copy's own size is the before-value — and only the copy's
+
+This is worth its own heading because it has now been got wrong twice, once in
+each direction, by people who had just written the rule down.
+
+Taking the size of a copy made *earlier* and calling it *before* means the file
+grows by however much the fresh copy added — and **"the same file grew" is then
+satisfied even when the session forked into an empty tree.** The test passes on
+the failure it was built to catch.
+
+Read the size and mtime after step 4 completes, of the file that now exists.
+Nothing measured before that moment is a before-value.
+
+### 4c. A before-image can only be taken before
+
+Some criteria stop existing the moment the switch happens, and nobody can
+reconstruct them afterwards. Take them while the old session still runs:
+
+- does it run **with or without `--resume`**, and if with, **which conversation
+  id**? After the switch it must carry one, and it must be that one.
+- its pid, its birth, its uptime.
+- the transcript file it is actually writing to.
+
+Write them somewhere both the witness and the operator can read — not into a
+letter that scrolls away.
+
 ---
 
 ## What the witness measures
@@ -87,8 +113,12 @@ Four things, in this order. The fourth is the one that matters.
    - A **new uuid appearing beside it proves nothing**: the usage meter writes
      one every time it runs — three in ten minutes, measured.
    - A file that is **not growing means idle, not dead**. A session writes only
-     while it works, so run this check right after the session has answered
-     something.
+     while it works — so this check needs a *how*, not just a *when*: **send the
+     session a letter and measure after it answers.** "Let it work first" without
+     a way to make it work is a delay dressed as a method, and turns into another
+     guess.
+   - The proof of a fork is the **combination**: it answers the bus **and** the
+     file stands still. Either alone means nothing.
 
 ---
 
