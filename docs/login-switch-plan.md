@@ -1,0 +1,145 @@
+# Switching a session's login, with a witness
+
+**Status:** in flight 2026-09-14. One of six rows done. Written so the three
+stewards can read the same thing instead of reconstructing it from letters, and
+so the estate owner does not have to choose at each step.
+
+A session cannot verify its own restart. That is the whole reason this document
+exists, and every rule below follows from it.
+
+---
+
+## The failure this guards against
+
+A session that switches login without its transcript present in the **new**
+login's tree does not error. `linux/session-supervisor-linux.sh` says it
+plainly:
+
+> *"A session that changes model account while keeping the path looks in the
+> WRONG account's history — and this selector falls OPEN to a fresh start, so it
+> forks a new thread SILENTLY. The session lives, answers, and has lost its
+> conversation."*
+
+**From inside, the worst outcome looks like nothing at all.** The session
+answers the bus, reports healthy, and does not know what it lost. It is the only
+fault in the operation that cannot be measured by the party it happens to — so
+it must be measured by somebody else.
+
+A second failure, found the same evening: a **fresh login tree has never run the
+first-time dialog**. A switched session came back with the right root, the right
+conversation and the right `--resume`, and stood waiting in the theme picker.
+Live process, zero progress, forever. It had not lost anything; it had never
+started, and it could not report that because it was not running.
+
+---
+
+## Preparation, per estate
+
+Nothing below may begin until all five hold. Verify them; do not assume them.
+
+| | check |
+|---|---|
+| the login row | exists **in that estate's own register** — authority is domain-bound |
+| the credential | `claude auth status` in the target directory answers the right account. A credential is per home **and** per machine; signing in on one estate does nothing for another |
+| the onboarding fields | `hasCompletedOnboarding`, `lastOnboardingVersion` (the installed CLI's version), and `settings.json` — without them the session stops in the theme picker |
+| the product | new enough to carry the login machinery the switch needs |
+| `steward` on PATH | a symlink in `~/bin` to the deployed binary; a login shell finds it there |
+
+Transcripts are **not** prepared in advance. See the next section for why.
+
+---
+
+## The five steps, in order, per row
+
+The order is the whole mechanism. Steps 2 and 3 exist because of a death gap
+that an earlier draft of this plan left open.
+
+1. **Write the row** — `LOGIN=` in the estate's register **and** in the deployed
+   tree. The supervisor unit sets no `STEWARD_ESTATE_ROOT`, so it reads
+   `~/scripts/sessions.d`: a commit alone looks like a switch without being one.
+   Compare the two with `cmp`.
+2. **Stop the session.**
+3. **Wait until the process is actually gone.** Not the row, not the unit — the
+   process. A session still running holds its transcript open and is still
+   writing to it.
+4. **Copy the transcript now**, in this minute, and read the size and mtime **of
+   the fresh copy**. That pair is the *before* value. Copying earlier gives a
+   file that ages while the work continues; using the pre-copy number as the
+   reference measures the copy instead of the session.
+5. **Respawn**, and let the witness measure.
+
+---
+
+## What the witness measures
+
+Four things, in this order. The fourth is the one that matters.
+
+1. **A process exists for that row.** Not `pane_current_command` — that reads
+   `bash` for a healthy session too, because the launcher runs
+   `bash -c '... claude ...; exec bash'` and claude is the pane's child.
+2. **The generation carries a real pid and birth.** An empty pid with
+   `spawn_state=started` is the silent state: inside the grace window a dead
+   session looks like a healthy supervisor for ten minutes, quiet and rc 0.
+3. **The process runs on the new `CLAUDE_CONFIG_DIR`** — read it from
+   `/proc/<pid>/environ`, not from the row.
+4. **The transcript file that already existed keeps growing.** Size and mtime
+   against the *before* value from step 4.
+   - A **new uuid appearing beside it proves nothing**: the usage meter writes
+     one every time it runs — three in ten minutes, measured.
+   - A file that is **not growing means idle, not dead**. A session writes only
+     while it works, so run this check right after the session has answered
+     something.
+
+---
+
+## Who may witness whom
+
+A witness must **see** and **speak**. Both, or it is not a witness.
+
+| row | witness | why |
+|---|---|---|
+| skeppsbron's steward | basement's steward or hub | both have shell there and can report |
+| skeppsbron's hub | basement's steward or hub | same |
+| basement's steward | basement's hub | same machine, same home |
+| basement's hub | the estate owner | it is the last row, and by then nobody else is left to report |
+| butler's two | butler's own steward, plus basement reading their snapshot | basement has a read-only key there and no shell |
+
+**A witness that quotes the measured party is not a witness.** It is the same
+claim a second time with a different sender, and it is more dangerous than no
+witness because it sounds like confirmation.
+
+**And a failed lookup is not an absence.** `ssh <host>` without `-i` failing
+answers *"did the keys I happened to offer work?"*, not *"is there a way?"* —
+measured the hard way this evening, in both directions.
+
+---
+
+## Order of the six rows
+
+The hand that writes must survive the writing, so each estate's hub goes last
+within its own estate, and the estate that coordinates goes last overall.
+
+1. **butler**, both rows, by **butler's own hub** — their register, their
+   authority. Blocked until they say which login their rows carry.
+2. **skeppsbron's steward** — done 2026-09-14, verified from outside.
+3. **skeppsbron's hub**, by itself, witnessed from basement.
+4. **basement's steward**, by basement's hub.
+5. **basement's hub**, by itself, witnessed by the estate owner.
+
+No estate's hub writes another estate's rows. That is not caution; it is the
+same domain-bound rule the register enforces everywhere else, and it holds even
+when a relay says go.
+
+---
+
+## What this cost, and what it bought
+
+Four faults were found in preparation, none of which would have been visible
+afterwards: transcripts ageing into a silent fork; an after-test that measured a
+quantity the usage meter also changes; a before-value that the copy overwrites;
+and a fresh login tree that stops in the theme picker.
+
+The pattern under all four, and under the two witness errors as well, was named
+by basement's hub after walking into it:
+
+> *"It is a quantity with two causes, and I chose the one I already believed."*
