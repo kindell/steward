@@ -481,3 +481,78 @@ test('a session node with an unknown state and an unknown age says it once', () 
   assert.ok(h.includes(' - Mine - b - unknown</li>'), h);
   assert.ok(!h.includes('unknown - unknown'));
 });
+
+// ── the estates this desk consumes ──────────────────────────────────────────
+//
+// THE SECTION IS THE POINT, not the rows in it. A fleet page earns its keep by
+// being HONEST about what it could not see, and the two failing states are the
+// ones worth asserting hardest: an estate that could not be reached must show
+// its reason and NOT its last-known rows, and an estate that is merely old must
+// show both its rows and its age.
+const remoteSnap = (viewer, generatedAt, labels) => ({
+  schemaVersion: 1, host: 'far', generatedAt, registryRevision: 'def5678',
+  viewer, viewerIdentity: ['tailscale:b@example.com'], readAll: false,
+  entities: [], projects: [],
+  sessions: labels.map((l, i) => ({
+    id: 's-9' + i, slug: 'far-' + i, label: l, owner: viewer, mine: true,
+    domain: null, project: null, runtime: 'claude-code', host: 'far', repo: 'r',
+    liveness: { state: 'running', measuredAt: generatedAt, ageSeconds: 5 }, mcp: []
+  }))
+});
+
+test('an estate that answered renders its name and its rows', () => {
+  const h = pageIndex(snap, [
+    { estate: 'butler', status: 'ok', fetchedAt: '2026-09-08T00:00:00Z', ageSeconds: 30,
+      snap: remoteSnap('b-far', '2026-09-08T00:00:00Z', ['Far Work']) }
+  ]);
+  assert.match(h, /butler/);
+  assert.match(h, /Far Work/);
+});
+
+test('an unavailable estate shows the reason and none of its rows', () => {
+  // The rows are on disk and deliberately not handed over; this asserts the
+  // renderer does not invent a way to show them either.
+  const h = pageIndex(snap, [
+    { estate: 'butler', status: 'unavailable', snap: null, fetchedAt: '2026-09-08T00:00:00Z',
+      reason: 'ssh: connect to host 10.0.0.9 port 22: Connection timed out' }
+  ]);
+  assert.match(h, /butler/);
+  assert.match(h, /unavailable/);
+  assert.match(h, /Connection timed out/);
+});
+
+test('an estate that is silent is a VISIBLE row, never an omitted section', () => {
+  // THE CLAIM THAT BITES. A page that simply left the estate out would pass
+  // every assertion above about reasons - by never rendering the estate at all.
+  const withIt = pageIndex(snap, [
+    { estate: 'skeppsbron', status: 'unavailable', snap: null, reason: 'refused' }
+  ]);
+  const without = pageIndex(snap, []);
+  assert.match(withIt, /skeppsbron/);
+  assert.ok(!/skeppsbron/.test(without), 'the fixture name must come from the estate row, not the layout');
+});
+
+test('a stale estate shows its rows AND its age', () => {
+  const h = pageIndex(snap, [
+    { estate: 'butler', status: 'stale', fetchedAt: '2026-09-08T00:00:00Z', ageSeconds: 7200,
+      snap: remoteSnap('b-far', '2026-09-07T22:00:00Z', ['Old Work']) }
+  ]);
+  assert.match(h, /stale/);
+  assert.match(h, /Old Work/, 'stale rows are the best answer there is');
+  assert.match(h, /2 h/, 'and the reader is told how old they are');
+});
+
+test('an estate with nothing of yours says so, and does not read as broken', () => {
+  const h = pageIndex(snap, [
+    { estate: 'butler', status: 'ok', fetchedAt: '2026-09-08T00:00:00Z', snap: null }
+  ]);
+  assert.match(h, /butler/);
+  assert.ok(!/unavailable/.test(h), 'an estate holding nothing of yours is not an unreachable one');
+});
+
+test('a desk that consumes nothing renders no estates section at all', () => {
+  // Most machines in a fleet consume nothing. An empty heading on every one of
+  // their pages would be a permanent piece of furniture that means nothing.
+  const h = pageIndex(snap, []);
+  assert.ok(!/Estates/i.test(h));
+});
