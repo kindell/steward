@@ -116,6 +116,36 @@ which case you are in** — an answer that is right for one row is not a general
 answer, and treating it as one turns a correct measurement into a wrong
 conclusion about somebody else.
 
+### 4b''. FALL C — the target is not empty
+
+Step 4's whole-directory copy assumes the target is a place the session has
+never lived. Measured on one estate, that assumption is false in the most
+expensive way available:
+
+    transcripts   five uuids exist in BOTH trees; the live one is 163 MB in the
+                  SOURCE and 150 MB, two days older, in the TARGET
+    memory        38 files in the TARGET, and ZERO in the source
+
+**The transcript is freshest in the source; the memory exists only in the
+target.** A whole-directory copy in that direction overwrites thirty-eight live
+memory files with nothing — and it is the only step in this operation that
+destroys something which exists nowhere else.
+
+The rule was right for the case it was written for and destructive for this one,
+which is worse than merely insufficient. So, before step 4:
+
+> **Compare source and target per FILE, not per directory. Copy only where the
+> source is newer. Never count — compare.**
+
+The direction is not constant inside one directory, so a per-directory rule is
+wrong in one direction whichever way it is written. This is not the opencode
+exception above: nothing here is pinned outside a tree. It is a *merge*, and the
+plan knew only about moves.
+
+**And the onboarding fields can be missing from an old, heavily used target
+too.** One `~/.claude` lacked `hasCompletedOnboarding` after two years of use.
+Check them because they may be absent, not because the tree looks new.
+
 ### 4c. A before-image can only be taken before
 
 Some criteria stop existing the moment the switch happens, and nobody can
