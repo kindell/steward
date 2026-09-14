@@ -163,4 +163,35 @@ AUTHRC=7 run work --reauth
 is  "6a the sign-in's failure is the verb's"     "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 no  "6b ...and it never claims success"          "$OUT" "✓"
 
+
+echo "== 7. a register fault is not 'you have no account here' =="
+# THE GUARD EXISTED AND NO CALLER COULD REACH IT. registry_account_here has three
+# outcomes - one row, no row, and TWO rows claiming the same (unix account, host)
+# for one principal, which its own comment calls a thing the register cannot hold
+# and not a choice to make at read time. Every caller wrote
+# `x="$(registry_account_here ...)" 2>/dev/null || x=""`, which threw the message
+# away and collapsed the third outcome into the second.
+#
+# The user then got the OWNERSHIP refusal - "this login belongs to someone else"
+# - for a register that holds two rows that cannot coexist. Both outcomes are a
+# refusal, so nothing visibly broke, which is exactly why nobody would find it.
+# Found by review, not by use.
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="%s"\n' "$ME" > "$FX/accounts.d/a-dup.conf"
+chmod 600 "$FX/accounts.d/a-dup.conf"
+run mine
+is  "7a a duplicate account row refuses"            "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+has "7b ...and says the register holds two"         "$ERR" "two account rows claim"
+has "7c ...and names them"                          "$ERR" "a-dup"
+# THE WRONG EXPLANATION IS THE DEFECT, not the refusal. A reader told "not this
+# account's to sign in" goes looking at the login row; the fault is in accounts.d.
+no  "7d ...and never blames ownership instead"      "$ERR" "not this account's to sign in"
+is  "7e ...and signs nothing in"                    "$LOG" ""
+# THE LISTING REFUSES TOO, rather than printing one misleading row per login: the
+# fault is estate-wide, so every login of that principal is affected and none of
+# them can be described correctly.
+run
+is  "7f the listing refuses on the same fault"      "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+has "7g ...with the same sentence"                  "$ERR" "two account rows claim"
+rm -f "$FX/accounts.d/a-dup.conf"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]

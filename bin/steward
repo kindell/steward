@@ -2551,7 +2551,17 @@ cmd_registry_login_shell() {
   # widens nothing. A silent failure here is fine: the state line then produces
   # the same refusal it produced before, naming what is missing.
   if [ -z "$account" ]; then
-    account="$(registry_account_here "$LOGIN_PRINCIPAL" 2>/dev/null)" || account=""
+  # THE THIRD OUTCOME IS NOT THE SECOND. registry_account_here answers rc 0 (one
+  # row), rc 1 (none) and rc 2 - two rows claiming the same unix account and host
+  # for one principal, which its own refusal calls a thing the register cannot
+  # hold. Writing `2>/dev/null || x=""` threw the message away and collapsed the
+  # fault into "you have no account here", so the user was told their login
+  # belonged to somebody else while the truth was two rows that cannot coexist.
+  # Both are refusals, nothing visibly broke, and that is exactly why nobody
+  # would have found it by using it.
+    account="$(registry_account_here "$LOGIN_PRINCIPAL")"; _ah=$?
+    [ "$_ah" -eq 2 ] && fel "the account register cannot answer for principal '$LOGIN_PRINCIPAL' (see above); fix it before signing in" 78
+    [ "$_ah" -eq 0 ] || account=""
   fi
   local user dir cred _login_row
   # Capture first - see cmd_registry_login_ls for the bash 3.2 reason.
@@ -7861,7 +7871,12 @@ cmd_auth() {
     registry_login_load "$slug" >/dev/null 2>&1 || {
       rows="$rows$slug	?	?	unreadable	\n"; continue; }
     principal="$LOGIN_PRINCIPAL"; acct="$LOGIN_ACCOUNT"; owner="$LOGIN_LEGAL_OWNER"
-    acctslug="$(registry_account_here "$principal" 2>/dev/null)" || acctslug=""
+    # THE LISTING REFUSES ON THE SAME FAULT rather than printing one misleading
+    # row per login. Two rows that cannot coexist affect EVERY login of that
+    # principal, so there is no row here that could be described correctly.
+    acctslug="$(registry_account_here "$principal")"; _ah=$?
+    [ "$_ah" -eq 2 ] && fel "the account register cannot answer for principal '$principal' (see above); every login of that person is affected" 78
+    [ "$_ah" -eq 0 ] || acctslug=""
     if [ -z "$acctslug" ]; then
       # NOT YOURS IS A LISTED FACT, NEVER A HIDDEN ROW. A register that holds a
       # login must not look like one that does not, or the operator goes looking
@@ -7930,7 +7945,9 @@ cmd_auth() {
 
   registry_login_load "$slug" >/dev/null || fel "login '$slug' does not resolve" 78
   local me; me="$(id -un)"
-  acctslug="$(registry_account_here "$LOGIN_PRINCIPAL" 2>/dev/null)" || acctslug=""
+  acctslug="$(registry_account_here "$LOGIN_PRINCIPAL")"; _ah=$?
+  [ "$_ah" -eq 2 ] && fel "the account register cannot answer for principal '$LOGIN_PRINCIPAL' (see above); fix it before signing in" 78
+  [ "$_ah" -eq 0 ] || acctslug=""
   if [ -z "$acctslug" ]; then
     # THE OWNERSHIP RULE, SAID BEFORE ANYTHING IS TOUCHED. Credentials belong to
     # the human whose home they sit in; a sign-in aimed at another person's
