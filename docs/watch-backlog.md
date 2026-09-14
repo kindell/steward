@@ -52,8 +52,43 @@ for N minutes* rather than an alarm. Standing still → alarm exactly as today.
 Never the reverse default: a guard that cannot read the transcript must fall
 back to alarming, because absence of a measurement is not evidence of health.
 
-**One more thing to fix while in there.** The alarm text says *"I get pinged but
-do not read"*. A session cannot observe that about itself — it does not know it
-was pinged; it knows mail is still queued. It is the same shape as *"I
-switched"*: a claim about oneself that only someone else can test. The line
-should say what was measured, which is that mail is unacknowledged.
+## 2. The alarm speaks in the row's voice, and the supervisor is the one speaking
+
+Raised by the same session, measured in the supervisor rather than proposed from
+memory, and confirmed here before being written down.
+
+The text is built in `linux/session-supervisor-linux.sh` around line 2105:
+
+    UNACK_MSG="DRIFT okvitterad-post: $NAME has $(( AGE/60 )) min of unacked mail
+    AUTO-ALERT: unacked mail in my inbox for ... I get pinged but do not read ..."
+
+**The first line is already right.** It names the row in the third person and
+states what was measured. It is only the second line that borrows first person -
+and the supervisor, not the row, is what writes both.
+
+That costs two things, and the second is the serious one:
+
+- it asserts something about the row's **experience** ("I get pinged") that
+  neither the row nor the supervisor has measured. What the supervisor knows is
+  that mail is still queued.
+- if the row is **hung**, the alarm is still phrased in her voice - so the worst
+  outcome reads exactly like the ordinary one. That is the equivalence the
+  witness discipline exists to break, reappearing in the one line a person
+  actually reads.
+
+It is the same shape as *"I switched"*: a claim about oneself that only somebody
+else can test.
+
+**But the text was not careless - it was outgrown.** The comment at line 2030
+records why it was written: a session measured **35 identical pings for one
+message** on 2026-08-17 and could not read, because the wake-up looped. The line
+says *"an alarm saying 'I get pinged but do not read' is true while the cause
+lies in the PING"* - and for that case it was true and first person was honest.
+Item 1 above is a later widening of the same alarm onto a case nobody rewrote it
+for. **The defect is the unreviewed extension, not the original sentence.**
+
+**Two constraints on the repair, both documented in place.** Consumers grep for
+the occurrence of `AUTO-ALERT`, not its line position, so the token stays; and
+the subject slug `okvitterad-post` is a live thread key on the hub, so renaming
+it would sever the thread. The second line should simply take the first line's
+voice: what was measured, and who measured it.
