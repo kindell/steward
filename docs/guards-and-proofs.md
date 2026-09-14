@@ -357,9 +357,9 @@ outranks the tree, are the same mistake.
 ## 13. The field you can read and the surface a person looks at may be two objects.
 
 A session's tile in the vendor's list showed `Du har post` for seven and a
-half hours while its name was `Butler→Nav`. Two sessions measured it
+half hours while its name was `Team→Session`. Two sessions measured it
 independently and both reported the right name, because both read the same
-place: the vendor's session record, which said `name=Butler→Nav,
+place: the vendor's session record, which said `name=Team→Session,
 nameSource=user` the whole time - verified in a third tree afterwards. The
 rename had worked. What the human was reading was an AUTOTITLE the runtime
 had written over the tile when the first `[bus] du har post` ping arrived, on
