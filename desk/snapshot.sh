@@ -169,7 +169,7 @@ if [ -d "$pdir" ]; then
       read_all=false
       [ "$PRINCIPAL_DESK_READ_ALL" = "yes" ] && read_all=true
       # THE IDENTITY WORDS, SO A SECOND ESTATE CAN JOIN ON THE PERSON AND NOT ON
-      # THE SPELLING. Nothing today ties one estate's `jon` to another's but the
+      # THE SPELLING. Nothing today ties one estate's `alice` to another's but the
       # fact that both were typed the same way, and the failure mode of that is
       # showing one human another human's sessions. These two fields are the
       # register's only per-person unique keys, enforced across all rows, so they

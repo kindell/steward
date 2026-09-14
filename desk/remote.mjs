@@ -17,7 +17,7 @@
 // by THAT estate's principal slugs, which this estate does not govern and did
 // not choose. Opening `<my-slug>.json` over there would be trusting a
 // stranger's spelling to decide whose sessions this is about - and the day two
-// estates each have a `jon` who are different people, that reader hands one of
+// estates each have an `alice` who are different people, that reader hands one of
 // them the other's work. So every file in the generation is read and the one
 // whose viewerIdentity shares a word with this viewer's is the answer.
 //

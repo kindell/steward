@@ -30,7 +30,8 @@
 # one estate per line:
 #
 #     <estate>  <ssh-target>  <identity-slug>
-#     skeppsbron  steward@100.81.122.5  id_desk_fetch
+#
+#   for example:  far-estate  worker@192.0.2.10  id_desk_fetch    (RFC 5737)
 #
 # The identity is a SLUG under ~/.ssh, not a path: a free-form path field would
 # let a line aim this machine's keys anywhere, and the line would look correct
