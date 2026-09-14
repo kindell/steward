@@ -60,8 +60,18 @@ that an earlier draft of this plan left open.
    Compare the two with `cmp`.
 2. **Stop the session.**
 3. **Wait until the process is actually gone.** Not the row, not the unit — the
-   process. A session still running holds its transcript open and is still
-   writing to it.
+   process, checked in a loop. Not "wait a few seconds": measured on the last
+   row of this operation, the transcript's final mtime was the exact second the
+   signal was sent — **a session writes its last bytes while it dies**, and a
+   copy taken one second early would have left them nowhere at all.
+3b. **List what exists ONLY in the target, and stop if the list is not empty.**
+   Step 4 begins by deleting the target, and the case where that destroys
+   something is FALL C below — but the check belongs here, as a step, not there
+   as an explanation. On the last row of this operation the check was made
+   because the operator had happened to read another estate's figures an hour
+   earlier, not because anything told them to; a plan that survives on that is
+   the unwritten habit this document already warns about, one level up.
+
 4. **Copy the whole project directory now**, in this minute, and read the size
    and mtime **of the fresh copy** of the transcript. That pair is the *before*
    value. Copying earlier gives a file that ages while the work continues; using
