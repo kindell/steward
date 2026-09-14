@@ -277,8 +277,17 @@ is empty; the fifth is the only one that speaks when it is not.
    session looks like a healthy supervisor for ten minutes, quiet and rc 0.
 3. **The process runs on the new `CLAUDE_CONFIG_DIR`** - read it from
    `/proc/<pid>/environ`, not from the row.
-   - **This check does not apply when the target login IS the default
-     directory.** A login that resolves to `~/.claude` needs no override, so the
+   - **Use the SESSION RECORD instead, and prefer it everywhere.** A running
+     session writes `<login-tree>/sessions/<pid>.json`, carrying its own label.
+     Which tree holds that file answers the same question as the environment
+     variable, but as a written artefact rather than an inherited setting - and
+     it still answers when the variable is legitimately absent. Measured across
+     a switch, from outside, on a machine running both of an estate's rows: the
+     switched row's record sat in the target tree under its own name, and the
+     un-switched row's record sat in the source tree under its. Two rows, one
+     machine, told apart by a file each of them wrote.
+   - **The environment variable does not apply when the target login IS the
+     default directory.** A login that resolves to `~/.claude` needs no override, so the
      variable is legitimately absent and the field reads empty - which looks
      exactly like a failed check. Measured on a switch into an estate's legacy
      login: empty on the new process, present on the old one. Absent and wrong
