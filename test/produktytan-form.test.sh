@@ -1,8 +1,9 @@
 #!/bin/bash
 # test/produktytan-form.test.sh - a measurement attribution in a comment names a PLATFORM and a
-# DATE, never a host. The product cannot carry the estate's name list, so it cannot know that
-# "butler" is a machine - but it can know the SHAPE that carried machine names into the product
-# twice on 2026-09-12: "(<one bare word> <ISO date>)" where the word is not a measurement verb.
+# DATE, never a host. The product cannot carry the estate's name list, so it cannot know that a
+# given bare word is a machine - but it can know the SHAPE that carried machine names into the
+# product twice on 2026-09-12: "(<one bare word> <ISO date>)" where the word is not a
+# measurement verb.
 # "(butler 2026-09-12)" and "(basement 2026-09-11)" match; "(a darwin host, 2026-09-12)",
 # "(measured 2026-09-07)" and "(PR #6, 2026-09-11)" do not. The allowlist is small and explicit.
 set -u
@@ -16,8 +17,9 @@ is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'";
 PAT='\(([A-Za-z][A-Za-z0-9-]*) (20[0-9]{2}-[0-9]{2}-[0-9]{2})\)'
 ALLOW='measured|verified|since|rev|until|before|after|from|by'
 # ONE MATCH AT A TIME, NOT ONE LINE AT A TIME. The first cut filtered the WHOLE LINE through the
-# allowlist, so a line carrying an allowed parenthesis AND a host one passed - "(measured
-# 2026-09-07) and (butler 2026-09-12)" was silent. That is rule 5 in the suite that cites rule 5:
+# allowlist, so a line carrying an allowed parenthesis AND a host one passed. This example was
+# silent: "(measured 2026-09-07) and (butler 2026-09-12)". That is rule 5 in the suite that cites
+# rule 5:
 # an allowed substring somewhere on the line is not membership for the match beside it, and the
 # text is free prose written by an author. Reproduced on main 2026-09-14 with this file's own PAT
 # and ALLOW before the rewrite.
