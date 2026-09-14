@@ -17,3 +17,8 @@ libc = "0.2"
 [[bin]]
 name = "cockpit"
 path = "src/main.rs"
+
+[dev-dependencies]
+# setsid(2) for the exit-code test: it must measure "no controlling terminal",
+# and the only way to guarantee that from inside a test is to detach the child.
+libc = "0.2"
