@@ -62,10 +62,20 @@ that an earlier draft of this plan left open.
 3. **Wait until the process is actually gone.** Not the row, not the unit — the
    process. A session still running holds its transcript open and is still
    writing to it.
-4. **Copy the transcript now**, in this minute, and read the size and mtime **of
-   the fresh copy**. That pair is the *before* value. Copying earlier gives a
-   file that ages while the work continues; using the pre-copy number as the
-   reference measures the copy instead of the session.
+4. **Copy the whole project directory now**, in this minute, and read the size
+   and mtime **of the fresh copy** of the transcript. That pair is the *before*
+   value. Copying earlier gives a file that ages while the work continues; using
+   the pre-copy number as the reference measures the copy instead of the session.
+
+   **The whole directory, not the transcript.** Beside the `.jsonl` and its uuid
+   directory sits `memory/`, and a step that names two things is silent about
+   the third. One estate survived that only because somebody copied their memory
+   files by hand, out of habit — and a plan that survives on an unwritten habit
+   is not a plan. An enumeration forgets; a whole cannot.
+
+   And the ageing is not only the transcript's: measured on this estate, a
+   memory note was 2 899 B live and 2 041 B in a copy fourteen minutes old,
+   while the **file count matched exactly**. Counting is not comparing.
 5. **Respawn**, and let the witness measure.
 
 ### 4b. The copy's own size is the before-value — and only the copy's
