@@ -203,7 +203,17 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             eprintln!("cockpit: {e}");
-            std::process::exit(69);
+            // EX_IOERR, NOT EX_UNAVAILABLE. What fails here is an ioctl on the
+            // terminal - enable_raw_mode, or writing the alternate-screen and
+            // cursor-hide sequences - so the failure is I/O on a device, not a
+            // service that is missing. Measured on darwin 2026-09-14 by running
+            // the binary with stdin closed and no tty: "Device not configured
+            // (os error 6)", ENXIO. 69 in this fleet means "the thing you asked
+            // for is not available here" (bridge-kill without pidfd,
+            // desk-snapshot-serve with no generation to send); reading a tty
+            // error as that class sends the operator looking for a missing
+            // dependency instead of at their terminal.
+            std::process::exit(74);
         }
     };
     // WITHOUT THIS, WHATEVER WAS ON SCREEN BEFORE (a shell prompt, a
