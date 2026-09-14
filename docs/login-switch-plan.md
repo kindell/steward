@@ -91,6 +91,23 @@ the failure it was built to catch.
 Read the size and mtime after step 4 completes, of the file that now exists.
 Nothing measured before that moment is a before-value.
 
+### 4b'. Where a row's memory lives is a per-row fact, not a general one
+
+Step 4's whole-directory copy covers memory **only when the memory sits in the
+login tree**, and whether it does depends on the row:
+
+- a **claude-code** row keeps its memory under the login's `projects/` — it
+  follows the login, and the whole-directory copy carries it;
+- an **opencode** row may pin `CLAUDE_MEMORY_ROOT` to an absolute path outside
+  every login tree, in which case the copy neither carries it nor needs to.
+
+Measured on one estate: twenty-one memory files sat outside all login trees for
+exactly that reason, while the same estate's login trees held none. Both facts
+were true and they describe different rows. **Check the row before deciding
+which case you are in** — an answer that is right for one row is not a general
+answer, and treating it as one turns a correct measurement into a wrong
+conclusion about somebody else.
+
 ### 4c. A before-image can only be taken before
 
 Some criteria stop existing the moment the switch happens, and nobody can
