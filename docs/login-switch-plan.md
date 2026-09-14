@@ -54,7 +54,9 @@ Transcripts are **not** prepared in advance. See the next section for why.
 The order is the whole mechanism. Steps 2 and 3 exist because of a death gap
 that an earlier draft of this plan left open.
 
-1. **Write the row** — `LOGIN=` in the estate's register **and** in the deployed
+1. **Write the row LAST, not first** - see 3c below. What follows is the order
+   as it was originally written, with the correction marked where it bites.
+   `LOGIN=` goes in the estate's register **and** in the deployed
    tree. The supervisor unit sets no `STEWARD_ESTATE_ROOT`, so it reads
    `~/scripts/sessions.d`: a commit alone looks like a switch without being one.
    Compare the two with `cmp`.
@@ -71,6 +73,27 @@ that an earlier draft of this plan left open.
    because the operator had happened to read another estate's figures an hour
    earlier, not because anything told them to; a plan that survives on that is
    the unwritten habit this document already warns about, one level up.
+
+3c. **THE SUPERVISOR DOES NOT WAIT FOR YOU.** This step is a correction of
+   step 1, and the fault was this document's.
+
+   The moment the new `LOGIN` is rolled out, the supervisor sees a row whose
+   login has changed and starts the session against a tree that step 4 has not
+   filled yet. The window between step 1 and step 4 is not empty; it is staffed
+   by a supervisor doing exactly its job.
+
+   Measured on one estate: the row was written and rolled out, the final copy
+   and restart came eight minutes later, and for those eight minutes the session
+   flapped - seven pids, both transcripts frozen, nothing written. It recovered
+   the second the copy landed, so from inside it looked like a slow start.
+
+   **And the window grows with the transcript.** Eight minutes on a 12 MB row is
+   a longer window on a 150 MB one, not a shorter one.
+
+   So: stop the session first, keep the supervisor from respawning it (park the
+   row, or stop the supervisor for that id), do 3b and 4, and **write the row
+   last** - so that the thing which releases the supervisor is the last thing
+   that happens rather than the first.
 
 4. **Copy the whole project directory now**, in this minute, and read the size
    and mtime **of the fresh copy** of the transcript. That pair is the *before*
@@ -252,8 +275,15 @@ is empty; the fifth is the only one that speaks when it is not.
 2. **The generation carries a real pid and birth.** An empty pid with
    `spawn_state=started` is the silent state: inside the grace window a dead
    session looks like a healthy supervisor for ten minutes, quiet and rc 0.
-3. **The process runs on the new `CLAUDE_CONFIG_DIR`** — read it from
+3. **The process runs on the new `CLAUDE_CONFIG_DIR`** - read it from
    `/proc/<pid>/environ`, not from the row.
+   - **This check does not apply when the target login IS the default
+     directory.** A login that resolves to `~/.claude` needs no override, so the
+     variable is legitimately absent and the field reads empty - which looks
+     exactly like a failed check. Measured on a switch into an estate's legacy
+     login: empty on the new process, present on the old one. Absent and wrong
+     are indistinguishable here, so do not report it either way: say the check
+     is inapplicable and let check 5 carry the weight.
 4. **The transcript file that already existed keeps growing.** Size and mtime
    against the *before* value from step 4.
    - A **new uuid appearing beside it proves nothing**: the usage meter writes
@@ -278,6 +308,20 @@ is empty; the fifth is the only one that speaks when it is not.
      the line count of a live `.jsonl` only grows. On the row that produced this
      check, `74 015 < 80 711` lines is the harder statement, and `149 MB <
      165 MB` merely the visible one. Bytes are the secondary reading.
+   - **The comparison is valid only once the SOURCE IS DEAD.** Against a live
+     source the target is normally shorter, and that means nothing at all. This
+     is the same shape as 4b: a number that was true at one moment used as a
+     reference at another.
+   - **Compare the last USER or ASSISTANT line, not the last line.** A `.jsonl`
+     ends in bookkeeping - `bridge-session`, `cost-state`, `mode`,
+     `queue-operation` - and bookkeeping is written while the session shuts
+     down, so a killed source almost always ends in records that are not
+     conversation. Measured on one row: the trees agreed through line 6982 and
+     diverged at 6983, and every one of the source's extra fourteen lines was
+     state, with no user or assistant line among them. By the count, fourteen
+     lines were missing and it read as lost conversation; by the content,
+     nothing was lost. **A count can raise a false alarm that only the content
+     can put down.**
    - Skip this check only when the target project directory did not exist before
      step 4, and then **say so** rather than assume it.
 
