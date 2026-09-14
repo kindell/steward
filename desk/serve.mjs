@@ -141,6 +141,7 @@ import net from 'node:net';
 import os from 'node:os';
 import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync, accessSync, constants } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { loadRemotes } from './remote.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, ICON } from './render.mjs';
@@ -596,7 +597,11 @@ function loadSnapshot(principal) {
 }
 
 const ROUTES = [
-  [/^\/desk\/$/, (s) => pageIndex(s)],
+  // THE THIRD ARGUMENT IS THE CONSUMED ESTATES, and only the index takes it.
+  // The team, project and session pages are about one thing inside THIS estate;
+  // a remote estate's rows belong to its own tree, not grafted into a local
+  // one, and a session id from over there is not addressable here.
+  [/^\/desk\/$/, (s, _id, remotes) => pageIndex(s, remotes)],
   [/^\/desk\/team\/([a-z0-9-]+)$/, (s, id) => pageTeam(s, id)],
   [/^\/desk\/project\/([a-z0-9-]+)$/, (s, id) => pageProject(s, id)],
   [/^\/desk\/session\/(s-[a-f0-9]+)$/, (s, id) => pageSession(s, id)]
@@ -647,9 +652,27 @@ function servePage(req, res, principal, headers) {
   const snap = loadSnapshot(principal);
   if (!snap) return send(res, 503, NO_MEASUREMENT, headers);
 
+  // THE ESTATES THIS DESK CONSUMES, IF ANY. Read on every request rather than
+  // cached, because they are files this process does not write: the fetcher
+  // swaps a symlink on its own schedule, and a cache would keep showing an
+  // estate as unreachable for minutes after it came back - the one direction a
+  // status must never be slow in.
+  //
+  // A FAILURE HERE IS NOT A FAILED PAGE. The local estate is what this desk is
+  // for; remote/ is an addition. If reading it throws, the page still renders
+  // with what this machine knows, and the console carries the fault - the
+  // alternative is one unreadable neighbour turning off a desk that had a
+  // perfectly good answer of its own.
+  let remotes = [];
+  try {
+    remotes = loadRemotes(DIR, snap.viewerIdentity, { maxAgeSeconds: MAX_AGE });
+  } catch (e) {
+    console.error('desk: remote estates could not be read: ' + (e && e.message ? e.message : e));
+  }
+
   let html;
   try {
-    html = route[1](snap, route[0][1]);
+    html = route[1](snap, route[0][1], remotes);
   } catch (e) {
     console.error('desk: render threw: ' + (e && e.message ? e.message : e));
     return send(res, 503, NO_MEASUREMENT, headers); // a snapshot this renderer cannot read is not a page

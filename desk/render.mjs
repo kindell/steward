@@ -324,9 +324,48 @@ function forest(P) {
 // unknown route gets, so the page functions never have to know the difference
 // between "does not exist" and "not yours".
 
-export function pageIndex(snap) {
+// estateBlock - one consumed estate: its name, its state, and either its rows
+// or the reason there are none.
+//
+// THE STATE IS SPELLED OUT IN WORDS, not implied by an empty table. `ok`,
+// `stale` and `unavailable` are three different facts and a reader must be able
+// to tell which one they are looking at without counting rows: an estate that
+// could not be reached and an estate that holds nothing of yours would
+// otherwise render identically, and they call for opposite responses.
+//
+// AN UNAVAILABLE ESTATE SHOWS NO ROWS, and the renderer is not given any -
+// desk/remote.mjs withholds them on purpose. This function does not reach for
+// them either: last-known rows under a live heading is exactly the lie the
+// whole seam exists to prevent.
+function estateBlock(e) {
+  const head = '<h3>' + h(e.estate) + ' ' + tag(orNone(e.status)) + '</h3>';
+  if (e.status === 'unavailable') {
+    return head + '<p class="empty">' + h('unavailable — ' + (e.reason || 'no reason was recorded')) + '</p>';
+  }
+  if (!e.snap) {
+    // NOT AN ERROR AND NOT AN ABSENCE. The estate answered; you have nothing
+    // there. Saying so is what keeps the reader from repairing a working host.
+    return head + '<p class="empty">' + h('No sessions of yours on this estate.') + '</p>';
+  }
+  const v = readSnapshot(e.snap);
+  // THE AGE IS SHOWN WHENEVER IT IS KNOWN, not only when stale. A reader
+  // weighing two estates against each other needs the same fact about both.
+  const age = (typeof e.ageSeconds === 'number')
+    ? '<p class="empty">' + h('Measured ' + formatAge(e.ageSeconds) + ' ago.') + '</p>' : '';
+  return head + age + sessionTable(v.sessions);
+}
+
+export function pageIndex(snap, remotes) {
   const v = readSnapshot(snap);
-  return LAYOUT('Desk for ' + orNone(v.viewer), forest(plan(v)), v);
+  let body = forest(plan(v));
+  // A DESK THAT CONSUMES NOTHING GETS NO HEADING. Most machines in a fleet
+  // consume nothing, and a permanent empty section on every one of their pages
+  // is furniture that teaches a reader to skip that part of the page.
+  const list = arr(remotes);
+  if (list.length) {
+    body += section('Estates', list.map(estateBlock).join(''));
+  }
+  return LAYOUT('Desk for ' + orNone(v.viewer), body, v);
 }
 
 export function pageTeam(snap, id) {

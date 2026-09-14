@@ -168,8 +168,31 @@ if [ -d "$pdir" ]; then
         echo "desk snapshot: principal '$p': the registry refuses the row - skipped" >&2; exit 0; }
       read_all=false
       [ "$PRINCIPAL_DESK_READ_ALL" = "yes" ] && read_all=true
+      # THE IDENTITY WORDS, SO A SECOND ESTATE CAN JOIN ON THE PERSON AND NOT ON
+      # THE SPELLING. Nothing today ties one estate's `alice` to another's but the
+      # fact that both were typed the same way, and the failure mode of that is
+      # showing one human another human's sessions. These two fields are the
+      # register's only per-person unique keys, enforced across all rows, so they
+      # are what a join may use.
+      #
+      # EACH WORD CARRIES ITS SOURCE. A tailnet login and an OIDC subject are
+      # different kinds of word; prefixing them means a third source added later
+      # cannot collide with either by merely resembling it.
+      #
+      # THE WORDS TRAVEL IN THE CLEAR, and that is deliberate. A digest would
+      # suggest a protection it does not provide - these are short, known strings
+      # and a digest of one is guessable in seconds - while the viewer file it
+      # sits in already names the person's sessions, projects and teams. Consuming
+      # an estate is a trust relationship between its owners; pretending otherwise
+      # in one field would be the more dangerous of the two options.
+      ident="$(
+        for w in $PRINCIPAL_TAILSCALE_LOGIN; do printf 'tailscale:%s\n' "$w"; done
+        for w in $PRINCIPAL_OIDC_LOGIN;      do printf 'oidc:%s\n'      "$w"; done
+      )"
       jq -cn --arg id "$PRINCIPAL_ID" --arg name "$PRINCIPAL_NAME" --argjson readAll "$read_all" \
-        '{id:$id,name:$name,readAll:$readAll}'
+        --arg ident "$ident" \
+        '{id:$id,name:$name,readAll:$readAll,
+          identity:($ident|split("\n")|map(select(length>0)))}'
     ) >> "$principals_f"
   done
 fi
