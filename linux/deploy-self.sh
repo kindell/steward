@@ -74,7 +74,7 @@ if [ -z "$ESTATE" ] && [ -f "$HOME/.config/steward/config" ]; then
   # STEWARD_ vocabulary as every other key the steward CLI's config loader accepts. This line
   # used to read a bare ESTATE= and the refusal below told the operator to write exactly that -
   # and the loader refused the file it had just been told to write ("unknown key 'ESTATE'",
-  # rc 78, and the desk snapshot died with it). Measured on butler 2026-09-12, first root
+  # rc 78, and the desk snapshot died with it). Measured 2026-09-12, first root
   # deploy to a darwin home. Two readers of one file must share one vocabulary.
   ESTATE="$(grep -m1 '^STEWARD_ESTATE=' "$HOME/.config/steward/config" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"'')"
 fi

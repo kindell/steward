@@ -240,16 +240,16 @@ UNTOUCHED=""
 for HOME_ROOT in $HOMES; do
   USERNAME="$(basename "$HOME_ROOT")"
   # THE GROUP IS LOOKED UP, NEVER SPELLED AS THE USERNAME. Linux gives every account a
-  # user-private group of the same name, so "jon:jon" worked on every host this ran on until
-  # the first darwin home: macOS puts users in "staff" (gid 20) and has no group "jon", so
-  # install(1) died on the very first row - `install: unknown group jon` - and the home was
+  # user-private group of the same name, so "alice:alice" worked on every host this ran on until
+  # the first darwin home: macOS puts users in "staff" (gid 20) and has no group "alice", so
+  # install(1) died on the very first row - `install: unknown group alice` - and the home was
   # refused whole. Measured 2026-09-12, first live root deploy on a darwin host. id -gn is
   # the same call on both systems; an account without a primary group is not a home to write.
   # ...AND ONLY ON THE OWNER-INSTALL PATH. The fixture suites run apply with
   # STEWARD_DEPLOY_INSTALL_OWNER=off against homes whose accounts do not exist; resolving the
-  # group there refused every fixture home (deploy-apply 42/55 on Linux, found by basement
-  # 2026-09-12 within the hour). With owner-install off, the three sites that use GROUPNAME are
-  # never reached, so the lookup is skipped and GROUPNAME stays empty by design.
+  # group there refused every fixture home (deploy-apply 42/55 on Linux, found by the estate
+  # whose fixtures it broke, within the hour). With owner-install off, the three sites that use
+  # GROUPNAME are never reached, so the lookup is skipped and GROUPNAME stays empty by design.
   GROUPNAME=""
   if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" != "off" ]; then
     GROUPNAME="$(id -gn "$USERNAME" 2>/dev/null)" || GROUPNAME=""
