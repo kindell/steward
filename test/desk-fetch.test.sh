@@ -85,81 +85,81 @@ meta()  { cat "$DESK/remote/$1/meta.json" 2>/dev/null; }
 files() { ls "$DESK/remote/$1/current/" 2>/dev/null | LC_ALL=C sort | tr '\n' ' '; }
 gen_of(){ readlink "$DESK/remote/$1/current" 2>/dev/null; }
 
-printf 'skeppsbron  steward@10.0.0.1  id_desk_fetch\nbutler      jon@10.0.0.2      id_desk_fetch\n' > "$REMOTES"
-src skeppsbron 2026-09-13T20:00:00Z
-src butler     2026-09-13T20:00:05Z
+printf 'estate-b  alice@10.0.0.1  id_desk_fetch\nestate-a      bob@10.0.0.2      id_desk_fetch\n' > "$REMOTES"
+src estate-b 2026-09-13T20:00:00Z
+src estate-a     2026-09-13T20:00:05Z
 
 echo "== 1. the happy path: two estates, two generations =="
-mode skeppsbron good; mode butler good
+mode estate-b good; mode estate-a good
 run
 is     "1a rc 0"                                  "$RC" "0"
-isdir  "1b skeppsbron has a current generation"   "$DESK/remote/skeppsbron/current"
-isdir  "1c butler has one too"                    "$DESK/remote/butler/current"
-is     "1d skeppsbron's viewer files arrived"     "$(files skeppsbron)" "_operator.json alice.json "
-has    "1e its meta says ok"                      "$(meta skeppsbron)" '"status":"ok"'
-has    "1f ...and names the estate"               "$(meta skeppsbron)" '"estate":"skeppsbron"'
+isdir  "1b estate-b has a current generation"   "$DESK/remote/estate-b/current"
+isdir  "1c estate-a has one too"                    "$DESK/remote/estate-a/current"
+is     "1d estate-b's viewer files arrived"     "$(files estate-b)" "_operator.json alice.json "
+has    "1e its meta says ok"                      "$(meta estate-b)" '"status":"ok"'
+has    "1f ...and names the estate"               "$(meta estate-b)" '"estate":"estate-b"'
 # THE TWO TIMES ARE DIFFERENT FACTS. generatedAt belongs to the producer and
 # fetchedAt to the consumer; a design that collapsed them would make a fresh
 # fetch of a stale snapshot read as current.
-has    "1g meta carries fetchedAt"                "$(meta skeppsbron)" '"fetchedAt"'
+has    "1g meta carries fetchedAt"                "$(meta estate-b)" '"fetchedAt"'
 has    "1h the viewer file keeps its own generatedAt" \
-       "$(cat "$DESK/remote/skeppsbron/current/alice.json")" '2026-09-13T20:00:00Z'
-no     "1i meta does not restate generatedAt"     "$(meta skeppsbron)" '"generatedAt"'
+       "$(cat "$DESK/remote/estate-b/current/alice.json")" '2026-09-13T20:00:00Z'
+no     "1i meta does not restate generatedAt"     "$(meta estate-b)" '"generatedAt"'
 
 echo "== 2. the modes are the fetcher's, not the umask's =="
 # The mode bits are the last gate on a directory full of other people's viewer
 # files, so the process that writes them sets them - it does not inherit them.
-is "2a the generation is 0700"  "$(stat -c '%a' "$DESK/remote/skeppsbron/current/" 2>/dev/null || stat -f '%Lp' "$DESK/remote/skeppsbron/current/")" "700"
-is "2b each file is 0600"       "$(stat -c '%a' "$DESK/remote/skeppsbron/current/alice.json" 2>/dev/null || stat -f '%Lp' "$DESK/remote/skeppsbron/current/alice.json")" "600"
+is "2a the generation is 0700"  "$(stat -c '%a' "$DESK/remote/estate-b/current/" 2>/dev/null || stat -f '%Lp' "$DESK/remote/estate-b/current/")" "700"
+is "2b each file is 0600"       "$(stat -c '%a' "$DESK/remote/estate-b/current/alice.json" 2>/dev/null || stat -f '%Lp' "$DESK/remote/estate-b/current/alice.json")" "600"
 
 echo "== 3. a bad answer never replaces a good one =="
 # EACH SHAPE GETS ITS OWN CASE because they fail at different points: a stream
 # that stops mid-file, a stream that was never a tar, a command that exits
 # non-zero, and a command that says nothing at all. A fetcher that only checked
 # the exit status would swap in the first two.
-good_gen="$(gen_of skeppsbron)"
+good_gen="$(gen_of estate-b)"
 # `notgen` IS A TAR THAT UNPACKS PERFECTLY and is not a generation - the one
 # failure shape that survives both the exit status and the unpack. Without it
 # the fetcher could swap in any well-formed tarball an estate happened to send.
 for m in truncated garbage empty fail notgen; do
-  mode skeppsbron "$m"; mode butler good
+  mode estate-b "$m"; mode estate-a good
   run
-  is "3-$m: the generation is unchanged"   "$(gen_of skeppsbron)" "$good_gen"
-  is "3-$m: the rows are still readable"   "$(files skeppsbron)" "_operator.json alice.json "
-  has "3-$m: meta says unavailable"        "$(meta skeppsbron)" '"status":"unavailable"'
-  has "3-$m: meta names a reason"          "$(meta skeppsbron)" '"reason"'
+  is "3-$m: the generation is unchanged"   "$(gen_of estate-b)" "$good_gen"
+  is "3-$m: the rows are still readable"   "$(files estate-b)" "_operator.json alice.json "
+  has "3-$m: meta says unavailable"        "$(meta estate-b)" '"status":"unavailable"'
+  has "3-$m: meta names a reason"          "$(meta estate-b)" '"reason"'
   is "3-$m: rc is non-zero"                "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 done
 # THE REASON IS THE POINT, not the word. A refusal that cannot say why is the
 # silence this seam exists to end.
-mode skeppsbron fail; run
-has "3z the refusal carries the transport's own words" "$(meta skeppsbron)" "Connection refused"
+mode estate-b fail; run
+has "3z the refusal carries the transport's own words" "$(meta estate-b)" "Connection refused"
 
 echo "== 4. one dead estate does not hide a live one =="
 # A fetcher that stopped at the first failure would let one unreachable machine
 # make two others invisible, and the page would look like a two-estate fleet.
-mode skeppsbron fail; mode butler good
-src butler 2026-09-13T21:00:00Z
+mode estate-b fail; mode estate-a good
+src estate-a 2026-09-13T21:00:00Z
 run
-has "4a the live estate was still fetched"  "$(cat "$DESK/remote/butler/current/alice.json")" '2026-09-13T21:00:00Z'
-has "4b ...and reads ok"                    "$(meta butler)" '"status":"ok"'
-has "4c while the dead one reads unavailable" "$(meta skeppsbron)" '"status":"unavailable"'
+has "4a the live estate was still fetched"  "$(cat "$DESK/remote/estate-a/current/alice.json")" '2026-09-13T21:00:00Z'
+has "4b ...and reads ok"                    "$(meta estate-a)" '"status":"ok"'
+has "4c while the dead one reads unavailable" "$(meta estate-b)" '"status":"unavailable"'
 is  "4d and the run's rc is the worst of them" "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
 
 echo "== 5. an estate that recovers stops being unavailable =="
 # A status that only ever gets worse is a status nobody trusts.
-mode skeppsbron good; src skeppsbron 2026-09-13T22:00:00Z
+mode estate-b good; src estate-b 2026-09-13T22:00:00Z
 run
 is  "5a rc 0 once both answer"              "$RC" "0"
-has "5b the recovered estate reads ok"      "$(meta skeppsbron)" '"status":"ok"'
-has "5c ...with the new snapshot"           "$(cat "$DESK/remote/skeppsbron/current/alice.json")" '2026-09-13T22:00:00Z'
-is  "5d ...and the generation moved"        "$([ "$(gen_of skeppsbron)" != "$good_gen" ] && echo yes || echo no)" "yes"
+has "5b the recovered estate reads ok"      "$(meta estate-b)" '"status":"ok"'
+has "5c ...with the new snapshot"           "$(cat "$DESK/remote/estate-b/current/alice.json")" '2026-09-13T22:00:00Z'
+is  "5d ...and the generation moved"        "$([ "$(gen_of estate-b)" != "$good_gen" ] && echo yes || echo no)" "yes"
 
 echo "== 6. the remotes list is read strictly =="
-printf 'skeppsbron\n' > "$REMOTES"
+printf 'estate-b\n' > "$REMOTES"
 run
 is  "6a a line missing its target is refused"  "$RC" "65"
-has "6b ...and names the line"                 "$ERR" "skeppsbron"
+has "6b ...and names the line"                 "$ERR" "estate-b"
 printf '# only a comment\n\n' > "$REMOTES"
 run
 is  "6c a list with no estates is rc 0"        "$RC" "0"
@@ -172,10 +172,10 @@ is  "6e no list at all is rc 0, not an error"  "$RC" "0"
 # remember not to install.
 
 echo "== 7. only the named estates are touched =="
-printf 'butler      jon@10.0.0.2      id_desk_fetch\n' > "$REMOTES"
-before="$(gen_of skeppsbron)"
-mode butler good; run
-is  "7a an estate dropped from the list is left alone" "$(gen_of skeppsbron)" "$before"
+printf 'estate-a      bob@10.0.0.2      id_desk_fetch\n' > "$REMOTES"
+before="$(gen_of estate-b)"
+mode estate-a good; run
+is  "7a an estate dropped from the list is left alone" "$(gen_of estate-b)" "$before"
 # LEFT ALONE, NOT DELETED. Removing it would destroy the only record that the
 # estate was ever readable, and a list edited by mistake would take the history
 # with it. Pruning is an operator's act, not a fetch's.

@@ -1644,7 +1644,7 @@ ensure_workspace_trusted() {
   fi
 }
 
-# THE BYPASS DIALOG, PRE-ACCEPTED (measured on Skeppsbron 2026-09-12). Every claude row is launched with
+# THE BYPASS DIALOG, PRE-ACCEPTED (measured on a Debian host 2026-09-12). Every claude row is launched with
 # --permission-mode bypassPermissions (lib/mcpspawn.sh), and the runtime then asks "Yes, I accept" once
 # per config directory unless the directory's settings.json says skipDangerousModePermissionPrompt=true.
 # A fresh login directory has no such line, so a hub there sat at that dialog through every round while

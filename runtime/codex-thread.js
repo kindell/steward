@@ -97,7 +97,7 @@ function codexBin() {
   // ONE NAME, SEVERAL HOMES. The Linux installer puts codex in ~/.local/bin;
   // on macOS it arrives as a Homebrew cask in /opt/homebrew/bin, and a
   // non-interactive ssh session has no Homebrew on PATH at all. Measured on
-  // minin 2026-09-07: the default found nothing and the refusal named a path
+  // a darwin host 2026-09-07: the default found nothing and the refusal named a path
   // that was never going to exist there.
   const candidates = [
     path.join(os.homedir(), '.local', 'bin', 'codex'),

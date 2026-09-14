@@ -1,10 +1,10 @@
 #!/bin/bash
 # test/deploy-apply-group.test.sh - the group a deployed file gets is LOOKED UP, not spelled.
 #
-# Linux gives every account a user-private group of its own name, so `install -o jon -g jon`
-# and `chown jon:jon` were right on every host this ran on. macOS puts users in `staff`
+# Linux gives every account a user-private group of its own name, so `install -o alice -g alice`
+# and `chown alice:alice` were right on every host this ran on. macOS puts users in `staff`
 # (gid 20) and has no group named after the user: on the first live root deploy to a darwin
-# home (2026-09-12) install(1) died on the very first row - `install: unknown group jon` -
+# home (2026-09-12) install(1) died on the very first row - `install: unknown group alice` -
 # and the whole home was refused. The fixture suites never saw it: they run apply with
 # STEWARD_DEPLOY_INSTALL_OWNER=off, which skips exactly the three lines that were wrong.
 set -u

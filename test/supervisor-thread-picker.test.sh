@@ -6,7 +6,7 @@
 # substitution for its closing paren with naive quote tracking: an apostrophe in a python
 # COMMENT opened a shell quote. The body itself already carries a note dated 2026-08-20 saying
 # "NO APOSTROPHES in this comment" for exactly that reason; two possessives were added on
-# 2026-08-31 anyway. Measured 2026-09-12 in the hub's own supervisor log on butler:
+# 2026-08-31 anyway. Measured 2026-09-12 in the hub's own supervisor log on a darwin host:
 #   session-supervisor.sh: line 336: e: command not found
 #   session-supervisor.sh: line 361: syntax error near unexpected token `('
 # _pick came back empty and the round fell through to newest-by-content - the picker the

@@ -135,7 +135,7 @@ is "1b and the holder is named" "$h" "s-1111111111111111"
 
 # TWO homes on this host already carry the label (someone's and other's). A
 # THIRD home is still free to use it: the harm cannot cross a unix account.
-h="$(probe "s-9999999999999999" plex farhost "$LABEL")"; rc=$?
+h="$(probe "s-9999999999999999" worker farhost "$LABEL")"; rc=$?
 is "2a the SAME label in other homes is not a conflict here" "$rc" "1"
 h="$(probe "s-9999999999999999" someone otherhost "$LABEL")"; rc=$?
 is "2b nor is the same home's label on another host" "$rc" "1"

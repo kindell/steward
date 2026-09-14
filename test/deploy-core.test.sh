@@ -53,8 +53,8 @@ check "an unknown host gives rc 78" [ "$rc" -eq 78 ]
 echo "== THE HOME IS LOOKED UP, NEVER SPELLED /home/<owner> =="
 # A HOST WHERE THAT GUESS IS WRONG IS NOT HYPOTHETICAL. On darwin the homes are
 # under /Users and /home is an empty autofs mount; measured 2026-09-11 on such a
-# host, this function answered `/home/jon` for an account whose home is
-# /Users/jon, and a rollout aimed there would have written into a tree that does
+# host, this function answered `/home/alice` for an account whose home is
+# /Users/alice, and a rollout aimed there would have written into a tree that does
 # not exist while leaving the one that does untouched.
 #
 # The product already had the resolver this needed: _registry_owner_home asks

@@ -1,5 +1,5 @@
 #!/bin/bash
-# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on a darwin host 2026-09-12: without saying so, the
 # OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
 export BRIDGE_OS=linux
 # test/bridge-classify.test.sh - candidates by name never by order; poison is a LINE;
@@ -73,7 +73,7 @@ is "3e 109 reason is types (schema), not json" "$(printf '%s\n' "$out" | grep 10
 is "3f 110 reason is control-char" "$(printf '%s\n' "$out" | grep 110.json | cut -d "$US" -f 3)" "control-char"
 
 echo "== 3b. procStart: the vendor writes it as a NUMBER on one build and a STRING on another =="
-# MEASURED on basement 2026-09-11: "procStart":"54058753" - a string. P1 measured a number. It is an
+# MEASURED on a Linux host 2026-09-11: "procStart":"54058753" - a string. P1 measured a number. It is an
 # opaque token we only compare, so both are read and both become the same digits; anything else is poison.
 # (this section keeps only its own files; section 5 counts what section 4 left)
 printf '{"pid":120,"procStart":"54058753","tmux":"%s","name":"Str","nameSince":1,"sessionId":"s","startedAt":1}\n' "$ID:@7.%7" > "$D/120.json"
@@ -91,7 +91,7 @@ is "3b3c an empty string is poison" "$(bridge_candidates "$ID" "$D" | grep '126.
 rm -f "$D/125.json" "$D/126.json"
 
 echo "== 3c. procStart on darwin is a DATE, and the discriminator is pidDomain =="
-# MEASURED on butler (macOS 25.5) 2026-09-12: the vendor writes "procStart":"Sat Sep 12 08:40:24 2026"
+# MEASURED on a darwin host (macOS 25.5) 2026-09-12: the vendor writes "procStart":"Sat Sep 12 08:40:24 2026"
 # - ps(1)'s lstart words, not digits. Every bridge file on the host read as "types" poison, so every
 # candidate was unclassifiable and the adapter answered unknown for a session that was plainly running.
 #

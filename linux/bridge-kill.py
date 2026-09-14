@@ -64,7 +64,7 @@ def birth_of(pid):
 
 
 def birth_of_darwin(pid):
-    """(boot_sec:start_epoch, state) from ps(1) and sysctl(8) - MEASURED on minin 2026-09-12: darwin has
+    """(boot_sec:start_epoch, state) from ps(1) and sysctl(8) - MEASURED on a darwin host 2026-09-12: darwin has
     no /proc and no pidfd. The same words lib/bridge.sh's darwin backend produces. None when gone."""
     try:
         bt = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, check=False).stdout

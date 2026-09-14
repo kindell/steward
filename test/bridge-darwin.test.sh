@@ -1,5 +1,5 @@
 #!/bin/bash
-# The OS facts layer's DARWIN backend, run on any host through ps/sysctl/uname shims. MEASURED on minin
+# The OS facts layer's DARWIN backend, run on any host through ps/sysctl/uname shims. MEASURED on a darwin host
 # 2026-09-12 (macOS arm64): no /proc, no pidfd - so every process fact there comes from ps(1) and
 # sysctl(8). These claims pin the words the backend produces and the kill helper's darwin branch.
 set -u

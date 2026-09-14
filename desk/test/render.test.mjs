@@ -502,10 +502,10 @@ const remoteSnap = (viewer, generatedAt, labels) => ({
 
 test('an estate that answered renders its name and its rows', () => {
   const h = pageIndex(snap, [
-    { estate: 'butler', status: 'ok', fetchedAt: '2026-09-08T00:00:00Z', ageSeconds: 30,
+    { estate: 'estate-a', status: 'ok', fetchedAt: '2026-09-08T00:00:00Z', ageSeconds: 30,
       snap: remoteSnap('b-far', '2026-09-08T00:00:00Z', ['Far Work']) }
   ]);
-  assert.match(h, /butler/);
+  assert.match(h, /estate-a/);
   assert.match(h, /Far Work/);
 });
 
@@ -513,10 +513,10 @@ test('an unavailable estate shows the reason and none of its rows', () => {
   // The rows are on disk and deliberately not handed over; this asserts the
   // renderer does not invent a way to show them either.
   const h = pageIndex(snap, [
-    { estate: 'butler', status: 'unavailable', snap: null, fetchedAt: '2026-09-08T00:00:00Z',
+    { estate: 'estate-a', status: 'unavailable', snap: null, fetchedAt: '2026-09-08T00:00:00Z',
       reason: 'ssh: connect to host 10.0.0.9 port 22: Connection timed out' }
   ]);
-  assert.match(h, /butler/);
+  assert.match(h, /estate-a/);
   assert.match(h, /unavailable/);
   assert.match(h, /Connection timed out/);
 });
@@ -525,16 +525,16 @@ test('an estate that is silent is a VISIBLE row, never an omitted section', () =
   // THE CLAIM THAT BITES. A page that simply left the estate out would pass
   // every assertion above about reasons - by never rendering the estate at all.
   const withIt = pageIndex(snap, [
-    { estate: 'skeppsbron', status: 'unavailable', snap: null, reason: 'refused' }
+    { estate: 'estate-b', status: 'unavailable', snap: null, reason: 'refused' }
   ]);
   const without = pageIndex(snap, []);
-  assert.match(withIt, /skeppsbron/);
-  assert.ok(!/skeppsbron/.test(without), 'the fixture name must come from the estate row, not the layout');
+  assert.match(withIt, /estate-b/);
+  assert.ok(!/estate-b/.test(without), 'the fixture name must come from the estate row, not the layout');
 });
 
 test('a stale estate shows its rows AND its age', () => {
   const h = pageIndex(snap, [
-    { estate: 'butler', status: 'stale', fetchedAt: '2026-09-08T00:00:00Z', ageSeconds: 7200,
+    { estate: 'estate-a', status: 'stale', fetchedAt: '2026-09-08T00:00:00Z', ageSeconds: 7200,
       snap: remoteSnap('b-far', '2026-09-07T22:00:00Z', ['Old Work']) }
   ]);
   assert.match(h, /stale/);
@@ -544,9 +544,9 @@ test('a stale estate shows its rows AND its age', () => {
 
 test('an estate with nothing of yours says so, and does not read as broken', () => {
   const h = pageIndex(snap, [
-    { estate: 'butler', status: 'ok', fetchedAt: '2026-09-08T00:00:00Z', snap: null }
+    { estate: 'estate-a', status: 'ok', fetchedAt: '2026-09-08T00:00:00Z', snap: null }
   ]);
-  assert.match(h, /butler/);
+  assert.match(h, /estate-a/);
   assert.ok(!/unavailable/.test(h), 'an estate holding nothing of yours is not an unreachable one');
 });
 

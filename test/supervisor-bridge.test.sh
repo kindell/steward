@@ -1,9 +1,9 @@
 #!/bin/bash
-# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on a darwin host 2026-09-12: without saying so, the
 # OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
 export BRIDGE_OS=linux
 
-# PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
+# PORTABILITY (measured on a darwin host, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
 # mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
 # both stat dialects; the observation queue is shortened with tail, never sed -i.
 set_mtime() { python3 -c 'import os,sys; t=int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
@@ -357,7 +357,7 @@ reset; touch "$T_HAS_SESSION"; echo noadvance > "$T_RENAME_EFFECT"; OLD; run; ru
 is "23b bridge says desired but nameSince unchanged -> applied stays empty" "$(gget applied)" ""
 
 echo "== 23b. P1b case B and its receipt, MEASURED 2026-09-12: a resumed process whose bridge ALREADY reports the desired name =="
-# 07:58: the deployed supervisor resumed the hub's thread with --remote-control 'Steward→Basement (P1b-B)';
+# 07:58: the deployed supervisor resumed the hub's thread with --remote-control 'Alpha→Beta (P1b-B)';
 # the bridge reported that name with a fresh nameSince; the tile stayed on the OLD name for minutes. So a
 # bridge that reads desired from the start proves nothing about the tile: the cycle must type /rename.
 # 08:44: it did - and the receipt then FAILED five times, because the vendor does not move nameSince for a
@@ -612,9 +612,9 @@ is "39q a row under ANOTHER login key is not blocked, even in strict mode (two t
 rm -f "$ROOT/sessions.d/s-0000000000000004.conf" "$ROOT/accounts.d/b-h1.conf" "$ROOT/logins.d/shared-login.conf"
 
 echo "== 39y. M7, scoped: doubt about a same-key row stands the round down ONLY when that row could bear the display =="
-# MEASURED IN PRODUCTION 2026-09-12 14:05 (basement, Jon's home, eleven rows on one login): the first M7
+# MEASURED IN PRODUCTION 2026-09-12 14:05 (a Linux host, one person's home, eleven rows on one login): the first M7
 # refused every spawn as soon as ANY sibling failed to observe in the round - two different siblings in
-# two rounds, both plainly alive by hand - and a session Jon had asked to restart stayed down. A sibling
+# two rounds, both plainly alive by hand - and a session the operator had asked to restart stayed down. A sibling
 # whose registry display, applied name, pending name and last bridge name are all OTHER than the desired
 # display cannot be holding it, observable or not; only a sibling that COULD bear the display makes its
 # liveness decisive, and then observer failure, a malformed line, unknown, grace, wait-veto stand down.

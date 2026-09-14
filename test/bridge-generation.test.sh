@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
+# PORTABILITY (measured on a darwin host, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
 # mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
 # both stat dialects; the observation queue is shortened with tail, never sed -i.
 set_mtime() { python3 -c 'import os,sys; t=int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
@@ -40,9 +40,9 @@ is "1b pid" "$(bridge_gen_get "$T" "$ID" pid)" "100"
 is "1c launch_ms" "$(bridge_gen_get "$T" "$ID" launch_ms)" "1789000000000"
 bridge_gen_write "$T" "$ID" applied="Alpha→Beta"
 is "1d merge keeps pid" "$(bridge_gen_get "$T" "$ID" pid)" "100"; is "1e applied" "$(bridge_gen_get "$T" "$ID" applied)" "Alpha→Beta"
-bridge_gen_write "$T" "$ID" applied="Point→Chalmers→HR Pilot"; is "1f spaces and arrows survive" "$(bridge_gen_get "$T" "$ID" applied)" "Point→Chalmers→HR Pilot"
+bridge_gen_write "$T" "$ID" applied="Alpha→Beta→HR Pilot"; is "1f spaces and arrows survive" "$(bridge_gen_get "$T" "$ID" applied)" "Alpha→Beta→HR Pilot"
 bridge_gen_write "$T" "$ID" "bad key=1" >/dev/null 2>&1; is "1g bad key rc 64" "$?" "64"
-is "1h bad key wrote nothing" "$(bridge_gen_get "$T" "$ID" applied)" "Point→Chalmers→HR Pilot"
+is "1h bad key wrote nothing" "$(bridge_gen_get "$T" "$ID" applied)" "Alpha→Beta→HR Pilot"
 # A WELL-FORMED TYPO IS THE DANGEROUS ONE: it passes the grammar and would become a fact.
 bridge_gen_write "$T" "$ID" brith=boot-z:9 >/dev/null 2>&1; is "1i typo key (brith=) rc 64" "$?" "64"
 is "1j typo key not persisted (read from the file, not via get: get is rc 1 only when the FILE is absent)" "$(grep -c '^brith=' "$T/$ID.generation")" "0"

@@ -33,7 +33,7 @@ mkdir -p "$FX/bin"
 # staged. On Linux the host's real ss sat behind the stubs, `command -v ss`
 # found it the moment the ss stub was removed, and section 3 measured the
 # HOST's ss instead of the staged lsof: 14/5, assertions 3b-3f, measured by
-# basement 2026-09-12 against the deployed tree. A suite that passes only on
+# a Linux host 2026-09-12 against the deployed tree. A suite that passes only on
 # the platform that cannot exercise its failure branch has proven nothing
 # about that branch - rule 11, applied to PATH. The probe needs awk, grep and
 # id; they are SYMLINKED in so the PATH can be closed completely.

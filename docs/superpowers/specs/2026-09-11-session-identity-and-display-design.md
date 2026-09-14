@@ -4,7 +4,7 @@
 **Status:** sixth revision, plan-ready per the advisor's sixth pass once
 these were folded in: *moved* is not *orphan*; applied display is the last
 receipted `/rename`, not the bridge's reported name; OS birth token and
-bounded history in the generation; the pre-spawn-tmux row. Jon has delegated
+bounded history in the generation; the pre-spawn-tmux row. the operator has delegated
 execution.
 **Scope:** spec A of two. The entity/project graph (Nav/Steward as real
 projects under estate entities, MANAGED_BY hygiene, infra semantics) is
@@ -36,7 +36,7 @@ is corroboration, not proof, until it reads the adapter in §1.
 Consequences, measured: a hand-typed label rots (`Point→WordPress` against
 `NAME="WWW"`); a renamed project makes the supervisor see an unidentified
 process every round and never reach a safe state; the company form leaked
-into a label (`Varvet AB→steward`) because the label is free text; and a
+into a label (`Acme AB→steward`) because the label is free text; and a
 `/rename` typed at the wrong moment lands in a shell, where the supervisor's
 own comment records that a conf string **executes** (`:1392`, canary-proven).
 
@@ -77,18 +77,18 @@ own comment records that a conf string **executes** (`:1392`, canary-proven).
 - The pause marker does not stop a process (`:160-163`).
 - `runtime_alive_in_session` is deliberately loose (`:998-1012`): a kill veto
   only.
-- The macOS twin lives in the butler estate; `ps eww` shows no environment
+- The macOS twin lives in the the darwin estate estate; `ps eww` shows no environment
   there.
 - Bus addressing is slug-addressed, ID-keyed. Display is uninvolved.
 - Central watch runs in the hub account and **cannot read other owners'
   0750 config dirs**.
 
-## Decisions (Jon, 2026-09-11)
+## Decisions (the operator, 2026-09-11)
 
 - Display is the root-to-leaf ancestry (`Team→Kund→Projekt` in the common
   case), arrow only, no account and no machine in the name.
 - A root entity (no `MANAGED_BY`) is the team. No collapse rule, no `IS_TEAM`.
-- `Varvet`, never `Varvet AB`, in any register value or label.
+- `Acme`, never `Acme AB`, in any register value or label.
 - Work rule: one `claude-code` row per (login, project) among non-retired rows.
 - Identity binds to ID, never to the string.
 
@@ -264,10 +264,10 @@ rows and migrate sessions one at a time instead of mutating shared edges.
 ### 3. Rules — who enforces what
 
 **The namespace of both gates is the LOGIN KEY** (amended 2026-09-11 — this
-paragraph replaces the earlier "estate-wide"; Jon's decision of the same
+paragraph replaces the earlier "estate-wide"; the operator's decision of the same
 day, point 4). A display is a tile in one Claude login's list, and two
 logins have two lists that never meet: two project accounts under different
-logins may render the same name, and `Chalmers→Innovation` needs no suffix
+logins may render the same name, and `Gamma→Delta` needs no suffix
 for that. Within ONE login, two identical names are two tiles a human cannot
 tell apart, and that is what is refused. The key is the row's `LOGIN`; for a
 legacy row that names none it is `owner:<OWNER>@<HOST>` — the HOME, which is
@@ -371,7 +371,7 @@ with a display change → no decision changes. Dual-read byte-identical.
 
 **Platforms.** Fixtures portable for the contract. **Actual macOS execution
 is acceptance before the first live row** — the twin's process model, veto
-and bridge lifecycle are unmeasured. The butler estate implements and
+and bridge lifecycle are unmeasured. The the darwin estate estate implements and
 measures its own.
 
 ## Gates before the plan
@@ -404,7 +404,7 @@ pid; adapter answers for stale+live and malformed+live; `/exit` or crash
 with a tmux shell left; the exact-pane canary through the production
 `type_line`; central watch via the owner's host measurement.
 
-**P2 — macOS twin**, as above, in the butler estate.
+**P2 — macOS twin**, as above, in the the darwin estate estate.
 
 **P3 — manual census** for any login on more than one host or estate.
 
@@ -429,10 +429,10 @@ Spec B. Seat rotation. Federated uniqueness. A vendor API for tiles.
 
 ## Amendment 2026-09-12 — the OS facts layer and darwin
 
-**Measured on minin (macOS arm64) by the Point butler session:** no `/proc`, no `pidfd_open`. Every process fact this design rests on — boot token, birth, state, process group, tty, foreground group, environment — was read from `/proc`, so on darwin the adapter would have answered *uninspectable* for every row and the supervisor would have supervised nothing; the kill helper refused everything with 69.
+**Measured on the darwin host (macOS arm64) by the Point the darwin estate session:** no `/proc`, no `pidfd_open`. Every process fact this design rests on — boot token, birth, state, process group, tty, foreground group, environment — was read from `/proc`, so on darwin the adapter would have answered *uninspectable* for every row and the supervisor would have supervised nothing; the kill helper refused everything with 69.
 
-**Decision (Jon, 2026-09-12: go ahead):** one OS facts layer in `lib/bridge.sh` with two backends and one vocabulary — `/proc` on Linux, `ps(1)` + `sysctl(8)` on darwin — behind `bridge_os`, `bridge_boot_id`, `bridge_uptime_ms`, `bridge_os_birth`, `bridge_proc_facts`, `bridge_proc_has_tty`, `bridge_env_has`. Callers (adapter, supervisor, kill helper) read no `/proc` path themselves. On darwin the boot token is `kern.boottime`'s seconds and the birth is `lstart` in seconds (a pid reused within the same second as its predecessor's start is the one case this cannot tell apart); tty is a name (`ttys003`, `??` for none) and compared for equality only; the environment is read through `ps -Eww`, so an entry whose value carries spaces cannot be matched there — the nonce is hex.
+**Decision (the operator, 2026-09-12: go ahead):** one OS facts layer in `lib/bridge.sh` with two backends and one vocabulary — `/proc` on Linux, `ps(1)` + `sysctl(8)` on darwin — behind `bridge_os`, `bridge_boot_id`, `bridge_uptime_ms`, `bridge_os_birth`, `bridge_proc_facts`, `bridge_proc_has_tty`, `bridge_env_has`. Callers (adapter, supervisor, kill helper) read no `/proc` path themselves. On darwin the boot token is `kern.boottime`'s seconds and the birth is `lstart` in seconds (a pid reused within the same second as its predecessor's start is the one case this cannot tell apart); tty is a name (`ttys003`, `??` for none) and compared for equality only; the environment is read through `ps -Eww`, so an entry whose value carries spaces cannot be matched there — the nonce is hex.
 
 **The kill rule's darwin shape.** Linux keeps the pin: `pidfd_open` → stat read after the pin → birth compare → `pidfd_send_signal`; without pidfd, 69 and nothing sent. Darwin has no pin: the birth is re-read immediately before `kill(2)` and must equal the caller's; a zombie, a mismatch, a gone pid, an empty token, a failing recorder all refuse with 65; the receipt says *no pin*. The window between that read and the signal is the one a reused pid could slip through, and it would also need the same start second. This is the best darwin offers, and the alternative measured was no supervision at all.
 
-**Fixtures:** `test/bridge-darwin.test.sh` runs the darwin backend on any host through `ps`/`sysctl`/`uname` shims and `BRIDGE_OS=darwin`; five mutations bite. `bridge-kill.test.sh`'s positive sections are Linux-shaped and skip loudly where pidfd is absent. The real measurement on minin — the adapter answering `identified:managed` for a live row — is P2's remaining step and is run by the Point butler session after this lands.
+**Fixtures:** `test/bridge-darwin.test.sh` runs the darwin backend on any host through `ps`/`sysctl`/`uname` shims and `BRIDGE_OS=darwin`; five mutations bite. `bridge-kill.test.sh`'s positive sections are Linux-shaped and skip loudly where pidfd is absent. The real measurement on the darwin host — the adapter answering `identified:managed` for a live row — is P2's remaining step and is run by the Point the darwin estate session after this lands.

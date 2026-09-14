@@ -51,8 +51,8 @@ const view = (viewer, identity, generatedAt, sessions = []) =>
      viewer, viewerIdentity: identity, readAll: false, entities: [], projects: [], sessions });
 
 test('an estate that answered hands over the viewer matched by identity, not by name', () => {
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { // THE SLUG OVER THERE IS NOT THE SLUG HERE. `alice-far` is this person on that
       // estate; a reader joining on the local slug would open alice.json and find
       // a different human.
@@ -61,7 +61,7 @@ test('an estate that answered hands over the viewer matched by identity, not by 
       '_operator.json': view('_operator', [], '2026-09-14T09:58:00Z', [{ id: 's-1' }, { id: 's-2' }])
     });
   const [e] = f.read();
-  assert.equal(e.estate, 'butler');
+  assert.equal(e.estate, 'estate-a');
   assert.equal(e.status, 'ok');
   assert.equal(e.snap.viewer, 'alice-far');
   assert.equal(e.snap.sessions.length, 1);
@@ -72,8 +72,8 @@ test('an estate that answered hands over the viewer matched by identity, not by 
 test('the operator file is never the match, because it names nobody', () => {
   // Its identity array is present and EMPTY. If an empty array counted as a
   // match, one request would hand a person the whole of another estate.
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { '_operator.json': view('_operator', [], '2026-09-14T09:58:00Z', [{ id: 's-1' }]) });
   const [e] = f.read();
   assert.equal(e.status, 'ok');
@@ -82,8 +82,8 @@ test('the operator file is never the match, because it names nobody', () => {
 });
 
 test('an estate with nothing of yours is ok and empty, not unavailable', () => {
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { 'other.json': view('other', ['tailscale:bob@example.invalid'], '2026-09-14T09:58:00Z') });
   const [e] = f.read();
   assert.equal(e.status, 'ok');
@@ -93,8 +93,8 @@ test('an estate with nothing of yours is ok and empty, not unavailable', () => {
 });
 
 test('meta says unavailable: the reason is carried through and no rows are shown', () => {
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:40:00Z', status: 'unavailable',
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:40:00Z', status: 'unavailable',
       reason: 'ssh: connect to host 10.0.0.9 port 22: Connection timed out' },
     { 'alice-far.json': view('alice-far', ME, '2026-09-14T09:00:00Z', [{ id: 's-1' }]) });
   const [e] = f.read();
@@ -112,8 +112,8 @@ test('a producer too old to name identities makes the estate unavailable, not gu
   // it must fail toward showing less - never toward matching on the slug.
   const old = view('alice-far', ME, '2026-09-14T09:58:00Z');
   delete old.viewerIdentity;
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { 'alice-far.json': old });
   const [e] = f.read();
   assert.equal(e.status, 'unavailable');
@@ -123,8 +123,8 @@ test('a producer too old to name identities makes the estate unavailable, not gu
 });
 
 test('an old snapshot is stale: the rows are shown AND the age is', () => {
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { 'alice-far.json': view('alice-far', ME, '2026-09-14T08:00:00Z', [{ id: 's-1' }]) });
   const [e] = f.read();
   assert.equal(e.status, 'stale');
@@ -151,8 +151,8 @@ test('a malformed viewer file does not take the estate down with it', () => {
   // ONE BAD FILE IS NOT A BAD ESTATE. The match is over every file; a colleague's
   // unreadable row must not hide yours, or one corrupt byte in somebody else's
   // file would blank the estate for everyone.
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { 'broken.json': '{{{',
       'alice-far.json': view('alice-far', ME, '2026-09-14T09:58:00Z', [{ id: 's-1' }]) });
   const [e] = f.read();
@@ -163,12 +163,12 @@ test('a malformed viewer file does not take the estate down with it', () => {
 
 test('several estates come back sorted, and one failure does not hide another', () => {
   const f = fixture()
-    .estate('skeppsbron', { estate: 'skeppsbron', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+    .estate('estate-b', { estate: 'estate-b', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
             { 'j.json': view('j', ME, '2026-09-14T09:58:00Z', [{ id: 's-9' }]) })
-    .estate('butler', { estate: 'butler', fetchedAt: '2026-09-14T09:30:00Z', status: 'unavailable', reason: 'refused' },
+    .estate('estate-a', { estate: 'estate-a', fetchedAt: '2026-09-14T09:30:00Z', status: 'unavailable', reason: 'refused' },
             { 'j.json': view('j', ME, '2026-09-14T09:00:00Z') });
   const got = f.read();
-  assert.deepEqual(got.map((x) => x.estate), ['butler', 'skeppsbron']);
+  assert.deepEqual(got.map((x) => x.estate), ['estate-a', 'estate-b']);
   assert.equal(got[0].status, 'unavailable');
   assert.equal(got[1].status, 'ok');
   f.done();
@@ -184,8 +184,8 @@ test('a viewer with no identity of their own matches nothing, anywhere', () => {
   // A LOCAL PRINCIPAL WITH NO IDENTITY WORDS is a row nobody has finished
   // writing. It must not become a wildcard that matches every empty array on
   // every estate.
-  const f = fixture().estate('butler',
-    { estate: 'butler', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
+  const f = fixture().estate('estate-a',
+    { estate: 'estate-a', fetchedAt: '2026-09-14T09:59:00Z', status: 'ok' },
     { '_operator.json': view('_operator', [], '2026-09-14T09:58:00Z'),
       'alice-far.json': view('alice-far', ME, '2026-09-14T09:58:00Z') });
   const [e] = f.read([]);

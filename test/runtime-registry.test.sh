@@ -76,7 +76,7 @@ EOF
 
 cat > "$fixtures/claude-old.conf" <<'EOF'
 REPO_PATH="/Users/alice/Projects/steward"
-RC_LABEL="Butler: steward"
+RC_LABEL="Estate: steward"
 OWNER="alice"
 DOMAIN="steward"
 EOF
@@ -103,7 +103,7 @@ done
 
 cat > "$fixtures/claude-opencode-field.conf" <<'EOF'
 REPO_PATH="/Users/alice/Projects/steward"
-RC_LABEL="Butler: steward"
+RC_LABEL="Estate: steward"
 OWNER="alice"
 DOMAIN="steward"
 OPENCODE_PORT="4097"

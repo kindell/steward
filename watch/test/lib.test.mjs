@@ -1181,15 +1181,15 @@ const row = (login, refresh, state = 'measured', access = '') =>
 // test asserted an alarm there and failed, and the code was right. An estate
 // reading "three days" should know it means three days to the minute.
 test('credentialAlerts: silent just OUTSIDE the threshold', () => {
-  const { alerts } = credentialAlerts({}, [row('jens', '2026-10-05T14:13:51Z')], NOW, { days: 3 })
+  const { alerts } = credentialAlerts({}, [row('alice', '2026-10-05T14:13:51Z')], NOW, { days: 3 })
   assert.deepEqual(alerts, [])
 })
 
 test('credentialAlerts: alarms once the deadline is inside the threshold', () => {
-  const { alerts } = credentialAlerts({}, [row('jens', '2026-10-05T14:13:51Z')],
+  const { alerts } = credentialAlerts({}, [row('alice', '2026-10-05T14:13:51Z')],
                                       '2026-10-02T14:20:00Z', { days: 3 })
   assert.equal(alerts.length, 1)
-  assert.equal(alerts[0].login, 'jens')
+  assert.equal(alerts[0].login, 'alice')
   assert.equal(alerts[0].kind, 'expiring')
 })
 
@@ -1206,7 +1206,7 @@ test('credentialAlerts: alarms harder on a deadline already past', () => {
 
 // A WATCH THAT RUNS EVERY FIVE MINUTES WOULD SEND 864 MAILS OVER THREE DAYS.
 test('credentialAlerts: does not repeat an alert it has already sent', () => {
-  const rows = [row('jens', '2026-10-05T14:13:51Z')]
+  const rows = [row('alice', '2026-10-05T14:13:51Z')]
   const inside = '2026-10-02T14:20:00Z'
   const first = credentialAlerts({}, rows, inside, { days: 3 })
   assert.equal(first.alerts.length, 1)
@@ -1215,7 +1215,7 @@ test('credentialAlerts: does not repeat an alert it has already sent', () => {
 })
 
 test('credentialAlerts: alarms again when the same login crosses into expired', () => {
-  const rows = [row('jens', '2026-10-05T14:13:51Z')]
+  const rows = [row('alice', '2026-10-05T14:13:51Z')]
   const first = credentialAlerts({}, rows, '2026-10-02T14:20:00Z', { days: 3 })
   const later = credentialAlerts(first.next, rows, '2026-10-06T00:00:00Z', { days: 3 })
   assert.equal(later.alerts.length, 1)
@@ -1223,8 +1223,8 @@ test('credentialAlerts: alarms again when the same login crosses into expired', 
 })
 
 test('credentialAlerts: forgets a login whose credential was renewed, so it can alarm again later', () => {
-  const first = credentialAlerts({}, [row('jens', '2026-10-05T14:13:51Z')], '2026-10-02T14:20:00Z', { days: 3 })
-  const renewed = credentialAlerts(first.next, [row('jens', '2026-11-05T00:00:00Z')], '2026-10-02T14:20:00Z', { days: 3 })
+  const first = credentialAlerts({}, [row('alice', '2026-10-05T14:13:51Z')], '2026-10-02T14:20:00Z', { days: 3 })
+  const renewed = credentialAlerts(first.next, [row('alice', '2026-11-05T00:00:00Z')], '2026-10-02T14:20:00Z', { days: 3 })
   assert.deepEqual(renewed.alerts, [])
   assert.equal(Object.keys(renewed.next).length, 0)
 })

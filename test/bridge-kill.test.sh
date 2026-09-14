@@ -1,5 +1,5 @@
 #!/bin/bash
-# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on a darwin host 2026-09-12: without saying so, the
 # OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
 export BRIDGE_OS=linux
 # test/bridge-kill.test.sh - the process is PINNED before its birth is read, and the signal goes
@@ -26,7 +26,7 @@ sleep 300 & SLEEPER=$!
 stat_for() { mkdir -p "$PROC/$1"; printf '%s (sleep) %s 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0 0\n' "$1" "${3:-S}" "$2" > "$PROC/$1/stat"; }
 run() { : > "$REC"; OUT="$(BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder" python3 "$K" "$@" 2>"$T/err")"; RC=$?; ERR="$(cat "$T/err")"; }
 
-# NO PIDFD ON DARWIN (measured on minin 2026-09-12: python 3.14, hasattr(os,'pidfd_open')=False). The helper
+# NO PIDFD ON DARWIN (measured on a darwin host 2026-09-12: python 3.14, hasattr(os,'pidfd_open')=False). The helper
 # then refuses everything with rc 69 by design, so the positive sections cannot run there - they are SKIPPED
 # and said so, instead of inverting seventeen claims. Section 4 measures the refusal itself on every platform.
 HAVE_PIDFD=0; python3 -c 'import os,sys; sys.exit(0 if hasattr(os,"pidfd_open") else 1)' 2>/dev/null && HAVE_PIDFD=1
@@ -68,7 +68,7 @@ run; is "3f no args -> 64" "$RC" "64"
 
 echo "== 4. no pidfd -> rc 69, NO fallback to kill =="
 # LINUX WITHOUT PIDFD is what this section measures (the darwin branch answers 65/0 on its own facts and
-# is proven in test/bridge-darwin.test.sh); measured on minin: without BRIDGE_OS=linux this read 65.
+# is proven in test/bridge-darwin.test.sh); measured on a darwin host: without BRIDGE_OS=linux this read 65.
 OUT="$(BRIDGE_OS=linux BRIDGE_PROC_ROOT="$PROC" STEWARD_KILL="$T/recorder" STEWARD_FORCE_NO_PIDFD=1 python3 "$K" "$SLEEPER" boot-k:4242 2>"$T/err")"; RC=$?
 is "4a rc 69" "$RC" "69"; has "4b says pidfd unavailable" "$(cat "$T/err")" "pidfd unavailable"; is "4c not signalled" "$(cat "$REC")" ""
 is "4d the sleeper is still alive (nothing was ever really signalled)" "$(kill -0 "$SLEEPER" 2>/dev/null && echo alive)" "alive"

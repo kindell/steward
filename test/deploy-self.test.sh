@@ -184,7 +184,7 @@ run() {  # run <hostname answer> <host argument>
 echo "== the estate from the CONFIG FILE: STEWARD_ESTATE= is read, the old bare ESTATE= is not =="
 # deploy-self.sh reads ~/.config/steward/config when STEWARD_ESTATE is unset. The key it reads
 # must be one the steward CLI's loader ACCEPTS, or the file that makes the deploy work breaks
-# every other steward command (measured on butler 2026-09-12: "unknown key 'ESTATE'", rc 78,
+# every other steward command (measured on a darwin host 2026-09-12: "unknown key 'ESTATE'", rc 78,
 # and the desk snapshot died). So the key is STEWARD_ESTATE - the same name as the env var.
 run_cfg() {  # run_cfg <config body>
   ( export PATH="$FX/binsys:$FX/bin:$PATH" HOME="$FX/home" STEWARD_REGISTRY_DIR="$FX/reg" STEWARD_DEPLOY_HOSTNAME=testhost SUDO_RC=0 SYSTEMCTL_RC=0

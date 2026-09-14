@@ -827,7 +827,7 @@ is  "an unknown desk verb is a usage error" "$rc" "64"
 # ── viewerIdentity: the word a second estate joins on ───────────────────────
 #
 # WHY THE FILE CARRIES IT AT ALL. A Desk that shows several estates has to
-# decide whether estate A's `jon` and estate B's `jon` are one person. Today
+# decide whether estate A's `alice` and estate B's `alice` are one person. Today
 # nothing says so but the fact that we spelled them alike, and the failure mode
 # of that assumption is showing one human another human's sessions. The register
 # already holds words that are unique per person - TAILSCALE_LOGIN and

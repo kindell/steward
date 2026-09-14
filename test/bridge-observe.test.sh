@@ -1,9 +1,9 @@
 #!/bin/bash
-# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on minin 2026-09-12: without saying so, the
+# THE FIXTURES ARE /proc-SHAPED (BRIDGE_PROC_ROOT). Measured on a darwin host 2026-09-12: without saying so, the
 # OS facts layer picks the darwin backend there and the suite measures the HOST instead of its fixtures.
 export BRIDGE_OS=linux
 
-# PORTABILITY (measured on minin, macOS, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
+# PORTABILITY (measured on a darwin host, 2026-09-12): touch -d, stat -c and sed -i spell differently on BSD.
 # mtime is set through python3 (required on both platforms by bridge-kill); inode and mtime are read with
 # both stat dialects; the observation queue is shortened with tail, never sed -i.
 set_mtime() { python3 -c 'import os,sys; t=int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
@@ -229,7 +229,7 @@ reset; grep -v '^ACCOUNT=' "$ROOT/sessions.d/$ID.conf" > "$T/r" && mv "$T/r" "$R
 
 echo "== 25. bootstrap: the census sees what the plain call refuses =="
 reset; live_managed; rm -f "$SD"/*; obs "$ID"; is "25a plain, no generation -> unknown" "$(f 2)" "unknown"
-# MEASURED IN PRODUCTION 2026-09-12 (basement, Jon's home): ten live rows without a generation answered
+# MEASURED IN PRODUCTION 2026-09-12 (a Linux host, one person's home): ten live rows without a generation answered
 # unknown/unclassifiable and read as a broken observer; the difference was visible only in the generation
 # directory. A live candidate with NO generation and no census is an UNCENSUSED row, and the reason says so.
 has "25a2 the reason names the cause: uncensused, run the census" "$(f 9)" "uncensused"
