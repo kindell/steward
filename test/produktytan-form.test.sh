@@ -20,21 +20,24 @@ ALLOW='measured|verified|since|rev|until|before|after|from|by'
 # 2026-09-07) and (butler 2026-09-12)" was silent. That is rule 5 in the suite that cites rule 5:
 # an allowed substring somewhere on the line is not membership for the match beside it, and the
 # text is free prose written by an author. Reproduced on main 2026-09-14 with this file's own PAT
-# and ALLOW before the rewrite. Now every match is extracted with -o and filtered ANCHORED as a
-# whole match, so one parenthesis can never vouch for another.
-shape_hits() {
-  LC_ALL=C grep -nE "$PAT" "$1" 2>/dev/null | while IFS= read -r _line; do
-    # grep -n prefixes "N:", and the text after it may carry colons of its own; strip ONE.
-    _txt="${_line#*:}"
-    # The ^ is REDUNDANT today and kept deliberately: PAT's left half is one bare word, so an
-    # allowed word can only ever sit at the start of a match, and removing the anchor changes
-    # nothing (measured: 11/0 either way). It becomes load-bearing the day PAT admits a wider left
-    # half. Rule 1's second branch - genuinely redundant, said out loud instead of hidden.
-    if printf '%s\n' "$_txt" | LC_ALL=C grep -oE "$PAT" | LC_ALL=C grep -qvE "^\\(($ALLOW) 20[0-9]{2}-"; then
-      printf '%s\n' "$_line"
-    fi
-  done
-}
+# and ALLOW before the rewrite.
+#
+# THE FORM IS THE MACHINE STEWARD'S, from their independent fix of the same advisor finding
+# (session_01XKcqbwVu6NHzG48xGSN7TX, 691fd47). Two of us built this in parallel because the review
+# went out without an owner; theirs is the better half and is kept. `grep -noE` extracts every
+# match WITH its line number in one pipe - no shell loop - and it reports one line PER MATCH: two
+# host words on one line are two hits, which is what a person reading the report wants; the first
+# cut collapsed them to one.
+#
+# THE ANCHORS ARE ZERO-COST TODAY, BOTH OF THEM, and this is measured rather than assumed: removing
+# the trailing $, and then removing ^ as well, leaves the suite at 11/0. `grep -o` emits exactly
+# one whole match per line, and PAT's halves are a single bare word and a fixed-width date, so an
+# allowed word can only sit at the start and nothing can follow the closing paren. They are kept
+# for the day PAT admits a wider left or right half - rule 1's second branch, said out loud. I had
+# written in a commit message that mine was zero-cost while this form's anchoring was load-bearing;
+# that was a comparison I had not measured, and it was wrong. What is actually better here is the
+# single pipe and the per-match report.
+shape_hits() { LC_ALL=C grep -noE "$PAT" "$1" 2>/dev/null | grep -vE "^[0-9]+:\(($ALLOW) 20[0-9]{2}-[0-9]{2}-[0-9]{2}\)$" ; }
 
 echo "== 1. the detector, measured before it measures =="
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
@@ -50,7 +53,7 @@ printf '# (measured 2026-09-07) and (butler 2026-09-12)\n' > "$FX/f"; is "1f an 
 printf '# (by 2026-09-12) plus (basement 2026-09-11)\n'    > "$FX/g"; is "1g ... in either order, anywhere on the line"                 "$(shape_hits "$FX/g" | wc -l | tr -d ' ')" "1"
 printf '# (butler 2026-09-12) and (measured 2026-09-07)\n' > "$FX/h"; is "1h ... host first, allowed second"                            "$(shape_hits "$FX/h" | wc -l | tr -d ' ')" "1"
 printf '# (measured 2026-09-07) and (verified 2026-08-02) and (since 2026-01-01)\n' > "$FX/i"; is "1i three allowed on one line stay silent" "$(shape_hits "$FX/i" | wc -l | tr -d ' ')" "0"
-printf '# (butler 2026-09-12) and (basement 2026-09-11)\n' > "$FX/j"; is "1j two host words on one line are ONE flagged line"           "$(shape_hits "$FX/j" | wc -l | tr -d ' ')" "1"
+printf '# (butler 2026-09-12) and (basement 2026-09-11)\n' > "$FX/j"; is "1j two host words on one line are TWO hits, one per match"    "$(shape_hits "$FX/j" | wc -l | tr -d ' ')" "2"
 
 echo "== 2. the product surface carries no such shape =="
 hits=0; list=""
