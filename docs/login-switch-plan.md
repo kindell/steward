@@ -154,6 +154,13 @@ memory had thirty-eight files in the target, none in the source, and **zero
 filenames in common**. What varies is the directory's kind, not the individual
 file — so this needs no file-by-file machine, only a decision per kind.
 
+**The source is the directory the session RUNS AGAINST NOW** - never the one
+that happens to hold the file. A tree can hold a bigger, older, more convincing
+copy of the same uuid; size and plausibility are not provenance. And on a
+collision the **target's file is moved aside with a timestamp, never quietly
+overwritten**: the step that destroys something is the one step that must leave
+a receipt.
+
 **"Newer OR missing" and not merely "newer."** Two transcripts existed only in
 the source; a plain newer-wins rule drops them silently, because a file that is
 absent on one side has no timestamp to lose a comparison with.
@@ -263,11 +270,16 @@ is empty; the fifth is the only one that speaks when it is not.
      grows. Two files of the same name, one moving and one still, is not
      compatible with the session writing anywhere else — and unlike every check
      above it cannot be satisfied by accident.
-5. **The new tree's transcript is not SMALLER than the old tree's frozen one.**
-   Checks 1-4 each read a single tree, and a session resumed from a stale copy
-   in the target satisfies every one of them - see 4d. Only a comparison
-   *between* the trees sees it. Skip this check only when the target project
-   directory did not exist before step 4, and then say so rather than assume it.
+5. **The new tree's transcript is not SHORTER than the old tree's frozen one -
+   counted in LINES.** Checks 1-4 each read a single tree, and a session resumed
+   from a stale copy in the target satisfies every one of them - see 4d. Only a
+   comparison *between* the trees sees it.
+   - **Count lines, not bytes.** A byte count can fall for a legitimate reason;
+     the line count of a live `.jsonl` only grows. On the row that produced this
+     check, `74 015 < 80 711` lines is the harder statement, and `149 MB <
+     165 MB` merely the visible one. Bytes are the secondary reading.
+   - Skip this check only when the target project directory did not exist before
+     step 4, and then **say so** rather than assume it.
 
 ---
 
