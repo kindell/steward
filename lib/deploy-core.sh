@@ -281,7 +281,7 @@ deploy_home_list() {
     #
     # COSTS ZERO ASSERTIONS TODAY AND THAT IS WRITTEN DOWN ON PURPOSE (rule 1,
     # dormant). Measured 2026-09-12: with the line removed, the estate's
-    # butler-deploy suite is 31/0 either way. It first appeared to cost 13 of
+    # own deploy suite is 31/0 either way. It first appeared to cost 13 of
     # those 31 - but that number measured a FIXTURE that staged deploy-core
     # without registry.sh, which was the fixture's defect and has been fixed
     # there. No test is written to make the zero look better; the line stays
@@ -309,8 +309,8 @@ deploy_home_list() {
     # THE HOME IS LOOKED UP, NEVER SPELLED. `/home/$_o` is true on the Linux
     # hosts this was written for and false on every darwin one, where homes live
     # under /Users and /home is an empty autofs mount. Measured 2026-09-11 on
-    # such a host: this answered `/home/jon` for an account whose home is
-    # /Users/jon, so a rollout would have written into a tree that does not
+    # such a host: this answered `/home/alice` for an account whose home is
+    # /Users/alice, so a rollout would have written into a tree that does not
     # exist and left the one that does untouched - and nothing would have said
     # so, because a path is not an error.
     #
