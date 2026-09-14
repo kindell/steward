@@ -194,6 +194,19 @@ for t in test/*.test.sh; do
     printf '  SILENT %-34s %s — %s syntax error(s) on stderr WITHOUT a test failure: the measurement did not run\n' \
       "$name" "$n" "$n_syntax"
     silent=$((silent+1))
+    # THE SAME RULE AS THE RED BRANCH, AND THIS ONE NEEDS IT MORE. The line says
+    # a measurement did NOT run, and then deleted the only text that said WHICH:
+    # the syntax error, and the line it was on, went out with errfile. A reader
+    # of that line is left knowing something broke and unable to find out what -
+    # which is the state this whole branch exists to prevent.
+    #
+    # Only stderr is kept here. stdout is the suite's ordinary chatter and the
+    # counter already summarises it; the evidence for a SILENT verdict is what
+    # was written to stderr WITHOUT being counted.
+    mkdir -p "$RED_DIR" 2>/dev/null
+    cp "$errfile" "$RED_DIR/$name.stderr" 2>/dev/null
+    grep -nE 'syntax error|unexpected token' "$errfile" 2>/dev/null | head -10 | sed 's/^/         /'
+    printf '         full stderr: %s\n' "$RED_DIR/$name.stderr"
     rm -f "$errfile"
   else
     printf '  ok     %-34s %s\n' "$name" "$n"
