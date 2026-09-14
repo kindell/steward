@@ -65,6 +65,20 @@ for k in BESLUT FYND SAMORDNING DRIFT FRAGA; do
   bus_envelope_parse "$k topic: headline" >/dev/null 2>&1 && ok "class $k is accepted" || bad "class $k is accepted"
 done
 
+echo "1b. a subject with a space names the line the author meant"
+e="$(bus_envelope_parse "FYND lackvakt-omfang steg 1: 56 rows characterised" 2>&1 >/dev/null)"; rc=$?
+is  "rc 65"                              "$rc" "65"
+has "...the refusal names the subject"   "$e" "lackvakt-omfang steg 1"
+has "...and offers the corrected line"   "$e" "FYND lackvakt-omfang: steg 1 56 rows characterised"
+# NO SUGGESTION WHEN THE FIRST WORD IS NOT A SUBJECT EITHER - a guess would teach
+# the wrong form, and this is the case that tells the two branches apart.
+e="$(bus_envelope_parse "FYND Steg 1 lackvakt: 56 rows" 2>&1 >/dev/null)"
+has "a bad first word: still the rule"   "$e" "is not [a-z0-9-]+"
+if printf '%s' "$e" | grep -q 'You probably meant'; then bad "a bad first word is not guessed at" "suggested anyway"; else ok "a bad first word is not guessed at"; fi
+# A SUBJECT THAT IS BAD WITHOUT A SPACE GETS NO SUGGESTION EITHER.
+e="$(bus_envelope_parse "FYND Under_score: headline" 2>&1 >/dev/null)"
+if printf '%s' "$e" | grep -q 'You probably meant'; then bad "no space, no suggestion" "suggested anyway"; else ok "no space, no suggestion"; fi
+
 echo "2. the refusal paths"
 for case_ in "no class at all" "MADEUP topic: headline" "BESLUT Under_score: headline" "BESLUT Upper: headline" "BESLUT UPPER: headline" "BESLUT topic headline without colon" "DRIFT topic:" "DRIFT topic:    " "DRIFT topic: 	"; do
   u="$(bus_envelope_parse "$case_" 2>&1)"; rc=$?

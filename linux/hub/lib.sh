@@ -100,7 +100,7 @@ bus_hub_word() {
 BUS_KLASSER='BESLUT FYND SAMORDNING DRIFT FRAGA'
 
 bus_envelope_parse() {
-  local text="$1" rad1 klass rest amne rubrik
+  local text="$1" rad1 klass rest amne rubrik _be_head _be_tail
   rad1="$(printf '%s\n' "$text" | sed -n 1p)"
   klass="${rad1%% *}"
   case " $BUS_KLASSER " in
@@ -120,7 +120,26 @@ bus_envelope_parse() {
   # behave identically.
   case "$amne" in
     ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
-      echo "bus: the envelope's subject '$amne' is not [a-z0-9-]+ (lowercase, digits, hyphens)" >&2; return 65 ;;
+      echo "bus: the envelope's subject '$amne' is not [a-z0-9-]+ (lowercase, digits, hyphens)" >&2
+      # A SUBJECT WITH A SPACE IN IT IS THE SAME MISTAKE EVERY TIME: the headline
+      # started in the subject field, because the colon was written further right
+      # than the author meant. Twice on 2026-09-13 by two different senders, both
+      # of whom already knew the rule - so the refusal that only restates the rule
+      # does not change the next attempt. Naming the line the author meant to write
+      # does, and it costs one branch. The suggestion is only offered when the
+      # first word IS a valid subject; otherwise there is nothing to suggest and a
+      # guess would teach the wrong form.
+      case "$amne" in
+        *" "*)
+          _be_head="${amne%% *}"; _be_tail="${amne#* }"
+          case "$_be_head" in
+            ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) : ;;
+            *) echo "     the headline ran into the subject. You probably meant:" >&2
+               echo "       $klass $_be_head: $_be_tail $rubrik" >&2 ;;
+          esac
+          ;;
+      esac
+      return 65 ;;
   esac
   # Whitespace alone is not a headline. The two copies must behave identically.
   [ -n "${rubrik//[[:space:]]/}" ] || { echo "bus: the envelope has no headline after the subject (whitespace does not count)" >&2; return 65; }
