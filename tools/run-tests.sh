@@ -73,7 +73,8 @@ TIMEOUT_S="${RUN_TESTS_TIMEOUT:-200}"
 # (rc 0), while an empty file and /dev/null are both refused with rc 78 - so no host line can reach
 # a suite. Suites that test the loader set their own STEWARD_CONFIG_FILE and override this.
 _rt_iso="$(mktemp -d 2>/dev/null || mktemp -d -t run-tests)" || exit 70
-export STEWARD_CONFIG_FILE="$_rt_iso/no-operator-config"
+_rt_cfg="$_rt_iso/no-operator-config"     # the path WE own; nothing else may be removed
+export STEWARD_CONFIG_FILE="$_rt_cfg"
 trap 'rm -rf "$_rt_iso"' EXIT
 ONLY="${2:-}"           # optional: run only suites whose name matches
 
@@ -121,6 +122,21 @@ for t in test/*.test.sh; do
   ran=$((ran+1))
 
   errfile="$(mktemp)"
+  # THE ISOLATED PATH MUST STILL BE ABSENT WHEN THIS SUITE STARTS. It is a writable path in a
+  # 0700 directory, so a suite that creates it hands the NEXT suite an operator config the host
+  # never had - the same class as the host config this isolation exists against, only from
+  # inside the run. Absence is what "no config" means (measured: a missing file is rc 0, an
+  # empty one rc 78), so the check is one test and the remedy is to remove it and say so.
+  # ONLY THE PATH THIS RUNNER CREATED. The first cut removed whatever STEWARD_CONFIG_FILE
+  # pointed at - so a run whose isolation had been edited away would DELETE THE OPERATOR'S REAL
+  # CONFIG. Caught by this suite's own control (4b), which runs the runner with the isolation
+  # stripped and a poisoned config in the environment: the check ate the fixture's file and the
+  # control went silent instead of red. A cleanup that can touch a path it did not create is not
+  # a cleanup.
+  if [ "${STEWARD_CONFIG_FILE:-}" = "$_rt_cfg" ] && [ -e "$_rt_cfg" ]; then
+    printf '  NOTE   %-34s a previous suite wrote %s - removed before this suite\n' "$name" "$_rt_cfg"
+    rm -f "$_rt_cfg"
+  fi
   out="$(run_with_timeout bash "$t" 2>"$errfile")"
   rc=$?
   n="$(counts "$out")"

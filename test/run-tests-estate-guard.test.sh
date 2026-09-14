@@ -54,9 +54,35 @@ chmod +x "$FX/tree/test/probe.test.sh"
 out="$(cd "$FX/tree" && STEWARD_CONFIG_FILE="$FX/poison" bash tools/run-tests.sh . probe 2>&1)"
 has "4a a poisoned host config in the environment never reaches a suite" "$out" "ok     probe"
 # the probe bites: strip the isolation lines from the copy and the poison walks straight in
-sed -i.bak '/^_rt_iso=/d; /^export STEWARD_CONFIG_FILE=/d' "$FX/tree/tools/run-tests.sh"
+# STRIP THE ISOLATION, NOT THE BOOKKEEPING. Deleting the _rt_iso/_rt_cfg lines too would leave
+# the later ownership check referring to an unset variable, and under set -u the runner dies
+# before it can be wrong - a crashed runner is not the control we want. Removing only the export
+# leaves the poisoned path in STEWARD_CONFIG_FILE, which is exactly the world this guards against.
+sed -i.bak '/^export STEWARD_CONFIG_FILE=/d' "$FX/tree/tools/run-tests.sh"
 out="$(cd "$FX/tree" && STEWARD_CONFIG_FILE="$FX/poison" bash tools/run-tests.sh . probe 2>&1)"
 has "4b (control) without the isolation the probe is RED" "$out" "RED    probe"
+
+echo "== 5. a suite that writes the isolated config does not hand it to the next one =="
+# The isolated path is writable (a 0700 mktemp dir), so one suite can create the very file the
+# isolation exists to prevent - and every suite after it would read an operator config the host
+# never had. The runner removes it before each suite and says so. Probe A writes it; probe B is
+# red if it can see it.
+mkdir -p "$FX/tree5/test" "$FX/tree5/tools"; cp "$here/tools/run-tests.sh" "$FX/tree5/tools/"
+cat > "$FX/tree5/test/probe-a-writer.test.sh" <<'PROBE'
+#!/bin/bash
+printf 'FORMAT=1\nBOGUS=1\n' > "$STEWARD_CONFIG_FILE"
+echo "pass=1 fail=0"
+PROBE
+cat > "$FX/tree5/test/probe-b-reader.test.sh" <<'PROBE'
+#!/bin/bash
+if [ -e "${STEWARD_CONFIG_FILE:-/nonexistent}" ]; then echo "FAIL: inherited a config from an earlier suite"; echo "pass=0 fail=1"; exit 1; fi
+echo "pass=1 fail=0"
+PROBE
+chmod +x "$FX/tree5/test/probe-a-writer.test.sh" "$FX/tree5/test/probe-b-reader.test.sh"
+out="$( cd "$FX/tree5" && unset STEWARD_ESTATE_ROOT; bash tools/run-tests.sh . probe 2>&1 )"
+has "5a the writer runs"                          "$out" "ok     probe-a-writer"
+has "5b the next suite does not inherit the file" "$out" "ok     probe-b-reader"
+has "5c and the runner says it removed it"        "$out" "a previous suite wrote"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
