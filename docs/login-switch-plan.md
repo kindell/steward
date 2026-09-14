@@ -189,11 +189,55 @@ reconstruct them afterwards. Take them while the old session still runs:
 Write them somewhere both the witness and the operator can read — not into a
 letter that scrolls away.
 
+### 4d. Two rows on one machine can be two different cases
+
+Measured on one estate, on the two rows that were switched last. Both rows
+carried the same `LOGIN`, both moved to the same target login, and the estate's
+own summary of the work was *"two conf rows and a restart — no new directory, no
+new credential, no `/login`."* That summary is true about steps 1 and 2 and
+silent about step 4, and step 4 was different for each row:
+
+    row A (steward)   the target project directory DOES NOT EXIST
+                      source: one transcript, 12 MB, live; 10 memory files
+                      -> the ordinary case: a whole-directory copy, no merge
+
+    row B (hub)       the SAME uuid exists in both trees
+                      target:  149 919 278 B, two days old
+                      source:  165 033 932 B, live
+                      memory:  38 files in the TARGET, 0 in the source
+                      -> FALL C in both directions at once
+
+**Row B is the case that defeats the witness.** Read the four checks above
+against it. A switch that skips step 4 gives a live process (1), a real pid (2),
+the new `CLAUDE_CONFIG_DIR` (3) — and then the transcript *that already existed*
+in the new tree starts growing while the old tree's copy stands frozen (4),
+including the pair-of-files check called the strongest evidence there, the one
+that "cannot be satisfied by accident."
+
+All four pass. Two days and 15 MB of conversation are gone.
+
+It is not the silent fork the document was built around; it is a **silent
+rewind**, and it is worse in exactly one respect: the fork leaves an empty tree,
+which every check notices, while the rewind leaves a plausible one.
+
+**So the witness needs a fifth check, and it is a comparison, not a reading:**
+
+> **The new tree's transcript must not be SMALLER than the old tree's frozen
+> one.** After a correct step 4 they are the same file and the same size at the
+> moment of the copy, and only the new one moves afterwards. A new tree that is
+> smaller than the frozen source is a stale copy that was resumed — the one
+> shape all four earlier checks accept.
+
+And the lesson under it is the one this document keeps paying for in a new
+denomination each time: **every check above reads ONE tree. The fault lives in
+the relation between two.**
+
 ---
 
 ## What the witness measures
 
-Four things, in this order. The fourth is the one that matters.
+Five things, in this order. The fourth is the one that matters when the target
+is empty; the fifth is the only one that speaks when it is not.
 
 1. **A process exists for that row.** Not `pane_current_command` — that reads
    `bash` for a healthy session too, because the launcher runs
@@ -219,6 +263,11 @@ Four things, in this order. The fourth is the one that matters.
      grows. Two files of the same name, one moving and one still, is not
      compatible with the session writing anywhere else — and unlike every check
      above it cannot be satisfied by accident.
+5. **The new tree's transcript is not SMALLER than the old tree's frozen one.**
+   Checks 1-4 each read a single tree, and a session resumed from a stale copy
+   in the target satisfies every one of them - see 4d. Only a comparison
+   *between* the trees sees it. Skip this check only when the target project
+   directory did not exist before step 4, and then say so rather than assume it.
 
 ---
 
