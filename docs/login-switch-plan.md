@@ -80,8 +80,16 @@ that an earlier draft of this plan left open.
 
 ### 4b. The copy's own size is the before-value — and only the copy's
 
-This is worth its own heading because it has now been got wrong twice, once in
-each direction, by people who had just written the rule down.
+This is worth its own heading because it has now been got wrong three times in
+one evening — and the third was by the person who wrote the rule, citing it in
+the same message.
+
+That third case is the instructive one: the conclusion came out right anyway, so
+nothing looked wrong. The comparison used a copy from an hour earlier, and the
+copying alone had added 1.1 MB — so **the file would have read as grown even if
+the session had forked into an empty tree.** A test that cannot fail is not a
+test, and it takes an outside reader with the real before-value to notice that
+it never could have.
 
 Taking the size of a copy made *earlier* and calling it *before* means the file
 grows by however much the fresh copy added — and **"the same file grew" is then
@@ -146,6 +154,11 @@ Four things, in this order. The fourth is the one that matters.
      guess.
    - The proof of a fork is the **combination**: it answers the bus **and** the
      file stands still. Either alone means nothing.
+   - **The strongest evidence is the pair of files.** After the switch the old
+     login's copy is frozen at the second the session died, while the new one
+     grows. Two files of the same name, one moving and one still, is not
+     compatible with the session writing anywhere else — and unlike every check
+     above it cannot be satisfied by accident.
 
 ---
 
