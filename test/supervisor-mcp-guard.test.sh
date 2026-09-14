@@ -642,7 +642,7 @@ is "10d the login's own trust file was written"     "$trust10d" "true"
                                || ok "10d and \$HOME/.claude.json was left alone"
 
 echo "== 10f. the BYPASS dialog is pre-accepted in the login's settings.json, like the trust dialog =="
-# MEASURED ON SKEPPSBRON 2026-09-12: every claude row starts with --permission-mode bypassPermissions
+# MEASURED ON A DEBIAN HOST 2026-09-12: every claude row starts with --permission-mode bypassPermissions
 # (lib/mcpspawn.sh), and the runtime then asks "Yes, I accept" once per config directory unless
 # settings.json carries skipDangerousModePermissionPrompt=true. A fresh login directory has no such
 # line, so the hub there sat at that dialog through every round while the journal looked healthy -

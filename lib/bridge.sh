@@ -121,7 +121,7 @@ bridge_candidates() {
 }
 
 # ---- OS facts: two backends, one vocabulary --------------------------------------------------
-# MEASURED ON MININ 2026-09-12 (macOS arm64): there is no /proc and no pidfd. Every process fact the
+# MEASURED ON A DARWIN HOST 2026-09-12 (macOS arm64): there is no /proc and no pidfd. Every process fact the
 # identity rests on - boot token, birth, state, process group, tty, foreground group, environment -
 # is read here and nowhere else, from /proc on Linux and from ps(1)+sysctl(8) on darwin. Callers see
 # the same words on both. BRIDGE_OS overrides uname for fixtures; BRIDGE_PROC_ROOT replaces /proc.
