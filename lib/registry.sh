@@ -5585,6 +5585,50 @@ registry_login_unix_account_resolve() {
   return 1
 }
 
+# registry_account_here <principal> - the accounts.d slug for THIS process's own
+# unix account, on THIS host, under that principal. Empty and rc 1 when there is
+# none; rc 2 when two rows claim the same (unix account, host) for one principal,
+# which is a register fault and never a pick.
+#
+# WHY IT EXISTS. `registry login shell` refuses, rc 77, whenever the resolved
+# account's USERNAME is not the user running it - so the only account that verb
+# can ever succeed with is the one this function finds. Asking an operator to
+# name it was asking them to look up a slug in order to be allowed to do the one
+# thing permitted, and that friction is how somebody eventually runs a bare
+# /login in whatever directory they happen to be standing in.
+#
+# THE JOIN IS ALL THREE FIELDS, and each one is load-bearing. On the unix account
+# alone it would hand one person another person's credential directory the moment
+# two principals shared a machine account. On the principal alone it would
+# resolve into a home this process cannot open, which is the ambiguity that made
+# --account necessary in the first place. On principal and host without the user
+# it is exactly that ambiguity again.
+registry_account_here() {
+  local principal="${1:-}" host f cand hits="" n=0 me ok
+  [ -n "$principal" ] || return 1
+  me="$(id -un)" || return 1
+  host="$(_registry_self_host)" || return 1
+  for f in "$(registry_account_dir)"/*.conf; do
+    [ -f "$f" ] || continue
+    cand="$(basename "$f" .conf)"
+    # SUBSHELLED PER ROW, so ACCOUNT_* never reaches the caller's frame - the
+    # same isolation registry_login_unix_account_resolve documents.
+    ok="$( registry_account_load "$cand" >/dev/null 2>&1 \
+           && [ "$ACCOUNT_PRINCIPAL" = "$principal" ] \
+           && [ "$ACCOUNT_HOST" = "$host" ] \
+           && [ "$ACCOUNT_USERNAME" = "$me" ] \
+           && printf 'y' )"
+    [ -n "$ok" ] || continue
+    hits="$hits $cand"; n=$(( n + 1 ))
+  done
+  if [ "$n" -gt 1 ]; then
+    echo "registry: REFUSING - two account rows claim unix '$me' on '$host' for principal '$principal' ($(printf '%s' "${hits# }")). The register cannot hold both; this is not a choice to make at read time." >&2
+    return 2
+  fi
+  [ "$n" -eq 1 ] && { printf '%s\n' "${hits# }"; return 0; }
+  return 1
+}
+
 # The printing form every existing caller and probe already uses. It adds one
 # thing to the resolver: the answer on stdout.
 registry_login_unix_account() {

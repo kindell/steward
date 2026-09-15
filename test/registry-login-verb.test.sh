@@ -820,16 +820,31 @@ run7() { STEWARD_ESTATE_ROOT="$FX7" STEWARD_CONFIG_FILE="$FX7/no-such-config" \
 run7 add mine --principal me --account me@example.test --provider claude-team \
      --config-dir '~/.claude-logins/mine' --legal-owner 'Acme' --json >/dev/null 2>&1
 
-# THE REGRESSION ITSELF, PINNED. Without an account the verb must still refuse -
-# and the refusal must be the AMBIGUITY, not the sentence for a missing row.
+# THE REGRESSION ITSELF, PINNED - AND IT NO LONGER NEEDS THE FLAG. The measured
+# production failure was that a person with two accounts on one host could not
+# open ANY of their own login directories. --account answered that; deriving the
+# account answers it without asking. So the claim moves: the verb must now
+# SUCCEED here, on the account this process runs as.
+out="$(run7 shell mine -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null)"
+is  "14a two accounts, no flag: resolves to the one this user runs as" "$out" "$FX7/home/.claude-logins/mine"
+
+# AND THE AMBIGUITY REFUSAL IS STILL THERE FOR THE CASE THAT IS GENUINELY
+# UNKNOWABLE: two accounts, neither of them this process's. Nothing can be
+# derived, so the verb must refuse and say which rows collided rather than pick.
+# Dropping this with the flag would have retired the guard along with the
+# ceremony.
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="neither-a"\n' > "$FX7/accounts.d/a-me.conf"
+chmod 600 "$FX7/accounts.d/a-me.conf"
 err="$(run7 shell mine -- true 2>&1)"; rc=$?
-is  "14a two accounts, no --account: the verb refuses rc 78" "$rc" "78"
-has "14b ...and the refusal names the ambiguity"             "$err" "more than one account"
+is  "14b neither account is this user: refuses rc 78"  "$rc" "78"
+has "14c ...and names the ambiguity"                   "$err" "more than one account"
 case "$err" in
   *"no account for this login's principal on this host"*)
-    bad "14c ...and not the missing-row sentence" "still printed: $err" ;;
-  *) ok "14c ...and not the missing-row sentence" ;;
+    bad "14d ...and not the missing-row sentence" "still printed: $err" ;;
+  *) ok "14d ...and not the missing-row sentence" ;;
 esac
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="%s"\n' "$ME7" > "$FX7/accounts.d/a-me.conf"
+chmod 600 "$FX7/accounts.d/a-me.conf"
 
 # ASKED WITH THE ACCOUNT, IT OPENS.
 out="$(run7 shell mine --account a-me -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null)"
@@ -872,6 +887,80 @@ has "14o ls --account resolves the directory"        "$out" "$FX7/home/.claude-l
 out="$(run7 ls --account a-me --json 2>/dev/null | jq -r '.logins[] | select(.login=="mine") | .unix_account')"
 is  "14p --json carries the named account's username" "$out" "$ME7"
 rm -rf "$FX7"
+
+# ── 15. `login shell` KNOWS WHICH ACCOUNT IT IS ─────────────────────────────
+#
+# THE FLAG WAS CEREMONY ON THIS VERB, and reading the code to explain it to an
+# operator is what showed it. `login shell` already refuses, rc 77, whenever the
+# resolved account's USERNAME is not the user running it:
+#
+#     me="$(id -un)"; [ "$user" = "$me" ] || fel "... Run it as $user ..." 77
+#
+# So --account on `shell` can only ever name the account one is ALREADY running
+# as; every other value is refused one line later. Requiring it taught operators
+# to type a slug they had to look up in order to be allowed to do the only thing
+# the verb permits - and friction like that is why somebody eventually runs a
+# bare /login in whatever directory they are standing in, which is the incident
+# this verb exists to prevent.
+#
+# THE DERIVATION CANNOT WIDEN ANYTHING. It picks the row whose USERNAME is this
+# process's own user, on this host, under the login's principal. That is the one
+# account the ownership check would have accepted anyway.
+#
+# `login ls` KEEPS THE FLAG: asking about somebody else's row there is
+# legitimate and answers `unreadable`, which is a fact worth being able to ask
+# for.
+FX8="$(mktemp -d)"
+mkdir -p "$FX8/estate" "$FX8/logins.d" "$FX8/accounts.d" "$FX8/home/.claude-logins/mine"
+chmod 700 "$FX8/logins.d"
+chmod 755 "$FX8/home/.claude-logins" "$FX8/home/.claude-logins/mine"
+cp "$FX/estate/steward.conf" "$FX8/estate/steward.conf"
+ME8="$(id -un)"
+# The production shape: one human, two accounts on one host - their own home and
+# the machine account a hub runs as. Both rows are correct and neither is a typo.
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="%s"\n' "$ME8"      > "$FX8/accounts.d/a-self.conf"
+printf 'PRINCIPAL="me"\nHOST="h1"\nUSERNAME="elsewhere"\n'      > "$FX8/accounts.d/a-other.conf"
+printf 'PRINCIPAL="them"\nHOST="h1"\nUSERNAME="somebody-else"\n' > "$FX8/accounts.d/a-theirs.conf"
+chmod 600 "$FX8/accounts.d"/*.conf
+cat > "$FX8/homelookup8" <<STUB
+case "\$1" in
+  $ME8) printf '$FX8/home\n' ;;
+  elsewhere) printf '/srv/homes/elsewhere\n' ;;
+  somebody-else) printf '/srv/homes/somebody-else\n' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$FX8/homelookup8"
+run8() { STEWARD_ESTATE_ROOT="$FX8" STEWARD_CONFIG_FILE="$FX8/no-such-config" \
+         STEWARD_SELF_HOST=h1 STEWARD_HOME_LOOKUP_CMD="$FX8/homelookup8" \
+         bash "$STEWARD" registry login "$@"; }
+run8 add mine   --principal me   --account me@example.test   --provider claude-team --config-dir '~/.claude-logins/mine'   --legal-owner 'Acme' --json >/dev/null 2>&1
+run8 add theirs --principal them --account them@example.test --provider claude-team --config-dir '~/.claude-logins/theirs' --legal-owner 'Acme' --json >/dev/null 2>&1
+
+out="$(run8 shell mine -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null)"
+is  "15a with no flag at all, the verb finds the account it is running as" "$out" "$FX8/home/.claude-logins/mine"
+err="$(run8 shell mine -- true 2>&1 >/dev/null)"
+has "15b ...and the banner is unchanged"                 "$err" "dir      $FX8/home/.claude-logins/mine"
+# THE EXPLICIT FORM STILL WORKS, because a person reading a runbook should be
+# able to say which account they mean and have the verb agree.
+out="$(run8 shell mine --account a-self -- sh -c 'printf %s "$CLAUDE_CONFIG_DIR"' 2>/dev/null)"
+is  "15c an explicit --account naming the same row agrees" "$out" "$FX8/home/.claude-logins/mine"
+# AND IT STILL REFUSES SOMEBODY ELSE'S HOME. The derivation is a convenience on
+# top of the ownership rule, never a way around it.
+err="$(run8 shell mine --account a-other -- true 2>&1)"; rc=$?
+is  "15d --account naming another home still refuses rc 77" "$rc" "77"
+# A LOGIN WHOSE PRINCIPAL HAS NO ACCOUNT YOU RUN AS CANNOT BE DERIVED AT ALL.
+# The join is (principal, host, this user) - all three. A derivation that matched
+# on the unix account alone would hand one person another person's credential
+# directory the moment two principals ever shared a machine account; one that
+# matched on the principal alone would resolve into a home this process cannot
+# open. Here `them` runs as somebody else, so nothing is derivable and the
+# ownership rule refuses exactly as before.
+err="$(run8 shell theirs -- true 2>&1)"; rc=$?
+is  "15e another principal's login is refused, not derived" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+is  "15f ...with the ownership refusal, rc 77"            "$rc" "77"
+has "15g ...naming whose home it would have been"        "$err" "/srv/homes/somebody-else"
+rm -rf "$FX8"
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
