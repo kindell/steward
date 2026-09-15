@@ -8,9 +8,9 @@ naming-policy question before it is a code question.
 A session asked to be registered. The hub judged the requested slug wrong and
 wrote the row under a different one. The row is correct; the session is mute.
 
-    request     namn=varvet-varvet-jon
-    row written SLUG="varvet-finance-claude-jon-varvet"
-    activation  no key '/home/<owner>/.ssh/id_busrelay_varvet-finance-claude-jon-varvet'
+    request     namn=acme-acme-alice
+    row written SLUG="acme-ledger-claude-alice-acme"
+    activation  no key '/home/<owner>/.ssh/id_busrelay_acme-ledger-claude-alice-acme'
 
 The key was minted under the name the REQUESTER chose, before the hub chose
 another. Nothing links the two.
