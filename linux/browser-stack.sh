@@ -52,9 +52,9 @@ W=1600 H=1000
 # `stat -c` is GNU-only. On a BSD stat it fails, the value became '?', and the
 # caller then refused EVERY profile with "the profile directory has mode ?". This
 # file is named linux/ but the manifest has no per-host column, so it installs on
-# every host as ~/bin/browser-stack.sh - measured on butler 2026-09-15: the file is
-# there, executable, and could not have worked. It does not bite today only because
-# the rigs on that host are started by the estate's chrome-launch.sh instead, which
+# every host as ~/bin/browser-stack.sh - measured on a darwin host, 2026-09-15: the
+# file is there, executable, and could not have worked. It does not bite today only
+# because the rigs on that host are started by the estate's chrome-launch.sh, which
 # is luck about who calls it and not a property of the file.
 #
 # AND `stat -f` IS NOT A SPELLING DIFFERENCE: on GNU it means FILESYSTEM status and

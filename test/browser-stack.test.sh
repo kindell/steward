@@ -420,31 +420,32 @@ else
 fi
 rm -rf "$homeE"
 
-# ── H. _bs_mode LÄSER LÄGET PÅ BÅDA PLATTFORMARNA ────────────────────────────
-# `stat -c` är GNU-only. Raden som läser profilkatalogens läge hade ingen BSD-väg,
-# så på darwin blev värdet '?' och skriptet REFUSERADE varje profil med "the
-# profile directory has mode ?". Filen heter linux/ men manifestet har ingen
-# per-värd-kolumn: den installeras på varje värd som ~/bin/browser-stack.sh, och
-# på butler låg den körbar och obrukbar (mätt 2026-09-15).
+# -- H. _bs_mode READS THE MODE ON BOTH PLATFORMS -----------------------------
+# `stat -c` is GNU-only. The line that reads the profile directory's mode had no
+# BSD path, so on a darwin host the value became '?' and the script REFUSED every
+# profile with "the profile directory has mode ?". The file is named linux/ but the
+# manifest has no per-host column: it installs on every host as
+# ~/bin/browser-stack.sh, and on the mini it sat there executable and unable to
+# work (measured 2026-09-15).
 #
-# Provet kör helpern mot RIKTIGA stat på den värd som kör sviten — inte mot
-# stubben ovan, som är till för att testa anroparen. Därför en ren PATH.
+# This section runs the helper against the REAL stat on whichever host runs the
+# suite - not against the stub above, which exists to test the CALLER.
 _bs_src="$(mktemp)"; sed -n '/^_bs_mode()/,/^}/p' "$SCRIPT" > "$_bs_src"
-_bs_fx="$(mktemp -d)"; mkdir -m 700 "$_bs_fx/sju"; mkdir -m 755 "$_bs_fx/sjufemfem"
-# STUBBEN MÅSTE BORT, inte bara PATH. Sviten definierar en egen stat()-FUNKTION
-# (för att testa anroparen), och en funktion bryr sig inte om PATH — ett subskal
-# ärver den. Första lydelsen av det här provet mätte därför stubbens fallback och
-# inte helperns: båda mutationerna nedan passerade grönt. `unset -f stat` är det
-# som gör provet till en mätning av koden i stället för av provets egen rigg.
+_bs_fx="$(mktemp -d)"; mkdir -m 700 "$_bs_fx/seven"; mkdir -m 755 "$_bs_fx/sevenfivefive"
+# THE STUB MUST GO, not only PATH. This suite defines a stat() FUNCTION, and a
+# function does not care about PATH: a subshell inherits it. The first draft of
+# this section therefore measured the stub's fallback and not the helper's - both
+# mutations below passed green. `unset -f stat` is what makes it a measurement of
+# the code instead of of the suite's own rig.
 _bs() { ( unset -f stat 2>/dev/null; PATH="/usr/bin:/bin"; . "$_bs_src"; _bs_mode "$1" ); }
-[ "$(_bs "$_bs_fx/sju")" = "700" ] && ok || bad "H1 700 läses som 700" "fick '$(_bs "$_bs_fx/sju")'"
-[ "$(_bs "$_bs_fx/sjufemfem")" = "755" ] && ok || bad "H2 755 läses som 755" "fick '$(_bs "$_bs_fx/sjufemfem")'"
-# EN SAKNAD KATALOG ÄR INTE ETT LÄGE. '?' är svaret, och anroparen vägrar på det —
-# tystnad här hade blivit ett tomt värde som jämförs mot "700" och också vägrar,
-# fast utan att säga varför.
-[ "$(_bs "$_bs_fx/finns-inte")" = "?" ] && ok || bad "H3 saknad katalog ger ?" "fick '$(_bs "$_bs_fx/finns-inte")'"
-# OCH DEN VIKTIGA: anroparen får ett värde som ser ut som ett läge, aldrig text.
-case "$(_bs "$_bs_fx/sju")" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ok ;; *) bad "H4 värdet har lägets form" ;; esac
+[ "$(_bs "$_bs_fx/seven")" = "700" ] && ok || bad "H1 700 reads as 700" "got '$(_bs "$_bs_fx/seven")'"
+[ "$(_bs "$_bs_fx/sevenfivefive")" = "755" ] && ok || bad "H2 755 reads as 755" "got '$(_bs "$_bs_fx/sevenfivefive")'"
+# A MISSING DIRECTORY IS NOT A MODE. '?' is the answer and the caller refuses on it;
+# silence here would become an empty value compared against "700", which also
+# refuses - without saying why.
+[ "$(_bs "$_bs_fx/no-such")" = "?" ] && ok || bad "H3 a missing directory gives ?" "got '$(_bs "$_bs_fx/no-such")'"
+# AND THE ONE THAT MATTERS: the caller gets something shaped like a mode, never text.
+case "$(_bs "$_bs_fx/seven")" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ok ;; *) bad "H4 the value has a mode's shape" ;; esac
 rm -rf "$_bs_fx" "$_bs_src"
 
 echo "pass=$pass fail=$fail"
