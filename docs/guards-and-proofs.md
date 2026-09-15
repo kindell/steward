@@ -608,3 +608,44 @@ Rule 1 asks whether a guard is unproven or redundant. This is the same question
 asked of one claim inside a group that is otherwise sound - and the answer is
 usually "redundant under load, load-bearing under regression", which is why the
 repair is neither keeping it as it is nor deleting it.
+
+## 18. A claim about two platforms, measured on one, is not "measured".
+
+Three of these in one night, all by the same author, all in the same shape:
+
+| the claim | measured on | asserted about |
+|---|---|---|
+| "the `^` anchor is zero-cost" | darwin, with that `PAT` | every `PAT` a later reader might write |
+| "no suite reads this file" | a grep for the filename | every suite, including those that glob |
+| "the shape check is zero-cost on both hosts we have" | darwin | GNU, where it turned out to do the work |
+
+Each time the word used was **measured**. Each time the measurement was real and
+the conclusion was wider than it. The mechanism is not laziness: it is that the
+reachable half is the half that gets measured, and a conclusion written in the
+same sentence inherits the confidence of the number beside it.
+
+The repair is a habit of phrasing, and it costs one clause:
+
+> **Name the ground the measurement stands on, in the sentence that makes the
+> claim.** "Zero-cost here; unmeasured on GNU" is honest and just as short as
+> "zero-cost on both". A reader on the other platform then knows whether they
+> are reading a result or an expectation - and, more usefully, knows they can
+> settle it in a minute.
+
+That is what happened to the third one: a colleague on the other platform ran
+the exact call, and the answer was not what the comment said. The code was
+right; the sentence about it was not. Code is tried by the gate on both
+platforms - **prose is tried only by a reader who cares**, which is why a
+cross-estate review cannot be replaced by more tests.
+
+**And the corollary, which cost a second correction the same hour: a measurement
+refutes everything it touches, not only the claim that prompted it.** The GNU
+run was made to check one sentence; it also falsified the sentence below it,
+and the person who ran it did not see that - they checked the line they were
+already looking at. So when someone else's measurement lands on your text, read
+the whole passage against it, not the clause they quoted. The one who runs a
+measurement is not automatically the one who sees everything it settles.
+
+Rule 15 is this rule's neighbour and not the same: there, a TOOL could not see
+half the answer and returned zero. Here the tool worked, the number was true,
+and the SENTENCE reached further than the ground under it.
