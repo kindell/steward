@@ -615,12 +615,19 @@ A suite says `pass=17 fail=0` about the things it checked. It says nothing
 whatsoever about what it wrote outside its own fixture tree - and a defect that
 lives only in the traces passes every run, in both worlds, forever.
 
-**The measured case.** Four suites start a *second* runner against a fixture
-tree. Three of those fixtures hold a probe that is MEANT to fail: it is the
-control group, the thing that shows the isolation bites when the protection is
-removed. The nested runner inherited `RUN_TESTS_RED_DIR` from the environment,
-and since a red suite now saves its whole output there, **the control group's
-deliberate failures were written into the OUTER run's evidence directory.**
+**The measured case.** Two suites start a *second* runner against a fixture
+tree, at five call sites between them. **One** of those runs a probe that is
+MEANT to fail: it is the control group, the thing that shows the isolation bites
+when the protection is removed. The nested runner inherited `RUN_TESTS_RED_DIR`
+from the environment, and since a red suite now saves its whole output there,
+**that deliberate failure was written into the OUTER run's evidence
+directory.**
+
+**One call site was enough.** The reader of an evidence directory cannot know
+which of the files in it is the control - so a single planted red makes the
+whole directory unreadable, not one file in it. This is a narrower claim than
+"nested runners tend to carry deliberate reds", and a stronger one: the defect
+does not need a pattern to be total.
 
 The result is a directory in which a control group and a real regression are
 indistinguishable. Somebody opening it after a gate run reads
