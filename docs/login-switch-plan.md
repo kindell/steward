@@ -1,6 +1,7 @@
 # Switching a session's login, with a witness
 
-**Status:** in flight 2026-09-14. One of six rows done. Written so the three
+**Status:** COMPLETE 2026-09-15. Six of six rows switched, and each one verified
+from outside by a party other than the one that switched it. Written so the three
 stewards can read the same thing instead of reconstructing it from letters, and
 so the estate owner does not have to choose at each step.
 
@@ -94,6 +95,23 @@ that an earlier draft of this plan left open.
    row, or stop the supervisor for that id), do 3b and 4, and **write the row
    last** - so that the thing which releases the supervisor is the last thing
    that happens rather than the first.
+
+   **And the three steps that must be TIGHT are kill -> copy -> write the row.**
+   Measured on the last row of the operation, 150 MB and three days: the first
+   attempt put a sync tool between the kill and the row, the tool wrote 1 225
+   decision lines, and while it ran the supervisor respawned the session against
+   the old login. That was harmless - the old tree was complete - but it made
+   the copy a moving target. The second attempt ran kill, `cp`, row with nothing
+   slow in between, and the window closed entirely.
+
+   So **"copy and kill in one command" is not enough if one of the steps is
+   slow**, and the repair is a division of labour rather than a faster tool:
+
+   > The tool decides WHAT to copy. A plain `cp` owns the WINDOW.
+
+   They are two different jobs with opposite requirements - one wants to be
+   thorough and explain itself, the other wants to be over. Run the tool first,
+   for the decision; then copy with the cheapest thing that can do it.
 
 4. **Copy the whole project directory now**, in this minute, and read the size
    and mtime **of the fresh copy** of the transcript. That pair is the *before*
@@ -333,6 +351,11 @@ is empty; the fifth is the only one that speaks when it is not.
      can put down.**
    - Skip this check only when the target project directory did not exist before
      step 4, and then **say so** rather than assume it.
+   - **The gap is not a law of nature.** On one row 14 lines of bookkeeping fell
+     between the copy and the kill; on the next, run tight, the target's first
+     81 959 lines were byte-for-byte identical to the whole frozen source and
+     the gap was ZERO. The window is a function of how slow the step between is,
+     and nothing else.
 
 ---
 
