@@ -12,13 +12,13 @@ The transfer verb is step 3 of the agreed order (1. lifecycle gate — merged.
 spec has to be built on, and item 1 below was why the spec could not be written.
 It now can be.
 
-**What the first use of it will be, measured 2026-09-15 rather than assumed:**
-fifteen rows in the Point domain on one estate, owned by **two different
-people**, to be moved to another machine. That is a materially different
-operation from the six-row login switch completed the same night: those rows
-changed which login they used *on the same machine*, and kept their home, their
-keys, their rig numbers and their bus identity. A move between estates keeps
-none of those by default, and half the rows are not the estate owner's to move.
+**What the first use of it will be, in shape rather than in particulars:** a
+domain's worth of rows on one estate, owned by **more than one person**, moving
+to another machine. That is a materially different operation from a login switch
+on a single machine: those rows change which login they use and keep their home,
+their keys, their rig numbers and their bus identity. A move between estates
+keeps none of those by default, and not every row belongs to the person
+requesting the move.
 
 ---
 
