@@ -561,3 +561,50 @@ The finding was the searcher's own - the flaw was in the question, not in the
 tree - and it was measured by the colleague who ran the suite out of habit
 after editing the same file, which is also how most of this document was
 found.
+
+## 16. The least load-bearing claim in a group is where a wall-clock limit hides.
+
+Four claims about one hung shim, in the order the suite makes them:
+
+```
+87  stderr names the deadline                      the guard fired
+88  its own child was reaped by the group kill     it killed the whole group
+89  seam-timeout at a different injected limit     the limit drives the reason, at two values
+90  returned in under twice the injected limit     and it was quick enough
+```
+
+The first three prove the thing the seam exists for: the guard **killed** the
+shim instead of waiting it out, and the limit - not chance - decided the reason,
+shown at two different values so a shim that merely happened to return cannot
+fake it. The fourth adds an upper bound on how long that was allowed to take.
+
+Measured 2026-09-15, on a host running 128 suites: the fourth failed and the
+other three passed. It compares `date +%s` before and after an injected 3-second
+limit and requires a return inside 6 - a **wall clock** on a shared machine.
+Under load the kill and the return took longer, with nothing wrong in the code
+the suite was pointed at. Run alone, three times: green, green, green.
+
+**The claim that fails under load is also the one that adds least.** That is not
+a coincidence, and it generalises: a wall-clock bound tends to arrive as an extra
+safety on top of a proof that already stands, written by someone who has just
+made the hard part work. It is the cheapest line in the group to write and the
+only one whose truth depends on who else is using the machine.
+
+So, when a timing claim goes red, read what its NEIGHBOURS already prove before
+repairing the timing:
+
+- If the neighbours carry the proof, the bound is decoration under load. But
+  removing it is not free either - it is the only thing standing between "kills
+  correctly" and "kills correctly in sixty seconds", and a regression there
+  would pass every remaining claim.
+- The repair that keeps the protection is to compare against a reference that
+  suffers the SAME load - a sleep started at the same moment - so the bound
+  scales WITH the host instead of against it.
+- The repair to refuse is a bigger constant, or one lifted into a variable the
+  gate can raise. A loaded enough host passes that too, and then the suite is
+  green because it was made slacker, not because the product got better.
+
+Rule 1 asks whether a guard is unproven or redundant. This is the same question
+asked of one claim inside a group that is otherwise sound - and the answer is
+usually "redundant under load, load-bearing under regression", which is why the
+repair is neither keeping it as it is nor deleting it.
