@@ -56,6 +56,14 @@ has "3b2 and says the run used the DESIGNATED estate" "$out" "estate-guard=ok(de
 out="$(STUB_RC=1 STEWARD_ESTATE_ROOT="$FX/estate" run)"
 has "3c a red guard is RED in the summary"     "$out" "estate-guard=RED"
 has "3c2 the red word is scoped the same way"  "$out" "estate-guard=RED(designated)"
+# A RED ESTATE GUARD KEEPS ITS OUTPUT. It is the one red the other platform cannot
+# reproduce - the name list lives in the estate, so a steward without one gets
+# not-run and can only ask. Measured 2026-09-15: a colleague asked for the line off
+# a red on their own branch and there was no file to send.
+case "$out" in *"full output: "*"estate-leak-guard.out"*) ok "3c3 a red guard names a saved file" ;; *) bad "3c3 a red guard names a saved file" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
+_egf="$(printf '%s' "$out" | sed -n 's/.*full output: \(.*estate-leak-guard.out\).*/\1/p' | head -1)"
+if [ -n "$_egf" ] && [ -s "$_egf" ]; then ok "3c4 the file exists and is not empty"; else bad "3c4 the file exists and is not empty" "path='$_egf'"; fi
+case "$(cat "$_egf" 2>/dev/null)" in *"produktytan"*|*"pass="*|*"FAIL"*) ok "3c5 it holds the guard's own output, not a summary" ;; *) bad "3c5 it holds the guard's own output" "$(head -c 120 "$_egf" 2>/dev/null)" ;; esac
 has "3d and counted among the red suites"      "$out" "red=1"
 # STEWARD_PRODUCT_REPO must be the gated tree, not a sibling: the stub echoes what it got.
 printf '#!/bin/bash\necho "FAIL: repo=${STEWARD_PRODUCT_REPO:-unset}"\necho "pass=1 fail=1"\nexit 1\n' > "$FX/estate/test/leak-guard.test.sh"

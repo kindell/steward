@@ -332,6 +332,17 @@ else
   if [ "$eg_rc" -eq 0 ]; then estate_guard="ok(designated)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
   else estate_guard="RED(designated)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
+       # THE ONE RED WHOSE EVIDENCE NOBODY ELSE CAN REPRODUCE MUST BE KEPT.
+       #
+       # Every shell suite's output is saved when it goes red. This guard's was not -
+       # it printed twelve matching lines and dropped the rest, in the one case where
+       # the person who needs them CANNOT re-run it: the name list lives in the estate,
+       # so a steward on a host without one gets estate-guard=not-run and has no way to
+       # ask what fell. Measured 2026-09-15: a colleague asked for exactly that line off
+       # a red on their own branch, and there was no file to send.
+       mkdir -p "$RED_DIR" 2>/dev/null
+       printf '%s\n' "$eg_out" > "$RED_DIR/estate-leak-guard.out" 2>/dev/null
+       printf '         full output: %s\n' "$RED_DIR/estate-leak-guard.out"
   fi
 fi
 [ -n "$eg_reason" ] && printf '  NOT RUN estate leak-guard: %s\n' "$eg_reason"
