@@ -380,6 +380,26 @@ else
   [ -n "$eg_who" ] || eg_who="$(basename "$STEWARD_ESTATE_ROOT")"   # an estate without the key still says something
   eg_out="$(run_with_timeout env STEWARD_PRODUCT_REPO="$HERE" bash "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" 2>&1)"; eg_rc=$?
   eg_n="$(counts "$eg_out")"; [ -n "$eg_n" ] || eg_n="?/?"
+  # THE LIST DIGEST IS A PAIR PROPERTY, SO ITS ABSENCE IS PRINTED TOO.
+  #
+  # Two receipts that both say ok(designated) are consistent with "two estates, two
+  # lists" AND with "one estate measured twice" - and the reader cannot tell. A digest
+  # of the list each guard actually ran settles it: different digests prove different
+  # lists, the same digest proves the same list, and neither leaks a name or even a
+  # COUNT (a count says how many people and customers an estate has; a digest says
+  # nothing).
+  #
+  # Measured 2026-09-16, and it is why the absence is printed rather than omitted: five
+  # open PRs carried "green on both halves" while one half had never run a name list at
+  # all. A field that is simply missing reads as a field that was not needed - the same
+  # equivalence between absence and emptiness this runner has paid for twice. A digest
+  # and a blank prove exactly as little as two blanks; saying WHICH half brought one is
+  # what makes the gap visible while the estates converge.
+  #
+  # The guard owns the definition. This reads the line it prints and carries it verbatim;
+  # computing one here would be a second reader of the list.
+  eg_digest="$(printf '%s\n' "$eg_out" | sed -n 's/^LIST-DIGEST=\([0-9a-fA-F][0-9a-fA-F]*\).*$/\1/p' | head -1)"
+  [ -n "$eg_digest" ] || eg_digest="absent"
   # THE SUMMARY LINE SAYS THE ROLE; THE SUITE LINE SAYS THE NAME.
   #
   # The summary is the line people paste into a pull request as proof. So the tool
@@ -404,6 +424,7 @@ else
   # ASKED (env) or because the host said so (config), which is the same distinction the
   # role made reproducible in the first place.
   eg_tag="designated"; [ "$eg_src" = config ] && eg_tag="designated:config"
+  eg_tag="$eg_tag, list=$eg_digest"
   if [ "$eg_rc" -eq 0 ]; then estate_guard="ok($eg_tag)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
   else estate_guard="RED($eg_tag)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
