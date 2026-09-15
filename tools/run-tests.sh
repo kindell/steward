@@ -70,6 +70,11 @@ TIMEOUT_S="${RUN_TESTS_TIMEOUT:-200}"
 # COMMAND SUBSTITUTION - a subshell - so a variable the function sets there
 # never reaches the caller that has to read rc 124. Measured: the first cut set
 # it in the function and the caller saw the old value every time.
+#
+# SET ONCE, READ TWICE. That makes "this host has no timeout(1)" a fact the
+# RUNNER holds, not a question asked again in every branch that needs it -
+# the same shape as _rt_cfg in the config isolation: a path the runner owns,
+# not a value it asks about. (butler-steward-jon, 2026-09-15)
 if command -v timeout >/dev/null 2>&1; then _RT_LIMITED=1; else _RT_LIMITED=0; fi
 
 # WHERE A RED SUITE'S OUTPUT IS KEPT. Outside the repo under test, because the
