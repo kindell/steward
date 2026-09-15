@@ -57,18 +57,25 @@ W=1600 H=1000
 # because the rigs on that host are started by the estate's chrome-launch.sh, which
 # is luck about who calls it and not a property of the file.
 #
-# AND `stat -f` IS NOT A SPELLING DIFFERENCE: on GNU it means FILESYSTEM status and
-# SUCCEEDS, printing "File: ... Type: ext2/ext3 ...", which read as a mode is a
-# wrong answer that exits 0. rc alone cannot catch that, so a value counts as a
-# mode only when it LOOKS like one - the same guard the operator-config fix needed
-# in the other direction.
+# AND `stat -f` IS NOT A SPELLING DIFFERENCE: on GNU it means FILESYSTEM status.
+# Measured on a GNU host 2026-09-15, with the exact call this code makes:
 #
-# THE SHAPE CHECK ON THE BSD BRANCH IS ZERO-COST ON BOTH HOSTS WE HAVE, and that is
-# measured rather than assumed: removing it leaves the suite green here, because a
-# BSD `stat -f %Lp` always answers with a mode. It is load-bearing only on a host
-# where `stat -c` fails AND `stat -f` answers with something else - which is what
-# GNU does, and GNU never reaches this branch. Kept, and said out loud rather than
-# pretended to be proven: rule 1's second branch, genuinely redundant here.
+#     $ stat -f %Lp /tmp/dir
+#     stat: cannot read file system information for '%Lp': No such file or directory
+#       File: "/tmp/dir"
+#         ID: ...  Namelen: 255  Type: ext2/ext3
+#     rc=1
+#
+# GNU's -f takes no format string (that is -c), so %Lp is read as a FILENAME, fails,
+# and drags rc to 1 - while the real directory still prints filesystem text on
+# STDOUT. The caller captures stdout with 2>/dev/null, so what it would get is that
+# text: multi-line, and not a mode. rc would also have caught it here; the SHAPE is
+# what separates the two answers, and the shape is what this checks.
+#
+# So the shape check does real work on GNU and none on BSD, where `stat -f %Lp`
+# always answers with a mode (measured: removing it leaves the suite green on
+# darwin). An earlier version of this comment called it zero-cost on BOTH hosts -
+# that was measured on one and asserted about the other.
 _bs_mode() {
   local _m
   _m="$(stat -c %a "$1" 2>/dev/null)"
