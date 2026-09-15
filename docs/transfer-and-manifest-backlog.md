@@ -1,19 +1,28 @@
 # Moving between estates, and what a session owns — the reviewed backlog
 
-**Status:** design backlog, nothing built. Twelve items, ordered. Written
+**Status:** item 1 DECIDED 2026-09-15; the spec is unblocked and not yet
+written. Eleven items still design-only, nothing built. Twelve items, ordered. Written
 2026-09-14 after an independent review of five proposals by the advisor on
 another estate, which found three of them wrong in their first form and saved
 them in a better one.
 
 The transfer verb is step 3 of the agreed order (1. lifecycle gate — merged.
-2. Desk across estates — built, awaiting merge. 3. the transfer verb.
+2. Desk across estates — **merged, on main**. 3. the transfer verb — **next**.
 4. Desk as authority — deferred). This document is not the spec. It is what the
-spec has to be built on, and item 1 below is why the spec could not be written
-yet.
+spec has to be built on, and item 1 below was why the spec could not be written.
+It now can be.
+
+**What the first use of it will be, measured 2026-09-15 rather than assumed:**
+fifteen rows in the Point domain on one estate, owned by **two different
+people**, to be moved to another machine. That is a materially different
+operation from the six-row login switch completed the same night: those rows
+changed which login they used *on the same machine*, and kept their home, their
+keys, their rig numbers and their bus identity. A move between estates keeps
+none of those by default, and half the rows are not the estate owner's to move.
 
 ---
 
-## 1. Define "in two places at once" — BLOCKING
+## 1. Define "in two places at once" — DECIDED 2026-09-15
 
 The estate owner's condition for a move is *never in two places at the same
 time*. That sentence has four possible meanings and they are not the same rule:
@@ -29,7 +38,11 @@ time*. That sentence has four possible meanings and they are not the same rule:
 satisfy row uniqueness while an isolated old runtime keeps writing locally, and
 that reads as success.
 
-### The proposed definition
+### The definition, decided by the estate owner 2026-09-15
+
+This is no longer a proposal. It was put to the estate owner as the one thing
+blocking the transfer verb's spec, with the four candidates above and the
+consequence of each, and accepted as written. The wording below is the rule.
 
 > **At most one estate may hold the ACTIVE CLAIM on a session at any moment.**
 >
