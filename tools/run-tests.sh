@@ -65,6 +65,12 @@ HERE="$(CDPATH= cd -- "$HERE" && pwd)" || exit 70
 cd "$HERE" || exit 70
 
 TIMEOUT_S="${RUN_TESTS_TIMEOUT:-200}"
+# WHETHER A LIMIT CAN BE APPLIED IS DECIDED ONCE, HERE, AND NOT INSIDE
+# run_with_timeout. The runner calls it as `out="$(run_with_timeout ...)"`, a
+# COMMAND SUBSTITUTION - a subshell - so a variable the function sets there
+# never reaches the caller that has to read rc 124. Measured: the first cut set
+# it in the function and the caller saw the old value every time.
+if command -v timeout >/dev/null 2>&1; then _RT_LIMITED=1; else _RT_LIMITED=0; fi
 
 # WHERE A RED SUITE'S OUTPUT IS KEPT. Outside the repo under test, because the
 # checkout must stay clean: rule 14 binds a run to a commit and verifies HEAD
@@ -93,7 +99,13 @@ run_with_timeout() {
   # `timeout` is not present everywhere; fall back to a plain run rather than
   # skipping the suite. Being unable to set a time limit is a worse day, but
   # silently omitting a suite is a silent failure.
-  if command -v timeout >/dev/null 2>&1; then timeout "$TIMEOUT_S" "$@"
+  #
+  # _RT_LIMITED RECORDS WHETHER A LIMIT WAS ACTUALLY APPLIED, and the caller
+  # needs it to read rc 124. GNU timeout exits 124 when it kills, but 124 is
+  # also an exit code a suite may choose for itself - and on a host without
+  # `timeout` it can ONLY mean the latter. Saying "timed out" on a host that
+  # never set a deadline would be a claim about a mechanism that was not there.
+  if [ "$_RT_LIMITED" -eq 1 ]; then timeout "$TIMEOUT_S" "$@"
   else "$@"; fi
 }
 
@@ -146,6 +158,16 @@ for t in test/*.test.sh; do
   out="$(run_with_timeout bash "$t" 2>"$errfile")"
   rc=$?
   n="$(counts "$out")"
+  # A SUITE THAT WAS KILLED SAYS SO, AND SAYS THE LIMIT. It used to report
+  # `?/?` - the same string a suite gets when its output cannot be parsed at
+  # all - so a reader of a timed-out suite went looking for a syntax error.
+  # Measured 2026-09-15 on a loaded host: a suite that normally takes 328s was
+  # killed at 200 and reported `?/?`; two readers in two estates began by
+  # hunting for a broken edit. The outcome was true (it did not finish) and
+  # pointed the wrong way (the cause was the clock, not the code).
+  if [ "${_RT_LIMITED:-0}" -eq 1 ] && [ "$rc" -eq 124 ]; then
+    n="TIMEOUT after ${TIMEOUT_S}s"
+  fi
   [ -n "$n" ] || n="?/?"
 
   # Silent syntax errors: written to stderr without counting as test failures.
@@ -186,7 +208,11 @@ for t in test/*.test.sh; do
       # non-zero without printing a claim at all, and silence here would read
       # as "no failures" -- the same equivalence between absence and emptiness
       # this product keeps paying for.
-      printf '         (no recognised failure line; the suite exited %s)\n' "$rc"
+      if [ "${_RT_LIMITED:-0}" -eq 1 ] && [ "$rc" -eq 124 ]; then
+        printf '         (killed at the %ss limit - RUN_TESTS_TIMEOUT; it did not fail, it did not finish)\n' "$TIMEOUT_S"
+      else
+        printf '         (no recognised failure line; the suite exited %s)\n' "$rc"
+      fi
     fi
     printf '         full output: %s\n' "$RED_DIR/$name.out"
     rm -f "$errfile"
