@@ -1,7 +1,9 @@
 # Switching a session's login, with a witness
 
-**Status:** COMPLETE 2026-09-15. Six of six rows switched, and each one verified
-from outside by a party other than the one that switched it. Written so the three
+**Status:** method, proven in use. Every rule below was measured during a real
+run in which each row was verified from outside by a party other than the one
+that switched it — which is the one constraint the whole document exists to
+serve. Written so the three
 stewards can read the same thing instead of reconstructing it from letters, and
 so the estate owner does not have to choose at each step.
 
@@ -381,19 +383,24 @@ measured the hard way this evening, in both directions.
 
 ---
 
-## Order of the six rows
+## The order the rows go in
 
-The hand that writes must survive the writing, so each estate's hub goes last
-within its own estate, and the estate that coordinates goes last overall.
+Three rules decide it, and between them they determine the sequence completely.
+An operation that follows them does not need a list; an operation that needs a
+list has not understood them.
 
-1. **estate C**, both rows, by **its own hub** — their register, their
-   authority. Blocked until they say which login their rows carry.
-2. **estate B's steward** — done 2026-09-14, verified from outside.
-3. **estate B's hub**, by itself, witnessed from estate A.
-4. **estate A's steward**, by its hub.
-5. **estate A's hub**, by itself, witnessed by the estate owner.
+**1. The hand that writes must survive the writing.** A hub cannot kill itself,
+wait out its own death, copy, and respawn. So within any estate, its hub goes
+**last** — every other row in that estate is switched by a hand that will still
+be there afterwards.
 
-No estate's hub writes another estate's rows. That is not caution; it is the
+**2. The estate that coordinates goes last overall.** By the time its own hub
+moves, nobody else is left to witness it, so its witness is the estate owner and
+that is the only row where that is true. Put it anywhere but last and you have
+spent the coordinator on a row that had cheaper witnesses available.
+
+**3. No estate's hub writes another estate's rows.** Each estate switches its
+own, on its own authority, in its own order. That is not caution; it is the
 same domain-bound rule the register enforces everywhere else, and it holds even
 when a relay says go.
 
