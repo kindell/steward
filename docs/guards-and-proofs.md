@@ -609,6 +609,64 @@ asked of one claim inside a group that is otherwise sound - and the answer is
 usually "redundant under load, load-bearing under regression", which is why the
 repair is neither keeping it as it is nor deleting it.
 
+## 17. A test's assertions are about its return values. Nothing asserts what it leaves behind.
+
+A suite says `pass=17 fail=0` about the things it checked. It says nothing
+whatsoever about what it wrote outside its own fixture tree - and a defect that
+lives only in the traces passes every run, in both worlds, forever.
+
+**The measured case.** Four suites start a *second* runner against a fixture
+tree. Three of those fixtures hold a probe that is MEANT to fail: it is the
+control group, the thing that shows the isolation bites when the protection is
+removed. The nested runner inherited `RUN_TESTS_RED_DIR` from the environment,
+and since a red suite now saves its whole output there, **the control group's
+deliberate failures were written into the OUTER run's evidence directory.**
+
+The result is a directory in which a control group and a real regression are
+indistinguishable. Somebody opening it after a gate run reads
+
+    FAIL: saw an existing config: /var/folders/.../poison
+    pass=0 fail=1
+
+and has no way to tell that this is the guard doing its job.
+
+**Why no test caught it, and no test could.** The suites pass identically with
+the leak and without it - `17/0` and `12/0` either way. Every assertion in them
+is about a return value or a captured string. Not one of them makes a claim
+about shared state outside the fixture, because nothing in the ordinary grammar
+of a test invites that claim. *A test sees its assertions; it does not see its
+traces.*
+
+**How it was found, which is the part worth copying.** By opening the evidence
+directory after a GREEN full run - a moment when it should have been empty - and
+noticing a file in it. Not a search, not a hypothesis: somebody looked at a
+thing that ought to be empty, *because they wanted to see how it worked*, and it
+was not empty. **An emptiness that is not empty is one of the few defects
+visible without knowing what you are looking for** - and only to someone who
+looks at the emptiness at all.
+
+**And the third measurement is the one that proves anything.** Two are obvious
+and insufficient: with the fix the outer directory is empty; with the fix removed
+`probe.out` returns. Both run inside the suite's own fixture, which is the world
+the fix was written for. Only the **full gate** - green, and the evidence
+directory empty, where before a green gate left a file there - shows it bites
+where the fault actually occurred.
+
+**How to apply.** When a change gives a run somewhere new to WRITE, ask the
+question the assertions cannot: *what does this leave behind, and who would
+notice if it left the wrong thing?* Then answer it by looking at the place
+itself after a run that should have left it untouched. The cost is one `ls`.
+
+This is rule 8's relative in the other direction: there, an error not
+distinguished from an answer becomes an answer. Here, a control group not
+distinguished from a regression becomes a regression - to the next person who
+reads the directory, who will be reading it precisely because something went
+wrong.
+
+Found by a colleague who was looking at the mechanism rather than for a bug,
+after the defect was introduced by the change that created the directory - a
+change whose own two full gate runs could not have seen it.
+
 ## 18. A claim about two platforms, measured on one, is not "measured".
 
 Three of these in one night, all by the same author, all in the same shape:
