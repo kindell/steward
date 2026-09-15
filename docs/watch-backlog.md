@@ -26,13 +26,35 @@ continuously and the mail was two status letters with nothing time-critical in
 them. **Same alarm, same threshold, same row — and the difference was not in
 anything the guard measured.**
 
-**The quantity that separates them.** Is the session's transcript growing? A
-session writes while it works. Growing means busy, and the alarm is noise;
-standing still with mail unread is the real thing.
+**The quantity that separates them — and it is a timestamp, not a growth
+measurement.** The obvious form is *is the transcript growing?* It is the same
+pair used as proof during the login switches the same evening — *the new tree
+grows while the old one stands frozen* — turned around: there it said a session
+had survived its restart, here it says an alarm is not needed.
 
-This is the same pair used as proof during the login switches the same evening —
-*the new tree grows while the old one stands frozen* — turned around. There it
-said a session had survived its restart; here it says an alarm is not needed.
+**But growth needs a window, and the window is a second parameter that is easy
+to forget to give.** Measured on a live alarm: the file was unchanged across a
+25-second sample, which by the growth rule reads as *stuck* — while its mtime was
+two minutes old and its last lines were a user turn at 04:45:53 and an assistant
+turn at 04:45:57. The session was awake and had worked *after* the mail arrived.
+Twenty-five seconds does not separate *thinking* from *hung*; a window shorter
+than the longest normal silence answers a different question than the one asked,
+and swaps one bad indicator for another.
+
+**So use the age of the last USER or ASSISTANT line instead.** It is strictly
+better on every axis that matters here:
+
+- it is an **instantaneous** value — no window, no waiting, no second parameter
+  to get wrong;
+- it distinguishes *wrote bookkeeping* from *held a conversation*, because a
+  `.jsonl` ends in state records written during shutdown — the same split that
+  verified the estate switches the same night;
+- and it degrades honestly: an old timestamp with unread mail is exactly the
+  condition the alarm is for.
+
+The growth form is not wrong, it is under-specified. Written down this way so
+that nobody implements the version that needs a window without being told the
+window is the hard part.
 
 **What it would take, and why this is not a one-line change.** The guard does
 not know where a row's transcript is. It measures processes, panes and the bus
@@ -46,6 +68,14 @@ lookup across a language boundary, not a condition to add. The proposal was
 first offered as "just a condition" by someone who had not opened the guard —
 and naming that is part of the item, because the same misjudgement in the other
 direction is how a finding gets oversold.
+
+**A note on how both of the above were found.** Each was proposed by the same
+session and then withdrawn by it after measurement — three times in one day, and
+the shape was identical every time: *a measurement was proposed without saying
+what it should be compared AGAINST.* The growth rule without a window is that
+shape exactly. It is worth naming here because the repair is cheap and the error
+is not visible from inside the proposal: a quantity always sounds sufficient
+until someone asks for its reference.
 
 **Shape when it is built.** Growing → silent, or a weaker line that says *busy
 for N minutes* rather than an alarm. Standing still → alarm exactly as today.
