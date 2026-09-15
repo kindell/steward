@@ -365,11 +365,11 @@ A witness must **see** and **speak**. Both, or it is not a witness.
 
 | row | witness | why |
 |---|---|---|
-| skeppsbron's steward | basement's steward or hub | both have shell there and can report |
-| skeppsbron's hub | basement's steward or hub | same |
-| basement's steward | basement's hub | same machine, same home |
-| basement's hub | the estate owner | it is the last row, and by then nobody else is left to report |
-| butler's two | butler's own steward, plus basement reading their snapshot | basement has a read-only key there and no shell |
+| estate B's steward | estate A's steward or hub | both have shell there and can report |
+| estate B's hub | estate A's steward or hub | same |
+| estate A's steward | estate A's hub | same machine, same home |
+| estate A's hub | the estate owner | it is the last row, and by then nobody else is left to report |
+| estate C's two | estate C's own steward, plus estate A reading their snapshot | estate A has a read-only key there and no shell |
 
 **A witness that quotes the measured party is not a witness.** It is the same
 claim a second time with a different sender, and it is more dangerous than no
@@ -386,12 +386,12 @@ measured the hard way this evening, in both directions.
 The hand that writes must survive the writing, so each estate's hub goes last
 within its own estate, and the estate that coordinates goes last overall.
 
-1. **butler**, both rows, by **butler's own hub** — their register, their
+1. **estate C**, both rows, by **its own hub** — their register, their
    authority. Blocked until they say which login their rows carry.
-2. **skeppsbron's steward** — done 2026-09-14, verified from outside.
-3. **skeppsbron's hub**, by itself, witnessed from basement.
-4. **basement's steward**, by basement's hub.
-5. **basement's hub**, by itself, witnessed by the estate owner.
+2. **estate B's steward** — done 2026-09-14, verified from outside.
+3. **estate B's hub**, by itself, witnessed from estate A.
+4. **estate A's steward**, by its hub.
+5. **estate A's hub**, by itself, witnessed by the estate owner.
 
 No estate's hub writes another estate's rows. That is not caution; it is the
 same domain-bound rule the register enforces everywhere else, and it holds even
@@ -407,6 +407,6 @@ quantity the usage meter also changes; a before-value that the copy overwrites;
 and a fresh login tree that stops in the theme picker.
 
 The pattern under all four, and under the two witness errors as well, was named
-by basement's hub after walking into it:
+by estate A's hub after walking into it:
 
 > *"It is a quantity with two causes, and I chose the one I already believed."*
