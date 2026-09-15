@@ -122,3 +122,47 @@ the occurrence of `AUTO-ALERT`, not its line position, so the token stays; and
 the subject slug `okvitterad-post` is a live thread key on the hub, so renaming
 it would sever the thread. The second line should simply take the first line's
 voice: what was measured, and who measured it.
+
+---
+
+## 3. A send that never left the machine is invisible to everything we have
+
+The guard watches `inbox/` and `malformed/`. It does not watch `failed/`, and
+neither does the supervisor. Verified by counting, in the product tree:
+
+```
+linux/session-supervisor-linux.sh    0 hits for failed/
+watch/session-watch.mjs              0
+watch/lib.mjs                        0
+```
+
+What they *do* reference: `inbox/`, `malformed/`, `done/`. A refused send lands
+in `failed/` with its reason, its rc and a timestamp — and nothing ever looks.
+
+**Measured live while writing this item:** the author's own `failed/` held **ten
+entries, the oldest 149 hours old**. Most were benign — deliberate address
+probes, and refusals of a class that does not cross an estate link. That is not
+the point. The point is that **nothing would have said so**; they were found
+because somebody asked.
+
+**The expensive version is already on record.** A session went quiet for eight
+days. Its reports were being written. Its sends were failing on `publickey`, its
+letters were piling into its own `failed/` — and the escalation that should have
+raised it went down the same closed path. Every part of the machinery was
+working, and the only observer that could have noticed was the one directory
+nobody reads.
+
+**Why this belongs beside item 1.** That item is about an alarm that fires when
+it should not. This is an alarm that cannot fire at all. They share a file and a
+sweep, and a fix that touches one should carry the other: the same loop that asks
+*how old is the oldest unread letter* can ask *how old is the oldest unsent one*,
+and the second question has no false-positive problem at all — an entry in
+`failed/` is never ambiguous. Something tried to leave and did not.
+
+**One caution on the coverage figure.** Measuring the central watch shows it
+inspects only a few rows of many, because `inspectable` requires the row's owner
+to match the account the watch runs as. Read alone that looks like a hole. It is
+not: each account's own supervisor runs the same signalling on its own rows. The
+coverage exists; it lives somewhere else. *A true number answering a different
+question* — and the reason to state it here is that the next person to measure it
+will reach for the same wrong conclusion.
