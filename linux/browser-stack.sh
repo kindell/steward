@@ -44,6 +44,40 @@ W=1600 H=1000
 # pictures of time on one machine — it is one picture for machines and one for
 # people, with different audiences. RIG_TZ can be set in the environment for a
 # host that stands somewhere else.
+# _bs_mode <dir> -> the mode as 3-4 octal digits, or '?' when neither stat spelled it.
+#
+# GNU FIRST, BSD SECOND, AND THE SHAPE IS CHECKED - the same three steps the test
+# file's stub already spells out, now in the script the stub stands for.
+#
+# `stat -c` is GNU-only. On a BSD stat it fails, the value became '?', and the
+# caller then refused EVERY profile with "the profile directory has mode ?". This
+# file is named linux/ but the manifest has no per-host column, so it installs on
+# every host as ~/bin/browser-stack.sh - measured on butler 2026-09-15: the file is
+# there, executable, and could not have worked. It does not bite today only because
+# the rigs on that host are started by the estate's chrome-launch.sh instead, which
+# is luck about who calls it and not a property of the file.
+#
+# AND `stat -f` IS NOT A SPELLING DIFFERENCE: on GNU it means FILESYSTEM status and
+# SUCCEEDS, printing "File: ... Type: ext2/ext3 ...", which read as a mode is a
+# wrong answer that exits 0. rc alone cannot catch that, so a value counts as a
+# mode only when it LOOKS like one - the same guard the operator-config fix needed
+# in the other direction.
+#
+# THE SHAPE CHECK ON THE BSD BRANCH IS ZERO-COST ON BOTH HOSTS WE HAVE, and that is
+# measured rather than assumed: removing it leaves the suite green here, because a
+# BSD `stat -f %Lp` always answers with a mode. It is load-bearing only on a host
+# where `stat -c` fails AND `stat -f` answers with something else - which is what
+# GNU does, and GNU never reaches this branch. Kept, and said out loud rather than
+# pretended to be proven: rule 1's second branch, genuinely redundant here.
+_bs_mode() {
+  local _m
+  _m="$(stat -c %a "$1" 2>/dev/null)"
+  case "$_m" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$_m"; return 0 ;; esac
+  _m="$(stat -f %Lp "$1" 2>/dev/null)"
+  case "$_m" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) printf '%s' "$_m"; return 0 ;; esac
+  printf '?'
+}
+
 start_screen() { # <display> <profile> <cdp-port> <vnc-port>
   # NEVER SET --remote-allow-origins. It opens CDP to any web page in the
   # browser. Solve it in the client instead (suppress_origin=True) — Chromium
@@ -134,7 +168,7 @@ start_screen() { # <display> <profile> <cdp-port> <vnc-port>
   # ...and refuse to start in a directory SOMEBODY ELSE created with the wrong
   # mode. That also catches the case where the directory already existed, and
   # turns the absence of an alarm into a measurement.
-  _pm="$(stat -c %a "$HOME/chrome-profiles/$prof" 2>/dev/null || echo '?')"
+  _pm="$(_bs_mode "$HOME/chrome-profiles/$prof")"
   if [ "$_pm" != "700" ]; then
     echo "browser-stack: REFUSING to start $prof — the profile directory has mode $_pm, the requirement is 700." >&2
     echo "  A profile that will hold real logins must not be readable by other accounts." >&2

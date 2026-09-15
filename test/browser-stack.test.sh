@@ -420,6 +420,33 @@ else
 fi
 rm -rf "$homeE"
 
+# ── H. _bs_mode LÄSER LÄGET PÅ BÅDA PLATTFORMARNA ────────────────────────────
+# `stat -c` är GNU-only. Raden som läser profilkatalogens läge hade ingen BSD-väg,
+# så på darwin blev värdet '?' och skriptet REFUSERADE varje profil med "the
+# profile directory has mode ?". Filen heter linux/ men manifestet har ingen
+# per-värd-kolumn: den installeras på varje värd som ~/bin/browser-stack.sh, och
+# på butler låg den körbar och obrukbar (mätt 2026-09-15).
+#
+# Provet kör helpern mot RIKTIGA stat på den värd som kör sviten — inte mot
+# stubben ovan, som är till för att testa anroparen. Därför en ren PATH.
+_bs_src="$(mktemp)"; sed -n '/^_bs_mode()/,/^}/p' "$SCRIPT" > "$_bs_src"
+_bs_fx="$(mktemp -d)"; mkdir -m 700 "$_bs_fx/sju"; mkdir -m 755 "$_bs_fx/sjufemfem"
+# STUBBEN MÅSTE BORT, inte bara PATH. Sviten definierar en egen stat()-FUNKTION
+# (för att testa anroparen), och en funktion bryr sig inte om PATH — ett subskal
+# ärver den. Första lydelsen av det här provet mätte därför stubbens fallback och
+# inte helperns: båda mutationerna nedan passerade grönt. `unset -f stat` är det
+# som gör provet till en mätning av koden i stället för av provets egen rigg.
+_bs() { ( unset -f stat 2>/dev/null; PATH="/usr/bin:/bin"; . "$_bs_src"; _bs_mode "$1" ); }
+[ "$(_bs "$_bs_fx/sju")" = "700" ] && ok || bad "H1 700 läses som 700" "fick '$(_bs "$_bs_fx/sju")'"
+[ "$(_bs "$_bs_fx/sjufemfem")" = "755" ] && ok || bad "H2 755 läses som 755" "fick '$(_bs "$_bs_fx/sjufemfem")'"
+# EN SAKNAD KATALOG ÄR INTE ETT LÄGE. '?' är svaret, och anroparen vägrar på det —
+# tystnad här hade blivit ett tomt värde som jämförs mot "700" och också vägrar,
+# fast utan att säga varför.
+[ "$(_bs "$_bs_fx/finns-inte")" = "?" ] && ok || bad "H3 saknad katalog ger ?" "fick '$(_bs "$_bs_fx/finns-inte")'"
+# OCH DEN VIKTIGA: anroparen får ett värde som ser ut som ett läge, aldrig text.
+case "$(_bs "$_bs_fx/sju")" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ok ;; *) bad "H4 värdet har lägets form" ;; esac
+rm -rf "$_bs_fx" "$_bs_src"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
 
