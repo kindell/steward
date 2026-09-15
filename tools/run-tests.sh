@@ -313,9 +313,36 @@ else
   eg_who="$(basename "$STEWARD_ESTATE_ROOT")"
   eg_out="$(run_with_timeout env STEWARD_PRODUCT_REPO="$HERE" bash "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" 2>&1)"; eg_rc=$?
   eg_n="$(counts "$eg_out")"; [ -n "$eg_n" ] || eg_n="?/?"
-  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok($eg_who)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
-  else estate_guard="RED($eg_who)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
+  # THE SUMMARY LINE SAYS THE ROLE; THE SUITE LINE SAYS THE NAME.
+  #
+  # The summary is the line people paste into a pull request as proof. So the tool
+  # that proves this surface carries no host or customer names was writing one INTO
+  # the proof, and our own habit published it: four of one author's PR bodies and
+  # several of another's carried an estate's directory name, every one of them from
+  # a pasted receipt (measured 2026-09-15, in the public repo).
+  #
+  # What a reader of a receipt needs is that the DESIGNATED estate's list ran - not
+  # which estate it was; the estates' lists are disjoint, so "designated" already
+  # says the run could only have used the one it was pointed at. The name stays on
+  # the suite line above, which is where somebody debugging a red guard looks and
+  # which nobody pastes.
+  #
+  # A guard that reads files cannot see issues and pull-request prose; that surface
+  # has no guard at all. This does not give it one - it stops handing it material.
+  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok(designated)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
+  else estate_guard="RED(designated)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
+       # THE ONE RED WHOSE EVIDENCE NOBODY ELSE CAN REPRODUCE MUST BE KEPT.
+       #
+       # Every shell suite's output is saved when it goes red. This guard's was not -
+       # it printed twelve matching lines and dropped the rest, in the one case where
+       # the person who needs them CANNOT re-run it: the name list lives in the estate,
+       # so a steward on a host without one gets estate-guard=not-run and has no way to
+       # ask what fell. Measured 2026-09-15: a colleague asked for exactly that line off
+       # a red on their own branch, and there was no file to send.
+       mkdir -p "$RED_DIR" 2>/dev/null
+       printf '%s\n' "$eg_out" > "$RED_DIR/estate-leak-guard.out" 2>/dev/null
+       printf '         full output: %s\n' "$RED_DIR/estate-leak-guard.out"
   fi
 fi
 [ -n "$eg_reason" ] && printf '  NOT RUN estate leak-guard: %s\n' "$eg_reason"

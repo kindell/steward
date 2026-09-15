@@ -32,15 +32,38 @@ echo "== 3. designated with a guard: it runs against THIS tree =="
 out="$(STEWARD_ESTATE_ROOT="$FX/estate" run)"
 has "3a the guard ran"                          "$out" "estate leak-guard"
 has "3b summary carries estate-guard=ok"       "$out" "estate-guard=ok"
-# WHICH estate's list ran is part of the word. 'ok' alone reads as "no names found anywhere",
-# and that is a claim no single run can make: each estate's guard sees only its OWN list, and the
-# lists are disjoint by design (measured 2026-09-13: two people appear in the product and in no
-# list on this host). A gate run on two estates leaves the third's people unguarded, so the
-# summary names the estate whose list actually ran.
-has "3b2 and names the estate whose list ran"  "$out" "estate-guard=ok(estate)"
+# THE SUMMARY LINE MUST NOT NAME THE ESTATE, and the suite line must. The summary
+# is what gets pasted into a public pull request as proof; the name in it was
+# published four times before anyone noticed (2026-09-15). The suite line above is
+# where a person debugging a red guard reads, and nobody pastes that.
+case "$out" in *"estate-guard=ok(designated)"*) ok "3b1 the summary says the ROLE" ;; *) bad "3b1 the summary says the ROLE" "no estate-guard=ok(designated) in: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
+case "$out" in *"estate-guard=ok($(basename "$FX/estate")"*) bad "3b2 the summary does NOT name the estate" "the estate's directory name is on the summary line" ;; *) ok "3b2 the summary does NOT name the estate" ;; esac
+case "$out" in *"estate leak-guard ($(basename "$FX/estate"))"*) ok "3b3 the suite line still names it, for the person debugging" ;; *) bad "3b3 the suite line still names it" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
+# THE WORD MUST SAY MORE THAN 'ok', AND LESS THAN THE NAME. The claim this was
+# written against still stands: a bare 'ok' reads as "no names found anywhere", which
+# no single run can make - each estate's guard sees only its OWN list, the lists are
+# disjoint by design (measured 2026-09-13: two people appear in the product and in no
+# list on this host), and a run against one estate leaves the others' people unguarded.
+# The first form met that by naming the estate. 'designated' meets it too: it says the
+# run used the estate it was POINTED AT, which is the only one it could have used, and
+# it is the DESIGNATION that scopes the claim - not which estate happened to be there.
+#
+# What the name cost: the summary line is what people paste into a public pull request
+# as proof, so the tool proving this surface carries no host names was writing one into
+# the proof, and the habit published it (measured 2026-09-15). The name stays one line
+# up, where somebody debugging a red guard reads and nobody pastes.
+has "3b2 and says the run used the DESIGNATED estate" "$out" "estate-guard=ok(designated)"
 out="$(STUB_RC=1 STEWARD_ESTATE_ROOT="$FX/estate" run)"
 has "3c a red guard is RED in the summary"     "$out" "estate-guard=RED"
-has "3c2 the red word names the estate too"    "$out" "estate-guard=RED(estate)"
+has "3c2 the red word is scoped the same way"  "$out" "estate-guard=RED(designated)"
+# A RED ESTATE GUARD KEEPS ITS OUTPUT. It is the one red the other platform cannot
+# reproduce - the name list lives in the estate, so a steward without one gets
+# not-run and can only ask. Measured 2026-09-15: a colleague asked for the line off
+# a red on their own branch and there was no file to send.
+case "$out" in *"full output: "*"estate-leak-guard.out"*) ok "3c3 a red guard names a saved file" ;; *) bad "3c3 a red guard names a saved file" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
+_egf="$(printf '%s' "$out" | sed -n 's/.*full output: \(.*estate-leak-guard.out\).*/\1/p' | head -1)"
+if [ -n "$_egf" ] && [ -s "$_egf" ]; then ok "3c4 the file exists and is not empty"; else bad "3c4 the file exists and is not empty" "path='$_egf'"; fi
+case "$(cat "$_egf" 2>/dev/null)" in *"produktytan"*|*"pass="*|*"FAIL"*) ok "3c5 it holds the guard's own output, not a summary" ;; *) bad "3c5 it holds the guard's own output" "$(head -c 120 "$_egf" 2>/dev/null)" ;; esac
 has "3d and counted among the red suites"      "$out" "red=1"
 # STEWARD_PRODUCT_REPO must be the gated tree, not a sibling: the stub echoes what it got.
 printf '#!/bin/bash\necho "FAIL: repo=${STEWARD_PRODUCT_REPO:-unset}"\necho "pass=1 fail=1"\nexit 1\n' > "$FX/estate/test/leak-guard.test.sh"
