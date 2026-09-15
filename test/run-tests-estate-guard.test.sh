@@ -16,7 +16,7 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $(printf '
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate/test"
 printf '#!/bin/bash\necho "== produktytan =="\necho "repo=${STEWARD_PRODUCT_REPO:-unset}"\necho "pass=1 fail=0"\nexit ${STUB_RC:-0}\n' > "$FX/estate/test/leak-guard.test.sh"; chmod +x "$FX/estate/test/leak-guard.test.sh"
-run() { ( cd "$here" && bash tools/run-tests.sh . zzzz-no-suite-matches 2>&1 ); }
+run() { ( cd "$here" && RUN_TESTS_RED_DIR="$FX/red" bash tools/run-tests.sh . zzzz-no-suite-matches 2>&1 ); }
 
 echo "== 1. not designated: said, not silent =="
 out="$( (unset STEWARD_ESTATE_ROOT; run) )"
@@ -60,7 +60,7 @@ if [ -e "$STEWARD_CONFIG_FILE" ]; then echo "FAIL: saw an existing config: $STEW
 echo "pass=1 fail=0"
 PROBE
 chmod +x "$FX/tree/test/probe.test.sh"
-out="$(cd "$FX/tree" && STEWARD_CONFIG_FILE="$FX/poison" bash tools/run-tests.sh . probe 2>&1)"
+out="$(cd "$FX/tree" && RUN_TESTS_RED_DIR="$FX/red" STEWARD_CONFIG_FILE="$FX/poison" bash tools/run-tests.sh . probe 2>&1)"
 has "4a a poisoned host config in the environment never reaches a suite" "$out" "ok     probe"
 # the probe bites: strip the isolation lines from the copy and the poison walks straight in
 # STRIP THE ISOLATION, NOT THE BOOKKEEPING. Deleting the _rt_iso/_rt_cfg lines too would leave
@@ -68,7 +68,7 @@ has "4a a poisoned host config in the environment never reaches a suite" "$out" 
 # before it can be wrong - a crashed runner is not the control we want. Removing only the export
 # leaves the poisoned path in STEWARD_CONFIG_FILE, which is exactly the world this guards against.
 sed -i.bak '/^export STEWARD_CONFIG_FILE=/d' "$FX/tree/tools/run-tests.sh"
-out="$(cd "$FX/tree" && STEWARD_CONFIG_FILE="$FX/poison" bash tools/run-tests.sh . probe 2>&1)"
+out="$(cd "$FX/tree" && RUN_TESTS_RED_DIR="$FX/red" STEWARD_CONFIG_FILE="$FX/poison" bash tools/run-tests.sh . probe 2>&1)"
 has "4b (control) without the isolation the probe is RED" "$out" "RED    probe"
 
 echo "== 5. a suite that writes the isolated config does not hand it to the next one =="
@@ -88,7 +88,7 @@ if [ -e "${STEWARD_CONFIG_FILE:-/nonexistent}" ]; then echo "FAIL: inherited a c
 echo "pass=1 fail=0"
 PROBE
 chmod +x "$FX/tree5/test/probe-a-writer.test.sh" "$FX/tree5/test/probe-b-reader.test.sh"
-out="$( cd "$FX/tree5" && unset STEWARD_ESTATE_ROOT; bash tools/run-tests.sh . probe 2>&1 )"
+out="$( cd "$FX/tree5" && unset STEWARD_ESTATE_ROOT; RUN_TESTS_RED_DIR="$FX/red" bash tools/run-tests.sh . probe 2>&1 )"
 has "5a the writer runs"                          "$out" "ok     probe-a-writer"
 has "5b the next suite does not inherit the file" "$out" "ok     probe-b-reader"
 has "5c and the runner says it removed it"        "$out" "a previous suite wrote"

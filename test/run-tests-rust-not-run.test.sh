@@ -20,7 +20,7 @@ printf '#!/bin/bash\necho "pass=1 fail=0"\n' > "$FX/tree/test/tiny.test.sh"; chm
 # guard - against this five-line fixture tree, which is not a git checkout, so the guard is red and
 # every count this suite asserts on shifts by one. Measured 2026-09-12: green here, 9/3 inside the
 # gate, from the same commit. A suite that drives the runner owns the runner's environment.
-run() { ( cd "$FX/tree" && unset STEWARD_ESTATE_ROOT; CARGO="$1" bash tools/run-tests.sh . 2>&1 ); }
+run() { ( cd "$FX/tree" && unset STEWARD_ESTATE_ROOT; RUN_TESTS_RED_DIR="$FX/red" CARGO="$1" bash tools/run-tests.sh . 2>&1 ); }
 
 echo "== 1. no cargo: NOT RUN, said, not red, not swept =="
 out="$(run "$FX/bin/no-such-cargo")"; rc=$?
