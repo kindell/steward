@@ -89,6 +89,13 @@ RED_DIR="${RUN_TESTS_RED_DIR:-${TMPDIR:-/tmp}/run-tests-red.$$}"
 # host points the loader at a path that does not exist - MEASURED: a missing file is "no config"
 # (rc 0), while an empty file and /dev/null are both refused with rc 78 - so no host line can reach
 # a suite. Suites that test the loader set their own STEWARD_CONFIG_FILE and override this.
+# REMEMBERED BEFORE IT IS ISOLATED AWAY. The estate-guard block below may need the
+# operator config to find out WHICH guard to run, and by then this variable points at
+# the isolation. Captured here, once, so the two uses never contend: the suites get a
+# path that does not exist, and the runner keeps the operator's real one for its own
+# configuration. (Written after the first cut read it after the export and silently
+# derived nothing.)
+_rt_operator_cfg="${STEWARD_CONFIG_FILE:-$HOME/.config/steward/config}"
 _rt_iso="$(mktemp -d 2>/dev/null || mktemp -d -t run-tests)" || exit 70
 _rt_cfg="$_rt_iso/no-operator-config"     # the path WE own; nothing else may be removed
 export STEWARD_CONFIG_FILE="$_rt_cfg"
@@ -298,10 +305,58 @@ echo "== estate guard =="
 # run is SAID so, in the summary line, and never looks like one that passed.
 estate_guard="not-run"
 eg_reason=""
+eg_src="env"
+
+# AN UNSET ROOT IS DERIVED FROM THE OPERATOR CONFIG, BECAUSE A GUARD THAT MUST BE
+# REMEMBERED IS A GUARD THAT WILL BE FORGOTTEN.
+#
+# Measured 2026-09-15/16, on the other estate: every gate run there reported
+# estate-guard=not-run, for a whole night, because the variable was only ever set
+# in ~/.config/steward/config and the gate environment does not read it. Two
+# receipts reported on a surface they could not see, and the explanation given
+# alongside them ("this estate has no guard") was false - the guard was there.
+#
+# The direction of the error decides this. Derive, and a guard may run when nobody
+# asked: the gate is STRICTER than expected, and a red suite with a name in it says
+# so immediately. Do not derive, and a guard silently does not run: the gate is
+# LOOSER than expected, and that is not self-reporting - it went unnoticed for a
+# night. One failure direction announces itself; the other does not.
+#
+# THE ISOLATION THIS DOES NOT BREAK: STEWARD_CONFIG_FILE is pointed at a path that
+# does not exist for the SUITES, so the host's config cannot fail a test. That is
+# about the INPUT to what is measured. The estate root is not something a suite
+# reads - it is this runner's own configuration, WHICH guard to run. Reading the
+# operator config for that is a different dependency, and the summary line says
+# which one was used so the two are never confused.
+if [ -z "${STEWARD_ESTATE_ROOT+set}" ]; then
+  # UNSET, not empty. `STEWARD_ESTATE_ROOT=` means "no estate, deliberately" and is
+  # left alone: otherwise the only way to run without the guard would be to edit the
+  # operator config - a durable change for a temporary need.
+  _rt_cfg_file="$_rt_operator_cfg"
+  if [ -f "$_rt_cfg_file" ] && [ ! -L "$_rt_cfg_file" ]; then
+    # ONE KEY, READ THE WAY THE LOADER SPELLS IT, and nothing else from the file.
+    # The CLI's loader owns this format - symlinks refused, FORMAT=1, an allowlist -
+    # and a second full reader of a format is the defect the lifecycle gate was
+    # written against. This reads one line and does not pretend to validate the file.
+    _rt_cfg_root="$(sed -n 's/^STEWARD_ESTATE_ROOT="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$_rt_cfg_file" 2>/dev/null | head -1)"
+    if [ -n "$_rt_cfg_root" ]; then
+      STEWARD_ESTATE_ROOT="$_rt_cfg_root"; eg_src="config"
+    fi
+  fi
+fi
+
 if [ -z "${STEWARD_ESTATE_ROOT:-}" ]; then
-  eg_reason="no estate designated (STEWARD_ESTATE_ROOT unset)"
+  eg_reason="no estate designated (STEWARD_ESTATE_ROOT unset in env and operator config)"
 elif [ ! -f "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" ]; then
-  eg_reason="no estate test dir at $STEWARD_ESTATE_ROOT/test, not run"
+  # TWO DIFFERENT FAILURES MUST NOT READ ALIKE. "You pointed at a tree without a
+  # guard" and "we found a root in your config and it has no guard" send a reader
+  # to different places, and the night this was written was spent on two people
+  # reading one wording as the other.
+  if [ "$eg_src" = config ]; then
+    eg_reason="not run (root derived from operator config: $STEWARD_ESTATE_ROOT) - no guard at $STEWARD_ESTATE_ROOT/test"
+  else
+    eg_reason="no estate test dir at $STEWARD_ESTATE_ROOT/test, not run"
+  fi
 else
   # STEWARD_PRODUCT_REPO IS THIS TREE - the one being gated - never a sibling checkout: the guard
   # derives the product surface from it, and a PR must be measured against its own files.
@@ -310,7 +365,19 @@ else
   # (measured 2026-09-13: two people appear in the product and in no list on this host). A bare
   # 'ok' would read as "no names anywhere", which no single run can establish. The estate's name is
   # DERIVED from the designated root, never written down twice. Rule 14, second corollary.
-  eg_who="$(basename "$STEWARD_ESTATE_ROOT")"
+  # THE ESTATE NAMES ITSELF; A DIRECTORY DOES NOT.
+  #
+  # basename of the root was the name until the root could be DERIVED. A derived root
+  # is ~/scripts in every home on every host, so every derived receipt would have read
+  # estate-guard=ok(scripts) - no estate named at all, on the exact runs where knowing
+  # WHICH list ran matters most. Measured on both estates before this line was written:
+  # one predicted ok(<estate>), the other got ok(scripts), same estate and same list.
+  #
+  # estate/steward.conf carries ESTATE_NAME, and it is deployed into every home, so the
+  # name is readable from the deployed copy as well as from the checkout. Nothing else
+  # is read from that file here.
+  eg_who="$(sed -n 's/^ESTATE_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$STEWARD_ESTATE_ROOT/estate/steward.conf" 2>/dev/null | head -1)"
+  [ -n "$eg_who" ] || eg_who="$(basename "$STEWARD_ESTATE_ROOT")"   # an estate without the key still says something
   eg_out="$(run_with_timeout env STEWARD_PRODUCT_REPO="$HERE" bash "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" 2>&1)"; eg_rc=$?
   eg_n="$(counts "$eg_out")"; [ -n "$eg_n" ] || eg_n="?/?"
   # THE SUMMARY LINE SAYS THE ROLE; THE SUITE LINE SAYS THE NAME.
@@ -329,8 +396,16 @@ else
   #
   # A guard that reads files cannot see issues and pull-request prose; that surface
   # has no guard at all. This does not give it one - it stops handing it material.
-  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok(designated)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
-  else estate_guard="RED(designated)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
+  # THE SUMMARY SAYS THE ROLE, AND WHERE THE ROOT CAME FROM. Two receipts that both say
+  # ok(designated) are consistent with "two estates, disjoint lists" AND with "one estate
+  # measured twice" - and the reader cannot tell which. That linux+darwin means two
+  # estates today is an UNWRITTEN INVARIANT, and unwritten invariants have cost this
+  # fleet twice in a night. The source word says whether the guard ran because somebody
+  # ASKED (env) or because the host said so (config), which is the same distinction the
+  # role made reproducible in the first place.
+  eg_tag="designated"; [ "$eg_src" = config ] && eg_tag="designated:config"
+  if [ "$eg_rc" -eq 0 ]; then estate_guard="ok($eg_tag)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
+  else estate_guard="RED($eg_tag)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
        # THE ONE RED WHOSE EVIDENCE NOBODY ELSE CAN REPRODUCE MUST BE KEPT.
        #

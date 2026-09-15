@@ -16,7 +16,11 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $(printf '
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate/test"
 printf '#!/bin/bash\necho "== produktytan =="\necho "repo=${STEWARD_PRODUCT_REPO:-unset}"\necho "pass=1 fail=0"\nexit ${STUB_RC:-0}\n' > "$FX/estate/test/leak-guard.test.sh"; chmod +x "$FX/estate/test/leak-guard.test.sh"
-run() { ( cd "$here" && RUN_TESTS_RED_DIR="$FX/red" bash tools/run-tests.sh . zzzz-no-suite-matches 2>&1 ); }
+# THE OPERATOR CONFIG IS ISOLATED FOR EVERY CASE THAT DOES NOT SUPPLY ONE. Since the
+# estate root can be DERIVED from it, a case meaning "no estate designated" would
+# otherwise depend on whether the host running the suite happens to name one - green
+# here, red on a colleague's machine, and neither would be about the code.
+run() { ( cd "$here" && RUN_TESTS_RED_DIR="$FX/red" STEWARD_CONFIG_FILE="$FX/no-such-operator-config" bash tools/run-tests.sh . zzzz-no-suite-matches 2>&1 ); }
 
 echo "== 1. not designated: said, not silent =="
 out="$( (unset STEWARD_ESTATE_ROOT; run) )"
@@ -115,6 +119,35 @@ out="$( cd "$FX/tree5" && unset STEWARD_ESTATE_ROOT; RUN_TESTS_RED_DIR="$FX/red"
 has "5a the writer runs"                          "$out" "ok     probe-a-writer"
 has "5b the next suite does not inherit the file" "$out" "ok     probe-b-reader"
 has "5c and the runner says it removed it"        "$out" "a previous suite wrote"
+
+echo "== 6. an unset root is derived from the operator config, and the line says so =="
+# A GUARD THAT MUST BE REMEMBERED IS A GUARD THAT WILL BE FORGOTTEN. Measured on the
+# other estate 2026-09-15/16: every gate run there said not-run for a night, because the
+# root was only ever set in the operator config and the gate environment does not read
+# it. Two receipts reported on a surface they could not see.
+# A PASSING STUB AGAIN: section 3e replaced it with one that exits 1 to prove a red
+# guard is reported. This section is about WHERE THE ROOT CAME FROM, not about red.
+printf '#!/bin/bash\necho "pass=1 fail=0"\n' > "$FX/estate/test/leak-guard.test.sh"; chmod +x "$FX/estate/test/leak-guard.test.sh"
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/estate" > "$FX/operator-config"
+out="$( cd "$here" && env -u STEWARD_ESTATE_ROOT STEWARD_CONFIG_FILE="$FX/operator-config" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6a the guard runs on a root that only the config named" "$out" "estate leak-guard"
+has "6b and the summary says where the root came from"       "$out" "estate-guard=ok(designated:config)"
+# UNSET IS NOT EMPTY. `STEWARD_ESTATE_ROOT=` means "no estate, deliberately"; deriving
+# over it would make editing the operator config the only way to run without the guard -
+# a durable change for a temporary need.
+out="$( cd "$here" && STEWARD_ESTATE_ROOT= STEWARD_CONFIG_FILE="$FX/operator-config" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6c an empty-but-set root is left alone"                 "$out" "estate-guard=not-run"
+has "6d and the reason names both places looked"             "$out" "unset in env and operator config"
+# THE TWO FAILURES MUST NOT READ ALIKE: "you pointed at a tree without a guard" and "we
+# found a root in your config and it has no guard" send a reader to different places.
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/nothing" > "$FX/operator-config-bad"
+out="$( cd "$here" && env -u STEWARD_ESTATE_ROOT STEWARD_CONFIG_FILE="$FX/operator-config-bad" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6e a derived root without a guard says it was derived"  "$out" "root derived from operator config"
+# AND THE NAME COMES FROM THE ESTATE, NOT THE DIRECTORY. A derived root is ~/scripts in
+# every home on every host; basename of it is "scripts", which is not an estate.
+mkdir -p "$FX/estate/estate"; printf 'ESTATE_NAME="fixture-estate"\n' > "$FX/estate/estate/steward.conf"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/estate" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6f the suite line names the estate, not the directory"  "$out" "estate leak-guard (fixture-estate)"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
