@@ -180,4 +180,24 @@ is  "7a an estate dropped from the list is left alone" "$(gen_of estate-b)" "$be
 # estate was ever readable, and a list edited by mistake would take the history
 # with it. Pruning is an operator's act, not a fetch's.
 
+echo "== 8. a run that fetched nothing says so, and names where it looked =="
+# RULE 21: an observer is obliged to report that its own INPUT went quiet before it
+# can say why. The header promises "Exit: 0 every named estate answered" - and
+# naming NO estate satisfies that vacuously. Measured on a real host 2026-09-16: a
+# list written one directory too high gave rc 0, no data and not one line of
+# output - byte for byte the same result as the run that worked. The operator could
+# not tell them apart. These four assertions are that difference.
+printf '# only a comment\n\n' > "$REMOTES"
+run
+is  "8a a list with no estates is still rc 0"      "$RC" "0"
+has "8b ...but stderr says nothing was fetched"    "$ERR" "nothing was fetched"
+has "8c ...and names the file it read"             "$ERR" "$REMOTES"
+rm -f "$REMOTES"
+run
+is  "8d a missing list is still rc 0"              "$RC" "0"
+has "8e ...and it still says nothing was fetched"  "$ERR" "nothing was fetched"
+# THE PATH IS THE WHOLE POINT OF THE LINE. "nothing was fetched" alone would tell an
+# operator that something is wrong and leave them to guess where to put the file -
+# which is the guess that produced the fault in the first place.
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" -eq 0 ]

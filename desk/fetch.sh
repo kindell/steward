@@ -26,7 +26,12 @@
 # EVERY ESTATE IS ATTEMPTED. A run that stopped at the first unreachable machine
 # would let one dead host make the others invisible.
 #
-# THE LIST lives at STEWARD_DESK_REMOTES (default <estate-root>/desk-remotes.conf),
+# THE LIST lives at STEWARD_DESK_REMOTES (default
+# <estate-root>/estate/desk-remotes.conf - BESIDE steward.conf, not above it: the
+# path is derived from the estate FILE, and a reader who trusts this line to say
+# otherwise puts the list one level too high. That happened, on a real host, on
+# 2026-09-16: the line read <estate-root>/desk-remotes.conf and the operator
+# believed it),
 # one estate per line:
 #
 #     <estate>  <ssh-target>  <identity-slug>
@@ -101,7 +106,21 @@ fi
 # AN ESTATE THAT CONSUMES NOTHING IS THE ORDINARY STATE for most machines in a
 # fleet. Refusing an absent or empty list would make this something one must
 # remember not to install.
-[ -n "${NAMES# }" ] || exit 0
+# ...BUT IT MUST SAY SO. Rule 21: an observer is obliged to report that its own
+# input went quiet before it can say why. A bare `exit 0` here is indistinguishable
+# from a successful fetch of every named estate - the header's own promise, "Exit: 0
+# every named estate answered", is satisfied VACUOUSLY by naming none. Measured
+# 2026-09-16 on a real host: a list written one directory too high produced rc 0,
+# no data and not one line, and the same rc 0 as the run that worked. The operator
+# had no way to tell the two apart. Naming the path searched is what separates them.
+if [ -z "${NAMES# }" ]; then
+  if [ -n "$REMOTES" ]; then
+    echo "desk-fetch: no estate is named in $REMOTES - nothing was fetched" >&2
+  else
+    echo "desk-fetch: no remotes list was found and none was named - nothing was fetched" >&2
+  fi
+  exit 0
+fi
 
 mkdir -p "$DESK/remote" 2>/dev/null || { echo "desk-fetch: cannot write $DESK/remote" >&2; exit 73; }
 chmod 700 "$DESK/remote" 2>/dev/null
