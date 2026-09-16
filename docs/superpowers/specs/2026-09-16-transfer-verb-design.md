@@ -6,9 +6,21 @@ without machinery this document lists as open. Step 3 of the agreed order; steps
 1 (the lifecycle gate) and 2 (Desk across estates) are merged.
 
 **Do not implement from this document in its current state.** What is written is
-believed correct as far as it goes; what is missing is load-bearing. The three
-blocking findings and their decisive measurements are in this spec's pull
-request, each with a named owner.
+believed correct as far as it goes; what is missing is load-bearing.
+
+The findings are tracked as issues, each with a named owner and the decisive
+measurement that would settle it:
+
+| | |
+|---|---|
+| **#76** | a killed pid is not a source fence — blocking |
+| **#77** | step 5 is not a distributed commit — blocking |
+| **#78** | two concurrent moves can both win — blocking |
+| **#79** | four promises this document makes and does not keep — high |
+
+*They are named by number rather than by where they were raised. An issue number
+can be followed in ten months; "this spec's pull request" asks a reader to know
+which pull request a merged document came out of.*
 
 **Input:** `docs/transfer-and-manifest-backlog.md`, twelve reviewed items, of
 which item 1 is decided and the rest are design-only. This document is what gets
