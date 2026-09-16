@@ -172,5 +172,36 @@ printf '#!/bin/bash\necho "LIST-DIGEST="\necho "pass=1 fail=0"\n' > "$FX/dg/test
 out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/dg" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
 has "7d an empty digest line reads as absent, not as empty" "$out" "list=absent"
 
+echo "== 8. which TREE the guard ran in, without saying where it is =="
+# THE SECOND HALF OF THE PAIR PROPERTY. Since the estate names itself out of its own
+# conf (section 6f), a checkout and a deployed copy of the same estate print the SAME
+# word - two different trees, one name. The list digest separates them only when the
+# lists differ. A digest of the resolved root says which tree, and says nothing about
+# where it lives: the path cannot go on this line, because this line is what gets
+# pasted into a public pull request and that is why the name came off it (2026-09-15).
+mkdir -p "$FX/t8a/test" "$FX/t8b/test"
+printf '#!/bin/bash\necho "pass=1 fail=0"\n' | tee "$FX/t8a/test/leak-guard.test.sh" > "$FX/t8b/test/leak-guard.test.sh"
+chmod +x "$FX/t8a/test/leak-guard.test.sh" "$FX/t8b/test/leak-guard.test.sh"
+_root_of() { printf '%s' "$1" | sed -n 's/.*estate-guard=[a-zA-Z]*(\([^)]*\)).*/\1/p' | sed -n 's/.*root=\([0-9a-z]*\).*/\1/p' | head -1; }
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/t8a" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_a="$(_root_of "$out")"
+case "$r_a" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ok "8a the line carries a root digest, eight hex" ;; *) bad "8a the line carries a root digest" "got root='$r_a' from: $(printf '%s' "$out" | grep -o 'estate-guard=[^ ]*')" ;; esac
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/t8b" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_b="$(_root_of "$out")"
+if [ -n "$r_a" ] && [ "$r_a" != "$r_b" ]; then ok "8b two trees give two digests - the receipts cannot look alike"; else bad "8b two trees give two digests" "both said '$r_a'"; fi
+# THE SAME TREE, REACHED TWO WAYS, IS THE SAME TREE. The source word (env vs config)
+# says how the runner found the root; the digest says what it found. They are different
+# questions and a run must not blur them.
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/t8a" > "$FX/operator-config-8"
+out="$( cd "$here" && env -u STEWARD_ESTATE_ROOT STEWARD_CONFIG_FILE="$FX/operator-config-8" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_cfg="$(_root_of "$out")"
+if [ "$r_cfg" = "$r_a" ]; then ok "8c env and config naming one tree give one digest"; else bad "8c env and config naming one tree give one digest" "env='$r_a' config='$r_cfg'"; fi
+has "8c2 and the source word still separates them" "$out" "designated:config, root=$r_cfg"
+# PHYSICAL, NOT SPELLED. A symlinked checkout and its target are one tree; a digest of
+# the literal string would call them two and invent a difference that is not there.
+ln -s "$FX/t8a" "$FX/t8a-link"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/t8a-link" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_link="$(_root_of "$out")"
+if [ "$r_link" = "$r_a" ]; then ok "8d a symlink to the tree is the same tree"; else bad "8d a symlink to the tree is the same tree" "direct='$r_a' via symlink='$r_link'"; fi
+# (control) THE PATH ITSELF STAYS OFF THE LINE. This is the whole reason it is a digest.
+_sum="$(printf '%s\n' "$out" | grep '^suites found=')"
+case "$_sum" in *"$FX"*) bad "8e the summary line carries no path" "the fixture path is on it: $_sum" ;; *) ok "8e the summary line carries no path" ;; esac
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

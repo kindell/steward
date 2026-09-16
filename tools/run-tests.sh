@@ -423,8 +423,30 @@ else
   # fleet twice in a night. The source word says whether the guard ran because somebody
   # ASKED (env) or because the host said so (config), which is the same distinction the
   # role made reproducible in the first place.
+  # WHICH TREE, WITHOUT SAYING WHERE.
+  #
+  # The peer who ran the other half asked for the RESOLVED PATH on this line, and the
+  # reason got STRONGER when the name started coming from the estate's own conf: a
+  # checkout and a deployed copy of the SAME estate now print the same word. Two
+  # different trees, one name. The list digest separates them only when the LISTS
+  # differ, and a stale deployed copy can differ in everything else.
+  #
+  # The path itself cannot go there. The summary line is what gets pasted into a public
+  # pull request, which is exactly why the estate's name came off it (four PR bodies
+  # carried it, measured 2026-09-15); a path carries a home directory's name and usually
+  # the estate's directory name too. Putting it back would undo that fix in a wider form.
+  #
+  # So the same trick as the list: a DIGEST of the path. Different trees give different
+  # values, the same tree gives the same value, and neither says where anything lives.
+  # Taken PHYSICALLY, so a symlinked checkout and its target read alike - the question is
+  # which tree was measured, not how the path was spelled.
+  eg_root_phys="$( (cd "$STEWARD_ESTATE_ROOT" 2>/dev/null && pwd -P) )"
+  [ -n "$eg_root_phys" ] || eg_root_phys="$STEWARD_ESTATE_ROOT"
+  # md5sum on GNU, md5 on BSD; whichever answers, the 32 hex are read out of its line.
+  eg_root="$(printf '%s' "$eg_root_phys" | { md5sum 2>/dev/null || md5 2>/dev/null; } | sed -n 's/.*\([0-9a-f]\{32\}\).*/\1/p' | cut -c1-8)"
+  [ -n "$eg_root" ] || eg_root="unhashed"   # a host with neither: said, never a silent blank
   eg_tag="designated"; [ "$eg_src" = config ] && eg_tag="designated:config"
-  eg_tag="$eg_tag, list=$eg_digest"
+  eg_tag="$eg_tag, root=$eg_root, list=$eg_digest"
   if [ "$eg_rc" -eq 0 ]; then estate_guard="ok($eg_tag)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
   else estate_guard="RED($eg_tag)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
