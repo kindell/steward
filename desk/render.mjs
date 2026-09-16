@@ -24,6 +24,8 @@
 // nothing - so the server's `default-src 'none'` policy costs the view
 // nothing.
 
+import { at } from './mount.mjs';
+
 export function escapeHtml(s) {
   if (s === null || s === undefined) return '';
   return String(s)
@@ -80,7 +82,7 @@ function LAYOUT(title, body, snap) {
   const { generatedAt, host } = snap || {};
   const foot = snap
     ? '<footer>measured at ' + h(generatedAt) + ' on ' + h(host) +
-      ' &middot; <a href="/desk/">desk</a></footer>'
+      ' &middot; <a href="' + at('') + '">desk</a></footer>'
     : '';
   return '<!doctype html>' +
     '<meta charset="utf-8">' +
@@ -103,11 +105,16 @@ const section = (title, body) => '<h2>' + h(title) + '</h2>' + body;
 const empty = (what) => '<p class="empty">' + h(what) + '</p>';
 const tag = (word) => '<span class="tag">' + h(word) + '</span>';
 
-// link - the href is built from the escaped id and always under /desk/. The
+// link - the href is built from the escaped id and always under the mount. The
 // route patterns in serve.mjs accept only [a-z0-9-] ids and s-<hex> session
 // ids, so a link this function builds is a link that server can answer.
+//
+// `prefix` HERE IS THE ROUTE'S WORD - team, project, session - and not the mount.
+// The two were both called prefix while one of them was a literal; now that the
+// mount is a value, saying so is the difference between reading this line and
+// mis-reading it.
 const link = (prefix, id, text) =>
-  '<a href="/desk/' + prefix + '/' + h(id) + '">' + h(text) + '</a>';
+  '<a href="' + at('/' + prefix + '/' + h(id)) + '">' + h(text) + '</a>';
 
 // ---------------------------------------------------------------------------
 // The contract readers. Each takes one raw row and returns a copy carrying
@@ -440,7 +447,7 @@ export function pageProject(snap, id) {
 // refuses a file name that is not a slug.
 export function pageLogin(providers) {
   const items = [...providers.keys()].sort().map((slug) =>
-    '<li><a href="/desk/auth/login?provider=' + h(slug) + '">Log in with ' + h(slug) + '</a></li>').join('');
+    '<li><a href="' + at('/auth/login?provider=' + h(slug)) + '">Log in with ' + h(slug) + '</a></li>').join('');
   return LAYOUT('Steward Desk',
     '<p>Log in with the account you were invited with.</p><ul>' + items + '</ul>', null);
 }

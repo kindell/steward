@@ -334,7 +334,24 @@ The estate provides, in this order:
    the file and the key - the same as `DESK_ORIGIN` above, and for the same
    reason: the alternative is a front that starts and then fails the first
    real login. The provider's redirect URI is
-   `<DESK_ORIGIN>/desk/auth/callback`.
+   `<DESK_ORIGIN><DESK_PREFIX>/auth/callback`.
+2b. `DESK_PREFIX` in `estate/steward.conf`, **optional**, default `/desk` - where
+   the desk is mounted. A desk sharing a host with other things needs the prefix so
+   its routes do not collide; a desk given a hostname of its own does not, and there
+   the empty string is the right answer - `/desk` under a dedicated domain is
+   repetition in every link and every address bar.
+   Accepted: the empty string, or a string that starts with `/`, does not end with
+   `/`, and carries only unreserved characters (`A-Z a-z 0-9 - . _ ~`). Anything else
+   is refused at start, rc 78, naming the key - the same shape as the refusals above.
+   **CHANGING IT MEANS RE-REGISTERING THE REDIRECT URI IN EVERY PROVIDER CONSOLE THE
+   ESTATE USES**, because that URI is `<DESK_ORIGIN><DESK_PREFIX>/auth/callback`.
+   Before real people have signed in that is a quiet change; afterwards it breaks
+   their login and not yours. Decide the mount before the first provider is
+   registered, not after.
+   The empty string is a VALUE and not an absence: an estate that sets
+   `DESK_PREFIX=""` has chosen the root, and an estate that omits the key has said
+   nothing and gets the default. Every layer between the conf file and the routes
+   keeps those two apart.
 3. A drop-in `~/.config/systemd/user/steward-desk.service.d/50-estate.conf`:
 
        [Service]
