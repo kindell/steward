@@ -58,8 +58,28 @@ export function parseBridge(out) {
     }
     found[key] = value;
   }
+  // THE REFUSAL MUST NOT SAY THE WRONG ONE OF THE TWO THINGS THIS FILE IS ABOUT.
+  // It used to read "printed neither a dir= nor a sock= line" in every case, which
+  // was already wrong when only ONE was missing - and widening the value expression
+  // above made it wrong in a second, sharper way: a `dir=` printed with nothing
+  // after it now MATCHES the line, is recorded as present-and-empty, and lands
+  // here. The bridge did print a line. Saying it printed none sends the reader to
+  // desk-paths' emit() looking for a line that is already there.
+  //
+  // In a reader whose whole subject is the difference between ABSENT and
+  // PRESENT-BUT-EMPTY, a message that collapses them is the one thing it must not
+  // do. The state is hard to reach on purpose - dir and sock are derived, not read
+  // from a key - but "it cannot happen" is the sentence this file exists to
+  // disbelieve.
   if (!found.dir || !found.sock) {
-    return { ok: false, reason: 'desk-paths printed neither a dir= nor a sock= line' };
+    const naming = (k) => Object.prototype.hasOwnProperty.call(found, k)
+      ? "'" + k + "=' was printed with nothing after it"
+      : "no '" + k + "=' line was printed";
+    const missing = ['dir', 'sock'].filter((k) => !found[k]);
+    return {
+      ok: false,
+      reason: 'the desk has no directory to serve from: ' + missing.map(naming).join('; '),
+    };
   }
   return { ok: true, found };
 }

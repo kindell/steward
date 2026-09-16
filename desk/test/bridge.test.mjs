@@ -98,3 +98,31 @@ test('a repeated key is refused even when one value is empty', () => {
   assert.equal(parseBridge(OK + 'prefix=/a\nprefix=\n').ok, false);
   assert.equal(parseBridge(OK + 'prefix=\nprefix=/a\n').ok, false);
 });
+
+// THE REFUSAL NAMES WHICH KEY AND WHICH KIND OF ABSENCE. Widening the value
+// expression made `dir=` with nothing after it reachable, and the old message
+// called that "printed neither a dir= nor a sock= line" - it had printed one. A
+// reader sent to look for a line that is already there debugs the wrong file. The
+// old message was also wrong in the ordinary case, where only one of the two is
+// missing and it claimed both were.
+test('an empty required key is reported as printed-but-empty, and named', () => {
+  const r = parseBridge('dir=\nsock=/d/desk.sock\n');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /'dir='/, 'the refusal names the key at fault');
+  assert.match(r.reason, /nothing after it/, 'and says the line WAS printed');
+  assert.doesNotMatch(r.reason, /sock/, 'and does not accuse the key that was fine');
+});
+
+test('an absent required key is reported as never printed, and named', () => {
+  const r = parseBridge('sock=/d/desk.sock\n');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /no 'dir=' line was printed/);
+  assert.doesNotMatch(r.reason, /sock/, 'and does not accuse the key that was fine');
+});
+
+test('when both are gone the refusal names both', () => {
+  const r = parseBridge('origin=https://d.example\n');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /dir=/);
+  assert.match(r.reason, /sock=/);
+});
