@@ -121,5 +121,52 @@ case "$out" in
   *)                   ok  "the derived line was never printed" ;;
 esac
 
+echo "== DESK_PREFIX: absent, empty, set, and every refused form =="
+# THE EMPTY VALUE IS THE POINT. A desk on its own hostname mounts at the root, and
+# `prefix=` on the wire is how the estate says so. Absent is a DIFFERENT statement -
+# the estate said nothing and the front applies its default - so the two must not
+# collapse into each other anywhere along the path.
+sed -i.bak '/^DESK_PREFIX=/d' "$ROOT/estate/steward.conf"
+out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+is  "absent: rc 0"                       "$rc" "0"
+case "$out" in *prefix=*) bad "absent: no prefix line may be printed" "$out" ;; *) ok "absent: no prefix line" ;; esac
+
+printf 'DESK_PREFIX=""\n' >> "$ROOT/estate/steward.conf"
+out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+is  "empty: rc 0"                        "$rc" "0"
+has "empty: the line IS printed"         "$(printf '%s\n' "$out" | grep '^prefix=')" "prefix="
+is  "empty: and carries nothing after =" "$(printf '%s\n' "$out" | sed -n 's/^prefix=//p')" ""
+
+sed -i.bak 's|^DESK_PREFIX=.*|DESK_PREFIX="/desk"|' "$ROOT/estate/steward.conf"
+out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"
+has "a plain mount is carried"           "$out" "prefix=/desk"
+sed -i.bak 's|^DESK_PREFIX=.*|DESK_PREFIX="/a/b-c.d_e~f"|' "$ROOT/estate/steward.conf"
+out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"
+has "every unreserved character is allowed" "$out" "prefix=/a/b-c.d_e~f"
+
+# EACH REFUSAL NAMES THE KEY, because an operator who cannot see which line is
+# wrong goes and asks somebody. rc 78, the same shape as the other conf refusals.
+for bad_v in "desk" "/desk/" "//" "/a b" "/a%20b" "/a?b"; do
+  sed -i.bak "s|^DESK_PREFIX=.*|DESK_PREFIX=\"$bad_v\"|" "$ROOT/estate/steward.conf"
+  out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+  is  "refused: '$bad_v' is rc 78"       "$rc" "78"
+  has "refused: '$bad_v' names the key"  "$(cat "$T/err")" "DESK_PREFIX"
+  case "$out" in *prefix=*) bad "refused: '$bad_v' printed a line anyway" "$out" ;; *) ok "refused: '$bad_v' printed nothing" ;; esac
+done
+
+# A NEWLINE IN THIS KEY IS THE HAZARD THE BRIDGE IS LINE-ORIENTED ABOUT, and it is
+# refused by front_value's control-character rule before this key's own form is
+# considered - so the guard covers a key nobody thought about when it was written.
+printf 'DESK_PREFIX="/a\norigin=https://elsewhere.example"\n' > "$T/frag"
+sed -i.bak '/^DESK_PREFIX=/d' "$ROOT/estate/steward.conf"
+cat "$T/frag" >> "$ROOT/estate/steward.conf"
+out="$(bash "$here/desk/bin/desk-paths" 2>"$T/err")"; rc=$?
+is  "a newline in the value is rc 78"    "$rc" "78"
+case "$out" in
+  *elsewhere.example*) bad "the injected origin reached the output" "$out" ;;
+  *)                   ok  "the injected origin never reached the output" ;;
+esac
+sed -i.bak '/^DESK_PREFIX=/d;/^origin=/d' "$ROOT/estate/steward.conf"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

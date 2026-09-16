@@ -110,6 +110,30 @@ if origin="$(front_value DESK_ORIGIN '^https://[A-Za-z0-9.-]+(:[0-9]+)?$')"; the
 elif [ $? -eq 78 ]; then exit 78; fi
 root="$(_registry_estate_root)" || exit 78
 [ -d "$root/desk/providers.d" ] && emit providers "$root/desk/providers.d"
+# DESK_PREFIX - WHERE THE DESK IS MOUNTED, and the one key whose EMPTY value is
+# meaningful. A desk sharing a host with other things needs a prefix so its routes
+# do not collide; a desk given a hostname of its own does not, and `/desk` is then
+# repetition in every link and every address bar. Absent means the estate said
+# nothing and the front applies its default; present-and-empty means the estate
+# chose the root. desk/bridge.mjs was widened to carry that difference - before
+# that, an emitted `prefix=` read as absent and the front would have started on the
+# default while the provider's redirect URI pointed at the root.
+#
+# THE FORM IS THE SPEC'S: the empty string, or a string that starts with `/`, does
+# not end with `/`, and carries only unreserved characters (RFC 3986: ALPHA DIGIT
+# - . _ ~). `^(/[A-Za-z0-9._~-]+)*$` says all three at once - zero segments is the
+# empty string, and a segment must be non-empty, which is what rejects a trailing
+# slash and a doubled one. The hyphen is last in the bracket so it is a character
+# and not a range.
+#
+# CHANGING IT COSTS A ROUND OF PROVIDER-CONSOLE EDITS, because the redirect URI is
+# <DESK_ORIGIN><DESK_PREFIX>/auth/callback. Before real people sign in that is a
+# quiet change; after, it breaks their login and not ours. desk/SCHEMA.md says so
+# beside the default, in the same sentence, because an operator who reads only that
+# line must still learn the cost.
+if prefix="$(front_value DESK_PREFIX '^(/[A-Za-z0-9._~-]+)*$')"; then
+  emit prefix "$prefix"
+elif [ $? -eq 78 ]; then exit 78; fi
 if keyfile="$(front_value DESK_SESSION_KEY_FILE '^/.+$')"; then
   emit session_key "$keyfile"
 elif [ $? -eq 78 ]; then exit 78; fi
