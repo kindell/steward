@@ -833,3 +833,100 @@ finished rather than the moment its receipt was readable by somebody else, which
 left four queue entries carrying no label at all — and an absent label reads as
 "nothing needed", not as "a half is missing". Absence is not emptiness; this
 document has now paid for that equivalence four times.
+
+## 21. Measure the quantity that separates the states, not one detector per cause. An observer is obliged to say that something is wrong before it can say why.
+
+Rule 14 says a guard that was NOT RUN is not a guard that passed. That is a
+statement about one line in one runner. The same sentence holds a level up, about
+what to build in the first place, and a colleague's backlog item made it concrete
+enough to write down.
+
+**Their case, measured on their host and not here.** A scheduled job's failures
+are watched through the queue: a send that is attempted and refused lands in
+`failed/`, and somebody is obliged to read it. Then a sibling job died on a
+provider quota *before writing anything*. Nothing was delivered, nothing was
+sent, nothing was refused — `failed/` stayed empty, and stayed honest. Nine days
+against a weekly schedule. The job's delivery path has no queue in it at all:
+there was no channel to fail.
+
+**The move that fixes it is a choice of quantity.** Not another detector — a
+quota detector, a crash detector, a dead-key detector, a never-fired-schedule
+detector — but the one measurable fact those causes have in common: *the age of
+the newest delivered artefact*. Quota, crash, dead key, missing hook, a schedule
+that never fired: all present as the same fact, and the observer does not need to
+know which to be obliged to report it.
+
+**And the assumption that carries it has to be written down, because the first
+draft of this rule left it out.** Delivery age separates late from not-late *for
+a job where every run delivers*. A job that delivers CONDITIONALLY — writing a
+report only when there is something to report — breaks it: its newest artefact
+ages while the job is running perfectly, and the observer calls a healthy run
+late. That is an error in the other direction, which is precisely what a
+separating quantity is supposed not to have. The author of the backlog item this
+rule generalises raised it against their own item before the pair was spent, and
+the hole was inherited from that item rather than introduced here.
+
+**When delivery is conditional, the separating quantity is the RUN.** Which moves
+the weight onto the run marker being trustworthy — and that is not free either.
+Measured the same week: a tool's run column had been frozen for ten days because
+it read a log directory that stopped being written when an estate was split,
+while its delivery column was current the whole time. Every row rendered "never
+ran", and an alarm on every row is an alarm on none. So the choice is not
+delivery *or* run as a matter of taste: it is delivery when every run delivers,
+run when delivery is conditional, and in both cases the reading has to come from
+somewhere that still exists after the last reorganisation.
+
+**Why a detector per cause loses on principle and not just on effort.** Each
+detector covers the case its author thought of, which means the set of undetected
+failures is exactly the set nobody enumerated — and that set is invisible by
+construction, because an undetected failure produces no evidence that it went
+undetected. A separating quantity inverts that: *with its assumption
+satisfied* it is wrong in one direction only, it says *late* without claiming a
+reason, and a reason can always be added later to an alarm that already fired.
+The assumption is the part to state out loud — an unstated one turns the
+one-directional guarantee into a false alarm on a healthy job, and a watcher that
+cries wolf is decommissioned by the people it was built for.
+
+**The test to apply when choosing what to watch:** name the states you must tell
+apart, then ask what single reading differs between them. If the answer is a list
+of causes, the design is a catalogue and it will be incomplete. If the answer is
+one number, that is the thing to measure — and the causes become a diagnosis
+after the fact instead of a precondition for noticing.
+
+**The test to apply is also how the gap above was found.** Name the states, ask
+what single reading differs. For a conditionally-delivering job the states are
+*ran and had nothing to say* and *did not run at all* — and the delivery age is
+**identical in both**. So the answer is not the delivery age; the rule
+contradicted itself four paragraphs down, and the person who caught it did so by
+taking the test seriously rather than by taking the claim on trust.
+
+**The two quantities are not alternatives on equal footing.** Each has a
+precondition, and the preconditions differ:
+
+| quantity | works when | fails silently when |
+|---|---|---|
+| delivery age | every run delivers | delivery is conditional |
+| run age | the run marker is written where the reader looks | the marker's source moves |
+
+**And the chain does not terminate on its own.** Delivery age leans on the run
+marker; the run marker leans on its source still being the source. In the case
+above that chain had one silent link and it stayed silent for ten days. What
+makes it terminate is a property the observer can check about *itself*: the input
+I am reading has not changed at all in longer than it plausibly could. A log
+directory nothing has written to in ten days is a finding about the READER, not
+about the jobs — and that reading is free, being the same `mtime` comparison one
+level up, the same shape as the check already being performed.
+
+> **A separating quantity must also be able to report that its own input went
+> quiet.** Otherwise the blind spot is not removed, only moved one level down,
+> where it is harder to see and no longer anybody's item.
+
+That rule of thumb, the table above, and the two-states formulation are the
+objector's words rather than a summary of them, at their suggestion: take the
+wording where it is sharper, not a paraphrase of it.
+
+The form of this item was raised by the session that owns the affected jobs; the
+measurements were taken by the session that wrote it up; the generalisation is
+the reader's, and the correction to it came back from the first of them before it
+could be merged. It belongs to none of them alone. Nobody who is obliged to say
+"this is wrong" should be required to say why first.
