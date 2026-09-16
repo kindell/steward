@@ -16,6 +16,7 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $2" ;; esac; }
+no()  { case "$2" in *"$3"*) bad "$1" "unexpectedly present: '$3'" ;; *) ok "$1" ;; esac; }
 is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$3', got '$2'"; fi; }
 echo "bus-send-failure-line"
 
@@ -57,6 +58,38 @@ has "and its rc"                      "$out" "ssh rc 65"
 # connection, a rejected key and an unknown host key alike.
 echo "== exactly one line =="
 is "one line, not two" "$(bus_send_failed_line 'a@b' 1 '/d/' | wc -l | tr -d ' ')" "1"
+
+# A RECIPIENT COMES FROM argv AND NOTHING HERE FORM-CHECKS IT. The hub does that,
+# on the far side of an ssh that has just failed - so by the time this line is
+# written, nobody has looked at the string. The reason the line must be ONE line is
+# that ssh's own explanation must not be pushed out of a small pane, and that reason
+# is strongest exactly when the recipient is strange rather than tidy.
+#
+# The case below is the one the reviewing estate measured: before the guard it
+# produced a second line reading like the tool's own voice. Not a privilege
+# escalation - whoever sets the recipient can already run the command - but a line
+# they can write that looks like ours.
+echo "== a recipient carrying a newline cannot open a second line =="
+nl_to="$(printf 'a@b\nfake: THE SEND SUCCEEDED')"
+out="$(bus_send_failed_line "$nl_to" 1 '/d/')"
+is  "still exactly one line"            "$(printf '%s' "$out" | wc -l | tr -d ' ')" "0"
+is  "and one line by line count"        "$(bus_send_failed_line "$nl_to" 1 '/d/' | wc -l | tr -d ' ')" "1"
+has "the newline is rendered visibly"   "$out" "a@b?fake"
+no  "no line begins with the tool name twice" "$(printf '%s' "$out" | sed -n '2p')" "bus-send:"
+
+# EVERY CONTROL CHARACTER, not only the one that was demonstrated. A guard built for
+# the character somebody showed you covers that character.
+echo "== a tab and a carriage return are rendered too =="
+has "a tab"             "$(bus_send_failed_line "$(printf 'a@b\tc')" 1 '/d/')" "a@b?c"
+has "a carriage return"  "$(bus_send_failed_line "$(printf 'a@b\rc')" 1 '/d/')" "a@b?c"
+has "a DEL"              "$(bus_send_failed_line "$(printf 'a@b\177c')" 1 '/d/')" "a@b?c"
+
+# AND AN ORDINARY RECIPIENT IS UNTOUCHED - the control group. Without it, a guard
+# that mangled every recipient would pass every assertion above.
+echo "== an ordinary recipient passes through unchanged =="
+is "an @peer address is byte-identical" \
+   "$(bus_send_failed_line 'peer-session@butler' 255 '/d/')" \
+   "bus-send: THE SEND FAILED to 'peer-session@butler' (ssh rc 255). Saved in /d/"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

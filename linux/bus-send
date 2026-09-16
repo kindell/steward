@@ -558,8 +558,31 @@ fi
 # ssh rc 255 covers a refused connection, a rejected key and an unknown host key
 # alike, so the number alone does not say which - ssh's own stderr line does, and
 # it is left to speak for itself rather than guessed at here.
+# THE RECIPIENT IS RENDERED, NOT PRINTED. It comes from argv and nothing in this
+# script form-checks it - the hub does that, on the far side of an ssh that has just
+# failed. So a recipient carrying a newline used to make this ONE line into TWO, and
+# the second one looked like the tool speaking:
+#
+#     bus-send: THE SEND FAILED to 'a@b
+#     fake: THE SEND SUCCEEDED' (ssh rc 1). Saved in /d/
+#
+# Measured 2026-09-16 by the estate reviewing this branch. It is NOT a privilege
+# escalation - whoever sets the recipient can already run the command - and it is
+# the same shape as the control-character guard in desk/bin/desk-paths one level
+# down: a line-oriented output and a value that can span lines.
+#
+# RENDERED RATHER THAN REFUSED, because this line IS the failure report. Refusing a
+# malformed recipient here would suppress the only notice the operator gets, which
+# is a worse failure than the one being guarded. Rendered rather than stripped, too:
+# a '?' where a control character was says the recipient was malformed, while
+# silently removing it would misreport what was typed.
+#
+# LC_ALL=C AND EXPLICIT OCTAL RANGES so the class is the same on GNU and BSD tr. A
+# named class would be the locale's opinion, and this guard must not have one.
 bus_send_failed_line() { # <recipient> <ssh rc> <failed dir> -> the operator's line
-  printf "bus-send: THE SEND FAILED to '%s' (ssh rc %s). Saved in %s\n" "$1" "$2" "$3"
+  local _to
+  _to="$(printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?')"
+  printf "bus-send: THE SEND FAILED to '%s' (ssh rc %s). Saved in %s\n" "$_to" "$2" "$3"
 }
 
 send_rc=0
