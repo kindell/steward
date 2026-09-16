@@ -429,10 +429,33 @@ else
   # a pasted receipt (measured 2026-09-15, in the public repo).
   #
   # What a reader of a receipt needs is that the DESIGNATED estate's list ran - not
-  # which estate it was; the estates' lists are disjoint, so "designated" already
-  # says the run could only have used the one it was pointed at. The name stays on
-  # the suite line above, which is where somebody debugging a red guard looks and
-  # which nobody pastes.
+  # which estate it was. The name stays on the suite line above, which is where
+  # somebody debugging a red guard looks and which nobody pastes.
+  #
+  # THE CONCLUSION STANDS; THE REASON IT USED TO GIVE DOES NOT. This said "the
+  # estates' lists are disjoint, so 'designated' already says the run could only have
+  # used the one it was pointed at". Disjointness ended when peers.d made a
+  # neighbour's name part of the local register - see the correction seventy lines
+  # up - and the sentence was left standing here, where it was doing the work.
+  #
+  # It was ALSO contradicted by the paragraph two below, which has said all along
+  # that two receipts reading ok(designated) are consistent with "two estates,
+  # disjoint lists" AND with "one estate measured twice", and that a reader cannot
+  # tell which. The digests exist BECAUSE "designated" is not enough on its own.
+  # So the file argued both sides of the same question in one comment block, and the
+  # half that was wrong was the half a reader meets first.
+  #
+  # The real reason to say the role and not the name is the one the whole block is
+  # about: the summary gets pasted into public pull requests, and an estate's name
+  # there is the leak this tool exists to prevent. That reason never depended on
+  # disjointness and does not now. Which estate ran is answered by the digests,
+  # which distinguish without naming - and that is the answer whether the lists
+  # overlap or not.
+  #
+  # Found by the estate whose own list broke the invariant: they checked whether the
+  # correction had reached the ARGUMENT and not only the CLAIM. It had not. A
+  # correction that stops at the sentence leaves the error exactly where it does
+  # work.
   #
   # A guard that reads files cannot see issues and pull-request prose; that surface
   # has no guard at all. This does not give it one - it stops handing it material.
