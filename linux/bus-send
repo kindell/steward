@@ -588,11 +588,35 @@ fi
 # this file with sed and evals the slice, deliberately, so that bus-send gains no
 # test-only hook - see test/bus-send-failure-line.test.sh. Logic that lives inline
 # in the send path is logic no suite can address.
+# THE HUB'S LINE IS NOT THE FIRST LINE. This matched `bus:*` against the start of
+# the whole reason, which is what the hub's refusal looks like when quoted in a
+# letter and not what the variable ever holds. ssh prints
+#
+#     Pseudo-terminal will not be allocated because stdin is not a terminal.
+#
+# ahead of it on every send from a tool shell, so the hub's line is line two and the
+# classification fell through to `unknown` for every refusal the hub makes. Found in
+# production two minutes after the fix that introduced it was deployed: a real
+# refusal recorded `refused_by: "unknown"` while its reason plainly carried the
+# hub's sentence.
+#
+# THE SUITE COULD NOT HAVE CAUGHT IT. Its fixtures were transcribed from what the
+# hub SAYS, and the defect is in what the variable CONTAINS. A realistic fixture and
+# a real specimen are not the same thing — the same class as a test fixture carrying
+# a neighbouring estate's real name, found on this repo the same day.
+#
+# LINES, NOT A SUBSTRING. `bus:` anywhere in the text would let a refusal that
+# quotes a message body be attributed to the hub. The hub was measured not to echo
+# bodies on any of its four refusal classes, but that is a property of today's hub
+# and this is the line that must not depend on it.
 bus_send_refused_by() { # <reason text> <ssh rc> -> hub | ssh | unknown
-  case "$1" in
-    bus:*) printf 'hub' ;;
-    *) if [ "$2" -eq 255 ]; then printf 'ssh'; else printf 'unknown'; fi ;;
-  esac
+  local _l
+  while IFS= read -r _l; do
+    case "$_l" in bus:*) printf 'hub'; return 0 ;; esac
+  done <<BUS_REASON_EOF
+$1
+BUS_REASON_EOF
+  if [ "$2" -eq 255 ]; then printf 'ssh'; else printf 'unknown'; fi
 }
 
 # CAPPED so an unforeseen flood cannot fill the archive - the other estate asked for
