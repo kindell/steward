@@ -791,6 +791,25 @@ and that is the moment to stop rather than to reason.
 - The branches were disjoint by file, checked pairwise. That is not a
   precondition for the method; it is why the order-independence held here.
 
+**And when the hashes differ — which is the question a reader will have at the
+worst possible moment.** "Stop rather than reason" is the right posture and it is
+not an instruction; somebody standing in front of two unequal hashes at two in
+the morning will improvise unless the next step is written down. It is:
+
+- **Merge nothing further.** The difference means something changed that was not
+  in the plan — a branch moved, someone landed a sixth thing, a rebase happened
+  under one of the five. That is a fact to find, not a risk to weigh.
+- **The per-branch pairs still stand.** They proved their own branches, and those
+  branches did not change; a differing integration hash says nothing about them.
+- **Rebuild the integration object and redo the INTEGRATION pair only.** One
+  pair. That the remedy is this cheap is a property of the method rather than
+  good luck: the integration object is the only thing the difference implicates.
+
+This paragraph exists because the peer running the other half asked for it before
+the pair was spent rather than after — the rule's own lesson applied to the rule:
+adding it now costs two runs, adding it after the merge costs the same two runs
+plus a second thread to read.
+
 **The failure this method brings with it, and the guard against it.** The
 integration object is a commit, and it must be named as one. Its *branch name*
 moved under a peer mid-run — the author of this page rebuilt it to take in a
