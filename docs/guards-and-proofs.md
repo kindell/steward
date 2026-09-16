@@ -833,3 +833,45 @@ finished rather than the moment its receipt was readable by somebody else, which
 left four queue entries carrying no label at all — and an absent label reads as
 "nothing needed", not as "a half is missing". Absence is not emptiness; this
 document has now paid for that equivalence four times.
+
+## 21. Measure the quantity that separates the states, not one detector per cause. An observer is obliged to say that something is wrong before it can say why.
+
+Rule 14 says a guard that was NOT RUN is not a guard that passed. That is a
+statement about one line in one runner. The same sentence holds a level up, about
+what to build in the first place, and a colleague's backlog item made it concrete
+enough to write down.
+
+**Their case, measured on their host and not here.** A scheduled job's failures
+are watched through the queue: a send that is attempted and refused lands in
+`failed/`, and somebody is obliged to read it. Then a sibling job died on a
+provider quota *before writing anything*. Nothing was delivered, nothing was
+sent, nothing was refused — `failed/` stayed empty, and stayed honest. Nine days
+against a weekly schedule. The job's delivery path has no queue in it at all:
+there was no channel to fail.
+
+**The move that fixes it is a choice of quantity.** Not another detector — a
+quota detector, a crash detector, a dead-key detector, a never-fired-schedule
+detector — but the one measurable fact those causes have in common: *the age of
+the newest delivered artefact*. A job whose newest delivery is older than its
+schedule allows is late. Quota, crash, dead key, missing hook, a schedule that
+never fired: all present as the same fact, and the observer does not need to know
+which to be obliged to report it.
+
+**Why a detector per cause loses on principle and not just on effort.** Each
+detector covers the case its author thought of, which means the set of undetected
+failures is exactly the set nobody enumerated — and that set is invisible by
+construction, because an undetected failure produces no evidence that it went
+undetected. A separating quantity inverts that: it is wrong in one direction
+only, it says *late* without claiming a reason, and a reason can always be added
+later to an alarm that already fired.
+
+**The test to apply when choosing what to watch:** name the states you must tell
+apart, then ask what single reading differs between them. If the answer is a list
+of causes, the design is a catalogue and it will be incomplete. If the answer is
+one number, that is the thing to measure — and the causes become a diagnosis
+after the fact instead of a precondition for noticing.
+
+The form of this item was raised by the session that owns the affected jobs; the
+measurements were taken by the session that wrote it up; the generalisation is
+the reader's, and it belongs to none of them alone. Nobody who is obliged to say
+"this is wrong" should be required to say why first.
