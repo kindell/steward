@@ -33,9 +33,22 @@ type bus_send_failed_line >/dev/null 2>&1 || {
   exit 1
 }
 
+# THE FIXTURE PEER IS A PLACEHOLDER, NOT A NEIGHBOUR. An @peer recipient is the
+# right shape here - it is the form that made the bare failure line incomplete in
+# the first place - but the NAME must be one of the product's own placeholders. A
+# realistic fixture and a real name are not the same thing, and the estate's leak
+# guard is what tells them apart: this file shipped with a neighbouring estate's
+# name in it and went red on 2026-09-16.
+#
+# AND THE GUARD ONLY SEES ITS OWN LIST. The name that failed here is on the
+# REVIEWING estate's list because that neighbour is its peer. An estate that does
+# not have it listed would have gone green on these very lines - so a both-green
+# pair could have carried a real name into a public repository. That asymmetry is
+# why the guard lives where the name list lives, and it is the case the arrangement
+# was chosen for.
 echo "== the recipient is named =="
-out="$(bus_send_failed_line 'peer-session@butler' 255 '/h/.config/agent-bus/me/failed/')"
-has "the recipient appears"        "$out" "peer-session@butler"
+out="$(bus_send_failed_line 'peer-session@estate-a' 255 '/h/.config/agent-bus/me/failed/')"
+has "the recipient appears"        "$out" "peer-session@estate-a"
 has "the rc appears"               "$out" "ssh rc 255"
 has "the archive path appears"     "$out" "/h/.config/agent-bus/me/failed/"
 has "it still says the send failed" "$out" "THE SEND FAILED"
@@ -88,8 +101,8 @@ has "a DEL"              "$(bus_send_failed_line "$(printf 'a@b\177c')" 1 '/d/')
 # that mangled every recipient would pass every assertion above.
 echo "== an ordinary recipient passes through unchanged =="
 is "an @peer address is byte-identical" \
-   "$(bus_send_failed_line 'peer-session@butler' 255 '/d/')" \
-   "bus-send: THE SEND FAILED to 'peer-session@butler' (ssh rc 255). Saved in /d/"
+   "$(bus_send_failed_line 'peer-session@estate-a' 255 '/d/')" \
+   "bus-send: THE SEND FAILED to 'peer-session@estate-a' (ssh rc 255). Saved in /d/"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
