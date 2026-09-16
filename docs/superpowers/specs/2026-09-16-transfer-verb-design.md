@@ -137,6 +137,42 @@ flapping across seven spawns, both transcripts frozen, recovering the second the
 copy landed. **The window grows with the transcript** — the same mistake on a
 150 MB row flaps longer, not shorter.
 
+### Step 5 is TWO writes, and this order does not make them one
+
+Raised against this document before anything was built, and it holds. Step 5 as
+written — *"write the row on the destination, and retire it on the source"* —
+is **two registry writes on two machines**, and the order above treats them as
+one line.
+
+If the first lands and the second does not, **both registers carry a row that
+permits the session to run.** Two supervisors are then entitled to spawn it and
+two trees hold a transcript under one vendor session id. That is §2's safety
+property violated exactly, by a verb following §4 exactly.
+
+**The failure the objection named is the milder one.** If step 6 fails *after*
+both writes, the claim is unambiguous — the destination holds all three rights
+and nothing is running. That is a liveness problem with an obvious repair. The
+dangerous window is *inside* step 5, and it is invisible in a numbered list
+because a list makes every line look atomic.
+
+**What closes it is already in the backlog, and it is not a refinement.**
+Item 5 — *one at-most-once point; everything else idempotent* — plus items 2 and
+4, the offer and the tombstone-as-fencing-receipt. §9 lists them as deferred.
+**That listing is wrong for item 5:** it is not a later improvement to a correct
+order, it is the thing that makes this order correct. A transfer verb built on §4
+without it has a window in which the fence is open, and no amount of care in the
+surrounding steps closes it.
+
+So, stated as a dependency rather than a wish:
+
+> **The verb may not be built on this order until the at-most-once point exists.**
+> Until then §4 describes the sequence and not the safety, and §2 is a property
+> the implementation does not yet have.
+
+This is what a review is for, and it was found by reading the document after
+somebody pointed at the seam — not by the author, and not by the gate, which
+measured a document that was internally consistent and externally incomplete.
+
 **Steps 2, 4 and 5 must be TIGHT.** "Copy and kill in one command" is not enough
 if one of the steps is slow: a sync tool between the kill and the row wrote 1 225
 decision lines, and the supervisor respawned during it. The repair is a division
@@ -270,8 +306,9 @@ work?"*, not *"is there a way?"*
 
 - **the offer and the receipt** (backlog items 2, 4) — cryptographic identity for
   the hand-off, and the tombstone as a fencing receipt rather than a row edit
-- **phase-local finalizers** (item 3) and **the single at-most-once point**
-  (item 5)
+- **phase-local finalizers** (item 3). **NOT** the single at-most-once point
+  (item 5) — see §4: that one is a dependency of this order, not a deferral from
+  it, and listing it here was the document's own mistake
 - **conflict in the Desk** (item 7) — surfacing a contested claim to a person
 - **the session manifest** (items 8–10)
 - **where `desk-remotes.conf` lives**, and whether estates get a register
