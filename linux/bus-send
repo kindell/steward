@@ -539,6 +539,52 @@ fi
 # With failed/ the archive is complete without lying, and AN EMPTY failed/ BECOMES
 # A MEASUREMENT rather than an absence — the same reason the absence of a finding
 # is also a measurement.
+# THE FAILURE LINE NAMES WHO IT FAILED TO, and it is a function so that it can be
+# proven without a failing ssh - extraction, not sourcing, the same technique
+# bus_secret_guard is tested with.
+#
+# IT USED TO SAY ONLY "THE SEND FAILED (ssh rc N)". That was enough while a home
+# had ONE peer: there was only one place mail could be going. This estate gained a
+# second peer on 2026-09-16, and a bare failure line stopped being a complete
+# report the moment it did - the same shape as the address that became ambiguous
+# in the same hour, and for the same reason: nothing about the line changed, the
+# world around it did.
+#
+# The recipient was never secret. The failed/ record beside this line has carried
+# `to` all along, so the fact was already on disk; it was missing from the only
+# place the operator actually looks. A report that is complete on disk and
+# incomplete on screen is the shape this file has spent the day naming.
+#
+# ssh rc 255 covers a refused connection, a rejected key and an unknown host key
+# alike, so the number alone does not say which - ssh's own stderr line does, and
+# it is left to speak for itself rather than guessed at here.
+# THE RECIPIENT IS RENDERED, NOT PRINTED. It comes from argv and nothing in this
+# script form-checks it - the hub does that, on the far side of an ssh that has just
+# failed. So a recipient carrying a newline used to make this ONE line into TWO, and
+# the second one looked like the tool speaking:
+#
+#     bus-send: THE SEND FAILED to 'a@b
+#     fake: THE SEND SUCCEEDED' (ssh rc 1). Saved in /d/
+#
+# Measured 2026-09-16 by the estate reviewing this branch. It is NOT a privilege
+# escalation - whoever sets the recipient can already run the command - and it is
+# the same shape as the control-character guard in desk/bin/desk-paths one level
+# down: a line-oriented output and a value that can span lines.
+#
+# RENDERED RATHER THAN REFUSED, because this line IS the failure report. Refusing a
+# malformed recipient here would suppress the only notice the operator gets, which
+# is a worse failure than the one being guarded. Rendered rather than stripped, too:
+# a '?' where a control character was says the recipient was malformed, while
+# silently removing it would misreport what was typed.
+#
+# LC_ALL=C AND EXPLICIT OCTAL RANGES so the class is the same on GNU and BSD tr. A
+# named class would be the locale's opinion, and this guard must not have one.
+bus_send_failed_line() { # <recipient> <ssh rc> <failed dir> -> the operator's line
+  local _to
+  _to="$(printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?')"
+  printf "bus-send: THE SEND FAILED to '%s' (ssh rc %s). Saved in %s\n" "$_to" "$2" "$3"
+}
+
 send_rc=0
 printf '%s\n%s' "$to" "$text" | \
   ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 "$HUB_SSH_TARGET" || send_rc=$?
@@ -565,7 +611,7 @@ if [ -n "$me" ] && [ "$send_rc" -ne 0 ]; then
       '{from: $from, to: $to, ts: $ts, text: $text, delivered: false, ssh_rc: $rc}' \
       > "$failed/${now}-${safe_to}-$$.json" 2>/dev/null || true
   fi
-  echo "bus-send: THE SEND FAILED (ssh rc $send_rc). Saved in $HOME/.config/agent-bus/$me/failed/" >&2
+  bus_send_failed_line "$to" "$send_rc" "$HOME/.config/agent-bus/$me/failed/" >&2
 fi
 [ "$send_rc" -eq 0 ] || exit "$send_rc"
 
