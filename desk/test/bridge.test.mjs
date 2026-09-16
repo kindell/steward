@@ -55,3 +55,46 @@ test('the refusal does not depend on which line came last', () => {
 test('a repeated required key is refused too', () => {
   assert.equal(parseBridge('dir=/d\ndir=/other\nsock=/d/desk.sock\n').ok, false);
 });
+
+// A KEY THAT IS PRESENT AND EMPTY IS NOT AN ABSENT KEY, and the difference is
+// about to matter: DESK_PREFIX makes the empty string a LEGAL value - it is what
+// a desk on its own hostname must have, where `/desk` is repetition in every
+// link. The reader used `(.+)`, which requires at least one character, so an
+// emitted `prefix=` did not match, was skipped, and read as absent. A front would
+// then fall back to the default mount and answer somewhere the redirect URI
+// registered with the provider does not point - no error, no journal line, and
+// the breakage lands on the people logging in.
+//
+// Measured against a KNOWN key, so membership of KEYS could not confound it:
+// parseBridge('dir=/d\nsock=/s\norigin=\n') returned {dir, sock} and no origin.
+test('a present-but-empty value is kept, not read as absent', () => {
+  const r = parseBridge(OK + 'prefix=\n');
+  assert.equal(r.ok, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(r.found, 'prefix'), true,
+    'an emitted prefix= line must reach the caller');
+  assert.equal(r.found.prefix, '', 'and it must arrive as the empty string');
+});
+
+// THE TWO ABSENCES MUST STAY TELLABLE APART. `absent` means the estate said
+// nothing and the default applies; `present and empty` means the estate chose the
+// empty mount. A reader that cannot distinguish them has no way to honour the
+// second, which is the whole point of the key.
+test('an absent key stays absent, and is not an empty string', () => {
+  const r = parseBridge(OK);
+  assert.equal(Object.prototype.hasOwnProperty.call(r.found, 'prefix'), false);
+  assert.equal(r.found.prefix, undefined);
+});
+
+// AND EMPTINESS MUST NOT WEAKEN THE REQUIRED PAIR. dir and sock are the two the
+// desk cannot start without; an empty one of those is still no answer.
+test('an empty dir or sock is still a refusal', () => {
+  assert.equal(parseBridge('dir=\nsock=/d/desk.sock\n').ok, false);
+  assert.equal(parseBridge('dir=/d\nsock=\n').ok, false);
+});
+
+// A REPEATED KEY STAYS A REFUSAL WHEN ONE OF THE TWO IS EMPTY. Widening the value
+// expression must not open a route past the duplicate guard.
+test('a repeated key is refused even when one value is empty', () => {
+  assert.equal(parseBridge(OK + 'prefix=/a\nprefix=\n').ok, false);
+  assert.equal(parseBridge(OK + 'prefix=\nprefix=/a\n').ok, false);
+});

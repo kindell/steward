@@ -21,8 +21,23 @@
 // lines for one key mean the bridge produced something nobody intended, and a
 // reader that silently picks one is how that stays invisible.
 
-const KEYS = ['dir', 'sock', 'origin', 'providers', 'session_key'];
-const LINE = new RegExp('^(' + KEYS.join('|') + ')=(.+)$');
+const KEYS = ['dir', 'sock', 'origin', 'providers', 'session_key', 'prefix'];
+// `(.*)` AND NOT `(.+)`, BECAUSE AN EMPTY VALUE IS A VALUE. The expression used to
+// demand at least one character, so an emitted `prefix=` did not match the line at
+// all, was skipped, and reached the caller as an ABSENT key. That is exactly wrong
+// for the one key whose empty string is meaningful: a desk on its own hostname
+// mounts at the root, where `/desk` is repetition in every link and every address
+// bar. Absent means "the estate said nothing, apply the default"; present and empty
+// means "the estate chose the root". A reader that cannot tell them apart silently
+// converts the second into the first - and the front then answers somewhere the
+// redirect URI registered with the provider does not point. No error, no journal
+// line, and the breakage lands on the people logging in rather than on us.
+//
+// THE REQUIRED PAIR IS NOT WEAKENED BY THIS. dir and sock are checked below for
+// truthiness, so an empty one of them is still no answer; and the duplicate guard
+// keys off the property being present, not off its value, so widening the value
+// expression opens no route past it. Both are pinned by their own tests.
+const LINE = new RegExp('^(' + KEYS.join('|') + ')=(.*)$');
 
 // parseBridge(out) -> { ok: true, found } | { ok: false, reason }
 // `reason` is a complete operator-facing sentence; the caller decides how to
