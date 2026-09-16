@@ -1,7 +1,14 @@
 # Moving a session between estates — the transfer verb
 
-**Status:** design, nothing built. Step 3 of the agreed order; steps 1 (the
-lifecycle gate) and 2 (Desk across estates) are merged.
+**Status:** design, nothing built, **and not yet buildable.** A commissioned
+review found three blocking faults; §4's order does not deliver §2's property
+without machinery this document lists as open. Step 3 of the agreed order; steps
+1 (the lifecycle gate) and 2 (Desk across estates) are merged.
+
+**Do not implement from this document in its current state.** What is written is
+believed correct as far as it goes; what is missing is load-bearing. The three
+blocking findings and their decisive measurements are in this spec's pull
+request, each with a named owner.
 
 **Input:** `docs/transfer-and-manifest-backlog.md`, twelve reviewed items, of
 which item 1 is decided and the rest are design-only. This document is what gets
@@ -94,8 +101,8 @@ object it read** — *"29 rows in the nav's register"*, never *"29 rows"*.
 
 - the row exists and its `LIFECYCLE` permits it to run — class A
 - the operator can act as the owning account — class A
-- nothing in the destination's target directory that exists only there — class A,
-  see §6
+- nothing UNCLASSIFIABLE in the destination's target directory — class A, see §6a.
+  *Target-only data is expected and is not by itself a refusal*
 
 **Account creation is a precondition the verb CHECKS, never one it satisfies.**
 An account is a person's foothold on a machine. A verb that creates accounts as a
@@ -123,7 +130,7 @@ The order is the mechanism. Three rules fix it completely:
 1.  take the before-image (§5) — it cannot be reconstructed afterwards
 2.  KILL the process, on its pid, never by pattern
 3.  wait for the PROCESS, not the clock
-3b. list what exists ONLY in the destination, and stop if the list is non-empty
+3b. classify what exists ONLY in the destination (§6a); stop on the unknown
 4.  copy — transcript and memory, direction decided per directory kind (§6)
 5.  WRITE THE ROW — on the destination, and retire it on the source
 6.  let the supervisor take it up
@@ -235,6 +242,37 @@ something existing nowhere else. So:
 - **Compare directories by their entries, never by their size.** `stat` on a
   directory returns its entry table: an empty one and one holding thirty-eight
   files differ by 64 against 1280, and it reads like content.
+
+### 6a. Step 3b refuses the case §6 exists for — found by review, and it was mine
+
+The step as first written said *stop if anything exists only in the destination*,
+and the precondition said the same. §6's motivating case is **thirty-eight memory
+files that exist only in the destination and must be preserved.** So the
+prescribed algorithm could never reach the prescribed merge: the check refuses
+exactly the state the section was written to handle.
+
+It is inherited, and that is why it survived a reading. In the single-machine
+plan *"exists only in the target"* always meant *"something you are about to
+destroy"*, and stopping was right. Carried into a merge it became a refusal of
+the merge itself.
+
+**The repair is a classification, not a threshold.** Target-only data splits in
+two and the verb must say which it found:
+
+| | |
+|---|---|
+| **known** | data this row owns and §6 preserves — its memory, its own artefacts under its own project directory |
+| **unknown** | anything else: another row's files, an unrecognised directory, a name the register cannot account for |
+
+Known target-only data is **expected**; it is the ordinary state of a destination
+that has been used before, and §6's direction rule already says what to do with
+it. Unknown target-only data is the stop, and it is the one the original check
+was reaching for.
+
+**The receipt must distinguish them.** A step that reports "target-only data
+found" without saying which kind has reported the ordinary state as an anomaly —
+and a reader who learns that the message is usually harmless will stop reading it,
+which is how the unknown case gets through.
 
 **Where a row's memory lives is a per-row fact.** A claude-code row keeps memory
 under the login's `projects/`; another runtime may pin it to an absolute path
