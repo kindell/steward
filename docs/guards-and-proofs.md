@@ -714,3 +714,45 @@ measurement is not automatically the one who sees everything it settles.
 Rule 15 is this rule's neighbour and not the same: there, a TOOL could not see
 half the answer and returned zero. Here the tool worked, the number was true,
 and the SENTENCE reached further than the ground under it.
+
+## 19. A gate number applies to a TREE. The tree that lands is the merge result.
+
+A receipt binds to a commit — that is rule 14's whole point, and it is why a
+receipt never lies about *what* it measured. But a branch's tip is not the tree
+that will exist after the merge. **When a branch does not contain the target's
+tip, merging produces a third tree that neither parent was**, and both halves'
+numbers describe something that will not exist.
+
+**Measured, not reasoned.** On one day, all five open pull requests stood on
+branches that did not contain `main`'s tip:
+
+```
+git merge-base --is-ancestor origin/main origin/<branch>   →  false, five times
+```
+
+Two of them carried a *both-green* label at the time. The label was a true
+statement about a tree, and the tree was not the one anybody would get.
+
+**What follows is a claim and is marked as one.** That a clean merge of two green
+halves can go red is not demonstrated here. It is credible rather than certain,
+and the reason it is credible is rule 15's: this product has a suite that reads
+prose files, so "nothing reads that file" is a claim somebody has to check, not a
+safe default. Anyone who wants it measured can build it — a branch that tightens
+a text check, plus a line on the target that the tightened check refuses; both
+halves green, the merge red.
+
+**The working order this produces:**
+
+- **Rebase before asking for the pair, never after.** A rebase after a receipt
+  discards both halves, including the one that measured nothing new.
+- **Merge one at a time, and promptly.** Every merge invalidates every other open
+  pair. Five open branches and one merge is five pairs to redo.
+- **A label may not outlive the tree it describes.** When a branch falls behind,
+  take the label down to *needs* rather than leave a green one standing for a
+  tree that will not land — the label is what the queue shows, and it is read by
+  people who never open the thread.
+
+The shape underneath is one this document keeps meeting: **a statement that was
+true when it was made, and stopped being true without anything in it changing.**
+Rules 14 and 18 bind a claim to what it measured; this one binds it to how long
+that stays the relevant thing to have measured.
