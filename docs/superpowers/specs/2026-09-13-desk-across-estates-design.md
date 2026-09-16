@@ -12,33 +12,34 @@ unchanged.
 
 ## The measurement that starts it
 
-Three estates run the product: basement (Linux), butler (macOS), skeppsbron
-(Linux). Each produces a correct per-principal snapshot. One of them serves a
-Desk, and that Desk can see exactly one estate — its own. A person with
+Three estates run the product: `estate-a` (Linux), `estate-b` (macOS),
+`estate-c` (Linux). Each produces a correct per-principal snapshot. One of them
+serves a Desk, and that Desk can see exactly one estate — its own. A person with
 sessions on two machines has no page that shows them both, and the operator has
 no page that shows the fleet at all.
 
-Measured 2026-09-13: skeppsbron's producer runs and answers
-`host: skeppsbron`, two sessions, rc 0. The bytes exist. Nothing carries them.
+Measured 2026-09-13: a producer on a second estate runs and answers with its own
+`host:`, two sessions, rc 0. The bytes exist. Nothing carries them.
 
 ## Shape
 
 **One Desk. Three producers. The consumer pulls.**
 
-An estate is named after its machine — `basement`, `skeppsbron`, `butler` —
-and this spec spells them that way throughout. The third was called `minin` in
-conversation for a year, after the hardware it runs on, and that nickname does
-not appear in any estate's own `ESTATE_NAME`. A composed view is exactly where
-such a habit becomes a defect: two estates would answer with the name their
-register holds and one with the name people happened to use, and nothing in the
-document would say they were the same kind of word.
+An estate is named after its machine, and an estate's name is the one its own
+`ESTATE_NAME` holds. This spec spells every estate that way throughout, and the
+rule is worth stating because it was nearly broken: one of the three had been
+called by a nickname in conversation for a year, after the hardware it runs on,
+and that nickname appears in no estate's `ESTATE_NAME` at all. A composed view is
+exactly where such a habit becomes a defect: two estates would answer with the
+name their register holds and one with the name people happened to use, and
+nothing in the document would say they were the same kind of word.
 
 ```
-  skeppsbron ──┐
-               │  (pull, ssh + forced command)
-  butler ──────┼─────────────▶  basement: desk/remote/<estate>/
-               │                          desk/current/          (its own)
-  basement ────┘                              │
+  estate-c ──┐
+             │  (pull, ssh + forced command)
+  estate-b ──┼───────────────▶  estate-a: desk/remote/<estate>/
+             │                            desk/current/          (its own)
+  estate-a ──┘                                │
                                               ▼
                                         one Desk, one page per viewer
 ```
@@ -52,9 +53,10 @@ it:
 2. **A dead estate is a stale snapshot, not a broken Desk.** The Desk reads
    files. If a fetch fails, the previous generation is still on disk and the
    estate is marked — the page renders.
-3. **Only one machine needs the server.** butler and skeppsbron need `bash` and
-   `jq`, which they have. `node` stays on basement alone. Measured: skeppsbron
-   has no node installed, and under this design it never needs one.
+3. **Only one machine needs the server.** The two producers need `bash` and
+   `jq`, which they have. `node` stays on the consumer alone. Measured
+   2026-09-13: one producer had no node installed at all, and under this design
+   it never needs one.
 
 ### Why not one Desk per estate
 
@@ -75,8 +77,8 @@ command="STEWARD_ESTATE_ROOT=<root> /bin/bash <scripts>/desk/bin/desk-snapshot-s
 This is the shape already in production for the bus relay, unchanged:
 
 ```
-command="STEWARD_ESTATE_ROOT=/home/steward/Projects/basement /bin/bash \
-         /home/steward/scripts/bus/bin/bus-relay-peer butler jon"
+command="STEWARD_ESTATE_ROOT=<estate root> /bin/bash \
+         <scripts>/bus/bin/bus-relay-peer <peer> <principal>"
 ```
 
 **The client names nothing.** The command takes no argument and reads no
@@ -166,12 +168,12 @@ missed run is not an alarm and two are.
 The viewer file today carries the principal's slug and nothing else:
 
 ```json
-{"host":"basement","generatedAt":"2026-09-13T16:10:05Z",
- "registryRevision":"8671c71","viewer":"jon"}
+{"host":"estate-a","generatedAt":"2026-09-13T16:10:05Z",
+ "registryRevision":"<revision>","viewer":"alice"}
 ```
 
-Nothing ties basement's `jon` to skeppsbron's `jon` except the convention that
-we spelled them alike. That holds today and is exactly the kind of assumption
+Nothing ties one estate's `alice` to another estate's `alice` except the
+convention that they were spelled alike. That holds today and is exactly the kind of assumption
 that holds until it does not — and the failure is showing one person another
 person's sessions.
 
