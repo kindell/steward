@@ -21,8 +21,23 @@
 // lines for one key mean the bridge produced something nobody intended, and a
 // reader that silently picks one is how that stays invisible.
 
-const KEYS = ['dir', 'sock', 'origin', 'providers', 'session_key'];
-const LINE = new RegExp('^(' + KEYS.join('|') + ')=(.+)$');
+const KEYS = ['dir', 'sock', 'origin', 'providers', 'session_key', 'prefix'];
+// `(.*)` AND NOT `(.+)`, BECAUSE AN EMPTY VALUE IS A VALUE. The expression used to
+// demand at least one character, so an emitted `prefix=` did not match the line at
+// all, was skipped, and reached the caller as an ABSENT key. That is exactly wrong
+// for the one key whose empty string is meaningful: a desk on its own hostname
+// mounts at the root, where `/desk` is repetition in every link and every address
+// bar. Absent means "the estate said nothing, apply the default"; present and empty
+// means "the estate chose the root". A reader that cannot tell them apart silently
+// converts the second into the first - and the front then answers somewhere the
+// redirect URI registered with the provider does not point. No error, no journal
+// line, and the breakage lands on the people logging in rather than on us.
+//
+// THE REQUIRED PAIR IS NOT WEAKENED BY THIS. dir and sock are checked below for
+// truthiness, so an empty one of them is still no answer; and the duplicate guard
+// keys off the property being present, not off its value, so widening the value
+// expression opens no route past it. Both are pinned by their own tests.
+const LINE = new RegExp('^(' + KEYS.join('|') + ')=(.*)$');
 
 // parseBridge(out) -> { ok: true, found } | { ok: false, reason }
 // `reason` is a complete operator-facing sentence; the caller decides how to
@@ -43,8 +58,38 @@ export function parseBridge(out) {
     }
     found[key] = value;
   }
+  // THE REFUSAL MUST NOT SAY THE WRONG ONE OF THE TWO THINGS THIS FILE IS ABOUT.
+  // It used to read "printed neither a dir= nor a sock= line" in every case, which
+  // was already wrong when only ONE was missing - and widening the value expression
+  // above made it wrong in a second, sharper way: a `dir=` printed with nothing
+  // after it now MATCHES the line, is recorded as present-and-empty, and lands
+  // here. The bridge did print a line. Saying it printed none sends the reader to
+  // desk-paths' emit() looking for a line that is already there.
+  //
+  // In a reader whose whole subject is the difference between ABSENT and
+  // PRESENT-BUT-EMPTY, a message that collapses them is the one thing it must not
+  // do. The state is hard to reach on purpose - dir and sock are derived, not read
+  // from a key - but "it cannot happen" is the sentence this file exists to
+  // disbelieve.
   if (!found.dir || !found.sock) {
-    return { ok: false, reason: 'desk-paths printed neither a dir= nor a sock= line' };
+    const naming = (k) => Object.prototype.hasOwnProperty.call(found, k)
+      ? "'" + k + "=' was printed with nothing after it"
+      : "no '" + k + "=' line was printed";
+    const missing = ['dir', 'sock'].filter((k) => !found[k]);
+    // AND THE FIXED HALF MUST NOT NAME ONE OF THE TWO EITHER. The first attempt at
+    // this repair opened with "the desk has no directory to serve from" in every
+    // case - so a missing SOCKET produced a sentence that began by blaming the
+    // directory and then correctly named the socket. The same defect as the one
+    // being fixed, one layer up: a constant clause asserting the wrong one of the
+    // two things this reader exists to keep apart. Found by measuring all five
+    // cases rather than reading the code.
+    //
+    // So the lead names the REQUIREMENT, which is true whichever key is at fault,
+    // and everything specific lives in the named parts.
+    return {
+      ok: false,
+      reason: 'desk-paths must print both a dir= and a sock= line: ' + missing.map(naming).join('; '),
+    };
   }
   return { ok: true, found };
 }
