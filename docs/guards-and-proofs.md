@@ -894,10 +894,36 @@ one number, that is the thing to measure — and the causes become a diagnosis
 after the fact instead of a precondition for noticing.
 
 **The test to apply is also how the gap above was found.** Name the states, ask
-what single reading differs — and for a conditional job the answer is not
-delivery age. The rule contradicted itself four paragraphs down, and the person
-who caught it did so by taking the test seriously rather than by taking the claim
-on trust.
+what single reading differs. For a conditionally-delivering job the states are
+*ran and had nothing to say* and *did not run at all* — and the delivery age is
+**identical in both**. So the answer is not the delivery age; the rule
+contradicted itself four paragraphs down, and the person who caught it did so by
+taking the test seriously rather than by taking the claim on trust.
+
+**The two quantities are not alternatives on equal footing.** Each has a
+precondition, and the preconditions differ:
+
+| quantity | works when | fails silently when |
+|---|---|---|
+| delivery age | every run delivers | delivery is conditional |
+| run age | the run marker is written where the reader looks | the marker's source moves |
+
+**And the chain does not terminate on its own.** Delivery age leans on the run
+marker; the run marker leans on its source still being the source. In the case
+above that chain had one silent link and it stayed silent for ten days. What
+makes it terminate is a property the observer can check about *itself*: the input
+I am reading has not changed at all in longer than it plausibly could. A log
+directory nothing has written to in ten days is a finding about the READER, not
+about the jobs — and that reading is free, being the same `mtime` comparison one
+level up, the same shape as the check already being performed.
+
+> **A separating quantity must also be able to report that its own input went
+> quiet.** Otherwise the blind spot is not removed, only moved one level down,
+> where it is harder to see and no longer anybody's item.
+
+That rule of thumb, the table above, and the two-states formulation are the
+objector's words rather than a summary of them, at their suggestion: take the
+wording where it is sharper, not a paraphrase of it.
 
 The form of this item was raised by the session that owns the affected jobs; the
 measurements were taken by the session that wrote it up; the generalisation is
