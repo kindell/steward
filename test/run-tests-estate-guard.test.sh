@@ -16,7 +16,11 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "missing '$3' in: $(printf '
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/estate/test"
 printf '#!/bin/bash\necho "== produktytan =="\necho "repo=${STEWARD_PRODUCT_REPO:-unset}"\necho "pass=1 fail=0"\nexit ${STUB_RC:-0}\n' > "$FX/estate/test/leak-guard.test.sh"; chmod +x "$FX/estate/test/leak-guard.test.sh"
-run() { ( cd "$here" && RUN_TESTS_RED_DIR="$FX/red" bash tools/run-tests.sh . zzzz-no-suite-matches 2>&1 ); }
+# THE OPERATOR CONFIG IS ISOLATED FOR EVERY CASE THAT DOES NOT SUPPLY ONE. Since the
+# estate root can be DERIVED from it, a case meaning "no estate designated" would
+# otherwise depend on whether the host running the suite happens to name one - green
+# here, red on a colleague's machine, and neither would be about the code.
+run() { ( cd "$here" && RUN_TESTS_RED_DIR="$FX/red" STEWARD_CONFIG_FILE="$FX/no-such-operator-config" bash tools/run-tests.sh . zzzz-no-suite-matches 2>&1 ); }
 
 echo "== 1. not designated: said, not silent =="
 out="$( (unset STEWARD_ESTATE_ROOT; run) )"
@@ -36,7 +40,7 @@ has "3b summary carries estate-guard=ok"       "$out" "estate-guard=ok"
 # is what gets pasted into a public pull request as proof; the name in it was
 # published four times before anyone noticed (2026-09-15). The suite line above is
 # where a person debugging a red guard reads, and nobody pastes that.
-case "$out" in *"estate-guard=ok(designated)"*) ok "3b1 the summary says the ROLE" ;; *) bad "3b1 the summary says the ROLE" "no estate-guard=ok(designated) in: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
+case "$out" in *"estate-guard=ok(designated,"*) ok "3b1 the summary says the ROLE" ;; *) bad "3b1 the summary says the ROLE" "no estate-guard=ok(designated, in: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
 case "$out" in *"estate-guard=ok($(basename "$FX/estate")"*) bad "3b2 the summary does NOT name the estate" "the estate's directory name is on the summary line" ;; *) ok "3b2 the summary does NOT name the estate" ;; esac
 case "$out" in *"estate leak-guard ($(basename "$FX/estate"))"*) ok "3b3 the suite line still names it, for the person debugging" ;; *) bad "3b3 the suite line still names it" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)" ;; esac
 # THE WORD MUST SAY MORE THAN 'ok', AND LESS THAN THE NAME. The claim this was
@@ -52,10 +56,10 @@ case "$out" in *"estate leak-guard ($(basename "$FX/estate"))"*) ok "3b3 the sui
 # as proof, so the tool proving this surface carries no host names was writing one into
 # the proof, and the habit published it (measured 2026-09-15). The name stays one line
 # up, where somebody debugging a red guard reads and nobody pastes.
-has "3b2 and says the run used the DESIGNATED estate" "$out" "estate-guard=ok(designated)"
+has "3b2 and says the run used the DESIGNATED estate" "$out" "estate-guard=ok(designated,"
 out="$(STUB_RC=1 STEWARD_ESTATE_ROOT="$FX/estate" run)"
 has "3c a red guard is RED in the summary"     "$out" "estate-guard=RED"
-has "3c2 the red word is scoped the same way"  "$out" "estate-guard=RED(designated)"
+has "3c2 the red word is scoped the same way"  "$out" "estate-guard=RED(designated,"
 # A RED ESTATE GUARD KEEPS ITS OUTPUT. It is the one red the other platform cannot
 # reproduce - the name list lives in the estate, so a steward without one gets
 # not-run and can only ask. Measured 2026-09-15: a colleague asked for the line off
@@ -115,6 +119,89 @@ out="$( cd "$FX/tree5" && unset STEWARD_ESTATE_ROOT; RUN_TESTS_RED_DIR="$FX/red"
 has "5a the writer runs"                          "$out" "ok     probe-a-writer"
 has "5b the next suite does not inherit the file" "$out" "ok     probe-b-reader"
 has "5c and the runner says it removed it"        "$out" "a previous suite wrote"
+
+echo "== 6. an unset root is derived from the operator config, and the line says so =="
+# A GUARD THAT MUST BE REMEMBERED IS A GUARD THAT WILL BE FORGOTTEN. Measured on the
+# other estate 2026-09-15/16: every gate run there said not-run for a night, because the
+# root was only ever set in the operator config and the gate environment does not read
+# it. Two receipts reported on a surface they could not see.
+# A PASSING STUB AGAIN: section 3e replaced it with one that exits 1 to prove a red
+# guard is reported. This section is about WHERE THE ROOT CAME FROM, not about red.
+printf '#!/bin/bash\necho "pass=1 fail=0"\n' > "$FX/estate/test/leak-guard.test.sh"; chmod +x "$FX/estate/test/leak-guard.test.sh"
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/estate" > "$FX/operator-config"
+out="$( cd "$here" && env -u STEWARD_ESTATE_ROOT STEWARD_CONFIG_FILE="$FX/operator-config" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6a the guard runs on a root that only the config named" "$out" "estate leak-guard"
+has "6b and the summary says where the root came from"       "$out" "estate-guard=ok(designated:config,"
+# UNSET IS NOT EMPTY. `STEWARD_ESTATE_ROOT=` means "no estate, deliberately"; deriving
+# over it would make editing the operator config the only way to run without the guard -
+# a durable change for a temporary need.
+out="$( cd "$here" && STEWARD_ESTATE_ROOT= STEWARD_CONFIG_FILE="$FX/operator-config" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6c an empty-but-set root is left alone"                 "$out" "estate-guard=not-run"
+has "6d and the reason names both places looked"             "$out" "unset in env and operator config"
+# THE TWO FAILURES MUST NOT READ ALIKE: "you pointed at a tree without a guard" and "we
+# found a root in your config and it has no guard" send a reader to different places.
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/nothing" > "$FX/operator-config-bad"
+out="$( cd "$here" && env -u STEWARD_ESTATE_ROOT STEWARD_CONFIG_FILE="$FX/operator-config-bad" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6e a derived root without a guard says it was derived"  "$out" "root derived from operator config"
+# AND THE NAME COMES FROM THE ESTATE, NOT THE DIRECTORY. A derived root is ~/scripts in
+# every home on every host; basename of it is "scripts", which is not an estate.
+mkdir -p "$FX/estate/estate"; printf 'ESTATE_NAME="fixture-estate"\n' > "$FX/estate/estate/steward.conf"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/estate" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "6f the suite line names the estate, not the directory"  "$out" "estate leak-guard (fixture-estate)"
+
+echo "== 7. the list digest is carried, and its absence is printed =="
+# A PAIR PROPERTY. Two receipts that both say ok(designated) are consistent with two
+# estates AND with one estate measured twice; a digest of the list each guard ran
+# settles it. Measured 2026-09-16: five open PRs carried "green on both halves" while
+# one half had never run a name list at all, and the receipts did not say so.
+mkdir -p "$FX/dg/test" "$FX/dg/estate"
+printf 'ESTATE_NAME="digest-fixture"\n' > "$FX/dg/estate/steward.conf"
+printf '#!/bin/bash\necho "LIST-DIGEST=1233ed66"\necho "pass=1 fail=0"\n' > "$FX/dg/test/leak-guard.test.sh"
+chmod +x "$FX/dg/test/leak-guard.test.sh"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/dg" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "7a a digest the guard printed is carried verbatim" "$out" "list=1233ed66"
+# AND A GUARD THAT PRINTS NONE SAYS SO. A missing field reads as a field that was not
+# needed - the same equivalence between absence and emptiness this runner has paid for
+# twice. A digest and a blank prove exactly as little as two blanks.
+printf '#!/bin/bash\necho "pass=1 fail=0"\n' > "$FX/dg/test/leak-guard.test.sh"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/dg" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "7b a guard without one prints the absence"        "$out" "list=absent"
+case "$out" in *"list=absent"*) ok "7c the field is never simply omitted" ;; *) bad "7c the field is never simply omitted" "no list= field at all" ;; esac
+# THE GUARD OWNS THE DEFINITION: a malformed line is not half-read into a digest.
+printf '#!/bin/bash\necho "LIST-DIGEST="\necho "pass=1 fail=0"\n' > "$FX/dg/test/leak-guard.test.sh"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/dg" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+has "7d an empty digest line reads as absent, not as empty" "$out" "list=absent"
+
+echo "== 8. which TREE the guard ran in, without saying where it is =="
+# THE SECOND HALF OF THE PAIR PROPERTY. Since the estate names itself out of its own
+# conf (section 6f), a checkout and a deployed copy of the same estate print the SAME
+# word - two different trees, one name. The list digest separates them only when the
+# lists differ. A digest of the resolved root says which tree, and says nothing about
+# where it lives: the path cannot go on this line, because this line is what gets
+# pasted into a public pull request and that is why the name came off it (2026-09-15).
+mkdir -p "$FX/t8a/test" "$FX/t8b/test"
+printf '#!/bin/bash\necho "pass=1 fail=0"\n' | tee "$FX/t8a/test/leak-guard.test.sh" > "$FX/t8b/test/leak-guard.test.sh"
+chmod +x "$FX/t8a/test/leak-guard.test.sh" "$FX/t8b/test/leak-guard.test.sh"
+_root_of() { printf '%s' "$1" | sed -n 's/.*estate-guard=[a-zA-Z]*(\([^)]*\)).*/\1/p' | sed -n 's/.*root=\([0-9a-z]*\).*/\1/p' | head -1; }
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/t8a" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_a="$(_root_of "$out")"
+case "$r_a" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ok "8a the line carries a root digest, eight hex" ;; *) bad "8a the line carries a root digest" "got root='$r_a' from: $(printf '%s' "$out" | grep -o 'estate-guard=[^ ]*')" ;; esac
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/t8b" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_b="$(_root_of "$out")"
+if [ -n "$r_a" ] && [ "$r_a" != "$r_b" ]; then ok "8b two trees give two digests - the receipts cannot look alike"; else bad "8b two trees give two digests" "both said '$r_a'"; fi
+# THE SAME TREE, REACHED TWO WAYS, IS THE SAME TREE. The source word (env vs config)
+# says how the runner found the root; the digest says what it found. They are different
+# questions and a run must not blur them.
+printf 'FORMAT=1\nSTEWARD_ESTATE_ROOT=%s\n' "$FX/t8a" > "$FX/operator-config-8"
+out="$( cd "$here" && env -u STEWARD_ESTATE_ROOT STEWARD_CONFIG_FILE="$FX/operator-config-8" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_cfg="$(_root_of "$out")"
+if [ "$r_cfg" = "$r_a" ]; then ok "8c env and config naming one tree give one digest"; else bad "8c env and config naming one tree give one digest" "env='$r_a' config='$r_cfg'"; fi
+has "8c2 and the source word still separates them" "$out" "designated:config, root=$r_cfg"
+# PHYSICAL, NOT SPELLED. A symlinked checkout and its target are one tree; a digest of
+# the literal string would call them two and invent a difference that is not there.
+ln -s "$FX/t8a" "$FX/t8a-link"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/t8a-link" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"; r_link="$(_root_of "$out")"
+if [ "$r_link" = "$r_a" ]; then ok "8d a symlink to the tree is the same tree"; else bad "8d a symlink to the tree is the same tree" "direct='$r_a' via symlink='$r_link'"; fi
+# (control) THE PATH ITSELF STAYS OFF THE LINE. This is the whole reason it is a digest.
+_sum="$(printf '%s\n' "$out" | grep '^suites found=')"
+case "$_sum" in *"$FX"*) bad "8e the summary line carries no path" "the fixture path is on it: $_sum" ;; *) ok "8e the summary line carries no path" ;; esac
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
