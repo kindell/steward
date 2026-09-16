@@ -146,6 +146,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, ICON } from './render.mjs';
 import { parseBridge } from './bridge.mjs';
+import { MOUNT, setMount, at, reAt } from './mount.mjs';
 import { normalizeAddr, parseFrontListen, parseFrontPeer, visitorAddress, RateLimiter } from './front.mjs';
 import { parseCookies, serializeCookie, loadSessionKey, mintSession, verifySession, mintState, verifyState } from './cookie.mjs';
 import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from './oidc.mjs';
@@ -238,6 +239,43 @@ const LISTEN = LISTEN_RAW ? parseListen(LISTEN_RAW) : null;
 
 let DIR = process.env.STEWARD_DESK_DIR;
 let SOCK = process.env.STEWARD_DESK_SOCK;
+// THE MOUNT TAKES AN OVERRIDE BESIDE THE TWO PATHS - BUT NOT THEIR SHAPE, and the
+// difference is the whole point. DIR and SOCK are resolved with `X = X || p.x`,
+// which collapses an empty value into an absent one. That has never cost anything
+// there: an empty dir or sock is a refusal either way, pinned by its own test.
+//
+// FOR THE MOUNT THAT FORM WOULD BE EXACTLY WRONG. The empty string is the one value
+// whose entire purpose is to BE a value - a desk on its own hostname mounts at the
+// root - and `||` reads it as absence. An operator setting STEWARD_DESK_PREFIX=""
+// would silently get the bridge's value instead. That is the same equivalence
+// between absent and present-but-empty that the bridge's line reader was widened to
+// stop carrying, re-introduced one layer up in the override. So this reads presence
+// (=== undefined, hasOwnProperty) and never truthiness.
+//
+// Measured on main by the estate reviewing this work, from a DESCRIPTION of this
+// code that said "the same override shape as the two paths". The code did not have
+// the bug; the sentence did. A design described in a shape it does not have is
+// reviewed as the shape it was described in.
+//
+// THE OPERATOR-FACING NAME IS PREFIX AND THE INTERNAL ONE IS MOUNT. The estate key
+// is DESK_PREFIX, so the override that stands in for it is STEWARD_DESK_PREFIX -
+// an operator should not have to learn a second word. Inside, `prefix` is already
+// render.mjs's word for a route segment (team, project, session), so the mount
+// needed a different one rather than a shared one.
+//
+// It is here rather than read from the bridge unconditionally because deskPaths()
+// is deliberately NOT called when both paths come from the environment - "a unit
+// that names both paths never pays for it" - and the suite relies on that: it sets
+// STEWARD_DESK_DIR and STEWARD_DESK_SOCK precisely so no bridge is spawned.
+//
+// Reading the mount only from the bridge would therefore leave a hole with exactly
+// the shape this estate has spent the week naming: an estate names DESK_PREFIX, the
+// unit supplies both paths, the bridge is never asked, and the desk answers at the
+// DEFAULT mount while the provider's redirect URI points at the one the estate
+// chose. No error, no journal line, and the breakage lands on whoever tries to log
+// in. So all three things the bridge supplies take an override, and none of them is
+// a test-only knob: the suite uses the same door an operator has.
+let MOUNT_RAW = process.env.STEWARD_DESK_PREFIX;
 if (LISTEN) {
   // Loopback mode touches no socket path at all: no desk-paths call for
   // `sock=`, no length check, no chmod, no unlink. desk-paths may still be
@@ -250,6 +288,25 @@ if (LISTEN) {
   const p = deskPaths();
   DIR = DIR || p.dir;
   SOCK = SOCK || p.sock;
+  // ABSENT AND PRESENT-BUT-EMPTY ARE DIFFERENT ANSWERS HERE, which is what the
+  // bridge was widened to carry: no prefix= line means the estate said nothing and
+  // the default stands; prefix= with nothing after it means the estate chose the
+  // root. hasOwnProperty is the only reading that tells them apart.
+  if (MOUNT_RAW === undefined && Object.prototype.hasOwnProperty.call(p, 'prefix')) {
+    MOUNT_RAW = p.prefix;
+  }
+}
+
+// REFUSED AT START, NAMING THE KEY, like every other malformed conf value - and
+// checked here even though desk-paths checks it too. desk-paths guards the estate
+// file; this guards every other way a value can arrive. A guard that trusts its
+// caller to have checked covers the caller it happened to think of.
+if (MOUNT_RAW !== undefined) {
+  const m = setMount(MOUNT_RAW);
+  if (!m.ok) {
+    console.error('desk: DESK_PREFIX (or STEWARD_DESK_PREFIX) is not usable: ' + m.reason);
+    process.exit(78);
+  }
 }
 
 // FRONT - null unless the operator asked for the second listener, and a
@@ -596,15 +653,20 @@ function loadSnapshot(principal) {
   }
 }
 
+// BUILT AFTER THE MOUNT IS RESOLVED, and that is a real ordering constraint rather
+// than a style: this is module-level, so it is evaluated once at import, and the
+// mount is settled above it. Moving either one past the other gives a route table
+// for the default mount on a desk that was told to use another - which answers
+// nowhere the estate asked for, with no error anywhere.
 const ROUTES = [
   // THE THIRD ARGUMENT IS THE CONSUMED ESTATES, and only the index takes it.
   // The team, project and session pages are about one thing inside THIS estate;
   // a remote estate's rows belong to its own tree, not grafted into a local
   // one, and a session id from over there is not addressable here.
-  [/^\/desk\/$/, (s, _id, remotes) => pageIndex(s, remotes)],
-  [/^\/desk\/team\/([a-z0-9-]+)$/, (s, id) => pageTeam(s, id)],
-  [/^\/desk\/project\/([a-z0-9-]+)$/, (s, id) => pageProject(s, id)],
-  [/^\/desk\/session\/(s-[a-f0-9]+)$/, (s, id) => pageSession(s, id)]
+  [new RegExp('^' + reAt('') + '$'), (s, _id, remotes) => pageIndex(s, remotes)],
+  [new RegExp('^' + reAt('/team/') + '([a-z0-9-]+)$'), (s, id) => pageTeam(s, id)],
+  [new RegExp('^' + reAt('/project/') + '([a-z0-9-]+)$'), (s, id) => pageProject(s, id)],
+  [new RegExp('^' + reAt('/session/') + '(s-[a-f0-9]+)$'), (s, id) => pageSession(s, id)]
 ];
 
 const server = http.createServer((req, res) => {
@@ -748,7 +810,7 @@ async function authLogin(url, res) {
     console.error('desk front: discovery failed for ' + slug + ': ' + refusalReason(e));
     return send(res, 503, NO_MEASUREMENT, FRONT_HEADERS); // a provider that is down is not this person's fault
   }
-  const begun = beginLogin(provider, doc, FRONT.origin + '/desk/auth/callback');
+  const begun = beginLogin(provider, doc, FRONT.origin + at('/auth/callback'));
   const state = mintState(FRONT.key, {
     state: begun.state, nonce: begun.nonce, verifier: begun.verifier, provider: slug, issuedAt: nowSec()
   });
@@ -776,7 +838,7 @@ async function authCallback(url, cookies, res) {
   try {
     const doc = await discover(provider);
     const token = await exchangeCode(provider, doc, {
-      code, verifier: fields.verifier, redirectUri: FRONT.origin + '/desk/auth/callback'
+      code, verifier: fields.verifier, redirectUri: FRONT.origin + at('/auth/callback')
     });
     claims = await verifyIdToken(provider, doc, token, { nonce: fields.nonce });
   } catch (e) {
@@ -796,7 +858,7 @@ async function authCallback(url, cookies, res) {
   // into the cookie would freeze it for twelve hours. It is resolved here only
   // so that an identity no row claims never gets a session at all.
   return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
-    location: '/desk/',
+    location: at(''),
     'set-cookie': [
       serializeCookie(SESSION_COOKIE, mintSession(FRONT.key, identity, nowSec()), { maxAge: SESSION_MAX_AGE }),
       clearCookie(STATE_COOKIE)
@@ -817,7 +879,7 @@ function authLogout(req, res) {
   // the browser for its full ten minutes, and a person who just logged out has
   // said they are done - the callback clears both, and so does this.
   return send(res, 303, '', Object.assign({}, FRONT_HEADERS, {
-    location: '/desk/auth/login',
+    location: at('/auth/login'),
     'set-cookie': [clearCookie(SESSION_COOKIE), clearCookie(STATE_COOKIE)]
   }));
 }
@@ -872,7 +934,7 @@ async function handleFront(req, res) {
   // would refuse anyway must not cost one of them. POST is a method here only
   // for the logout form.
   const readMethod = req.method === 'GET' || req.method === 'HEAD';
-  const logoutPost = req.method === 'POST' && path === '/desk/auth/logout';
+  const logoutPost = req.method === 'POST' && path === at('/auth/logout');
   if (!readMethod && !logoutPost) {
     return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow: 'GET, HEAD' }));
   }
@@ -886,8 +948,8 @@ async function handleFront(req, res) {
   // exists to prevent. It is refused here, BEFORE the budget, naming the one
   // method the path does answer. The desk's pages keep HEAD: they are pages,
   // and a HEAD of one costs a snapshot read and nothing scarce.
-  if (path.startsWith('/desk/auth/') && req.method === 'HEAD') {
-    const allow = path === '/desk/auth/logout' ? 'POST' : 'GET';
+  if (path.startsWith(at('/auth/')) && req.method === 'HEAD') {
+    const allow = path === at('/auth/logout') ? 'POST' : 'GET';
     return send(res, 405, '', Object.assign({}, FRONT_HEADERS, { allow }));
   }
 
@@ -896,7 +958,7 @@ async function handleFront(req, res) {
   // Ten per minute per visitor is far above what a person clicking a login
   // button does and far below what a scan needs to be useful. The 429 still
   // comes before any provider is contacted.
-  if (path.startsWith('/desk/auth/')) {
+  if (path.startsWith(at('/auth/'))) {
     // THE ROUTE IS MATCHED BEFORE THE BUDGET IS SPENT, for the same reason the
     // method is: a request this desk answers with 404 costs it nothing, so it
     // must cost the visitor nothing either. It used to cost a hit, and that
@@ -904,7 +966,7 @@ async function handleFront(req, res) {
     // on a page or in an HTML mail make the victim's own browser spend the
     // victim's own ten hits from the victim's own address, and the first real
     // click on /desk/auth/login then meets 429 for a minute, renewably.
-    const matched = (req.method === 'GET' && (path === '/desk/auth/login' || path === '/desk/auth/callback')) || logoutPost;
+    const matched = (req.method === 'GET' && (path === at('/auth/login') || path === at('/auth/callback'))) || logoutPost;
     if (!matched) return send(res, 404, NOT_FOUND, FRONT_HEADERS);
 
     // AND A SUBRESOURCE IS NOT A CLICK. The route match above closes the 404
@@ -933,7 +995,7 @@ async function handleFront(req, res) {
     // - the provider redirect (discovery, a state cookie), the callback (a
     // token exchange and the bridge) and the logout - so the budget still
     // bounds everything it was written to bound.
-    if (req.method === 'GET' && path === '/desk/auth/login' && !url.searchParams.has('provider')) {
+    if (req.method === 'GET' && path === at('/auth/login') && !url.searchParams.has('provider')) {
       return authLogin(url, res);
     }
 
@@ -942,8 +1004,8 @@ async function handleFront(req, res) {
     }
     // One of the three, or `matched` would be false: GET is the only read
     // method left on these paths, because HEAD was refused above.
-    if (path === '/desk/auth/login') return authLogin(url, res);
-    if (path === '/desk/auth/callback') return authCallback(url, cookies, res);
+    if (path === at('/auth/login')) return authLogin(url, res);
+    if (path === at('/auth/callback')) return authCallback(url, cookies, res);
     return authLogout(req, res);
   }
 
@@ -965,7 +1027,7 @@ async function handleFront(req, res) {
   // other half of the same bound.
   const identity = verifySession(FRONT.key, cookies.get(SESSION_COOKIE), nowSec());
   if (!identity) {
-    return send(res, 303, '', Object.assign({}, FRONT_HEADERS, { location: '/desk/auth/login' }));
+    return send(res, 303, '', Object.assign({}, FRONT_HEADERS, { location: at('/auth/login') }));
   }
   // THE BUDGET IS SPENT WHERE THE WORK IS, and past this line the work is a
   // bridge (or a memo of one), a snapshot read and a rendered page. A visitor

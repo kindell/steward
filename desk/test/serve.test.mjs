@@ -329,6 +329,70 @@ after(async () => {
   if (T) rmSync(T, { recursive: true, force: true });
 });
 
+// ── THE MOUNT IS USED, NOT JUST DEFAULTED TO ────────────────────────────────
+// Every other test in this file runs at the DEFAULT mount, which is exactly what
+// makes them unable to tell a derived route table from the literals it replaced:
+// both produce /desk/. These two spawn a desk that was TOLD to mount somewhere
+// else, and the proof is a pair of answers rather than one.
+//
+// 200 vs 404 IS THE DISTINCTION, AND IT NEEDS A VALID LOGIN HEADER. The first draft
+// of these tests asserted 403 against no header, on the reasoning that a 403 means
+// "route matched, login refused". It does not: the login check runs BEFORE the route
+// table, so without a header EVERY path is 403 and the assertion measured nothing.
+// Measured rather than reasoned the second time - the statuses below were read off a
+// running server before they were written down.
+//
+// Both halves are asserted because either alone is satisfied by a broken server:
+// "the new path answers" passes on one that answers everything, and "the old path is
+// gone" passes on one that answers nothing.
+function reqOn(sockPath, path, headers) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ socketPath: sockPath, path, method: 'GET', headers: headers || {}, agent: false }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+test('an empty prefix mounts the desk at the root, and /desk/ stops existing', async () => {
+  const sock = join(T, 'root-mount.sock');
+  const h = await spawnUp(childEnv({ STEWARD_DESK_SOCK: sock, STEWARD_DESK_PREFIX: '' }), sock);
+  try {
+    assert.equal((await reqOn(sock, '/', A)).status, 200, 'the index answers at the root');
+    assert.equal((await reqOn(sock, '/desk/', A)).status, 404, 'and the old mount stops existing');
+    assert.equal((await reqOn(sock, '/team/team', A)).status, 200,
+      'every route moved, not only the index - the table is built from the mount');
+  } finally {
+    await stopSpawned(h);
+  }
+});
+
+test('a custom prefix moves every route together', async () => {
+  const sock = join(T, 'custom-mount.sock');
+  const h = await spawnUp(childEnv({ STEWARD_DESK_SOCK: sock, STEWARD_DESK_PREFIX: '/a/b' }), sock);
+  try {
+    assert.equal((await reqOn(sock, '/a/b/', A)).status, 200, 'the index moved with the mount');
+    assert.equal((await reqOn(sock, '/desk/', A)).status, 404, 'and it did not stay behind');
+    assert.equal((await reqOn(sock, '/', A)).status, 404, 'nor did it land at the root');
+  } finally {
+    await stopSpawned(h);
+  }
+});
+
+// A MALFORMED MOUNT IS REFUSED AT START, NAMING THE KEY - the same shape as every
+// other conf refusal, and checked here as well as in desk-paths because this is the
+// guard for every route by which a value can arrive that is not the estate file.
+test('a malformed prefix refuses at start and names the key', async () => {
+  const sock = join(T, 'bad-mount.sock');
+  const r = await runToExit(childEnv({ STEWARD_DESK_SOCK: sock, STEWARD_DESK_PREFIX: '/desk/' }));
+  assert.equal(r.code, 78);
+  assert.match(r.err, /DESK_PREFIX/);
+});
+
 test('no login header is 403', async () => {
   assert.equal((await get('/desk/', {})).status, 403);
 });
