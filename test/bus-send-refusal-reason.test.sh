@@ -103,7 +103,14 @@ is "a flood is cut to the cap" "${#capped_huge}" 2000
 # THE CAP COUNTS CHARACTERS, NOT BYTES. A multibyte reason cut mid-character would
 # be invalid UTF-8, and jq refuses a record over it — the reason must never be the
 # thing that loses the record it explains.
-multi="$(printf 'å%.0s' $(seq 1 2500))"
+# THE FIXTURE IS BUILT FROM AN ESCAPE, NOT TYPED. What is needed here is a
+# two-byte character, and the obvious one to reach for is a Swedish letter — which
+# the estate's language suite forbids in the product surface, and which turned this
+# file red the first time it ran. The escape gives the same bytes and leaves the
+# source ASCII, so the fixture cannot be the thing that fails the sweep it is
+# unrelated to. U+00E9 is two bytes in UTF-8, which is the only property under test.
+two_byte="$(printf '\303\251')"
+multi="$(printf "%s" "$(for _ in $(seq 1 2500); do printf '%s' "$two_byte"; done)")"
 capped_multi="$(bus_send_reason_cap "$multi")"
 is "a multibyte reason is cut by character" "${#capped_multi}" 2000
 if printf '%s' "$capped_multi" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
