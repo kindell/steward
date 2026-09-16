@@ -360,10 +360,30 @@ elif [ ! -f "$STEWARD_ESTATE_ROOT/test/leak-guard.test.sh" ]; then
 else
   # STEWARD_PRODUCT_REPO IS THIS TREE - the one being gated - never a sibling checkout: the guard
   # derives the product surface from it, and a PR must be measured against its own files.
-  # WHOSE list ran is part of the answer. Each estate's guard knows only its OWN names, and the
-  # lists are disjoint by construction - a name in one estate's register is absent from the others
-  # (measured 2026-09-13: two people appear in the product and in no list on this host). A bare
-  # 'ok' would read as "no names anywhere", which no single run can establish. The estate's name is
+  # WHOSE list ran is part of the answer. Each estate's guard knows only its OWN names, so a bare
+  # 'ok' would read as "no names anywhere", which no single run can establish.
+  #
+  # THE LISTS WERE ONCE DISJOINT AND ARE NOT ANY MORE, and the sentence that said so is left here
+  # in its corrected form rather than deleted, because it was TRUE WHEN MEASURED and the thing
+  # that broke it is worth knowing. It read: "the lists are disjoint by construction - a name in
+  # one estate's register is absent from the others (measured 2026-09-13: two people appear in the
+  # product and in no list on this host)".
+  #
+  # A peer link is what broke it. peers.d makes a NEIGHBOUR's name part of the local register, so
+  # from the first link onwards two estates share at least each other's names, and every further
+  # link widens the overlap. Measured 2026-09-16, one estate carrying two peer rows: both
+  # neighbours' names sit in its own register, and the neighbour's list was confirmed - by planting
+  # the word in a fixture and checking BOTH directions - to carry this estate's name in return.
+  #
+  # NOTHING HERE DEPENDS ON THE DISJOINTNESS, and that is why this is a comment fix and not a code
+  # one: the receipt already names the estate and carries the list digest, which is what settles
+  # "two estates, two lists" against "one estate measured twice" WITHOUT any assumption about
+  # overlap. The invariant was a second reason for a decision that already had a sufficient first.
+  #
+  # IT IS RECORDED BECAUSE A MEASURED CLAIM THAT STOPPED BEING TRUE IS THE HARDEST KIND TO FIND.
+  # It carries a date and a method, it reads as settled, and nobody re-opens it - two readers went
+  # through this paragraph the same day looking for support and neither saw the contradiction,
+  # because neither was looking for one. The estate's name is
   # DERIVED from the designated root, never written down twice. Rule 14, second corollary.
   # THE ESTATE NAMES ITSELF; A DIRECTORY DOES NOT.
   #
