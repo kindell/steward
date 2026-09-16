@@ -166,3 +166,52 @@ not: each account's own supervisor runs the same signalling on its own rows. The
 coverage exists; it lives somewhere else. *A true number answering a different
 question* — and the reason to state it here is that the next person to measure it
 will reach for the same wrong conclusion.
+
+## 4. A job's DELIVERY age answers what an empty `failed/` cannot
+
+Item 3 asks *how old is the oldest unsent letter*. That catches a send that was
+attempted and refused. It does not catch a job that never reached the sending
+step at all, and it does not catch a job whose delivery was never on the bus in
+the first place.
+
+**Measured 2026-09-16, and both cases were live on the same host.**
+
+A daily job's bus sends had been failing on `publickey` since 2026-09-08 — nine
+runs, nine entries in its own `failed/`. That is the case item 3 covers.
+
+Its weekly sibling was in a different state entirely. It died on
+2026-09-14 on a provider quota:
+
+```
+05:30:08  <domain>/<job>-weekly   exit 1   "You've hit your weekly limit"
+```
+
+No report was written, so nothing was delivered, so nothing was ever sent, so
+`failed/` stayed empty. Its last delivery was 2026-09-07: **nine days**, against
+a weekly schedule. And the job's own delivery section says the bus is not part of
+it — *"The file is the report. The Slack summary is currently manual."* There was
+no channel to fail.
+
+So the quantity that separates the two is not the queue but the **delivery**: a
+job whose newest delivered artefact is older than its own schedule allows is
+late, and the observer does not have to know why. Quota, crash, dead key, missing
+hook, a schedule that never fired — all of them present as the same measurable
+fact, and each of the specific detectors catches only its own case.
+
+**It is cheap where the watch already stands.** A job row declares what it
+delivers and when it runs. The newest matching artefact's mtime against the
+schedule is one comparison, with the same shape as item 3's: not a promise of
+health, only the ability to say *this one is certainly late*.
+
+**And the tool that was supposed to do this could not.** A `job-status.sh` exists
+in exactly one home on the host, in no repository, in no deploy manifest, with no
+provenance row. Its run column had been frozen since the estate split ten days
+earlier, because its log directory defaults to the one that stopped being written
+that day; its delivery column, read from the artefacts instead, was current the
+whole time. Every row therefore rendered as "never ran" — an alarm on all rows,
+which is an alarm on none.
+
+That is the argument for putting the question in the scheduled observer rather
+than in a tool someone has to remember to run: the tool was broken for ten days
+in a single home, and it was found only because somebody went looking after an
+unrelated outage.
