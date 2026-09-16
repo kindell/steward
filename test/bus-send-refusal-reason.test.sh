@@ -46,6 +46,35 @@ is "parked subject is the hub" \
 is "FRAGA across a link is the hub" \
   "$(bus_send_refused_by "bus: a FRAGA does not cross a link — nothing is sent to 'x@y'." 65)" hub
 
+# THE REAL SPECIMEN, NOT THE TRANSCRIPT. Everything above was copied from what the
+# hub SAYS. What the variable HOLDS begins with a line from ssh, on every send from a
+# tool shell, measured three times in a row and identical each time:
+#
+#     Pseudo-terminal will not be allocated because stdin is not a terminal.
+#
+# The first version of this classifier matched the start of the whole string, so every
+# refusal the hub makes recorded `unknown`. The suite was green throughout, because
+# none of its fixtures had ever been through ssh. These are.
+SSH_NOISE="Pseudo-terminal will not be allocated because stdin is not a terminal."
+is "the hub's line behind ssh's noise is still the hub" \
+  "$(bus_send_refused_by "$SSH_NOISE
+bus: the envelope has no valid class" 65)" hub
+is "and behind two lines of noise" \
+  "$(bus_send_refused_by "$SSH_NOISE
+some other chatter
+bus: the subject 'x' is parked" 65)" hub
+
+# NOISE ALONE IS NOT A HUB REFUSAL. If ssh spoke and the hub did not, nothing here
+# came from a hub and saying so would name a component that never saw the mail.
+is "ssh's noise with no hub line is not the hub" "$(bus_send_refused_by "$SSH_NOISE" 65)" unknown
+
+# A LINE, NOT A SUBSTRING. A refusal that quoted a body containing the word would
+# otherwise be attributed to the hub. Today's hub does not echo bodies - measured on
+# all four of its refusal classes - but this line must not rest on that.
+is "bus: inside a line is not the hub" \
+  "$(bus_send_refused_by "$SSH_NOISE
+the sender wrote bus: nonsense in the body" 65)" unknown
+
 # TRANSPORT FAILURE IS NOT THE HUB. ssh rc 255 covers a refused connection, a
 # rejected key and an unknown host key alike; none of them reached a hub to be
 # refused by one, and recording "hub" would name a component that never saw the mail.
