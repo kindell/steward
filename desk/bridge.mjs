@@ -76,9 +76,19 @@ export function parseBridge(out) {
       ? "'" + k + "=' was printed with nothing after it"
       : "no '" + k + "=' line was printed";
     const missing = ['dir', 'sock'].filter((k) => !found[k]);
+    // AND THE FIXED HALF MUST NOT NAME ONE OF THE TWO EITHER. The first attempt at
+    // this repair opened with "the desk has no directory to serve from" in every
+    // case - so a missing SOCKET produced a sentence that began by blaming the
+    // directory and then correctly named the socket. The same defect as the one
+    // being fixed, one layer up: a constant clause asserting the wrong one of the
+    // two things this reader exists to keep apart. Found by measuring all five
+    // cases rather than reading the code.
+    //
+    // So the lead names the REQUIREMENT, which is true whichever key is at fault,
+    // and everything specific lives in the named parts.
     return {
       ok: false,
-      reason: 'the desk has no directory to serve from: ' + missing.map(naming).join('; '),
+      reason: 'desk-paths must print both a dir= and a sock= line: ' + missing.map(naming).join('; '),
     };
   }
   return { ok: true, found };

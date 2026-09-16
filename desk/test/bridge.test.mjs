@@ -110,14 +110,21 @@ test('an empty required key is reported as printed-but-empty, and named', () => 
   assert.equal(r.ok, false);
   assert.match(r.reason, /'dir='/, 'the refusal names the key at fault');
   assert.match(r.reason, /nothing after it/, 'and says the line WAS printed');
-  assert.doesNotMatch(r.reason, /sock/, 'and does not accuse the key that was fine');
+  // NAMED AS A REQUIREMENT, NOT AS A FAULT. The lead says both keys must be
+  // printed, so `sock=` appears in every refusal; what must not appear is a CLAIM
+  // about sock. An earlier version of this assertion tested for the substring and
+  // passed only because the lead happened not to contain it - it was measuring
+  // presence where it meant accusation.
+  assert.doesNotMatch(r.reason, /'sock=' was printed|no 'sock=' line/,
+    'and does not accuse the key that was fine');
 });
 
 test('an absent required key is reported as never printed, and named', () => {
   const r = parseBridge('sock=/d/desk.sock\n');
   assert.equal(r.ok, false);
   assert.match(r.reason, /no 'dir=' line was printed/);
-  assert.doesNotMatch(r.reason, /sock/, 'and does not accuse the key that was fine');
+  assert.doesNotMatch(r.reason, /'sock=' was printed|no 'sock=' line/,
+    'and does not accuse the key that was fine');
 });
 
 test('when both are gone the refusal names both', () => {
@@ -125,4 +132,25 @@ test('when both are gone the refusal names both', () => {
   assert.equal(r.ok, false);
   assert.match(r.reason, /dir=/);
   assert.match(r.reason, /sock=/);
+});
+
+// THE FIXED HALF OF THE SENTENCE MUST NOT NAME ONE OF THE TWO EITHER. The first
+// repair opened every refusal with "the desk has no directory to serve from", so a
+// missing SOCKET produced a sentence that began by blaming the directory and then
+// correctly named the socket - the same defect it was fixing, one layer up. These
+// assertions are about the CONSTANT clause, which is why they read it negatively:
+// what must not be there is a claim about the key that was fine.
+test('a missing sock is not reported as a missing directory', () => {
+  const r = parseBridge('dir=/d\n');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /no 'sock=' line was printed/);
+  assert.doesNotMatch(r.reason, /no directory/, 'the lead must not blame the directory');
+  assert.doesNotMatch(r.reason, /'dir=' was printed/, 'and must not accuse dir at all');
+});
+
+test('an empty sock is not reported as a missing directory', () => {
+  const r = parseBridge('dir=/d\nsock=\n');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /'sock=' was printed with nothing after it/);
+  assert.doesNotMatch(r.reason, /no directory/);
 });
