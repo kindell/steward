@@ -609,6 +609,71 @@ asked of one claim inside a group that is otherwise sound - and the answer is
 usually "redundant under load, load-bearing under regression", which is why the
 repair is neither keeping it as it is nor deleting it.
 
+## 17. A test's assertions are about its return values. Nothing asserts what it leaves behind.
+
+A suite says `pass=17 fail=0` about the things it checked. It says nothing
+whatsoever about what it wrote outside its own fixture tree - and a defect that
+lives only in the traces passes every run, in both worlds, forever.
+
+**The measured case.** Two suites start a *second* runner against a fixture
+tree, at five call sites between them. **One** of those runs a probe that is
+MEANT to fail: it is the control group, the thing that shows the isolation bites
+when the protection is removed. The nested runner inherited `RUN_TESTS_RED_DIR`
+from the environment, and since a red suite now saves its whole output there,
+**that deliberate failure was written into the OUTER run's evidence
+directory.**
+
+**One call site was enough.** The reader of an evidence directory cannot know
+which of the files in it is the control - so a single planted red makes the
+whole directory unreadable, not one file in it. This is a narrower claim than
+"nested runners tend to carry deliberate reds", and a stronger one: the defect
+does not need a pattern to be total.
+
+The result is a directory in which a control group and a real regression are
+indistinguishable. Somebody opening it after a gate run reads
+
+    FAIL: saw an existing config: /var/folders/.../poison
+    pass=0 fail=1
+
+and has no way to tell that this is the guard doing its job.
+
+**Why no test caught it, and no test could.** The suites pass identically with
+the leak and without it - `17/0` and `12/0` either way. Every assertion in them
+is about a return value or a captured string. Not one of them makes a claim
+about shared state outside the fixture, because nothing in the ordinary grammar
+of a test invites that claim. *A test sees its assertions; it does not see its
+traces.*
+
+**How it was found, which is the part worth copying.** By opening the evidence
+directory after a GREEN full run - a moment when it should have been empty - and
+noticing a file in it. Not a search, not a hypothesis: somebody looked at a
+thing that ought to be empty, *because they wanted to see how it worked*, and it
+was not empty. **An emptiness that is not empty is one of the few defects
+visible without knowing what you are looking for** - and only to someone who
+looks at the emptiness at all.
+
+**And the third measurement is the one that proves anything.** Two are obvious
+and insufficient: with the fix the outer directory is empty; with the fix removed
+`probe.out` returns. Both run inside the suite's own fixture, which is the world
+the fix was written for. Only the **full gate** - green, and the evidence
+directory empty, where before a green gate left a file there - shows it bites
+where the fault actually occurred.
+
+**How to apply.** When a change gives a run somewhere new to WRITE, ask the
+question the assertions cannot: *what does this leave behind, and who would
+notice if it left the wrong thing?* Then answer it by looking at the place
+itself after a run that should have left it untouched. The cost is one `ls`.
+
+This is rule 8's relative in the other direction: there, an error not
+distinguished from an answer becomes an answer. Here, a control group not
+distinguished from a regression becomes a regression - to the next person who
+reads the directory, who will be reading it precisely because something went
+wrong.
+
+Found by a colleague who was looking at the mechanism rather than for a bug,
+after the defect was introduced by the change that created the directory - a
+change whose own two full gate runs could not have seen it.
+
 ## 18. A claim about two platforms, measured on one, is not "measured".
 
 Three of these in one night, all by the same author, all in the same shape:
@@ -649,3 +714,45 @@ measurement is not automatically the one who sees everything it settles.
 Rule 15 is this rule's neighbour and not the same: there, a TOOL could not see
 half the answer and returned zero. Here the tool worked, the number was true,
 and the SENTENCE reached further than the ground under it.
+
+## 19. A gate number applies to a TREE. The tree that lands is the merge result.
+
+A receipt binds to a commit — that is rule 14's whole point, and it is why a
+receipt never lies about *what* it measured. But a branch's tip is not the tree
+that will exist after the merge. **When a branch does not contain the target's
+tip, merging produces a third tree that neither parent was**, and both halves'
+numbers describe something that will not exist.
+
+**Measured, not reasoned.** On one day, all five open pull requests stood on
+branches that did not contain `main`'s tip:
+
+```
+git merge-base --is-ancestor origin/main origin/<branch>   →  false, five times
+```
+
+Two of them carried a *both-green* label at the time. The label was a true
+statement about a tree, and the tree was not the one anybody would get.
+
+**What follows is a claim and is marked as one.** That a clean merge of two green
+halves can go red is not demonstrated here. It is credible rather than certain,
+and the reason it is credible is rule 15's: this product has a suite that reads
+prose files, so "nothing reads that file" is a claim somebody has to check, not a
+safe default. Anyone who wants it measured can build it — a branch that tightens
+a text check, plus a line on the target that the tightened check refuses; both
+halves green, the merge red.
+
+**The working order this produces:**
+
+- **Rebase before asking for the pair, never after.** A rebase after a receipt
+  discards both halves, including the one that measured nothing new.
+- **Merge one at a time, and promptly.** Every merge invalidates every other open
+  pair. Five open branches and one merge is five pairs to redo.
+- **A label may not outlive the tree it describes.** When a branch falls behind,
+  take the label down to *needs* rather than leave a green one standing for a
+  tree that will not land — the label is what the queue shows, and it is read by
+  people who never open the thread.
+
+The shape underneath is one this document keeps meeting: **a statement that was
+true when it was made, and stopped being true without anything in it changing.**
+Rules 14 and 18 bind a claim to what it measured; this one binds it to how long
+that stays the relevant thing to have measured.
