@@ -539,6 +539,29 @@ fi
 # With failed/ the archive is complete without lying, and AN EMPTY failed/ BECOMES
 # A MEASUREMENT rather than an absence — the same reason the absence of a finding
 # is also a measurement.
+# THE FAILURE LINE NAMES WHO IT FAILED TO, and it is a function so that it can be
+# proven without a failing ssh - extraction, not sourcing, the same technique
+# bus_secret_guard is tested with.
+#
+# IT USED TO SAY ONLY "THE SEND FAILED (ssh rc N)". That was enough while a home
+# had ONE peer: there was only one place mail could be going. This estate gained a
+# second peer on 2026-09-16, and a bare failure line stopped being a complete
+# report the moment it did - the same shape as the address that became ambiguous
+# in the same hour, and for the same reason: nothing about the line changed, the
+# world around it did.
+#
+# The recipient was never secret. The failed/ record beside this line has carried
+# `to` all along, so the fact was already on disk; it was missing from the only
+# place the operator actually looks. A report that is complete on disk and
+# incomplete on screen is the shape this file has spent the day naming.
+#
+# ssh rc 255 covers a refused connection, a rejected key and an unknown host key
+# alike, so the number alone does not say which - ssh's own stderr line does, and
+# it is left to speak for itself rather than guessed at here.
+bus_send_failed_line() { # <recipient> <ssh rc> <failed dir> -> the operator's line
+  printf "bus-send: THE SEND FAILED to '%s' (ssh rc %s). Saved in %s\n" "$1" "$2" "$3"
+}
+
 send_rc=0
 printf '%s\n%s' "$to" "$text" | \
   ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 "$HUB_SSH_TARGET" || send_rc=$?
@@ -565,7 +588,7 @@ if [ -n "$me" ] && [ "$send_rc" -ne 0 ]; then
       '{from: $from, to: $to, ts: $ts, text: $text, delivered: false, ssh_rc: $rc}' \
       > "$failed/${now}-${safe_to}-$$.json" 2>/dev/null || true
   fi
-  echo "bus-send: THE SEND FAILED (ssh rc $send_rc). Saved in $HOME/.config/agent-bus/$me/failed/" >&2
+  bus_send_failed_line "$to" "$send_rc" "$HOME/.config/agent-bus/$me/failed/" >&2
 fi
 [ "$send_rc" -eq 0 ] || exit "$send_rc"
 
