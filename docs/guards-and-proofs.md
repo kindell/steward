@@ -756,3 +756,61 @@ The shape underneath is one this document keeps meeting: **a statement that was
 true when it was made, and stopped being true without anything in it changing.**
 Rules 14 and 18 bind a claim to what it measured; this one binds it to how long
 that stays the relevant thing to have measured.
+
+## 20. When more than one branch is open, no per-branch base check can be satisfied for all of them. Measure the integrated tree and bind the number to a tree hash.
+
+Rule 19's working order says *merge one at a time, and promptly*. Followed
+literally with more than two open branches, it does not converge: the first merge
+moves the target, so every other open pair is void again. Five open branches cost
+5+4+3+2+1 = **fifteen pairs** — and the last four of those are re-runs of code
+nobody changed.
+
+**The instrument that replaces it.** Build the tree that will actually land —
+the target plus every branch that is going in — and give *that* a pair. Then,
+after the merges, compare hashes:
+
+```
+git rev-parse origin/main^{tree}        →  must equal the gated tree
+```
+
+That comparison is the whole point. It turns "we assume the merge produced what
+we measured" into a measurement: equal hashes mean `main` is *literally* the tree
+both halves ran. Different hashes mean something else changed while we worked,
+and that is the moment to stop rather than to reason.
+
+**Measured on the night it was first used**, five branches, two hosts:
+
+- Five per-branch pairs, each on its own rebased commit, both halves readable in
+  its own thread; **one** integration pair on the merged tree. Six pairs where
+  the one-at-a-time order would have cost fifteen.
+- The merge order and the merge style do not move the result, and this was
+  measured rather than assumed: `51,47,53,68,52` as merge commits and
+  `52,68,53,47,51` with fast-forward allowed both produced tree `11dda0d`. The
+  real run then landed mixed — one branch fast-forwarded, four as merge commits —
+  and `main^{tree}` came out `11dda0d` all the same.
+- The branches were disjoint by file, checked pairwise. That is not a
+  precondition for the method; it is why the order-independence held here.
+
+**The failure this method brings with it, and the guard against it.** The
+integration object is a commit, and it must be named as one. Its *branch name*
+moved under a peer mid-run — the author of this page rebuilt it to take in a
+fifth branch, force-pushed the same name, and the peer who had already started
+was measuring a ref rather than the commit they were asked to measure. Their own
+diagnosis is the rule:
+
+> `HEAD == $(git rev-parse origin/<branch>)` cannot fail. It compares a value
+> with itself.
+
+The assertion has to pin the SHA **from the order**, never from a remote ref;
+and whoever names an integration commit owes the other half a promise that it
+will not be rebuilt. Two people caught that window independently, from opposite
+ends, and one of them had run the right tree by luck rather than by method — the
+distinction they insisted on drawing, and the reason it is written here.
+
+**A label may not outlive the tree it describes** (rule 19) has a second half
+that this night supplied: *a label changes state when the THREAD changes state,
+never when the person does*. Four labels were taken down at the moment a run
+finished rather than the moment its receipt was readable by somebody else, which
+left four queue entries carrying no label at all — and an absent label reads as
+"nothing needed", not as "a half is missing". Absence is not emptiness; this
+document has now paid for that equivalence four times.
