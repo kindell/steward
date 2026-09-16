@@ -579,15 +579,84 @@ fi
 #
 # LC_ALL=C AND EXPLICIT OCTAL RANGES so the class is the same on GNU and BSD tr. A
 # named class would be the locale's opinion, and this guard must not have one.
+# WHO REFUSED, not merely that someone did. The hub prefixes its own refusals with
+# `bus:`; ssh's transport failures do not and arrive as 255. Anything else says
+# unknown rather than guessing - an archive that guesses is worse than one that
+# admits, and this field exists precisely because rc 65 already guesses for us.
+#
+# A FUNCTION RATHER THAN INLINE CODE so the suite can reach it. test/ reaches into
+# this file with sed and evals the slice, deliberately, so that bus-send gains no
+# test-only hook - see test/bus-send-failure-line.test.sh. Logic that lives inline
+# in the send path is logic no suite can address.
+bus_send_refused_by() { # <reason text> <ssh rc> -> hub | ssh | unknown
+  case "$1" in
+    bus:*) printf 'hub' ;;
+    *) if [ "$2" -eq 255 ]; then printf 'ssh'; else printf 'unknown'; fi ;;
+  esac
+}
+
+# CAPPED so an unforeseen flood cannot fill the archive - the other estate asked for
+# this before the field was written. 2000 characters holds every refusal this hub
+# writes today: the longest, the FRAGA-across-a-link explanation, is four lines and
+# under 300. The cap counts CHARACTERS and not bytes, so a multibyte reason is never
+# cut mid-character into something jq would refuse.
+bus_send_reason_cap() { # <reason> -> the reason, at most 2000 characters
+  if [ "${#1}" -gt 2000 ]; then printf '%s' "${1:0:2000}"; else printf '%s' "$1"; fi
+}
+
 bus_send_failed_line() { # <recipient> <ssh rc> <failed dir> -> the operator's line
   local _to
   _to="$(printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?')"
   printf "bus-send: THE SEND FAILED to '%s' (ssh rc %s). Saved in %s\n" "$_to" "$2" "$3"
 }
 
+# THE HUB'S REASON IS CAPTURED, NOT ONLY SHOWN. Until 2026-09-16 the ssh below let
+# the hub's stderr pass straight through to the terminal and the failed/ record was
+# written from `send_rc` alone. The explanation therefore existed at the exact moment
+# the record was written, and the record kept the one field that cannot carry it: rc
+# 65 covers a malformed envelope, an invented class, a parked subject and a FRAGA
+# across a link alike, and each of those needs a different correction.
+#
+# The file already said this one level up, about ssh's own 255 — "the number alone
+# does not say which, ssh's own stderr line does" — and this path stored the number
+# without the line.
+#
+# MEASURED on one estate the day this changed: 31 records over 22.6 days, 15 of them
+# from this path. Twelve were an invented class, four distinct ones, every one of
+# which the hub had named in a line nobody kept. One was a CORRECTION of a factual
+# error sent to another estate: it was refused, the sender believed it delivered, and
+# the wrong claim stood with the recipient for 48 hours while the correction sat in
+# the sender's own failed/.
+#
+# THIS IS NOT A NEW SHAPE. The other writer in this file — the secret guard, forty
+# lines up — already writes `refused_by` and a `note` saying why the text is absent.
+# This is that shape applied to the second writer.
+#
+# CAPTURED TO A FILE AND RE-EMITTED rather than tee'd through a process substitution:
+# the record is written immediately afterwards, and a tee that has not finished
+# flushing yields an empty reason on exactly the fast refusals this is for. The cost
+# is that stderr is no longer streamed — acceptable for a one-shot send with an 8 s
+# connect timeout, and the operator sees the same two lines in the same order.
+#
+# IF mktemp FAILS THE SEND STILL HAPPENS. A reason is worth having and worth nothing
+# compared with the mail: the capture is skipped, stderr passes through as before,
+# and the record carries `refused_by: "unknown"` instead of a wrong answer.
+_bs_err=""
+_bs_err="$(mktemp "${TMPDIR:-/tmp}/bus-send-err.XXXXXX" 2>/dev/null || true)"
+if [ -n "$_bs_err" ]; then
+  trap 'rm -f "$_bs_err"' EXIT
+fi
+
 send_rc=0
-printf '%s\n%s' "$to" "$text" | \
-  ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 "$HUB_SSH_TARGET" || send_rc=$?
+if [ -n "$_bs_err" ]; then
+  printf '%s\n%s' "$to" "$text" | \
+    ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 "$HUB_SSH_TARGET" \
+      2>"$_bs_err" || send_rc=$?
+  if [ -s "$_bs_err" ]; then cat "$_bs_err" >&2; fi
+else
+  printf '%s\n%s' "$to" "$text" | \
+    ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=8 "$HUB_SSH_TARGET" || send_rc=$?
+fi
 
 # ARCHIVE AFTER SSH, NEVER BEFORE. set -e aborts on a failed send, so the line
 # below is reached only when the mail has actually left the machine. An archive
@@ -606,9 +675,47 @@ if [ -n "$me" ] && [ "$send_rc" -ne 0 ]; then
   if mkdir -p "$failed" 2>/dev/null; then
     now="$(date +%s)"
     safe_to="$(printf '%s' "$to" | tr -c 'A-Za-z0-9._-' '_')"
+    # THE REASON CANNOT LEAK MORE THAN THE RECORD ALREADY DOES. The other estate
+    # raised the right worry: if a refusal line quoted the message, storing it would
+    # be a way past the secret guard's text=null rule. It is not, and the reason is
+    # structural rather than a measurement that could age — when the guard fires the
+    # send never reaches this path at all, so any text here has already been judged
+    # archivable and is written to `text` in this very record. A reason quoting it
+    # adds nothing the record does not already hold.
+    # Measured anyway, on all four of this hub's refusal classes — malformed
+    # envelope, unknown recipient, parked subject, FRAGA across a link: each names
+    # the rule and none echoes the body.
+    #
+    # NUL BYTES ARE REMOVED because jq would refuse the whole record over one, and a
+    # reason must never be the thing that loses the record it explains. LC_ALL=C so
+    # the class is the same on GNU and BSD tr.
+    _bs_reason=""
+    _bs_note=""
+    _bs_full=""
+    if [ -n "$_bs_err" ] && [ -s "$_bs_err" ]; then
+      # ONE COMPARISON DECIDES BOTH, and the note is then true by construction. The
+      # first form of this had the caller test the length against 2000 and the cap
+      # test it again inside the function — two sources of truth for one decision,
+      # which can disagree. In one direction that is harmless; in the other the
+      # record says "truncated" about a reason nothing removed anything from, and a
+      # note that lies about the field beside it is worse than no note.
+      # Found by breaking the cap deliberately: `-gt` changed to `-ge` passed the
+      # whole suite, because cutting 2000 characters to 2000 is a no-op and no
+      # assertion could see it. The suite could not see it because the property was
+      # split across two places; it is now in one.
+      _bs_full="$(LC_ALL=C tr -d '\000' < "$_bs_err")"
+      _bs_reason="$(bus_send_reason_cap "$_bs_full")"
+      if [ "${#_bs_reason}" -ne "${#_bs_full}" ]; then
+        _bs_note="reason truncated to 2000 characters"
+      fi
+    fi
+    _bs_by="$(bus_send_refused_by "$_bs_reason" "$send_rc")"
     jq -n --arg from "$me" --arg to "$to" --argjson ts "$now" --arg text "$text" \
-      --argjson rc "$send_rc" \
-      '{from: $from, to: $to, ts: $ts, text: $text, delivered: false, ssh_rc: $rc}' \
+      --argjson rc "$send_rc" --arg by "$_bs_by" --arg reason "$_bs_reason" \
+      --arg note "$_bs_note" \
+      '{from: $from, to: $to, ts: $ts, text: $text, delivered: false, ssh_rc: $rc,
+        refused_by: $by, reason: $reason}
+       + (if $note == "" then {} else {note: $note} end)' \
       > "$failed/${now}-${safe_to}-$$.json" 2>/dev/null || true
   fi
   bus_send_failed_line "$to" "$send_rc" "$HOME/.config/agent-bus/$me/failed/" >&2
