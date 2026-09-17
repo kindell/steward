@@ -930,3 +930,58 @@ measurements were taken by the session that wrote it up; the generalisation is
 the reader's, and the correction to it came back from the first of them before it
 could be merged. It belongs to none of them alone. Nobody who is obliged to say
 "this is wrong" should be required to say why first.
+
+## 22. Rule 20 integrates branches that merge TOGETHER. Two authors merging separately have no shared tree to bind to, and the only instrument left is telling each other.
+
+Rule 20 builds the tree that will land and gives it one pair. That works because
+one person decides what goes in. **When two estates each hold a branch and each
+merges on their own judgement, there is no such tree**: the first merge moves the
+target and the other author's gate — possibly already running — is measuring a
+tree that will never land.
+
+There is no measurement that closes this. The branch is current when the gate
+starts and stale by the time it finishes, and nothing local to either side can
+see it happen. What is left is coordination, and the five rules below are what it
+cost to find out.
+
+**1. Start on a handover, not on the existence of a branch.** A pushed branch is
+not an invitation to gate it. The author says *handed over* when they have
+finished moving it, and the reviewer starts then. A gate begun on a branch the
+author is still rebasing measures a commit nobody will merge.
+
+**2. The party whose wait is free is the party that holds.** Not the one who is
+senior, or asked first, or has the smaller change. Count what is already running:
+a merge that throws away a gate in flight is expensive, and one that throws away
+nothing is not. Then count what the changes *are* — a correction to something
+already deployed goes ahead of a comment fix, because one is running wrong code
+and the other is not.
+
+**3. Say on the bus before a merge and again after it.** Before, so the other
+author can say "hold, mine is mid-flight". After, so they know to rebase without
+having to poll. The line costs one message and replaces a rule nobody can enforce.
+
+**4. A check that informs does not govern.** One estate's staleness check printed
+NO and let the run start anyway; the operator saw the line after the gate was
+already going. It now exits non-zero, with an explicit override for the
+deliberate case. A measurement that exists and may not act is the failure mode
+this document names in five other places.
+
+**5. An agreement a third party will need later belongs in the artefact.** "Not
+to be merged before #89" written in the pull request body is a condition; the
+same sentence on the bus is a memory two people share. The reader in three weeks
+has the first and not the second — the same reason a label follows what the
+thread can be read to say rather than what the two participants know.
+
+**Measured over one night, three estates, four rounds on the same branch:**
+
+| | thrown-away gate runs |
+|---|---|
+| before the rules | 1 — a merge landed while a reviewer's run was starting |
+| the three rounds after | 0, 0, 0 |
+
+The fourth round was the first where no party's wait cost anything, and it was
+not luck: one author held, the second waited for the first author's number rather
+than handing over early, and the reviewer did not start until the handover came.
+**Three parties each declined to do something that would have looked like
+progress.**
+
