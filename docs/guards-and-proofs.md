@@ -1275,8 +1275,8 @@ guard, opened an issue for it, and began building it — while the guard sat on 
 inside the very commit under review. It was found only because the person building
 the replacement opened the file they were about to change and saw it already done.
 
-**The mechanism is not carelessness.** When you know which file fell, diffing that
-file is the natural thing to do, and the path argument makes the narrowing
+**Three readers narrowed the same way, independently, within the same hour.** When
+you know which file fell, diffing that file is the natural thing to do, and the path argument makes the narrowing
 **invisible afterwards**:
 
 > A review that runs `git diff <a> <b> -- <file>` leaves no trace of what it did not
