@@ -1295,8 +1295,18 @@ discovered by somebody happening to redo the work.
   the thing it fixes.
 
 **The mirror case arrived the same night**, and it is the same failure from the other
-side: an issue whose body was written against `main` and whose load-bearing claim —
-"the guard is aimed at three files" — stopped being true one merge later, while the
-issue was still being written. One reader took too narrow a slice of the right tree;
-the other took the right slice of a tree that had moved. **Both times what was missing
-lay inside what the reviewer already had.**
+side: an issue whose body was written against **the tip that was `main` when its author
+started**, and whose load-bearing claim — "the guard is aimed at three files" — stopped
+being true one merge later, while the issue was still being written. `main` is a moving
+name, and it was the movement that made the claim false; "written against `main`" reads
+like a choice of reference, when the reference changed underneath.
+
+**And it was not re-reading that corrected it.** Its author began building the fix,
+opened the file they were about to change, and found it already done. Had they not
+built, the issue would still be open — which is the same shape as this rule's own
+remedy, on the issue side rather than the review side: **an issue is corrected by
+somebody touching the code it is about, not by somebody reading it again.**
+
+One reader took too narrow a slice of the right tree; the other took the right slice of
+a tree that had moved. **Both times what was missing lay inside what the reviewer
+already had.**
