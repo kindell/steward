@@ -556,3 +556,47 @@ test('a desk that consumes nothing renders no estates section at all', () => {
   const h = pageIndex(snap, []);
   assert.ok(!/Estates/i.test(h));
 });
+
+// ── A CONSUMED ESTATE'S ROWS ARE NOT LINKED ─────────────────────────────────
+// serve.mjs decided that a remote session id is not addressable on the consuming
+// desk - "a remote estate's rows belong to its own tree, not grafted into a local
+// one". The renderer offered the link anyway, so every session under every consumed
+// estate was a link to a 404. Measured 2026-09-17 on a live fleet page.
+//
+// A LINK THAT CANNOT WORK IS WORSE THAN NO LINK: it tells the reader the row is
+// reachable and the desk is broken, when the truth is that the row belongs elsewhere.
+const REMOTE_SNAP = {
+  schemaVersion: 1, host: 'far', generatedAt: '2026-09-17T00:00:00Z', viewer: 'alice',
+  readAll: false, entities: [], projects: [],
+  sessions: [{ id: 's-00ab', slug: 'far-one', label: 'Far One', owner: 'alice', mine: true,
+               domain: null, project: null, runtime: 'claude', host: 'far', repo: 'r',
+               liveness: { state: 'running', measuredAt: '2026-09-17T00:00:00Z', ageSeconds: 5 },
+               mcp: [] }]
+};
+const EMPTY_LOCAL = {
+  schemaVersion: 1, host: 'here', generatedAt: '2026-09-17T00:00:00Z', viewer: 'alice',
+  readAll: false, entities: [], projects: [], sessions: []
+};
+
+test('a consumed estate offers no session link', () => {
+  const html = pageIndex(EMPTY_LOCAL, [{ estate: 'far', status: 'ok', ageSeconds: 60, snap: REMOTE_SNAP }]);
+  assert.match(html, /far-one/, 'the row is still shown');
+  assert.doesNotMatch(html, /href="[^"]*s-00ab/, 'but its id is not offered as a link');
+  assert.doesNotMatch(html, /session\/s-00ab/, 'and no session route is built from it');
+});
+
+// THE CONTROL. Without it, a renderer that dropped every link everywhere would
+// satisfy the assertion above.
+test('the local estate still links its own sessions', () => {
+  const html = pageIndex(snap);
+  assert.match(html, /href="[^"]*session\/s-1"/, 'a local session keeps its link');
+});
+
+// AND THE ROW IS NOT DIMINISHED BY LOSING THE LINK - the label, the liveness answer
+// and the `mine` mark are what the fleet view is read for, and they stay.
+test('a consumed estate keeps everything but the link', () => {
+  const html = pageIndex(EMPTY_LOCAL, [{ estate: 'far', status: 'ok', ageSeconds: 60, snap: REMOTE_SNAP }]);
+  assert.match(html, /Far One/, 'the label is there');
+  assert.match(html, /running/, 'the liveness answer is there');
+  assert.match(html, /mine/, 'and the mine mark is there');
+});

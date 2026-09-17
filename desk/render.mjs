@@ -191,18 +191,36 @@ export function formatAge(ageSeconds) {
 const why = (lv) => (lv.reason ? ' (' + lv.reason + ')' : '');
 const livenessWord = (lv) => orNone(lv.state) + ', last activity ' + formatAge(lv.ageSeconds) + why(lv);
 
-// sessionLine - one session as a table row: its handle links to its page, the
-// label and the liveness answer sit beside it, and `mine` is marked so a viewer
-// can tell their own work from a colleague's at a glance.
-function sessionLine(s) {
-  return '<tr><td>' + link('session', s.id, s.slug) + (s.mine ? tag('mine') : '') + '</td>' +
+// sessionLine - one session as a table row: the label and the liveness answer sit
+// beside its handle, and `mine` is marked so a viewer can tell their own work from a
+// colleague's at a glance.
+//
+// THE HANDLE LINKS ONLY WHEN THIS DESK CAN ANSWER FOR IT. A row that arrived from a
+// CONSUMED estate has an id this desk cannot resolve - serve.mjs decided that
+// deliberately: "a remote estate's rows belong to its own tree, not grafted into a
+// local one, and a session id from over there is not addressable here." The renderer
+// offered the link anyway, so every session under every consumed estate was a link to
+// a 404. Measured 2026-09-17: the remote block emitted /desk/session/<id> and the
+// consuming desk answered null for it.
+//
+// A LINK THAT CANNOT WORK IS WORSE THAN NO LINK, and worse in a specific way: it
+// tells the reader the row is reachable and the desk is broken, when the truth is
+// that the row belongs somewhere else. Plain text says the second thing.
+function sessionLine(s, linkable) {
+  const handle = (linkable === false) ? h(s.slug) : link('session', s.id, s.slug);
+  return '<tr><td>' + handle + (s.mine ? tag('mine') : '') + '</td>' +
     '<td>' + h(s.label) + '</td>' +
     '<td>' + h(livenessWord(s.liveness)) + '</td></tr>';
 }
 
-const sessionTable = (list) =>
+// THE DEFAULT IS LINKED, so every existing caller keeps the behaviour it had; only a
+// consumed estate passes false. Making the local case opt IN would have been the same
+// change with the blast radius reversed - and the local case is the one that has been
+// right all along.
+const sessionTable = (list, linkable) =>
   (list.length
-    ? '<table><tr><th>session</th><th>label</th><th>liveness</th></tr>' + list.map(sessionLine).join('') + '</table>'
+    ? '<table><tr><th>session</th><th>label</th><th>liveness</th></tr>'
+      + list.map((s) => sessionLine(s, linkable)).join('') + '</table>'
     : empty('No sessions in this view.'));
 
 // ---------------------------------------------------------------------------
@@ -359,7 +377,7 @@ function estateBlock(e) {
   // weighing two estates against each other needs the same fact about both.
   const age = (typeof e.ageSeconds === 'number')
     ? '<p class="empty">' + h('Measured ' + formatAge(e.ageSeconds) + ' ago.') + '</p>' : '';
-  return head + age + sessionTable(v.sessions);
+  return head + age + sessionTable(v.sessions, false);
 }
 
 export function pageIndex(snap, remotes) {
