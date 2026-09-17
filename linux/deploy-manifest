@@ -214,6 +214,7 @@ desk/serve.mjs                   scripts/desk/serve.mjs               644  scrip
 desk/render.mjs                  scripts/desk/render.mjs              644  scripts
 desk/bridge.mjs                  scripts/desk/bridge.mjs              644  scripts
 desk/mount.mjs                   scripts/desk/mount.mjs               644  scripts
+desk/order.mjs                   scripts/desk/order.mjs               644  scripts
 desk/SCHEMA.md                   scripts/desk/SCHEMA.md               644  scripts
 desk/remote.mjs                  scripts/desk/remote.mjs              644  scripts
 desk/fetch.sh                    scripts/desk/fetch.sh                755  scripts
