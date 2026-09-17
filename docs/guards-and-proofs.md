@@ -1016,3 +1016,246 @@ than handing over early, and the reviewer did not start until the handover came.
 **Three parties each declined to do something that would have looked like
 progress.**
 
+
+## 23. Consistent numbers are not a check. Put the control assertion beside it.
+
+When a probe answers the same in both states, you have not measured the
+difference — you have measured something insensitive to it. The consistency
+reads as rigour, and that is what makes it dangerous: a number that never moves
+looks like a number that was checked.
+
+**The cure is a CONTROL ASSERTION next to the one you care about:** something
+that MUST change if the probe measures what you think it does.
+
+Four instances in one week, none of them a miscount:
+
+1. **A receipt asserted not to carry a secret.** It did not — because the guard
+   had been used as a scrubber when it is a detector, so every receipt came out
+   EMPTY. The assertion was satisfied by an empty set. Missing control: prove
+   that ORDINARY output IS carried.
+2. **A register lookup probed at two directory modes answered rc 1 in both.** Six
+   fixture defects in a row produced the same rc 1, so "cannot reproduce" would
+   have looked like a measurement. Missing control: drop the `2>/dev/null` so
+   the loader's own refusal is visible, separating "this row does not match" from
+   "no row could load".
+3. **A sweep that finds nothing and a sweep that CANNOT find anything print the
+   same zero.** That is the shape that let two `mapfile` calls through a guard
+   that forbids `mapfile`. The control now in `test/deploy-policy.test.sh` asserts
+   that the pattern still matches a known violation.
+4. **"Red without this change" listed five assertions; two were.** The other
+   three passed against the old tree, because the route they exercise did not
+   exist there and every path 404s — which is exactly what those three assert.
+   Green for a different reason than the one claimed, in the commit message whose
+   whole subject was that failure mode.
+
+**Being red is not the same as measuring the right thing, either.** The cure at
+that level is MUTATION: change the production code in the specific way the test
+claims to guard against, and require it to fall FOR THAT REASON. Two here, one at
+a time: moving the route after the principal check fell exactly the test about
+ordering; silencing the journal fell exactly the test about the journal — and
+fell it ON THE JOURNAL ASSERTION while the 404 assertion before it stayed green,
+which is how you learn a test measures its two halves independently. **One test
+per mutation is the second reading and it is not given:** a test that falls on
+several unrelated mutations measures something broader than it says.
+
+**What cannot be mutation-tested, and say so rather than implying otherwise:** an
+assertion that guards against a FUTURE change has no mutation to provoke yet.
+Those three green-on-both-sides assertions pin that the route's refusal stays
+byte-for-byte identical to an unknown path's. That is not evidence for the commit
+that introduced them. **It is a commitment about the next one.**
+
+**And THE COUNT IS NOT THE READING.** Overlaying new tests on the old tree tells you
+that N assertions fall. It tells you nothing about why the others STAND, and a
+colleague who had used this technique on four branches had named two reasons a test
+can be green on both sides - it is a GUARD, or it is a TAUTOLOGY - with the note
+that the difference is read and not measured. This week produced a third:
+
+> **green on both sides because THE SUBJECT DID NOT EXIST on the old side.**
+
+Three of five assertions about an invitation route passed against the old tree
+because the route was not there, so every path 404s - which is exactly what those
+three assert. Not a guard and not a tautology: a claim about an object that did not
+exist when the measurement was taken, and **it looks exactly like a guard**.
+
+There is a time axis inside it. What is coincidental today is load-bearing tomorrow,
+and the only moment the difference can be seen is BEFORE the subject exists - after
+it does, the two are indistinguishable. So the technique's output needs a sentence
+the technique cannot produce: which of the three each green-on-both-sides assertion
+is, marked as read and not measured.
+
+**Where this does NOT apply:** it is not a demand that every assertion acquire a
+partner. It applies where a probe has two states you believe it distinguishes. If
+you cannot name the state in which your assertion would FAIL, you do not yet know
+what it measures.
+
+## 24. A check whose subject set is ENUMERATED stops covering the tree. Rule 7 is about the question; this is about the subjects.
+
+Rule 7 says broadening a sweep does not change the question it asks, and that the
+answer is often a second guard asking the inverse. **This is the complementary
+case, and the tell is different:** when the question is already right and only the
+list of things it is asked ABOUT is frozen, widening IS the fix.
+
+`test/deploy-policy.test.sh` has forbidden `mapfile`, `declare -A`, `find
+-printf` and `grep -P` since long before `desk/apply.sh` was written, with the
+reasoning in its own comment: *"a construct that works only on the developer's
+machine is a latent failure on every other one."* It checked TWO FILES, both
+named literals. The rule was universal; the enforcement was a hand-kept list.
+
+**So every file added after the check was written was exempt in silence.**
+`desk/apply.sh` landed months later with two `mapfile` calls, the whole suite was
+green on Linux, and the defect was found by a NEIGHBOUR'S MACHINE after a full
+darwin run — 5 passed, 20 failed, nineteen of them downstream of the first.
+
+**A guard whose subject is a hand-kept list does not grow with the tree, and its
+coverage shrinks every time the tree grows.** Widening cost nothing: 194 shell
+files (union of `*.sh` and a shell shebang, `07c28d9`), two real hits, four
+comments naming the constructs in order to forbid them, two self-references in
+the guard's own pattern. The rule had been followed everywhere someone happened
+to remember it — which is precisely why nobody noticed the enforcement had
+stopped growing.
+
+**The same file carried three assumptions about its own environment**, and they
+were found one at a time by making it bigger:
+
+- the subject was a hand-kept list of two files;
+- `strip()` used `\s`, a GNU extension — in the guard whose entire purpose is to
+  catch constructs that only work on the developer's platform. Invisible while
+  the sweep covered two files that happened to have no comment naming a forbidden
+  construct; the moment it reached `bin/steward`, whose line 5 says "no mapfile",
+  a working `\s` was the only thing between it and a FALSE FAILURE ON DARWIN ONLY;
+- the file loop word-splits its listing, so a tracked path containing a space is
+  split into pieces that each fail `[ -f ]` and are skipped without a word.
+  Measured: 0 of 194 tracked paths contain whitespace — latent, not active.
+
+**All three are assumptions about the environment baked into a check whose job is
+to measure that environment.** A guard is the last place an assumption should
+live, because nothing downstream of it will look again. And note what found them:
+not a failure and not a review. WIDENING did. An assumption is only visible where
+its exception lives, and a check that touches two files never meets its own
+exception.
+
+**A safeguard can hide its own subject.** `tools/run-tests.sh` loops over
+`fleet watchdog watch`; two of those directories do not exist. The next line is
+`[ -d "$d" ] || continue`, which makes the dead entries harmless AND THEREFORE
+SILENT. **A dead entry never alarms.** The list is simultaneously too broad and
+too narrow, and the too-broad half is invisible precisely because somebody
+guarded against it.
+
+**The form that survives is a set, not a list — and it must carry its reason.**
+`test/desk-serve.test.sh` faced the same choice, chose a glob, and wrote down why
+it did NOT add `desk` to the runner's list (it would run the suites twice under
+two names). That reason is what stops the next person "tidying up" by adding it.
+**A choice that carries its reason can be re-examined. A choice without one
+becomes a habit.**
+
+## 25. A number without its lens and its tree cannot be re-taken.
+
+`bin/steward:4130` was corrected to `:4088`. **Both were right.** The line had
+MOVED — `96c30b2` added 42 lines above it — and the two readers were looking at
+different trees: one at `main`, one at a deployed copy. Neither number carried
+its tree, so the correction inherited the defect it was correcting.
+
+The same week produced five answers to "how many shell files are there", from
+three machines, all correct under their own lens:
+
+| lens | count |
+|---|---|
+| `file --mime-type` | 194 |
+| `*.sh` only | 177 |
+| shell shebang only | 194 |
+| `*.sh` OR shebang (what the guard walks) | 195 (194 swept; the guard file is exempt) |
+
+**The form: a number that claims something is written `<number> (<lens>, <tree>)`.**
+`171 (*.sh, 07c28d9)`. `193 (file --mime-type, before my own two commits)`.
+`4088 (bin/steward, 3dd90d3)`.
+
+**Three slots, because an empty slot is visible.** This is the same mechanic that
+makes the gate line in a merge commit a check rather than a claim: the line cannot
+be filled in without holding the facts, so whoever cannot say which tree they
+measured discovers it AT THE MOMENT OF WRITING. A rule that says "state your lens"
+does not work — there are four measured instances in a single day, three of them
+inside sentences ABOUT numbers needing their lens. A slot that stands empty does.
+
+**Its limit, stated first when it was proposed:** the form prevents an UNSTATED
+lens and nothing else. Not a miscounted number, not a badly chosen lens. All four
+instances were of exactly that kind and none was a miscount.
+
+**Scope:** it applies to the number in the sentence that CLAIMS something, not to
+every digit in a letter. A line length or a PR number does not need the slots. It
+is retelling that loses the lens, so the numbers that need it are the ones someone
+may repeat.
+
+**What it buys beyond re-takeability:** two numbers that both carry their slots can
+be COMPARED. `desk-serve 246 (07c28d9)` and `desk-serve 251 (9fbd3d3)` differ by
+five, and the commit claims exactly five added assertions, named. Two estates, two
+trees, and the receipt's own claim checked from outside by someone who did not
+have the branch. Without the slots those are just two numbers that disagree.
+
+**And writing a rule down is necessary, not sufficient.** The two-file list above
+survived for months — not because nobody had written the rule, but because the
+rule was in that guard's OWN COMMENT and nothing put it in front of anyone at the
+moment it was being broken. `test/desk-serve.test.sh` has carried *"NO NODE IS NOT
+A PASS. A suite that could not run is reported as one failure, not as silence: the
+alternative is a green line that measured nothing"* since long before the week that
+produced rules 23–25 — the same sentence as `not-run` vs `pass`, as `list=absent`
+vs `list=<digest>`, as an empty receipt satisfying "the secret is not in it". It
+was on the page before anyone here argued it out, and three people rediscovered it
+the expensive way. **This is why the slots and the gate line are worth more than
+this document: they stand in the way. A document stands beside.**
+
+**Which gives an ordering worth choosing in.** Everything in rules 23-25 is one of
+three kinds, and they are not equally strong. One question separates them — WHAT
+HAPPENS AT THE MOMENT OF WRITING:
+
+| kind | example | at the moment of writing |
+|---|---|---|
+| **a slot** | the lens, the tree, the letter an endorsement names, the gate line's two rows | an empty field is in front of you |
+| **a removed shortcut** | a send that refuses an identical body to a second recipient | you must do the thing twice |
+| **a resolution** | "I will split the letters from now on" | nothing |
+
+A slot is strongest because it cannot be skipped without the skipping being visible:
+whoever cannot say which tree they measured finds out WHILE WRITING, not afterwards.
+A removed shortcut does not make the error impossible — the sender can paste the same
+text twice and change one word — but it abolishes the one route that produces the
+error without the text being read twice. A resolution does nothing at all, and that
+is measured rather than asserted: the author of the sentence about splitting letters
+wrote it, named the mechanism it prevents, promised it, and broke it twice within the
+hour, in a single letter.
+
+**So when something must be prevented: ask first whether it can be made a slot. If
+not, ask whether the shortcut can be removed. If neither, write the resolution and
+know that it will not bite.** Three points from one week, and certainly not a complete
+taxonomy — but the three are separable by that one question, and it is the question
+that has divided what bit from what did not, every time.
+
+**A SLOT CARRIES THE QUESTION AND NOT THE ANSWER**, and this is the limit to state
+before anyone builds one expecting more. An empty slot is visible; a WRONGLY FILLED
+one is not. Five numbers from the same week, every one of them written by someone
+being careful, and every one of them would have passed a slot:
+
+| the number | what was wrong with it |
+|---|---|
+| `90 of 104` | two different lenses in one fraction — the numerator counted lines, the denominator counted insertions |
+| `193 shell files` | a third lens, at a fourth moment, taken before the change's own commits added files |
+| `72 of 104` | the RIGHT lens and a wrong subtraction |
+| `171 shell files` | a correct number with its lens unstated |
+| `two of four threads` | the right method applied to the wrong set — comments counted, bodies missed |
+
+The third is the sharp one: its lens and its tree were both correct and the arithmetic
+was not. No slot can reach that, even in principle. What the slot buys is that the
+number can be RE-TAKEN, which is how the other four were caught — and how the third
+was caught too, by someone re-doing the subtraction.
+
+The same limit appears in a completely different construction, which is how you know
+it is the limit and not a property of numbers. A send that refuses an identical body
+to a second recipient can be overridden; `--anyway` is a switch you press, while
+`--also <address>,<address>` is a statement you must compose. The second is a slot, and
+it forces the writer to confront that there ARE two recipients — but someone who
+writes both addresses correctly can still have "yours" pointing at one of them.
+**It compels the realisation; it does not validate the text.**
+
+**And a CHOICE tests an ordering in a way a description never can.** Everything above
+was written by describing forms already in use, and a description can always be made
+to fit afterwards. The `--anyway` → `--also` change was different: somebody stood in
+front of two constructions, used the table to pick one, and moved their own proposal up
+a rank. If the ordering is wrong, that is where it will show — not here.
