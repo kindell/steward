@@ -3992,7 +3992,7 @@ $ent_line"
 }
 
 cmd_invite_redeem() {
-  local want_json="" token="" identity="" email="" a
+  local want_json="" token="" digest_in="" identity="" email="" a
   for a in "$@"; do [ "$a" = "--json" ] && want_json=1; done
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4002,7 +4002,7 @@ cmd_invite_redeem() {
       # not, and for any caller that would rather be explicit than lucky.
       --) shift
           while [ $# -gt 0 ]; do
-            if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+            if [ -n "$token" ] || [ -n "$digest_in" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
             token="$1"; shift
           done ;;
       --json) shift ;;
@@ -4021,8 +4021,38 @@ cmd_invite_redeem() {
       # terminal types and it is unchanged; `--token-file` and `-` are what a
       # program uses. Either way the value stays in this shell: it is digested
       # here, and only the digest is ever passed on.
+      # --digest IS FOR A CALLER THAT NEVER HELD THE TOKEN, and that is a
+      # different thing from a caller that holds one and would rather not put it
+      # in argv. The Desk is the case: the server validates a request and appends
+      # ONE order to a spool for a privileged process to act on, and that order
+      # has to carry enough to identify the invitation and no more.
+      #
+      # THE REGISTRY ALREADY STORES ONLY THE DIGEST, deliberately, so that a
+      # readable register does not leak an open door. Putting the token back into
+      # a spool file beside it would undo that decision in a second place - the
+      # file would be a working invitation, on disk, for as long as the queue is
+      # not drained. The digest is what the register holds, so an order that
+      # carries the digest tells a reader of the spool nothing the register does
+      # not already tell them.
+      #
+      # IT IS NOT A WEAKER TOKEN. Anyone who can read the spool is the account
+      # that runs the applying verb, so nothing is gained there; and the digest is
+      # useless against the register from anywhere else, because every other entry
+      # point hashes what it is given before it looks anything up.
+      --digest) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --digest needs a value"; return 64; }
+                if [ -n "$token" ] || [ -n "$digest_in" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+                # THE FORM IS CHECKED HERE AND NOT WHERE IT IS USED. A value that
+                # is not a sha256 hex digest cannot match any row, so the lookup
+                # would answer "no open invitation" - which sends the operator to
+                # reissue an invitation that was never wrong. Naming the shape is
+                # the difference between that and a refusal they can act on.
+                case "$2" in
+                  *[!0-9a-f]*|"") _reg_fail "$want_json" "steward invite redeem: --digest takes a sha256 hex digest (64 lowercase hex characters)"; return 64 ;;
+                esac
+                [ "${#2}" -eq 64 ] || { _reg_fail "$want_json" "steward invite redeem: --digest takes a sha256 hex digest (64 lowercase hex characters), got ${#2}"; return 64; }
+                digest_in="$2"; shift 2 ;;
       --token-file) [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --token-file needs a value"; return 64; }
-                    if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+                    if [ -n "$token" ] || [ -n "$digest_in" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
                     # A DIRECTORY IS -r TOO, and reading one is a redirection
                     # error rather than an answer, so it is named here instead.
                     { [ -r "$2" ] && [ ! -d "$2" ]; } || { _reg_fail "$want_json" "steward invite redeem: cannot read the token file '$2'"; return 64; }
@@ -4042,7 +4072,7 @@ cmd_invite_redeem() {
                     token="${token%$'\r'}"
                     [ -n "$token" ] || { _reg_fail "$want_json" "steward invite redeem: the token file '$2' is empty - the token goes on its first line"; return 64; }
                     shift 2 ;;
-      -)  if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+      -)  if [ -n "$token" ] || [ -n "$digest_in" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
           IFS= read -r token || :
           # AND A CRLF LINE IS AN ORDINARY TOKEN LINE, exactly as above: `-` is
           # the form a PROGRAM uses, and a program piping a line in ends it the
@@ -4056,11 +4086,15 @@ cmd_invite_redeem() {
       --email)    [ $# -ge 2 ] || { _reg_fail "$want_json" "steward invite redeem: --email needs a value"; return 64; }
                   email="$2"; shift 2 ;;
       -*) _reg_fail "$want_json" "steward invite redeem: unknown flag '$1'"; return 64 ;;
-      *) if [ -n "$token" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
+      *) if [ -n "$token" ] || [ -n "$digest_in" ]; then _reg_fail "$want_json" "steward invite redeem: one token at a time"; return 64; fi
          token="$1"; shift ;;
     esac
   done
-  [ -n "$token" ] || { _reg_fail "$want_json" "steward invite redeem: a token is required"; return 64; }
+  # ONE OF THE FOUR WAYS IN, AND THE REFUSAL NAMES THEM ALL. A caller that gave
+  # none of them is not told "a token is required" when a digest would also have
+  # done - a refusal that names a smaller set than it accepts sends the reader
+  # looking for something they do not have.
+  [ -n "$token" ] || [ -n "$digest_in" ] || { _reg_fail "$want_json" "steward invite redeem: a token is required - as an argument, with --token-file, on stdin as '-', or as --digest for a caller that never held one"; return 64; }
   [ -n "$identity" ] || { _reg_fail "$want_json" "steward invite redeem: --identity <source>:<value> is required"; return 64; }
 
   # THE SOURCE IS THE PART BEFORE THE FIRST COLON, AND ONLY THE FIRST. An OIDC
@@ -4083,8 +4117,16 @@ cmd_invite_redeem() {
 
   # -- STEP 1: the token, the row, and the two refusals ---------------------
   local digest id
-  digest="$(printf '%s' "$token" | _registry_sha256)" || {
-    _redeem_fail "the token could not be digested on this machine - either no sha256 tool is on PATH, or the one that is there ran and failed; the refusal above says which" 78; return 78; }
+  # A CALLER THAT GAVE A DIGEST HAS NOTHING TO HASH, and must not be refused for
+  # the absence of a sha256 tool it never needed. The two paths meet here and
+  # nowhere earlier: everything below this line works on a digest and does not
+  # know which way it arrived.
+  if [ -n "$digest_in" ]; then
+    digest="$digest_in"
+  else
+    digest="$(printf '%s' "$token" | _registry_sha256)" || {
+      _redeem_fail "the token could not be digested on this machine - either no sha256 tool is on PATH, or the one that is there ran and failed; the refusal above says which" 78; return 78; }
+  fi
   id="$(registry_invite_for_digest "$digest" 2>/dev/null)" || id=""
   if [ -z "$id" ]; then
     # THE SAME ANSWER FOR WRONG, USED AND EXPIRED. A refusal that distinguished
