@@ -254,13 +254,161 @@ done
 
 echo
 echo "== node suites =="
-for d in fleet watchdog watch; do
+# THE LIST IS NOT REPLACED BY A GLOB - IT IS MADE CHECKABLE AGAINST THE TREE, and that
+# is a different repair with a better failure mode.
+#
+# WHAT WAS WRONG. This loop read `for d in fleet watchdog watch`, and two of those three
+# directories do not exist. The `[ -d ]` below made them harmless AND THEREFORE SILENT:
+# A DEAD ENTRY NEVER ALARMS. The list was simultaneously too broad (two names pointing
+# at nothing) and too narrow (a directory could be added and never be run), and the
+# too-broad half was invisible precisely because somebody had guarded against it.
+#
+# WHY NOT A GLOB. Deriving the set from the tree looks like the obvious fix and is
+# worse here, because `desk` holds ten node suites that are ALREADY RUN - by
+# test/desk-serve.test.sh, which wraps them so the shell runner can read their count.
+# A glob would run them a second time under a second name, which is exactly what that
+# wrapper's own comment says it was written to avoid. The set is genuinely
+# "directories with node tests, MINUS the ones a wrapper already covers", and the
+# second half of that is knowledge no glob has.
+#
+# SO: TWO EXPLICIT LISTS AND A CHECK THAT THEY ACCOUNT FOR THE TREE. A name that
+# stops existing is now a failure rather than a silent skip, and a directory that
+# appears and is in neither list is a failure rather than a silent omission. The
+# lists are still hand-kept - what changed is that the tree now contradicts them
+# out loud.
+NODE_DIRS="watch"
+# Covered elsewhere, with the reason, so nobody "tidies up" by moving it above:
+#   desk - test/desk-serve.test.sh runs desk/test/*.mjs with a glob and translates
+#          node's TAP summary into the shell runner's count line. Adding it to
+#          NODE_DIRS would run those ten suites twice under two names.
+NODE_COVERED_ELSEWHERE="desk"
+
+# THE CANDIDATES COME FROM THE TREE, one directory per node test file, deduplicated.
+# `*/test/*.test.mjs` is one level deep, which is where every node suite in this tree
+# lives; a nested one would be missed, and that is written down rather than guarded
+# against something nobody has built.
+#
+# AND IT IS NARROWER THAN NODE'S OWN DISCOVERY, measured while writing this: moving
+# `watch/test` aside entirely still produced `watch 183/0`, because `node --test`
+# finds test files by name pattern and not only under `test/`. So this glob answers
+# "which directories does the PROJECT keep node suites in", not "which directories
+# would node find tests in". The two agree today. If they stop agreeing, a directory
+# can run and go unaccounted - which is the quieter of the two failures and the one
+# the control assertion below cannot see either.
+node_candidates=""
+for _f in */test/*.test.mjs; do
+  [ -e "$_f" ] || continue
+  _d="${_f%%/*}"
+  case " $node_candidates " in *" $_d "*) ;; *) node_candidates="$node_candidates $_d" ;; esac
+done
+
+node_unaccounted=""
+for _d in $node_candidates; do
+  case " $NODE_DIRS $NODE_COVERED_ELSEWHERE " in
+    *" $_d "*) ;;
+    *) node_unaccounted="$node_unaccounted $_d" ;;
+  esac
+done
+node_missing=""
+for _d in $NODE_DIRS $NODE_COVERED_ELSEWHERE; do
+  [ -d "$_d" ] || node_missing="$node_missing $_d"
+done
+# AND THE CHECK'S OWN CONTROL ASSERTION. If the glob above matches nothing,
+# `node_candidates` is empty, every other test here passes vacuously, and this block
+# prints `ok node-accounting 0/0` - A GREEN LINE THAT MEASURED NOTHING, in the very
+# check written to catch that. It is not hypothetical: `[ -e "$_f" ] || continue`
+# correctly discards the unexpanded pattern, so a layout change that puts node tests
+# one level deeper turns this check off and says ok while doing it.
+#
+# The lists themselves are the control: naming a directory in NODE_DIRS or
+# NODE_COVERED_ELSEWHERE asserts that it HAS node tests, so finding none anywhere
+# while the lists are non-empty is a contradiction rather than an empty tree.
+# THIS RUNNER IS ALSO RUN AGAINST TREES THAT ARE NOT THIS ONE, and the lists above
+# describe THIS repository. test/run-tests-timeout, -rust-not-run and -estate-guard
+# each build a small fixture tree with one suite in it and run this file inside it;
+# `watch` and `desk` do not exist there, and the first version of this check reported
+# `0/2 (named, but not on disk: watch desk)` in every one of them - red=1 added to
+# three fixtures whose whole purpose is to assert an exact red count.
+#
+# The old `[ -d ] || continue` made this block portable by accident: it could not tell
+# a foreign tree from a dead name because it reacted to neither. THE DISTINCTION IS
+# WHETHER *ANY* NAMED DIRECTORY IS PRESENT. None present means the lists do not
+# describe this tree at all; some present and some missing is a dead name and is the
+# fault this check exists for.
+node_present=""
+for _d in $NODE_DIRS $NODE_COVERED_ELSEWHERE; do
+  [ -d "$_d" ] && node_present="$node_present $_d"
+done
+
+node_vacuous=""
+if [ -z "$node_candidates" ] && [ -n "$node_present" ]; then
+  node_vacuous="the */test/*.test.mjs glob matched nothing while named directories are present"
+fi
+if [ -z "$node_present" ] && [ -z "$node_candidates" ]; then
+  # NOT SILENT, AND NOT RED. A line that says which tree this is, so a reader of a
+  # fixture's output can tell "these lists are for another tree" from "the check
+  # passed". Saying nothing here is what the whole change is against.
+  printf '  ok     %-34s -    (no named directory here; lists describe another tree)\n' "node-accounting"
+elif [ -n "$node_vacuous" ]; then
+  printf '  RED    %-34s 0/1 (%s)\n' "node-accounting" "$node_vacuous"
+  red=$((red+1))
+elif [ -n "$node_unaccounted" ]; then
+  # ONE TOKEN FOR THE NAME AND AN N/M FOR THE VALUE, like every other line in this
+  # output. The first version of this line read `node-suite accounting   2 accounted`,
+  # and a reader that takes the second field as the name and the third as the count -
+  # which is how this output is parsed when two runs are compared - would have read the
+  # name as `node-suite` and the count as `accounting`. A line added to make the block
+  # honest would have corrupted the instrument that compares blocks.
+  #
+  # The N/M is accounted/unaccounted, so it carries the same shape as a suite's
+  # passed/failed and moves for the same kind of reason.
+  printf '  RED    %-34s %s/%s (in the tree, in neither list:%s)\n' "node-accounting" "$(set -- $node_candidates; echo $#)" "$(set -- $node_unaccounted; echo $#)" "$node_unaccounted"
+  red=$((red+1))
+elif [ -n "$node_missing" ]; then
+  printf '  RED    %-34s %s/%s (named, but not on disk:%s)\n' "node-accounting" "$(set -- $node_candidates; echo $#)" "$(set -- $node_missing; echo $#)" "$node_missing"
+  red=$((red+1))
+else
+  printf '  ok     %-34s %s/0\n' "node-accounting" "$(set -- $node_candidates; echo $#)"
+fi
+
+for d in $NODE_DIRS; do
+  # THE `[ -d ]` SKIP IS BACK, AND IT IS SAFE NOW FOR A REASON THAT DID NOT HOLD BEFORE.
+  # It was this line that hid two dead names for months: it made a missing directory
+  # harmless and therefore silent. The accounting check above now names a missing
+  # directory out loud, so the silence here is covered by something else - and without
+  # the skip, one dead name produces TWO red lines, the accounting failure and a
+  # `cd` that could not run. Measured while writing this: a planted `ghostdir` gave
+  # exactly that pair. One fault should print one line.
   [ -d "$d" ] || continue
-  if run_with_timeout bash -c "cd '$d' && node --test" >/dev/null 2>&1; then
-    printf '  ok     %-34s\n' "$d"
-  else
-    printf '  RED    %-34s (node --test)\n' "$d"
+  # THE COUNT IS READ, NOT DISCARDED - and until now it was discarded. This loop used
+  # to send node's output to /dev/null and print `ok <dir>` on exit status alone.
+  #
+  # `node --test` IN A DIRECTORY WITH NO TEST FILES EXITS 0. Measured: an empty tree
+  # gives rc=0, and so does one with a passing test. So `ok watch` was printed
+  # identically for 183 passing assertions and for a directory whose suites had
+  # vanished - A GREEN LINE THAT MEASURED NOTHING, which is the exact failure
+  # test/desk-serve.test.sh's own comment says that wrapper was written to prevent.
+  # The same fault was left standing one block away.
+  #
+  # THE REPORTER IS PINNED for the reason that wrapper records: TAP stopped being
+  # node's default, and a host upgrading node would silently turn `# pass N` into a
+  # line neither grep matches - green to red with nothing changed but the interpreter.
+  _nout="$(run_with_timeout bash -c "cd '$d' && node --test --test-reporter=tap" 2>&1)"; _nrc=$?
+  _npass="$(printf '%s\n' "$_nout" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -1)"
+  _nfail="$(printf '%s\n' "$_nout" | sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' | tail -1)"
+  if [ -z "$_npass" ] || [ -z "$_nfail" ]; then
+    printf '  RED    %-34s (node printed no TAP summary)\n' "$d"
     red=$((red+1))
+  elif [ "$_npass" = "0" ] && [ "$_nfail" = "0" ]; then
+    # ZERO IS NOT A PASS. A directory that ran and found nothing is the state this
+    # whole block could not previously distinguish from a green one.
+    printf '  RED    %-34s (0/0 - ran and measured nothing)\n' "$d"
+    red=$((red+1))
+  elif [ "$_nrc" -ne 0 ] || [ "$_nfail" != "0" ]; then
+    printf '  RED    %-34s %s/%s\n' "$d" "$_npass" "$_nfail"
+    red=$((red+1))
+  else
+    printf '  ok     %-34s %s/%s\n' "$d" "$_npass" "$_nfail"
   fi
 done
 
