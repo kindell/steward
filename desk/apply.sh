@@ -120,20 +120,44 @@ for f in "$ORDERS"/*.json; do
     continue
   fi
 
-  mapfile -t cmd < <(_apply_command_for "$action") || true
-  if [ "${#cmd[@]}" -eq 0 ]; then
+  # NO mapfile, AND NO BARE EXPANSION OF A POSSIBLY-EMPTY ARRAY. macOS ships bash
+  # 3.2.57 and always will - Apple stopped following bash at the licence change - and
+  # that shell has neither. This file was written with both and went red on the
+  # neighbour's darwin half: 5 passed, 20 failed, all twenty downstream of the first.
+  #
+  # THE HOUSE ALREADY KNEW. linux/hub/lib.sh carries the same note for the same two
+  # reasons, and test/deploy-policy.test.sh forbids mapfile outright - on two named
+  # files, which is why it did not catch this one. The rule was written; the
+  # enforcement was a hand-kept list that does not grow with the tree.
+  #
+  # A COUNTER RATHER THAN ${#cmd[@]}, because the count is what the empty case needs
+  # and a counter cannot be an unbound expansion. The array itself is only ever
+  # expanded below, after the zero case has already taken `continue`.
+  cmd=(); cmd_n=0
+  while IFS= read -r _line; do cmd[$cmd_n]="$_line"; cmd_n=$((cmd_n+1)); done < <(_apply_command_for "$action")
+  if [ "$cmd_n" -eq 0 ]; then
     jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg a "$action" \
       '{state:"failed",at:$at,lines:[("no recipe for action " + $a)]}' > "$receipt"
     mv -f "$f" "$DONE_DIR/" 2>/dev/null || true
     failed=$((failed+1))
     continue
   fi
-  mapfile -t extra < <(_apply_args_for "$action" "$f") || true
+  extra=(); extra_n=0
+  while IFS= read -r _line; do extra[$extra_n]="$_line"; extra_n=$((extra_n+1)); done < <(_apply_args_for "$action" "$f")
 
   # (1) RUNNING BEFORE THE VERB.
   jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{state:"running",at:$at,lines:[]}' > "$receipt"
 
-  out="$("${cmd[@]}" "${extra[@]}" 2>&1)"; rc=$?
+  # THE EMPTY CASE IS BRANCHED, NOT EXPANDED. `_apply_args_for` names one action, so
+  # FIVE OF THE SIX carry no extra argv at all - and on bash 3.2 under `set -u`,
+  # "${extra[@]}" on an empty array is an unbound-variable error, not an empty word
+  # list. Fixing only the mapfile above would have moved the darwin failure from one
+  # action to five without changing the number of red lines much.
+  if [ "$extra_n" -eq 0 ]; then
+    out="$("${cmd[@]}" 2>&1)"; rc=$?
+  else
+    out="$("${cmd[@]}" "${extra[@]}" 2>&1)"; rc=$?
+  fi
 
   # THE GUARD REFUSES, IT DOES NOT REDACT, and the receipt is built around that.
   #

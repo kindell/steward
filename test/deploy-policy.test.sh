@@ -8,7 +8,13 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 
-strip() { grep -v '^\s*#' "$1"; }   # comments may mention anything at all
+# [[:space:]] AND NOT \s. `\s` is a GNU extension; BSD grep - which is the grep on
+# the very platform this file exists to protect - does not promise it. It went
+# unnoticed while the sweep below covered two files, neither of which had a comment
+# naming a forbidden construct. The moment the sweep widened to the whole tree it
+# would have matched the comments that forbid mapfile and turned the PORTABILITY
+# GUARD into a false failure ON DARWIN ONLY.
+strip() { grep -v '^[[:space:]]*#' "$1"; }   # comments may mention anything at all
 
 # 1. The only systemctl verb is daemon-reload. Anything that starts, stops or
 # enables a unit would make a deploy an operational action, and a deploy that
@@ -43,19 +49,75 @@ B="${STEWARD_HUB_ENTRY:-}"
 if [ -f "$B" ] && strip "$B" | sed -n '/deploy)/,/;;/p' | grep -Eq 'md5|md5sum|shasum'; then
   bad "the hub computes a hash"; else ok; fi
 
-# 4. bash 3.2 prohibitions. This code has to run on hosts whose default bash is
-# 3.2, where associative arrays, readarray/mapfile, find -printf and grep -P do
-# not exist. A construct that works only on the developer's machine is a latent
-# failure on every other one.
-if [ -f "$B" ] && strip "$B" | grep -Eq 'declare -A|readarray|mapfile|find [^|]*-printf|grep -P'; then
-  bad "bash 3.2-forbidden construct in the hub entry point"; else ok; fi
-# 4b. The same prohibitions in the core. It went ungated when the core was
-# lifted out of the hub, which matters MORE rather than less now that the host
-# path sources the same file: a fault there is a fault in BOTH entry points at
-# once.
-L="$here/lib/deploy-core.sh"
-if [ -f "$L" ] && strip "$L" | grep -Eq 'declare -A|readarray|mapfile|find [^|]*-printf|grep -P'; then
-  bad "bash 3.2-forbidden construct in lib/deploy-core.sh"; else ok; fi
+# 4. bash 3.2 prohibitions, OVER EVERY SHELL FILE IN THE TREE. This code has to
+# run on hosts whose default bash is 3.2, where associative arrays,
+# readarray/mapfile, find -printf and grep -P do not exist. A construct that works
+# only on the developer's machine is a latent failure on every other one.
+#
+# THIS USED TO NAME TWO FILES, and that is why it is written this way now. The rule
+# above was stated universally and enforced on the hub entry point and
+# lib/deploy-core.sh - so every file added after the check was written was exempt in
+# silence. desk/apply.sh was written months later with two mapfile calls in it, the
+# whole suite was green on Linux, and the defect was found by a NEIGHBOUR'S MACHINE
+# after a full darwin run: 5 passed, 20 failed, nineteen of them downstream of the
+# first. A guard whose subject is a hand-kept list does not grow with the tree, and
+# its coverage shrinks every time the tree does grow.
+#
+# THE SWEEP IS CHEAP AND THE TREE WAS ALREADY CLEAN. Measured when this was widened:
+# 193 shell files, two real hits (both in desk/apply.sh), four comments that name the
+# constructs in order to forbid them, and the two lines below. Widening cost nothing
+# because the rule had been followed everywhere a person happened to remember it.
+#
+# WHAT IT STILL DOES NOT CATCH, said here so nobody reads this as complete: the other
+# half of the same darwin failure was "${arr[@]}" on an EMPTY array under `set -u`,
+# which 3.2 treats as an unbound variable rather than an empty word list. That is not
+# a construct, it is a state, and no grep can see it. Only running on 3.2 can.
+_b32_files() {
+  # git ls-files when this is a checkout, find otherwise - and neither -printf nor
+  # -regex, which are the very extensions being forbidden here.
+  if command -v git >/dev/null 2>&1 && [ -d "$here/.git" ]; then
+    ( cd "$here" && git ls-files )
+  else
+    ( cd "$here" && find . -type f | sed 's|^\./||' )
+  fi
+}
+b32_hits=""
+for _rel in $(_b32_files); do
+  _f="$here/$_rel"
+  [ -f "$_f" ] || continue
+  # THIS FILE IS EXEMPT, and the reason is not convenience: it must contain the
+  # forbidden words in order to forbid them, so a sweep that included it would always
+  # fail. It needs no static check of its own because it is EXECUTED on both
+  # platforms - a bash 4 construct in here does not go unnoticed, it kills the guard
+  # on darwin, which is a louder signal than the one this loop produces.
+  case "$_rel" in test/deploy-policy.test.sh) continue ;; esac
+  # A SHELL FILE IS ONE THAT SAYS SO. Extension or shebang - `file --mime-type` is
+  # not portable enough to be the thing a portability guard depends on.
+  case "$_rel" in
+    *.sh) : ;;
+    *) head -1 "$_f" 2>/dev/null | grep -q '^#!.*\(ba\)\?sh' || continue ;;
+  esac
+  if strip "$_f" | grep -Eq 'declare -A|readarray|mapfile|find [^|]*-printf|grep -P'; then
+    b32_hits="$b32_hits $_rel"
+  fi
+done
+if [ -n "$b32_hits" ]; then
+  bad "bash 3.2-forbidden construct in:$b32_hits"; else ok; fi
+
+# 4b. AND THE PATTERN STILL MATCHES A KNOWN VIOLATION. A sweep that finds nothing and
+# a sweep that CANNOT find anything print the same zero, and the second is the shape
+# that let desk/apply.sh through. Consistent numbers are not a check: what makes this
+# one a check is that the line below MUST match, so an edit that breaks the alternation
+# turns the silence into a failure instead of into a pass.
+#
+# WHAT THIS COVERS AND WHAT IT DOES NOT. It guards the PATTERN, which is the part most
+# likely to rot under editing. It does not guard the FILE WALK above - that was
+# verified by hand when the sweep was widened, by appending a mapfile line to
+# desk/fetch.sh and confirming the guard named that file and went red (pass=6 fail=1),
+# then restoring it and confirming green (pass=7 fail=0). That check is a person's,
+# not the suite's, and saying so is the point.
+if printf 'mapfile -t x < <(echo y)\n' | grep -Eq 'declare -A|readarray|mapfile|find [^|]*-printf|grep -P'; then
+  ok; else bad "the bash 3.2 pattern no longer matches a known violation"; fi
 
 # 5. THE WRITE IS GENUINELY ATOMIC, not atomic by the grace of one install
 # implementation.
