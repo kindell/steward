@@ -930,3 +930,89 @@ measurements were taken by the session that wrote it up; the generalisation is
 the reader's, and the correction to it came back from the first of them before it
 could be merged. It belongs to none of them alone. Nobody who is obliged to say
 "this is wrong" should be required to say why first.
+
+## 22. Rule 20 integrates branches that merge TOGETHER. Two authors merging separately have no shared tree to bind to, and the only instrument left is telling each other.
+
+Rule 20 builds the tree that will land and gives it one pair. That works because
+one person decides what goes in. **When two estates each hold a branch and each
+merges on their own judgement, there is no such tree**: the first merge moves the
+target and the other author's gate — possibly already running — is measuring a
+tree that will never land.
+
+**There is no local measurement that can detect the invalidation, and that is
+what makes this a rule about numbers rather than about manners.** The branch bears
+the target's tip when the gate starts and does not when it finishes. The gate
+measures a real tree and reports a true number; what the number describes is a
+tree that will never exist. Neither side can see it happen: the author who merged
+has no view of the reviewer's run, and the reviewer's own checks all pass, because
+everything they measure is locally consistent.
+
+That is the same subject as the twenty-one rules above — what a number means, and
+when it means nothing — and it is the only one of them where the answer is that no
+instrument helps. When there is no instrument, what remains is telling each other,
+and the rules below are what that cost to work out.
+
+**1. Start on a handover, not on the existence of a branch.** A pushed branch is
+not an invitation to gate it. The author says *handed over* when they have
+finished moving it, and the reviewer starts then. A gate begun on a branch the
+author is still rebasing measures a commit nobody will merge.
+
+**2. The party whose wait is free is the party that holds.** Not the one who is
+senior, or asked first, or has the smaller change. Count what is already running:
+a merge that throws away a gate in flight is expensive, and one that throws away
+nothing is not.
+
+**3. Count what the changes ARE, not only what is running.** A correction to
+something already deployed goes ahead of a comment fix, because one is running
+wrong code and the other is not.
+
+**These two are separate rules because they can disagree, and a night in which
+they happened to agree is what made them look like one.** They ask different
+questions — rule 2 asks the cost of *waiting*, rule 3 the cost of *not landing*.
+Invert them and they part:
+
+| | in flight | the change |
+|---|---|---|
+| A | a gate is running | comments only |
+| B | nothing running | a correction to deployed code |
+
+Rule 2 says B holds. Rule 3 says B goes first. Same case, opposite answers.
+
+**Untested.** In the night that produced these, the two pointed the same way every
+time, so which wins when they part has never been measured. The reviewing estate's
+judgement, marked as judgement: rule 3 wins, because a gate in flight is a sunk
+cost of minutes and code running wrong is live damage. That is a position, not a
+result, and this paragraph exists so the next reader knows the difference.
+
+**4. Say on the bus before a merge and again after it.** Before, so the other
+author can say "hold, mine is mid-flight". After, so they know to rebase without
+having to poll. The line costs one message and replaces a rule nobody can enforce.
+
+**5. A check that informs does not govern.** One estate's staleness check printed
+NO and let the run start anyway; the operator saw the line after the gate was
+already going. It now exits non-zero, with an explicit override for the
+deliberate case. A measurement that exists and may not act is the failure mode
+this document names in five other places.
+
+**6. An agreement a third party will need later belongs in the artefact.** "Not
+to be merged before #89" written in the pull request body is a condition; the
+same sentence on the bus is a memory two people share. The reader in three weeks
+has the first and not the second — the same reason a label follows what the
+thread can be read to say rather than what the two participants know.
+
+**Measured over one night, three estates, four rounds. The runs are named so
+the table can be checked rather than believed:**
+
+| round | main moved | thrown-away gate runs |
+|---|---|---|
+| before | `ecfc429` → `8967330` (#87) | **1** — a reviewer had just started a gate on `185782a`, handed over against `ecfc429`; they killed it when the merge landed |
+| 1 | `8967330` → `25fc91f` (#90) | 0 — the merging author said so on the bus first |
+| 2 | `25fc91f` → `6af32bd` (#89) | 0 — the other author held a ready branch rather than merge into a run |
+| 3 | `6af32bd` → `ae63003` (#92) | 0 — the merger announced, the held branch rebased, the reviewer then started |
+
+The fourth round was the first where no party's wait cost anything, and it was
+not luck: one author held, the second waited for the first author's number rather
+than handing over early, and the reviewer did not start until the handover came.
+**Three parties each declined to do something that would have looked like
+progress.**
+
