@@ -140,6 +140,11 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import { readFileSync, unlinkSync, chmodSync, mkdirSync, existsSync, accessSync, constants } from 'node:fs';
+// THE WHOLE NAMESPACE, ONLY FOR THE SPOOL. order.mjs takes an fs object rather than
+// importing one, so that its writes can be exercised against a fake in a unit test -
+// the same reason bridge.mjs is a pure function. This is the real one.
+import * as fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { loadRemotes } from './remote.mjs';
 import { join, dirname } from 'node:path';
@@ -147,6 +152,13 @@ import { fileURLToPath } from 'node:url';
 import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, ICON } from './render.mjs';
 import { parseBridge } from './bridge.mjs';
 import { MOUNT, setMount, at, reAt } from './mount.mjs';
+// NOT validateOrder. That one is the FORM's gate - method, content type, body size,
+// fetch site, nonce - and this route is a GET a stranger follows from a link, with no
+// form and no nonce to carry. Importing it here unused would read as if this path
+// were validated by it. What this route does instead is in serveInvite: it proves the
+// token against the register, requires a tailnet identity, and runs the same
+// one-open-order rule through openActionsFor.
+import { appendOrder, openActionsFor, orderId } from './order.mjs';
 import { normalizeAddr, parseFrontListen, parseFrontPeer, visitorAddress, RateLimiter } from './front.mjs';
 import { parseCookies, serializeCookie, loadSessionKey, mintSession, verifySession, mintState, verifyState } from './cookie.mjs';
 import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, identityOf } from './oidc.mjs';
@@ -154,6 +166,7 @@ import { loadProviders, discover, beginLogin, exchangeCode, verifyIdToken, ident
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LOOKUP = join(HERE, 'bin', 'principal-for-login');
 const PATHS_BRIDGE = join(HERE, 'bin', 'desk-paths');
+const INVITE_BRIDGE = join(HERE, 'bin', 'invite-for-digest');
 
 // A BRIDGE THAT CANNOT EVEN RUN IS AN OUTAGE, CHECKED ONCE, NOT PER REQUEST.
 // A deploy that drops the executable bit, or omits the file, must fail loudly
@@ -669,6 +682,125 @@ const ROUTES = [
   [new RegExp('^' + reAt('/session/') + '(s-[a-f0-9]+)$'), (s, id) => pageSession(s, id)]
 ];
 
+// serveInvite - the only page a stranger can reach.
+//
+// ONE ANSWER FOR EVERY WAY A TOKEN CAN BE NO GOOD: unknown, already redeemed,
+// revoked, expired, or malformed all produce the SAME 404 an unknown path produces.
+// Anything else is an oracle - a stranger working through a list of guesses would
+// learn which of them were once real invitations and roughly when they were spent.
+// It is the same reasoning authCallback's uniform refusals already carry.
+//
+// THE BRIDGE IS NOT UNIFORM, AND MUST NOT BE. It splits its refusals across exit
+// codes so this handler can decide which ones are worth a journal line; the page
+// answers 404 to all of them regardless, so nothing a VISITOR can observe varies.
+// The codes are for the caller and never for the wire - see the catch below, where
+// that split is the whole content.
+//
+// THE TOKEN IS DIGESTED HERE AND NEVER TRAVELS FURTHER. The register stores only the
+// digest so that a readable register does not leak an open door; the order carries
+// the digest for the same reason, and `invite redeem --digest` exists so that this
+// path never has to hold the token at all beyond the request that brought it.
+function serveInvite(req, res, rawToken, login, headers) {
+  const notFound = () => send(res, 404, NOT_FOUND, headers);
+
+  // A TOKEN IS ONE PATH SEGMENT AND NOTHING ELSE. A value with a slash in it is not a
+  // token that failed to match - it is a different route being asked for, and it gets
+  // the answer that route would get.
+  const token = String(rawToken || '');
+  if (!token || token.includes('/')) return notFound();
+
+  const digest = createHash('sha256').update(token).digest('hex');
+
+  let inviteId;
+  try {
+    inviteId = execFileSync(INVITE_BRIDGE, [digest], {
+      encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (e) {
+    // EVERYTHING EXCEPT THE PROBING CASE REACHES THE JOURNAL. rc 1 is the one silent
+    // refusal - no invitation carries that digest - and it is silent because A ROUTE A
+    // STRANGER CAN REACH THAT LOGS PER REQUEST IS A FLOODING SURFACE. This desk
+    // already holds that rule for its 403s: ordinary refusals on a shared tailnet must
+    // never fill a log. The first draft of this handler wrote every refusal, and an
+    // existing assertion about the quiet path caught it.
+    //
+    // The others are all worth a line, and the test is not a list of codes but
+    // whether an OPERATOR HAS SOMEWHERE TO GO: 69 says a real invitation was
+    // presented and was not open, 78 says the register would not load, 64 says this
+    // desk called its own bridge wrong, and NO status at all says the bridge is
+    // missing or unrunnable. Writing the condition as "not 1" rather than as a list
+    // is deliberate - a code added to the bridge later is journalled by default, and
+    // the failure of an unlisted code is silence, which is the failure nobody sees.
+    //
+    // THE PAGE ANSWERS 404 TO ALL OF THEM EITHER WAY, so nothing a visitor can
+    // observe changes - the codes are for the caller and never for the wire.
+    if (e && e.status !== 1) {
+      process.stderr.write(e.stderr ? String(e.stderr)
+        : 'desk: the invitation bridge did not run: ' + (e.message || e) + '\n');
+    }
+    return notFound();
+  }
+  if (!inviteId) return notFound();
+
+  // THE TAILNET ALWAYS CARRIES AN IDENTITY, so its absence here is not a visitor
+  // without one - it is a request that did not come through the proxy. The front's
+  // answer is its login page; this entrance has no such thing to offer.
+  if (!login) return send(res, 403, FORBIDDEN, headers);
+
+  const spool = join(DIR, 'orders');
+
+  // `principal` HOLDS AN INVITATION ID HERE, AND THAT IS A LABEL SAYING ONE THING
+  // WHILE THE VALUE SAYS ANOTHER. It is written down rather than fixed, and both
+  // halves of that need to be honest:
+  //
+  // WHY IT WORKS. The field is the SUBJECT the order is about, and for the five form
+  // actions the subject is a principal. For this one there is no principal yet - the
+  // whole point of the redemption is to create one - so the subject is the row being
+  // spent. apply.sh never resolves the value against a register; it requires it to be
+  // non-empty and puts it in the receipt, and openActionsFor keys the one-open-order
+  // rule on the same string, so the two agree. The `inv-` prefix also makes the value
+  // self-describing, which is the only reason this is a naming problem and not an
+  // ambiguity.
+  //
+  // WHY IT IS NOT RENAMED IN THIS BRANCH. The spool's shape is merged (#95) and the
+  // applying half is under a gate right now on a commit a neighbour has already
+  // measured (#97). Changing the field here would invalidate a green number that was
+  // taken honestly, to fix a name - and a rename done under a running gate is the
+  // thing that makes the next number impossible to trust. It belongs in its own
+  // branch with its own two halves.
+  const order = {
+    id: orderId(),
+    principal: inviteId,
+    action: 'invite-redeem',
+    args: { digest, identity: 'tailscale:' + login },
+    at: Math.floor(Date.now() / 1000),
+    origin: 'tailnet',
+  };
+
+  // ONE OPEN ORDER PER INVITATION. A visitor who reloads the page must not queue a
+  // second redemption of the same row: the first one creates an account, and the
+  // second would act on a world the first one changed. The spool is read rather than
+  // the snapshot, because a snapshot is a generation old by construction and two
+  // reloads between two generations would both pass a check made against it.
+  if (openActionsFor(fs, spool, inviteId).includes('invite-redeem')) {
+    return send(res, 303, '', Object.assign({}, headers, { location: at('') }));
+  }
+
+  try {
+    appendOrder(fs, spool, order);
+  } catch (e) {
+    console.error('desk: the invitation order could not be written: ' + (e && e.message ? e.message : e));
+    return send(res, 500, '', headers);
+  }
+  console.error('desk: queued invite-redeem for ' + inviteId);
+
+  // REDIRECTED TO THE INDEX AND NOT TO /desk/me, because /desk/me does not exist yet.
+  // The index already shows a person their own sessions, which is the page an invited
+  // person wants; the add-on buttons /desk/me adds are a later step and a redirect to
+  // a 404 would be a worse welcome than a plain one.
+  return send(res, 303, '', Object.assign({}, headers, { location: at('') }));
+}
+
 const server = http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, '', { allow: 'GET, HEAD' });
 
@@ -686,7 +818,38 @@ const server = http.createServer((req, res) => {
   // forwarding, so this value came from the tailnet's own identity and not from
   // the request. Nothing else - no query parameter, no cookie, no other header
   // - is consulted, so there is nothing else to spoof.
-  const { slug: principal, outage } = principalFor(req.headers['tailscale-user-login']);
+  const login = req.headers['tailscale-user-login'];
+
+  // THE INVITATION PAGE COMES BEFORE THE PRINCIPAL CHECK, and it is the only thing
+  // that does. Every other page is for somebody the register already knows; this one
+  // exists for somebody it does not, and the check below would refuse them with the
+  // same 403 as a stranger off the street. An invited person IS a stranger to the
+  // register - that is what the invitation is for.
+  //
+  // THE IDENTITY IS STILL THE TAILNET'S. What is missing is a ROW, not a name: the
+  // header is set by the proxy and stripped from anything a client sends, so this
+  // route acts on an identity it can trust and a registration it does not have.
+  // THE PATH IS PARSED HERE BECAUSE THIS DECISION IS MADE BEFORE servePage, which is
+  // where every other route's path comes from. The first draft of this block used
+  // `path` from there - a variable declared inside a function this code runs before -
+  // and the server threw on EVERY request. The suite said `socket hang up` on 42
+  // assertions, which is what a listener that dies before answering looks like from
+  // the other end: not a wrong answer, no answer.
+  //
+  // THE SAME REFUSAL AS servePage's FOR A URL THAT WILL NOT PARSE, and not a throw: a
+  // request line that is not a URL is a 404, the same one an unknown path gets.
+  let invitePath;
+  try {
+    invitePath = new URL(req.url, 'http://desk').pathname;
+  } catch {
+    return send(res, 404, NOT_FOUND, HEADERS);
+  }
+  const invitePrefix = at('/invite/');
+  if (req.method === 'GET' && invitePath.startsWith(invitePrefix)) {
+    return serveInvite(req, res, invitePath.slice(invitePrefix.length), login, HEADERS);
+  }
+
+  const { slug: principal, outage } = principalFor(login);
   if (outage) return send(res, 503, NO_MEASUREMENT); // a dead gate is an outage, never a refusal
   if (!principal) return send(res, 403, FORBIDDEN);
 
