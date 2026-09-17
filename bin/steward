@@ -6656,7 +6656,12 @@ cmd_desk() {
   case "${1:-}" in
     snapshot) shift; exec bash "$HERE/desk/snapshot.sh" "$@" ;;
     serve)    shift; exec node "$HERE/desk/serve.mjs" "$@" ;;
-    *) fel "steward desk: unknown verb '${1:-}' (allowed: snapshot, serve)" 64 ;;
+    # apply IS NOT exec'd LIKE THE OTHER TWO, and the difference is deliberate: it
+    # runs verbs of this same program, and exec would replace the shell those verbs
+    # are resolved from. The snapshot and the server own their exit codes; apply owns
+    # a summary of many, and its rc is "did every order succeed".
+    apply)    shift; bash "$HERE/desk/apply.sh" "$@"; return $? ;;
+    *) fel "steward desk: unknown verb '${1:-}' (allowed: snapshot, serve, apply)" 64 ;;
   esac
 }
 
