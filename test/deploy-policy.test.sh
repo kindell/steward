@@ -63,10 +63,21 @@ if [ -f "$B" ] && strip "$B" | sed -n '/deploy)/,/;;/p' | grep -Eq 'md5|md5sum|s
 # first. A guard whose subject is a hand-kept list does not grow with the tree, and
 # its coverage shrinks every time the tree does grow.
 #
-# THE SWEEP IS CHEAP AND THE TREE WAS ALREADY CLEAN. Measured when this was widened:
-# 193 shell files, two real hits (both in desk/apply.sh), four comments that name the
-# constructs in order to forbid them, and the two lines below. Widening cost nothing
-# because the rule had been followed everywhere a person happened to remember it.
+# THE SWEEP IS CHEAP AND THE TREE WAS ALREADY CLEAN. Measured, and the number is
+# written with its lens and its tree because it cannot be re-taken without them - the
+# first version of this comment said "193 shell files" and that was a third lens at a
+# fourth moment, before the widening's own commits added files:
+#
+#   194 (union of *.sh and a shell shebang, 07c28d9)   what this loop walks
+#   194 actually swept                                 this file is exempt, see below
+#   177 (*.sh only, 07c28d9)                           a different question
+#   194 (file --mime-type, 07c28d9)                    a third
+#
+# Of those: two real hits, both in desk/apply.sh; four comments that name the
+# constructs in order to forbid them; two self-references in this file's own pattern.
+# Widening cost nothing because the rule had been followed everywhere a person
+# happened to remember it - which is exactly why nobody noticed the enforcement had
+# stopped growing.
 #
 # WHAT IT STILL DOES NOT CATCH, said here so nobody reads this as complete: the other
 # half of the same darwin failure was "${arr[@]}" on an EMPTY array under `set -u`,
@@ -82,7 +93,20 @@ _b32_files() {
   fi
 }
 b32_hits=""
-for _rel in $(_b32_files); do
+# `while IFS= read -r` AND NOT `for _rel in $(...)`. Word splitting on the listing
+# breaks a path containing a space into pieces that each fail `[ -f ]` below and are
+# skipped WITHOUT A WORD - which is the same failure this whole check exists to
+# remove: coverage that quietly stops including something when a person does an
+# ordinary thing. Measured when this was written: 0 of 194 tracked paths (union of
+# *.sh and a shell shebang, 07c28d9) contain whitespace, so the fault was latent and
+# not active. That is a reason to fix it cheaply, not a reason to leave it: the first
+# path with a space in it would have been skipped silently, and a guard that is
+# silent about what it did not read is worse than one that was never widened.
+#
+# The here-document is the house's own form for this, for the house's own reason:
+# bash 3.2 has no mapfile, which is the construct this very check forbids.
+while IFS= read -r _rel; do
+  [ -n "$_rel" ] || continue
   _f="$here/$_rel"
   [ -f "$_f" ] || continue
   # THIS FILE IS EXEMPT, and the reason is not convenience: it must contain the
@@ -100,7 +124,9 @@ for _rel in $(_b32_files); do
   if strip "$_f" | grep -Eq 'declare -A|readarray|mapfile|find [^|]*-printf|grep -P'; then
     b32_hits="$b32_hits $_rel"
   fi
-done
+done <<EOF
+$(_b32_files)
+EOF
 if [ -n "$b32_hits" ]; then
   bad "bash 3.2-forbidden construct in:$b32_hits"; else ok; fi
 

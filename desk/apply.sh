@@ -130,9 +130,25 @@ for f in "$ORDERS"/*.json; do
   # files, which is why it did not catch this one. The rule was written; the
   # enforcement was a hand-kept list that does not grow with the tree.
   #
-  # A COUNTER RATHER THAN ${#cmd[@]}, because the count is what the empty case needs
-  # and a counter cannot be an unbound expansion. The array itself is only ever
-  # expanded below, after the zero case has already taken `continue`.
+  # A COUNTER RATHER THAN ${#cmd[@]}, AND THE FIRST VERSION OF THIS COMMENT GAVE THE
+  # WRONG REASON FOR IT. It said a counter "cannot be an unbound expansion", which
+  # reads as though ${#cmd[@]} would be one on 3.2. Measured on bash 3.2.57:
+  #
+  #   set -u; c=();  echo "${#c[@]}"   ->  0                       declared, empty
+  #   set -u;        echo "${#b[@]}"   ->  b: unbound variable      never assigned
+  #   set -u; c=();  printf '%s' "${c[@]}"  ->  c[@]: unbound variable
+  #
+  # SO THE LINE IS DECLARED vs UNDECLARED, not empty vs non-empty, and counting is
+  # safe as long as the array is ASSIGNED - the assignment is what makes it a
+  # variable and the emptiness is irrelevant. Only "${arr[@]}" is unsafe on a
+  # declared-empty array. Both forms here always assign, so the counter is more
+  # conservative than required rather than necessary.
+  #
+  # IT STAYS ANYWAY, and the reason is not inertia: the two cases coincide in every
+  # branch except the one where the assignment is skipped, and THAT is the branch a
+  # reader consults a comment about. A counter cannot acquire that branch. The
+  # comment is what needed narrowing - a wrong reason beside right code is the thing
+  # the next reader builds on.
   cmd=(); cmd_n=0
   while IFS= read -r _line; do cmd[$cmd_n]="$_line"; cmd_n=$((cmd_n+1)); done < <(_apply_command_for "$action")
   if [ "$cmd_n" -eq 0 ]; then
