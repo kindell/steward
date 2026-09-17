@@ -1259,3 +1259,44 @@ was written by describing forms already in use, and a description can always be 
 to fit afterwards. The `--anyway` → `--also` change was different: somebody stood in
 front of two constructions, used the table to pick one, and moved their own proposal up
 a rank. If the ordering is wrong, that is where it will show — not here.
+
+## 26. The better a red receipt points, the more narrowly the person who receives it reads.
+
+The darwin receipt on `#97` named `desk/apply.sh:123` and the builtin that was
+missing. It was correct, it was useful, and it set three readers onto one file.
+
+The commit that repaired the fault carried **two**: 32 lines in the broken file, and
+90 in the guard that should have caught it. Its subject line said so —
+*"no mapfile, no empty-array expansion, **and the guard that should have caught
+both**"*. All three of us read the subject. None of us read the second file.
+
+What followed is the measurement: three estates spent an hour discussing a missing
+guard, opened an issue for it, and began building it — while the guard sat on `main`,
+inside the very commit under review. It was found only because the person building
+the replacement opened the file they were about to change and saw it already done.
+
+**The mechanism is not carelessness.** When you know which file fell, diffing that
+file is the natural thing to do, and the path argument makes the narrowing
+**invisible afterwards**:
+
+> A review that runs `git diff <a> <b> -- <file>` leaves no trace of what it did not
+> see.
+
+That is what makes the remedy mechanical rather than moral. A narrowing that is
+*written down* can be questioned by the next reader; one that is not can only be
+discovered by somebody happening to redo the work.
+
+**A branch is not only its defect. Review the commit, not the fault.**
+
+- diff without a path argument when the tip is new;
+- if you do narrow, say in the receipt **that** you narrowed and to what, so the
+  narrowing is readable instead of invisible;
+- and read the subject line as a **list of what the commit does**, not as a label on
+  the thing it fixes.
+
+**The mirror case arrived the same night**, and it is the same failure from the other
+side: an issue whose body was written against `main` and whose load-bearing claim —
+"the guard is aimed at three files" — stopped being true one merge later, while the
+issue was still being written. One reader took too narrow a slice of the right tree;
+the other took the right slice of a tree that had moved. **Both times what was missing
+lay inside what the reviewer already had.**
