@@ -2682,7 +2682,23 @@ registry_paused_dir_name()      { _registry_estate_value PAUSED_DIR_NAME      '^
 # a product that guessed one would print a link that reaches somebody else's
 # machine. A trailing slash is refused rather than trimmed - a value that is
 # quietly repaired is a value nobody fixes.
-registry_desk_origin()          { _registry_estate_value DESK_ORIGIN          '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$'; }
+#
+# https ONLY, AND NOT FOR SYMMETRY WITH THE BRIDGE. This reader accepted http
+# until 2026-09-18 while desk/bin/desk-paths:108 refused it, so an estate on
+# http had links ISSUED and had the front refuse the same value - an issued
+# link that opens no door, with neither half lying. Aligning them is the lesser
+# half of the reason.
+#
+# The scheme is load-bearing: an invitation link carries its TOKEN in the URL,
+# the token is printed exactly once, and it is the only key into an estate.
+# Over http that key crosses every intermediary in plaintext and lands in every
+# log that keeps a URL. So http is not a laxer validation of the same thing -
+# it is permission to send a one-time key unprotected.
+#
+# Nothing paid for the tightening: measured on 2026-09-18, no estate in the
+# fleet had the key set at all. After the first value is written the cost is
+# somebody's issued link, which is why it was decided before and not after.
+registry_desk_origin()          { _registry_estate_value DESK_ORIGIN          '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'; }
 
 # LEGACY_LOGIN — the ONE login row this estate allows to name the runtime's
 # unnamed default directory during a migration. Optional, and its absence is

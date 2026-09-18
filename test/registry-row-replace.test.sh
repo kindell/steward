@@ -198,8 +198,15 @@ done
 
 echo "== the estate names the desk's origin =="
 is  "DESK_ORIGIN resolves" "$(registry_desk_origin)" "https://desk.example.test"
+# THE SUBJECT HERE IS THE PORT, NOT THE SCHEME. This fixture said http until
+# 2026-09-18, when the reader was tightened to https only; the scheme was
+# incidental to what the line asserts, so it moves and the assertion does not.
+# That http is now refused is asserted where it belongs, in invite-verbs.
+printf 'DESK_ORIGIN="https://host-a.example.test:8443"\n' > "$ROOT/estate/steward.conf"
+is  "a port is part of the origin" "$(registry_desk_origin)" "https://host-a.example.test:8443"
 printf 'DESK_ORIGIN="http://host-a.example.test:8443"\n' > "$ROOT/estate/steward.conf"
-is  "a port is part of the origin" "$(registry_desk_origin)" "http://host-a.example.test:8443"
+registry_desk_origin >/dev/null 2>"$T/err"; rc=$?
+is  "and http is refused whatever the port" "$rc" "78"
 printf 'DESK_ORIGIN="https://desk.example.test/"\n' > "$ROOT/estate/steward.conf"
 registry_desk_origin >/dev/null 2>"$T/err"; rc=$?
 is  "a trailing slash is refused, not trimmed" "$rc" "78"
