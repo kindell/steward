@@ -83,16 +83,46 @@ if [ -f "$B" ] && strip "$B" | sed -n '/deploy)/,/;;/p' | grep -Eq 'md5|md5sum|s
 # half of the same darwin failure was "${arr[@]}" on an EMPTY array under `set -u`,
 # which 3.2 treats as an unbound variable rather than an empty word list. That is not
 # a construct, it is a state, and no grep can see it. Only running on 3.2 can.
+# _b32_files - the tracked files of this checkout, or a refusal.
+#
+# THE OLD TEST WAS `[ -d "$here/.git" ]`, AND IT WAS FALSE IN EVERY WORKTREE. In a
+# `git worktree`, `.git` is a FILE holding `gitdir: ...`, not a directory - so the
+# condition failed and the sweep fell through to `find`. Both estates gate in detached
+# worktrees. EVERY GATE RUN FOR TWO DAYS THEREFORE SWEPT WITH find WHILE EVERY LOCAL
+# RUN SWEPT WITH git, and the two of us compared the numbers as if they were the same
+# question.
+#
+# THE COMMENT THAT USED TO SIT HERE SAID "git ls-files when this is a checkout, find
+# otherwise". A worktree IS a checkout and took the find branch. The comment described
+# an intention; the code did something else; the same person wrote both.
+#
+# HOW BIG THE DIFFERENCE IS, measured in a clean worktree at f668ab6:
+#     git ls-files   278     find -type f   279     of which the bare .git file: 1
+# One file, and it is the worktree pointer itself. So on a clean tree the two lenses
+# give the same VERDICT - no gate number anyone took is wrong. What differs is a
+# CATEGORY: find sees UNTRACKED files and git ls-files does not, and on a clean tree
+# that category is empty. That is why they agreed for two days, and why it took a
+# planted unadded file to make the difference visible at all.
+#
+# THE FALLBACK IS GONE RATHER THAN FIXED. It existed for "a tree without git", and
+# that case was measured and does not occur: the deployed copy carries no test/
+# directory at all, no fixture copies this file, and nothing else invokes it. Every
+# time the fallback ran it ran by accident, and it changed the lens without saying so.
+# A tree that cannot be named by git cannot be gated anyway - the gate binds a number
+# to a commit, and rule 19 needs a tree that can be named.
+#
+# The detection is now the question itself rather than a guess about the filesystem's
+# shape: `--is-inside-work-tree` answers true in both a clone and a worktree.
 _b32_files() {
-  # git ls-files when this is a checkout, find otherwise - and neither -printf nor
-  # -regex, which are the very extensions being forbidden here.
-  if command -v git >/dev/null 2>&1 && [ -d "$here/.git" ]; then
-    ( cd "$here" && git ls-files )
-  else
-    ( cd "$here" && find . -type f | sed 's|^\./||' )
+  if ! command -v git >/dev/null 2>&1 || ! ( cd "$here" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
+    echo "__NOT_A_CHECKOUT__"
+    return 0
   fi
+  ( cd "$here" && git ls-files )
 }
 b32_hits=""
+b32_seen=0
+b32_nocheckout=""
 # `while IFS= read -r` AND NOT `for _rel in $(...)`. Word splitting on the listing
 # breaks a path containing a space into pieces that each fail `[ -f ]` below and are
 # skipped WITHOUT A WORD - which is the same failure this whole check exists to
@@ -107,6 +137,8 @@ b32_hits=""
 # bash 3.2 has no mapfile, which is the construct this very check forbids.
 while IFS= read -r _rel; do
   [ -n "$_rel" ] || continue
+  if [ "$_rel" = "__NOT_A_CHECKOUT__" ]; then b32_nocheckout=yes; continue; fi
+  b32_seen=$((b32_seen+1))
   _f="$here/$_rel"
   [ -f "$_f" ] || continue
   # THIS FILE IS EXEMPT, and the reason is not convenience: it must contain the
@@ -127,6 +159,34 @@ while IFS= read -r _rel; do
 done <<EOF
 $(_b32_files)
 EOF
+# THE ENUMERATION IS CHECKED, AND UNTIL NOW IT WAS NOT. The control assertion further
+# down guards the PATTERN - that it still matches a known violation - and the comment
+# beside it said plainly that the FILE WALK was verified by hand and not by the suite,
+# and that saying so was the point. It was not. Measured on f668ab6 by a neighbour and
+# reproduced here: neuter the listing so it yields nothing, and
+#
+#     as-is                       pass=8 fail=0
+#     enumeration yielding zero   pass=8 fail=0
+#
+# the same number in both states, which is this tree's own definition of a probe that
+# measures nothing. It is also the HALF THAT LET mapfile THROUGH in the first place:
+# the pattern was never too narrow, the set was.
+#
+# THE HONEST DISCLOSURE BECAME THE HOLE'S DOCUMENTATION RATHER THAN ITS FIX, and read
+# as care while it did so. That is worse than an unwritten limit, because an unwritten
+# one looks like a gap and this looked like judgement.
+#
+# A FLOOR AND NOT AN EXACT NUMBER, because the tree grows and an exact count would be a
+# second thing to maintain. The floor only has to be high enough that a broken listing
+# cannot pass it: the tree held 278 tracked files when this was written.
+if [ -n "$b32_nocheckout" ]; then
+  bad "the bash 3.2 sweep cannot run: $here is not inside a git work tree, so the file list cannot be enumerated"
+elif [ "$b32_seen" -lt 150 ]; then
+  bad "the bash 3.2 sweep read only $b32_seen files - the enumeration is probably broken, not the tree clean"
+else
+  ok
+fi
+
 if [ -n "$b32_hits" ]; then
   bad "bash 3.2-forbidden construct in:$b32_hits"; else ok; fi
 
