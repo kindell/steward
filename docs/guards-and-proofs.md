@@ -1445,3 +1445,65 @@ side: the heading lies about what it *matches*. Both are only visible when
 somebody changes something and the wrong thing goes red; this one is also visible
 whenever the finding has to cross a machine boundary, which is every time two
 estates share a fleet.
+
+---
+
+## 29. The lens has a version too. A receipt that names the instrument but not the instrument's COMMIT records a number nobody can re-take.
+
+Rule 25 requires a number to carry its lens and its tree. This is the case where
+it carried both and was still unreproducible.
+
+Two gate runs on one host, hours apart:
+
+```
+3bb8057   estate-guard=RED   root=ddba5552  list=6e524e3f
+0dd2f55   estate-guard=ok    root=ddba5552  list=6e524e3f
+```
+
+**The digests are identical.** `root=` is the estate root's path, `list=` is the
+guard's own name list — both were written precisely so that a reader could tell
+whether two runs measured the same thing, and both said yes.
+
+The entire difference was **one character in the guard's own source**, and that
+character lived on a branch that had not landed. The second receipt is green, is
+fully attributed under rule 25, and cannot be reproduced from `main` by anybody —
+including its author, tomorrow.
+
+### Why the existing fields could not catch it
+
+`root=` and `list=` describe the guard's **subject**: which estate, which names.
+Nothing in the receipt described the guard's **code**. A guard is not a constant
+that reads a changing world; it is itself a thing under version control, edited
+on the same days as everything it measures — this one was edited three times in
+one day.
+
+This is rule 28 turned against the gate that enforces it. A check measures what
+its code says, never what its name says, and `estate-guard=ok` is a name.
+
+### What a receipt therefore has to carry
+
+The instrument's own commit, and whether that commit is reachable from the branch
+the rest of the fleet would run:
+
+```
+VAKTEN: /Users/jon/Projects/butler 9ca874f [main] uncommitted=2 on-main=yes
+```
+
+- `on-main=no` means the number rests on unlanded code. It may still be a true
+  number; it is not a **re-takeable** one, and the difference is the whole of what
+  a receipt is for.
+- Uncommitted changes in the instrument's checkout are the same defect without a
+  commit to name, so the count is printed rather than hidden.
+- The comparison must **fetch first**. An unfetched ref would make a branch that
+  landed during the run read as unlanded — the same error one turn quieter.
+- And it is proven in both directions before it is trusted: a checkout on main
+  reads `yes`, a commit above main reads `no`, a commit *below* main (an
+  ancestor) reads `yes`, and a directory that is not a checkout at all reads `?`
+  and `no` — loudly, never silently.
+
+### The general form
+
+Every measuring apparatus in a fleet is also an artefact of that fleet, changing
+on the same schedule. Wherever a receipt records *what was measured* and *what it
+was measured against*, ask what is missing: **what was it measured WITH, and can
+somebody else obtain that.**
