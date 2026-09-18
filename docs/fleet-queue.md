@@ -334,12 +334,41 @@ both the manifest's domain and the cleaner's. Six weeks and fifty-odd rollouts l
 is still there. That makes remnants a kind of their own rather than drift in the same sense - a
 lagging file is a state the mechanism exists to close, a remnant is a state no mechanism touches.
 
+**The backward sweep finds two different things, and the counts lump them:**
+
+    REMNANT   somebody's leftover. Harmless, permanent, no mechanism touches it.
+    ORPHAN    nothing can recreate it, and something depends on it.
+
+A remnant is clutter. An orphan is a single copy of something load-bearing in a directory with
+no history. Measured the same evening: one estate's five homes held 102 unclaimed files, 33 of
+them remnants and 3 orphans; a second host held 28 unclaimed, 2 orphans and no remnants.
+
+Orphans come in degrees, and the second is the institutional risk: **without a source**, versus
+**without a source AND without an author in the room**. The first host's three are the second
+degree - 300+ lines of measurement tooling with comments explaining WHY the measurement is
+needed, written by nobody still working. The second host's two were built the same evening and
+one of them had been sent to two estates in plaintext, so the code survives even if the file does
+not.
+
+**Both hosts' first sweep used `+x` as a proxy for "something runs this", and both proxies
+hid cases.** The deepest instance is exactly the one the proxy cannot see: a file at mode 644,
+called twice by a script that is *itself* an orphan. A proxy for "something runs this" fails
+precisely where the call chain has already left version control. So an orphan count is a LOWER
+bound, always - and that belongs in the tool's own header, not in a letter. Dropping the proxy on
+the second host raised 2 to 6, of which four turned out on INSPECTION to be systemd enablement
+symlinks and drop-ins the deploy itself writes. Read them; do not filter them.
+
 A defect can CHANGE KIND when it is half-fixed. The account helper was a HOLE in the morning
 (called from four places, installed by zero rows); the manifest row landed in the afternoon; what
 remains is one host of three without the file, which is DRIFT. The hand that wrote the row went
 on citing the hole as open for hours - **whoever fixes half of something is the likeliest to keep
 describing the whole of it with the old word**, because what you remember is the problem you
 solved, not the solution.
+
+And there is a structural reason half-fixed examples survive longest, which is better than that
+psychological one: a FULL fix removes the example - there is nothing left to point at. A HALF fix
+leaves something real behind, so the example keeps working on the surface while naming the wrong
+class.
 
 **And a fourth method, which finds siblings rather than firsts:** ask what a guard that SHOULD
 have caught it actually matches. It needs no second estate and no host - it is a reading, available
