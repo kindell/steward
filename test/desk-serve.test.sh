@@ -38,6 +38,60 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+# THE FAILURE'S OWN WORDS COME FIRST, AND THE TAIL SECOND. node writes a test's
+# diagnostic block DIRECTLY AFTER that test's `not ok` line - never at the end - so
+# a window taken from the end of the stream carries the summary and not the failure.
+# Measured 2026-09-18: `not ok 198` stood on line 199 of 272, the old `tail -40` kept
+# 233-272, and the block sat 34 lines outside it. The one string in the whole run that
+# came from the process that failed - the assertion message, which for this suite
+# appends the server's stderr - was discarded by this filter FOUR TIMES, each time
+# before RED_DIR archived what the wrapper had already thrown away. Two estates then
+# spent a day varying the input to a measurement whose output could not be read.
+#
+# The bound stays, because an unbounded dump of a broken run is its own kind of
+# silence: at most FAIL_CAP failing blocks, then a line saying how many were left out.
+FAIL_CAP=10
+desk_serve_failure_report() {   # TAP on stdin -> each failure with its diagnostics, then a tail
+  # awk and not bash: the block below walks state over lines, which `while read` in
+  # bash 3.2 does more slowly and no more clearly. No mapfile, no arrays of the kind
+  # test/deploy-policy.test.sh forbids.
+  awk -v cap="${FAIL_CAP:-10}" -v tailn=40 '
+    # A PASSING TEST CARRIES A BLOCK TOO, and dropping it is half the repair. The old
+    # filter removed a passing `ok` line and left its four-line YAML behind, so 252
+    # green tests contributed roughly a thousand lines for the window to land in. The
+    # failure was not buried by the failure; it was buried by the successes.
+    /^[[:space:]]*not ok [0-9]+ - / {
+      nf++
+      if (nf <= cap) { keep = 1; print } else { keep = 0 }
+      skip = 0
+      next
+    }
+    /^[[:space:]]*ok [0-9]+ - /     { keep = 0; skip = 1; next }
+    /^[[:space:]]*---[[:space:]]*$/ {
+      if (keep)      { inblk  = 1; print }
+      else if (skip) { inskip = 1 }
+      next
+    }
+    inblk {
+      print
+      if ($0 ~ /^[[:space:]]*\.\.\.[[:space:]]*$/) { inblk = 0; keep = 0 }
+      next
+    }
+    inskip {
+      if ($0 ~ /^[[:space:]]*\.\.\.[[:space:]]*$/) { inskip = 0; skip = 0 }
+      next
+    }
+    /^[[:space:]]*# Subtest: / { next }
+    { rest[++nr] = $0 }
+    END {
+      if (nf > cap) printf("  ... and %d more failing tests, not shown\n", nf - cap)
+      start = nr - tailn + 1
+      if (start < 1) start = 1
+      for (i = start; i <= nr; i++) print rest[i]
+    }
+  '
+}
+
 out="$(cd "$here/desk" && node --test --test-reporter=tap test/*.mjs 2>&1)"
 rc=$?
 
@@ -69,7 +123,7 @@ if [ -z "$pass" ] || [ -z "$fail" ]; then
 fi
 
 if [ "$rc" -ne 0 ]; then
-  printf '%s\n' "$out" | grep -vE '^(ok [0-9]+ - |# Subtest: )' | tail -40
+  printf '%s\n' "$out" | desk_serve_failure_report
 fi
 
 echo "$pass passed, $fail failed"
