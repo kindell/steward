@@ -91,7 +91,7 @@ deploy_check_provenance() {
   # reader does not remove it where it still means something. A checkout on a
   # branch named main FOLLOWS ALONG: somebody's `pull` moves it. A detached head
   # is a state nobody moves for you, so the person maintaining a detached deploy
-  # worktree has to re-point it by hand each time origin advances.
+  # worktree has to move it by hand each time origin advances.
   #
   # That is an ergonomic property and not a provenance one, and it is why the
   # check is being removed rather than kept: this gate compares against the LIVE
