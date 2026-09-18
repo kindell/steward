@@ -2682,7 +2682,26 @@ registry_paused_dir_name()      { _registry_estate_value PAUSED_DIR_NAME      '^
 # a product that guessed one would print a link that reaches somebody else's
 # machine. A trailing slash is refused rather than trimmed - a value that is
 # quietly repaired is a value nobody fixes.
-registry_desk_origin()          { _registry_estate_value DESK_ORIGIN          '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$'; }
+#
+# https ONLY, AND NOT FOR SYMMETRY. An invitation link carries its token IN THE
+# URL. The token is printed exactly once and is the only key into an estate, so
+# over http it travels in cleartext through every intermediary and into every
+# log that keeps a URL. Admitting http here is therefore not a milder
+# validation - it is permitting a one-time key to be sent unprotected.
+#
+# THIS READER USED TO ADMIT http AND THE BRIDGE NEVER DID
+# (desk/bin/desk-paths). Two readers of one key, one accepting and one
+# refusing, do something worse than either would alone: they issue a link that
+# opens no door, and neither of them lies by itself. Found 2026-09-18 by the
+# skeppsbron estate, which has no DESK_ORIGIN at all and hit the refusal from
+# the far side; decided there, on the reason above, which none of the three
+# estates looking at it had named.
+#
+# The loose half survived because the assertion keeping it alive was about
+# something else: `a port is part of the origin` happened to use an http
+# fixture. A rule nothing asserts on purpose is held by whatever asserts it by
+# accident.
+registry_desk_origin()          { _registry_estate_value DESK_ORIGIN          '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'; }
 
 # LEGACY_LOGIN — the ONE login row this estate allows to name the runtime's
 # unnamed default directory during a migration. Optional, and its absence is

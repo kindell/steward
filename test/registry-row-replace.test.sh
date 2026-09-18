@@ -198,8 +198,16 @@ done
 
 echo "== the estate names the desk's origin =="
 is  "DESK_ORIGIN resolves" "$(registry_desk_origin)" "https://desk.example.test"
-printf 'DESK_ORIGIN="http://host-a.example.test:8443"\n' > "$ROOT/estate/steward.conf"
-is  "a port is part of the origin" "$(registry_desk_origin)" "http://host-a.example.test:8443"
+printf 'DESK_ORIGIN="https://host-a.example.test:8443"\n' > "$ROOT/estate/steward.conf"
+is  "a port is part of the origin" "$(registry_desk_origin)" "https://host-a.example.test:8443"
+# THIS ASSERTION USED TO CARRY AN http FIXTURE, and that is how the loose half
+# of the split survived: the heading is about the PORT, so nobody reading it saw
+# that it was also the only thing pinning the scheme. The scheme now has its own
+# assertion, below, which says what it is for.
+printf 'DESK_ORIGIN="http://desk.example.test"\n' > "$ROOT/estate/steward.conf"
+registry_desk_origin >/dev/null 2>"$T/err"; rc=$?
+is  "plaintext http is refused by the issuer too, not only by the bridge" "$rc" "78"
+has "and the refusal names the key" "$(cat "$T/err")" "DESK_ORIGIN"
 printf 'DESK_ORIGIN="https://desk.example.test/"\n' > "$ROOT/estate/steward.conf"
 registry_desk_origin >/dev/null 2>"$T/err"; rc=$?
 is  "a trailing slash is refused, not trimmed" "$rc" "78"
