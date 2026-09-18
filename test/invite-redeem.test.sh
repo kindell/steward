@@ -86,10 +86,18 @@ chmod 700 "$ROOT/invites.d" "$ROOT/logins.d"
 # the estate's label prefixes, socket and token name. A fixture that named only
 # DESK_ORIGIN and the hub failed there with "wrote it but it does not load back"
 # - a refusal about the fixture, wearing the shape of a refusal about the code.
+#
+# DESK_PREFIX IS NAMED HERE FOR THE SAME REASON THE ORIGIN IS. Three greps below
+# pin 'https://desk.example.test/desk/invite/', and until 2026-09-18 they pinned
+# it while this estate named no mount - so they were true because the product's
+# default matched, not because the estate had chosen. A suite that pins a path a
+# key decides must set that key; otherwise it measures the default and reports
+# it as the estate's, and it goes on passing when the two stop agreeing.
 cat > "$ROOT/estate/steward.conf" <<'EOF'
 ESTATE_NAME="acme"
 SCHEMA_VERSION="4"
 DESK_ORIGIN="https://desk.example.test"
+DESK_PREFIX="/desk"
 LABEL_PREFIX="com.fixture.claude"
 RC_LABEL_PREFIX="fixture: "
 STATE_DIR_NAME="fixture-state"

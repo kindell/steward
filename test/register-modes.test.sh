@@ -72,6 +72,15 @@ build_estate() { # <dir>
   ( . "$here/lib/scaffold.sh"
     estate_scaffold "$d" org=acme team=crew owner=alice session=home-alice ) >/dev/null 2>&1 || return $?
   printf 'DESK_ORIGIN="https://desk.example.test"\n' >> "$d/estate/steward.conf" || return 70
+  # THE MOUNT IS DECLARED, NOT INHERITED. This fixture pins the literal path
+  # '/desk/invite/' further down, and until 2026-09-18 it pinned it while naming
+  # no DESK_PREFIX at all - so the assertion was true because the product's
+  # default happened to match, not because this estate had said anything. A
+  # suite that pins a path a key decides must set that key, or it is measuring
+  # the default and reporting it as the estate's. (butler-steward-jon's measure,
+  # 2026-09-18: three of the four suites pinning this literal set no such key,
+  # and those three are exactly the ones that carried the hardcoded mount.)
+  printf 'DESK_PREFIX="/desk"\n' >> "$d/estate/steward.conf" || return 70
   printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$d/entities.d/acme.conf" || return 70
   printf 'OWNER="alice"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="alice"\n' > "$d/hosts.d/host-a.conf" || return 70
   return 0
