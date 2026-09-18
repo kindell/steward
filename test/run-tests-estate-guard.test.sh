@@ -203,5 +203,114 @@ if [ "$r_link" = "$r_a" ]; then ok "8d a symlink to the tree is the same tree"; 
 _sum="$(printf '%s\n' "$out" | grep '^suites found=')"
 case "$_sum" in *"$FX"*) bad "8e the summary line carries no path" "the fixture path is on it: $_sum" ;; *) ok "8e the summary line carries no path" ;; esac
 
+echo "== 9. the lens has a version: guard=<commit> and how it stands to main (rule 29) =="
+# WHY THIS SECTION EXISTS. root= and list= describe the guard's SUBJECT. Two receipts
+# from one host, hours apart, carried identical values for both - one RED and one ok -
+# and the whole difference was one character in the guard's own source on a branch that
+# had not landed. A receipt that names the instrument but not the instrument's COMMIT
+# records a number nobody can re-take, including its author tomorrow.
+#
+# THE ESTATE IS A REAL GIT REPO IN THIS FIXTURE, not a stub, because every claim below
+# is about what git answers: which commit last touched one file, whether the working
+# tree is dirty for that file, and whether a commit is reachable from a remote's main.
+# A stubbed git would prove the fixture.
+_guard_of() { printf '%s\n' "$1" | grep '^suites found=' | sed -n 's/.*guard=\([^)]*\)).*/\1/p'; }
+
+mk_estate_repo() {  # <dir> - an estate checkout with a guard and an origin
+  mkdir -p "$1/test" "$1.origin"
+  git init -q --bare "$1.origin"
+  git init -q "$1"; git -C "$1" config user.email e@x; git -C "$1" config user.name E
+  printf '#!/bin/bash\necho "pass=1 fail=0"\n' > "$1/test/leak-guard.test.sh"
+  chmod +x "$1/test/leak-guard.test.sh"
+  git -C "$1" add -A >/dev/null; git -C "$1" commit -qm "guard"
+  git -C "$1" branch -M main; git -C "$1" remote add origin "$1.origin"
+  git -C "$1" push -q origin main
+}
+
+# 9a ON MAIN: the commit is reachable from origin/main, so the bare sha stands alone.
+mk_estate_repo "$FX/e9"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/e9" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+g="$(_guard_of "$out")"
+case "$g" in
+  [0-9a-f]*+*) bad "9a a landed guard carries a bare commit" "got '$g'" ;;
+  [0-9a-f]*)   ok  "9a a landed guard carries a bare commit" ;;
+  *)           bad "9a a landed guard carries a bare commit" "got '$g'" ;;
+esac
+
+# 9b ABOVE MAIN: a new commit to the guard that has not been pushed. This is the exact
+# case from the rule - a number taken with an instrument nobody else has.
+printf '# edited\n' >> "$FX/e9/test/leak-guard.test.sh"
+git -C "$FX/e9" commit -qam "guard, edited"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/e9" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+case "$(_guard_of "$out")" in *+unlanded) ok "9b a guard above main says +unlanded" ;;
+  *) bad "9b a guard above main says +unlanded" "got '$(_guard_of "$out")'" ;; esac
+
+# 9c AN ANCESTOR OF MAIN IS LANDED. The direction that would be wrong if the check
+# asked "is it EQUAL to main" - a guard not touched for three merges is still landed,
+# and calling that unlanded would put the word on nearly every honest run until it
+# stopped being read.
+git -C "$FX/e9" push -q origin main
+printf 'x\n' > "$FX/e9/other-file"; git -C "$FX/e9" add -A >/dev/null
+git -C "$FX/e9" commit -qm "something else entirely"; git -C "$FX/e9" push -q origin main
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/e9" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+case "$(_guard_of "$out")" in *+unlanded) bad "9c an ancestor of main is landed" "said +unlanded" ;;
+  *) ok "9c an ancestor of main is landed" ;; esac
+
+# 9d DIRTY IS COUNTED, NOT HIDDEN. A working-tree edit is the most unreproducible state
+# of all - the commit exists and says nothing about what actually ran.
+printf '# uncommitted\n' >> "$FX/e9/test/leak-guard.test.sh"
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/e9" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+case "$(_guard_of "$out")" in *+dirty*) ok "9d an edited working tree says +dirty" ;;
+  *) bad "9d an edited working tree says +dirty" "got '$(_guard_of "$out")'" ;; esac
+git -C "$FX/e9" checkout -q -- test/leak-guard.test.sh
+
+# 9e NOT A CHECKOUT AT ALL: a deployed home. '?' and never blank - a missing value that
+# looks like an absent field is how a receipt claims more than it measured.
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/estate" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+case "$(_guard_of "$out")" in ?) ok "9e a deployed home says guard=?" ;;
+  *) bad "9e a deployed home says guard=?" "got '$(_guard_of "$out")'" ;; esac
+
+# 9g THE COMPARISON LEAVES NO STATE IN THE ESTATE. The estate checkout is shared -
+# this host runs two sessions out of one home against one estate root - so a fetch
+# into FETCH_HEAD would be two runs writing one file and reading each other's answer.
+# The ref is per-run and deleted; refs/tmp must be empty after a run, and a leftover
+# would be this field breaking the very rule it reports.
+out="$( cd "$here" && STEWARD_ESTATE_ROOT="$FX/e9" bash tools/run-tests.sh . zzzz-no-suite 2>&1 )"
+_left="$(git -C "$FX/e9" for-each-ref 'refs/tmp/*' 2>/dev/null | grep -c . || true)"
+[ "${_left:-1}" -eq 0 ] && ok "9g the landed-check leaves no ref behind" \
+  || bad "9g the landed-check leaves no ref behind" "refs/tmp: $(git -C "$FX/e9" for-each-ref 'refs/tmp/*')"
+# and it did not silently stop answering: the field is still filled in
+case "$(_guard_of "$out")" in "") bad "9g2 and still answers" "empty guard field" ;; *) ok "9g2 and still answers" ;; esac
+
+# 9h A GUARD, NOT A MEASUREMENT - and the difference is the point of the row.
+#
+# 9g proves the ref is DELETED. It does not prove the ref is UNIQUE PER RUN, and the
+# two are different properties: a fixed name is also deleted afterwards, so 9g stays
+# green on it. Measured 2026-09-18 by mutating the name from "guard-landed-$$" to
+# "guard-landed-fast": the whole section stayed 47/0. A row that cannot fail on the
+# axis it is named after is worth less than no row, because it is read as cover.
+#
+# WHY UNIQUENESS MATTERS: this host runs two sessions out of one home against one
+# estate checkout, and both gate. With a fixed name, run B's delete can land between
+# run A's fetch and A's merge-base, and A then reports +unlanded about a guard that is
+# landed - the exact unreproducible number this whole field exists to prevent.
+#
+# WHY IT IS NOT MEASURED HERE: the honest measurement is two runners racing on one
+# estate, and a race that passes by luck is a worse row than an admitted guard. So this
+# READS the source for the pid in the name, and says so in its own label. A guard is a
+# claim about a shape; a measurement is a claim about a behaviour. Writing one and
+# calling it the other is how a suite comes to certify the wrong thing.
+if grep -q 'refs/tmp/guard-landed-\$\$' "$here/tools/run-tests.sh"; then
+  ok "9h (guard, read not measured) the landed-check ref carries the pid"
+else
+  bad "9h (guard, read not measured) the landed-check ref carries the pid" \
+    "a fixed ref name races two runs sharing one estate checkout; 9g cannot see it"
+fi
+
+# 9f (control) THE FIELD NEVER CARRIES A PATH. Same reason root= is a digest: this line
+# is pasted into public pull requests.
+_sum="$(printf '%s\n' "$out" | grep '^suites found=')"
+case "$_sum" in *"$FX"*) bad "9f the guard field carries no path" "$_sum" ;; *) ok "9f the guard field carries no path" ;; esac
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
