@@ -186,6 +186,33 @@ is  "and --json still gets an object" "$(printf '%s' "$out" | jq -r '.ok' 2>/dev
 has "whose reason names DESK_ORIGIN" "$(printf '%s' "$out" | jq -r '.reason' 2>/dev/null)" "DESK_ORIGIN"
 is  "and no row was written" "$(ls "$R4/invites.d" | wc -l | tr -d ' ')" "0"
 
+# AN http ORIGIN IS REFUSED HERE TOO, AND THE REASON IS THE TOKEN.
+#
+# The bridge (desk/bin/desk-paths:108) has always required https; this reader
+# allowed http as well, so an estate could set http://, have links ISSUED, and
+# have the front refuse the same value. An issued link that opens no door is
+# worse than either half alone, because neither half is lying.
+#
+# The scheme is not a style question. An invitation link carries its TOKEN in
+# the URL, the token is printed exactly once, and it is the only key into an
+# estate. Over http that key crosses every intermediary and lands in every log
+# that keeps a URL.
+R4b="$T/estate4b"; mkroot "$R4b"
+printf 'ESTATE_NAME="fixture"\nDESK_ORIGIN="http://desk.example.test"\n' > "$R4b/estate/steward.conf"
+out="$(STEWARD_ESTATE_ROOT="$R4b" bash "$S" invite issue --name "Gus Example" --principal gus \
+       --entity acme --host host-a --json 2>/dev/null)"; rc=$?
+is  "an http DESK_ORIGIN is rc 78" "$rc" "78"
+has "whose reason names DESK_ORIGIN" "$(printf '%s' "$out" | jq -r '.reason' 2>/dev/null)" "DESK_ORIGIN"
+is  "and no row was written" "$(ls "$R4b/invites.d" | wc -l | tr -d ' ')" "0"
+
+# THE CONTROL: the same estate with https issues. Without this the three
+# assertions above would pass on a reader that refused EVERY origin.
+R4c="$T/estate4c"; mkroot "$R4c"
+printf 'ESTATE_NAME="fixture"\nDESK_ORIGIN="https://desk.example.test"\n' > "$R4c/estate/steward.conf"
+out="$(STEWARD_ESTATE_ROOT="$R4c" bash "$S" invite issue --name "Gus Example" --principal gus \
+       --entity acme --host host-a --json 2>/dev/null)"; rc=$?
+is  "https still issues" "$rc" "0"
+
 # AND SO DO THE THREE MINTS BELOW IT. registry_invite_mint_id,
 # registry_invite_mint_token and _registry_sha256 were each `|| return 70/78`
 # with the library's prose on stderr and an EMPTY stdout - exactly the defect
