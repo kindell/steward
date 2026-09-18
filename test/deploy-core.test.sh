@@ -329,5 +329,60 @@ check "a missing registry directory refuses" [ "$rc" -ne 0 ]
 case "$out" in *nosuch.d*) ok ;; *) bad "the refusal names the missing directory: $out" ;; esac
 rm -rf "$rfx"
 
+echo "== identifying a third value against the repository =="
+# THE CASE THIS EXISTS FOR, in a fixture: a file on disk that is neither
+# last-good nor the incoming source, but an OLDER RELEASED VERSION of the same
+# path. Before 2026-09-18 the gate called that a hand edit; the point of the
+# function is that the two are distinguishable without guessing.
+ifx="$(mktemp -d)"
+git -C "$ifx" init -q 2>/dev/null
+git -C "$ifx" config user.email t@example.invalid
+git -C "$ifx" config user.name  Test
+mkdir -p "$ifx/lib"
+printf 'v1\n' > "$ifx/lib/thing.sh"
+git -C "$ifx" add lib/thing.sh >/dev/null 2>&1
+git -C "$ifx" commit -qm v1 >/dev/null 2>&1
+printf 'v2\n' > "$ifx/lib/thing.sh"
+git -C "$ifx" commit -qam v2 >/dev/null 2>&1
+
+# 1. A released OLDER version: it must be named, with its commit, and rc 0.
+printf 'v1\n' > "$ifx/deployed"
+out="$(deploy_identify_blob "$ifx" "$ifx/deployed" lib/thing.sh)"; rc=$?
+check "an older released version identifies, rc 0" [ "$rc" -eq 0 ]
+case "$out" in *"IS a released version"*) ok ;; *) bad "the released version is not named: $out" ;; esac
+case "$out" in *"lib/thing.sh"*) ok ;; *) bad "the identification does not name the path: $out" ;; esac
+
+# 2. THE CURRENT version is released too. The function answers about content,
+#    not about recency - a deployed file equal to HEAD is still identifiable.
+printf 'v2\n' > "$ifx/deployed2"
+out="$(deploy_identify_blob "$ifx" "$ifx/deployed2" lib/thing.sh)"; rc=$?
+check "the current version identifies too" [ "$rc" -eq 0 ]
+case "$out" in *"IS a released version"*) ok ;; *) bad "HEAD's own content is not identified: $out" ;; esac
+
+# 3. A REAL hand edit: content in no commit of that path => rc 1, and the
+#    sentence has to be unmistakable, because this is the alarming answer.
+printf 'edited by hand\n' > "$ifx/deployed3"
+out="$(deploy_identify_blob "$ifx" "$ifx/deployed3" lib/thing.sh)"; rc=$?
+check "a genuine hand edit returns 1"      [ "$rc" -eq 1 ]
+case "$out" in *"NO released version"*) ok ;; *) bad "a hand edit is not called one: $out" ;; esac
+
+# 4. THE SAME CONTENT UNDER ANOTHER PATH IS NOT A MATCH. The question is
+#    "which version of THIS file", and a lookup that ignored the path would
+#    answer yes for any file in the repository that happened to share bytes.
+mkdir -p "$ifx/other"
+printf 'v1\n' > "$ifx/other/thing.sh"
+git -C "$ifx" add other/thing.sh >/dev/null 2>&1
+git -C "$ifx" commit -qm other >/dev/null 2>&1
+out="$(deploy_identify_blob "$ifx" "$ifx/deployed3" other/thing.sh)"; rc=$?
+check "another path with the same bytes is still not a match" [ "$rc" -eq 1 ]
+
+# 5. A FILE THAT IS NOT THERE says so rather than reporting a hand edit - a
+#    missing file and an edited one are different findings, and the drift gate
+#    already has its own sentence for a deletion.
+out="$(deploy_identify_blob "$ifx" "$ifx/nosuchfile" lib/thing.sh)"; rc=$?
+check "a missing file returns 1"           [ "$rc" -eq 1 ]
+case "$out" in *"not on disk"*) ok ;; *) bad "a missing file is reported as something else: $out" ;; esac
+rm -rf "$ifx"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

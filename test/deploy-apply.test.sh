@@ -60,13 +60,20 @@ u="$(run "$FX/home1")"; rc=$?
 check "clean re-run: rc 0"                 [ "$rc" -eq 0 ]
 case "$u" in *"UNTOUCHED-HOME"*home1*) ok ;; *) bad "an untouched home is not named: $u" ;; esac
 
-# ── 3. A HAND EDIT: a third md5 value => REFUSED, with the hand-edit diagnosis ──
+# ── 3. A THIRD VALUE => REFUSED, and the diagnosis MEASURES rather than judges ──
+# This case used to assert the words "hand edit". apply cannot know that: it
+# runs as root out of a stage with no repository, and on 2026-09-18 a third
+# value that the message called a hand edit turned out to be a released version
+# of the same path, older than last-good. The refusal must therefore say WHAT
+# was measured and hand the cause on; deploy-self does the lookup.
 printf '#!/bin/bash\necho HAND\n' > "$FX/home1/bin/tool-a"
 u="$(run "$FX/home1")"; rc=$?
-check "hand edit: rc 65"                   [ "$rc" -eq 65 ]
+check "third value: rc 65"                 [ "$rc" -eq 65 ]
 case "$u" in *REFUSAL*home1*tool-a*) ok ;; *) bad "the refusal names neither file nor home: $u" ;; esac
-case "$u" in *"hand edit"*) ok ;; *) bad "the three-way diagnosis does not say hand edit: $u" ;; esac
-check "hand edit: the file was NOT overwritten" grep -q HAND "$FX/home1/bin/tool-a"
+case "$u" in *"THIRD value"*) ok ;; *) bad "the three-way diagnosis does not name a third value: $u" ;; esac
+case "$u" in *"hand edit"*) bad "apply still passes a verdict it cannot test: $u" ;; *) ok ;; esac
+case "$u" in *--accept-drift*) ok ;; *) bad "the third-value refusal gives no way forward: $u" ;; esac
+check "third value: the file was NOT overwritten" grep -q HAND "$FX/home1/bin/tool-a"
 
 # ── 4. INTERRUPTION SIGNATURE: deployed = incoming source => diagnose 'interrupted' ──
 rig

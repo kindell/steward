@@ -403,3 +403,55 @@ deploy_stage() {
   cp "$APPLY" "$STAGE/deploy-apply.sh" || { echo "deploy: cannot copy apply to $STAGE/deploy-apply.sh" >&2; rm -rf "$STAGE"; return 70; }
   echo "$STAGE"
 }
+
+# ── IDENTIFYING A THIRD VALUE ──────────────────────────────────────────────
+# deploy_identify_blob <repo> <file-on-disk> <source-path> — say WHICH version
+# of <source-path> the deployed file actually is, by looking it up in <repo>'s
+# own history. Prints one line and returns 0 when a released version matches, 1
+# when none does (and that is the interesting answer, not the boring one).
+#
+# WHY IT EXISTS. The drift gate compares three md5s — deployed, last-good, the
+# incoming source — and when the deployed file matched neither of the other two
+# it reported "=> a hand edit". That is a VERDICT, and the gate could not test
+# it. Measured 2026-09-18 on a darwin host: a third value that the message
+# called a hand edit was byte-for-byte lib/registry.sh at 4e3d867, a released
+# commit four hours older than last-good. The operator was sent to look for an
+# edit that had never happened.
+#
+# The repository is sitting right there, so the cause does not have to be
+# guessed. A third value has at least three sources — another released version
+# (two installers write this tree), a partially finished run, a real hand edit —
+# and only the last one is alarming. Naming which it is turns an investigation
+# into a number.
+#
+# BLOB SHAS, NOT CONTENT. `git rev-parse <commit>:<path>` reads the tree entry
+# and costs nothing per commit; hashing the file content out of every commit
+# would read the whole file each time. `git hash-object` gives the same
+# identifier for the file on disk, so the comparison is sha against sha.
+deploy_identify_blob() {
+  local REPO="$1" FILE="$2" SRC="$3"
+  if [ ! -f "$FILE" ]; then
+    echo "  $SRC: not on disk — nothing to identify"
+    return 1
+  fi
+  local want
+  want="$(git -C "$REPO" hash-object -- "$FILE" 2>/dev/null)"
+  if [ -z "$want" ]; then
+    echo "  $SRC: could not hash the deployed file against $REPO"
+    return 1
+  fi
+  local c blob
+  for c in $(git -C "$REPO" log --all --format=%H -- "$SRC" 2>/dev/null); do
+    blob="$(git -C "$REPO" rev-parse "$c:$SRC" 2>/dev/null)" || continue
+    if [ "$blob" = "$want" ]; then
+      git -C "$REPO" log -1 --date=short \
+        --format="  $SRC IS a released version: %h %ad %s" "$c"
+      return 0
+    fi
+  done
+  # THE ALARMING ANSWER IS THE ONE THAT SAYS NOTHING MATCHED, and it has to be
+  # unmistakable: this is the case the old message asserted for every third
+  # value, and it is the only one it was ever right about.
+  echo "  $SRC is in NO released version of that path in $REPO — this one really is a hand edit"
+  return 1
+}

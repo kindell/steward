@@ -169,8 +169,14 @@ STAGE="$(deploy_stage "$PRODUCT" "$MANIFEST" "$PRODUCT/linux/deploy-apply.sh" $S
 trap 'rm -rf "$STAGE"' EXIT
 
 # ── 6. EXECUTE — locally, no ssh/scp: sudo -n runs apply on this machine ──
-sudo -n bash "$STAGE/deploy-apply.sh" "$STAGE" "$DEPLOY_SHA" "$@" $HOMES
-rc=$?
+# THE OUTPUT IS KEPT AS WELL AS SHOWN. apply's refusals name a target and a
+# diagnosis; one of those diagnoses can only be finished HERE, because apply
+# runs as root out of a stage with no repository and this script knows the
+# checkout. tee keeps the operator's stream unchanged and gives us the text.
+APPLY_OUT="$(mktemp "${TMPDIR:-/tmp}/deploy-apply-out.XXXXXX")" || exit 70
+trap 'rm -rf "$STAGE"; rm -f "$APPLY_OUT"' EXIT
+sudo -n bash "$STAGE/deploy-apply.sh" "$STAGE" "$DEPLOY_SHA" "$@" $HOMES 2>&1 | tee "$APPLY_OUT"
+rc="${PIPESTATUS[0]}"
 # TWO CAUSES MUST NOT SHARE ONE MESSAGE — but rc 1 is AMBIGUOUS in a way
 # rc 127 is not. deploy-apply.sh runs `set -uo pipefail` WITHOUT `-e`: an
 # unbound variable anywhere in its ~400 lines exits 1, exactly like a denied
@@ -187,6 +193,31 @@ case "$rc" in
        rc=70 ;;
   127) echo "execution failure: command not found — either sudo is missing, or the stage carries no deploy-apply.sh ($STAGE/deploy-apply.sh)." >&2; rc=70 ;;
 esac
+
+# ── 6b. FINISH THE ONE DIAGNOSIS APPLY CANNOT ────────────────────────────
+# A third value is not a cause, it is a measurement: the file on disk is
+# neither what was last installed nor what is about to be. It has at least
+# three sources and only one of them is alarming. The repository is here, so
+# the answer is looked up rather than guessed — see deploy_identify_blob.
+if grep -q 'THIRD value' "$APPLY_OUT" 2>/dev/null; then
+  echo
+  echo "IDENTIFYING the third values against $PRODUCT:"
+  while IFS= read -r _line; do
+    _home="$(printf '%s\n' "$_line" | awk '{print $2}')"
+    _target="$(printf '%s\n' "$_line" | awk '{print $3}')"
+    [ -n "$_target" ] || continue
+    # The manifest maps target back to source path; without it we would be
+    # searching the history of a path the product does not have.
+    _src="$(awk -v t="$_target" '!/^#/ && $2==t {print $1; exit}' "$MANIFEST")"
+    if [ -z "$_src" ]; then
+      echo "  $_target: no manifest row — cannot say which source it came from"
+      continue
+    fi
+    deploy_identify_blob "$PRODUCT" "$_home/$_target" "$_src" || true
+  done <<IDENT
+$(grep 'THIRD value' "$APPLY_OUT")
+IDENT
+fi
 
 # -- 7. THE DESK UNITS LEARN THE ESTATE THROUGH A DROP-IN, THE WAY ACTIVATION
 # BINDS A SESSION --------------------------------------------------------
