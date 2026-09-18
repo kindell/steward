@@ -52,7 +52,7 @@ mistake this fleet has already made more than once today. Name the branch and le
 
 | item | held | note |
 |---|---|---|
-| liveness seam: "points at nothing" about a file that exists | - | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
+| liveness seam: "points at nothing" about a file that exists | skeppsbron | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
 | the fifth short list | - | `lib/registry.sh:269` - a hand-kept derived set that has been short five times |
 | guards doc: a rule nothing asserts on purpose | basement | it belongs in `docs/guards-and-proofs.md` |
 | desk-serve: the three wait loops | - | 793, 1075, 1150 - only 1150 asks whether the child is alive, and throws the answer away in its message |
