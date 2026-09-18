@@ -304,7 +304,14 @@ for HOME_ROOT in $HOMES; do
         if [ "$dep_md5" = "$src_md5" ]; then
           DRIFT_DETAIL="$DRIFT_DETAIL|$target differs = the incoming source's md5 => the signature of an interrupted run, not a hand edit — re-run with --accept-drift $HOME_ROOT --file $target"
         else
-          DRIFT_DETAIL="$DRIFT_DETAIL|$target differs with a THIRD value (neither last-good nor the source) => a hand edit — investigate, or accept it deliberately with --accept-drift $HOME_ROOT --file $target"
+          # NOT "a hand edit". That was a verdict this gate cannot test, and it
+          # was measured wrong on 2026-09-18: the third value was a RELEASED
+          # version of the same path, four hours older than last-good, because
+          # two installers write this tree and only one keeps a baseline. The
+          # message now reports what was measured and names who can identify it;
+          # deploy-self looks the value up in the product's own history, which
+          # apply cannot do — it runs as root, from a stage with no repository.
+          DRIFT_DETAIL="$DRIFT_DETAIL|$target differs with a THIRD value (neither last-good nor the source) => some other version of the file is on disk; deploy-self identifies which one against the product's history. Accept it deliberately with --accept-drift $HOME_ROOT --file $target"
         fi
       fi
       # The valve: an enumerated file is let through, with a trace.
