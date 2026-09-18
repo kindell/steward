@@ -48,9 +48,9 @@ mistake this fleet has already made more than once today. Name the branch and le
 | DESK_ORIGIN https only | skeppsbron | `desk-origin-https-only` - awaiting a darwin half |
 | the wrapper's failure window | basement | `#107` |
 | the bridge failure's cause | skeppsbron | `bridge-failure-names` - basement's `#108` was withdrawn for it |
-| the hub client pin | butler | `#104` - queued behind the manifest rows, which have landed |
+| the hub client pin | butler | `#104` - nothing is queued in front of it now |
 
 ## Done today
 
-The manifest rows for what deployed code executes; three rollouts; the estate
+The manifest rows for what deployed code executes; five rollouts; the estate
 leak-guard's collision rule; the desk invitation route.
