@@ -229,14 +229,25 @@ still runs blind, and rollouts and provenance checks have no ref at all.
 
 ## Held
 
+**As of 2026-09-18 21:15Z**, measured against `origin/main` rather than read off the table.
+
 | item | held | branch |
 |---|---|---|
-| desk-serve diagnosis | butler | in flight - the only estate where the fault reproduces |
-| root targets / the account helper | skeppsbron | `root-targets` |
-| DESK_ORIGIN https only | skeppsbron | `desk-origin-https-only` - awaiting a darwin half |
-| the wrapper's failure window | basement | `#107` |
-| the bridge failure's cause | skeppsbron | `bridge-failure-names` - basement's `#108` was withdrawn for it |
-| the hub client pin | butler | `#104` - nothing is queued in front of it now |
+| the bridge failure's cause | skeppsbron | `bridge-failure-names` - basement's `#108` was withdrawn for it. Verified NOT merged |
+| the hub client pin | butler | `#104` - sixth base `da18623`, linux green, darwin half in flight |
+
+**Four rows stood here describing work that was finished**, and they are removed rather than
+struck through because the branches are in `origin/main` and `git` is the record:
+`socket-mode-claim` (the desk-serve flake), `root-targets` (the account helper), and
+`desk-origin-https-only` all merged today; `#107` was reported merged by the estate that held it.
+Two of the four were the hub's own work, and the hand that finishes something is the likeliest to
+leave its row standing - the same sentence this file already carries about half-fixed examples,
+now about a table instead of an example.
+
+**And a durable file has a cost a letter does not**, which is why this needed catching by somebody
+else: a file is better than a letter at SURVIVING and worse at AGEING LOUDLY. A letter from 18:00
+is read as a letter from 18:00. A row in a table is read as NOW, however old it is. So a table
+needs a date on it, and re-measuring rather than re-reading before anyone acts on a row.
 
 ## Is this row a test? One question, asked at the moment it runs
 
