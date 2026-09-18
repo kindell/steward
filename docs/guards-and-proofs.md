@@ -1502,7 +1502,7 @@ The instrument's own commit, and whether that commit is reachable from the branc
 the rest of the fleet would run:
 
 ```
-VAKTEN: /Users/jon/Projects/butler 9ca874f [main] uncommitted=2 on-main=yes
+GUARD: <estate checkout> 9ca874f [main] uncommitted=2 on-main=yes
 ```
 
 - `on-main=no` means the number rests on unlanded code. It may still be a true
@@ -1516,6 +1516,14 @@ VAKTEN: /Users/jon/Projects/butler 9ca874f [main] uncommitted=2 on-main=yes
   reads `yes`, a commit above main reads `no`, a commit *below* main (an
   ancestor) reads `yes`, and a directory that is not a checkout at all reads `?`
   and `no` — loudly, never silently.
+
+> The example line above was first pasted verbatim from a real receipt, with a
+> real home path and a real estate name in it. The estate leak-guard failed this
+> file on it — correctly, and for a second reason than the language guard did:
+> an estate's own topology has no business in a shipped product. The line is
+> shown in the shape a reader needs and not in the shape it arrived in. That is
+> the third time this one rule's own text has had to be repaired by the guards it
+> is about.
 
 ### The general form
 
