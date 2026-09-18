@@ -35,7 +35,7 @@ mistake this fleet has already made more than once today. Name the branch and le
 |---|---|---|
 | liveness seam: "points at nothing" about a file that exists | - | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
 | the fifth short list | - | `lib/registry.sh:269` - a hand-kept derived set that has been short five times |
-| guards doc: a rule nothing asserts on purpose | - | the sentence is basement's; it belongs in `docs/guards-and-proofs.md` |
+| guards doc: a rule nothing asserts on purpose | basement | it belongs in `docs/guards-and-proofs.md` |
 | desk-serve: the three wait loops | - | 793, 1075, 1150 - only 1150 asks whether the child is alive, and throws the answer away in its message |
 | `guard-enumeration` | skeppsbron | committed, base has rotted, needs a rebase before it can be measured |
 
@@ -47,7 +47,7 @@ mistake this fleet has already made more than once today. Name the branch and le
 | root targets / the account helper | skeppsbron | `root-targets` |
 | DESK_ORIGIN https only | skeppsbron | `desk-origin-https-only` - awaiting a darwin half |
 | the wrapper's failure window | basement | `#107` |
-| the bridge failure's cause | basement | `#108` |
+| the bridge failure's cause | skeppsbron | `bridge-failure-names` - basement's `#108` was withdrawn for it |
 | the hub client pin | butler | `#104` - queued behind the manifest rows, which have landed |
 
 ## Done today
