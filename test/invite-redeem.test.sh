@@ -29,7 +29,15 @@ echo "invite-redeem"
 mkdir -p "$FX/product/bin" "$FX/product/lib" "$FX/product/linux" "$FX/product/desk/bin"
 cp "$here/bin/steward"      "$FX/product/bin/steward"
 cp "$here/lib/registry.sh"  "$FX/product/lib/registry.sh"
-chmod 755 "$FX/product/bin/steward"
+# THE MOUNT'S TWO FILES, because the fixture stands in for a DEPLOYED tree and a
+# deployed tree has them - linux/deploy-manifest ships both. `invite issue` asks
+# desk/bin/desk-paths where this estate's desk is mounted and reads the product's
+# default out of desk/mount.mjs; a fixture product missing either would make the
+# verb refuse for a reason no real installation has, which is a fixture measuring
+# itself. They are COPIED, not stubbed: the point is that the real reader runs.
+cp "$here/desk/bin/desk-paths" "$FX/product/desk/bin/desk-paths"
+cp "$here/desk/mount.mjs"      "$FX/product/desk/mount.mjs"
+chmod 755 "$FX/product/bin/steward" "$FX/product/desk/bin/desk-paths"
 # deploy-self: the stub deploys a skeleton into EVERY home that has none, the
 # way the real per-host verb does. It is also THE HOOK the two concurrency
 # tests hang off: a file dropped by the test makes something else change the
