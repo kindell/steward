@@ -233,6 +233,18 @@ reset; live_managed; rm -f "$SD"/*; obs "$ID"; is "25a plain, no generation -> u
 # unknown/unclassifiable and read as a broken observer; the difference was visible only in the generation
 # directory. A live candidate with NO generation and no census is an UNCENSUSED row, and the reason says so.
 has "25a2 the reason names the cause: uncensused, run the census" "$(f 9)" "uncensused"
+# AND THE ROW WITH NO CANDIDATES AT ALL - the case the line above could not reach.
+# 25a2 uses live_managed, so the reason was only ever measured WITH live candidates, and
+# the condition carried the same assumption: it appended `uncensused` only when the class
+# list already held something. A BRAND-NEW ROW HAS NO CANDIDATE PROCESSES, so the one
+# case where `uncensused` is the WHOLE explanation was the one case that never got it.
+# Measured in production 2026-09-18: a freshly registered session refused to start and
+# the owner's log read `identity-unknown ()` - empty parentheses, and the only cure,
+# bridge-census, named nowhere. Twenty minutes to understand, four to fix.
+reset; rm -f "$SD"/*; obs "$ID"
+is   "25a3 no candidates, no generation, no census -> unknown" "$(f 2)" "unknown"
+has  "25a4 and the reason still names the cause" "$(f 9)" "uncensused"
+reset; live_managed
 obs --bootstrap "$ID"; is "25b bootstrap -> managed" "$(f 2)" "identified:managed"; is "25c gen_state says bootstrap" "$(f 8)" "bootstrap"
 reset; rm -f "$SD"/*; obs --bootstrap "$ID"; is "25d bootstrap, empty row -> no-process" "$(f 2)" "no-process"
 

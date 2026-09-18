@@ -156,8 +156,24 @@ CANDIDATES
   else ans="$(bridge_answer "$classes" "$gen_state" "$tmux_present" "$veto" "$census")"; fi
   case "$ans" in identified:*) : ;; *) L_PID=""; L_BIRTH=""; L_PANE=""; L_NAME=""; L_SINCE=""; L_PS=""; L_SID=""; L_MTIME=""; L_INODE="" ;; esac   # D9
   # AN UNCENSUSED ROW SAYS SO (measured 2026-09-12: ten live rows without a generation read as a broken
-  # observer). Live candidates, no generation, no census: the cure is bridge-census, and the reason names it.
-  if [ "$ans" = unknown ] && [ "$boot" != 1 ] && [ "$gen_state" = none ] && [ "$census" != 1 ] && [ -n "${classes# }" ]; then classes=" uncensused${classes}"; fi
+  # observer). No generation and no census: the cure is bridge-census, and the reason names it.
+  #
+  # THE `classes` NON-EMPTY TEST USED TO BE HERE AND IT EXCLUDED THE WORST CASE. It was
+  # written for the 2026-09-12 finding, which was about LIVE rows, and it carried that
+  # finding's assumption silently: the reason was appended only when the class list already
+  # held something else. A BRAND-NEW ROW HAS NO CANDIDATE PROCESSES, so its list is empty -
+  # and the one row for which `uncensused` is the WHOLE explanation was the one row that
+  # never received it.
+  #
+  # MEASURED IN PRODUCTION 2026-09-18, on a Linux host: a freshly registered session refused
+  # to start and the supervisor wrote `identity-unknown ()`. Empty parentheses, and
+  # bridge-census - the one command that fixes it - named nowhere. It was found by reading
+  # bridge_answer, not by reading the failure. Twenty minutes to understand, four to repair.
+  #
+  # The remaining four conditions already say exactly what an uncensused row is: we do not
+  # know, there is no generation, and no census has run. Whether any candidate process
+  # happens to be visible is a different question, and it was never part of the answer.
+  if [ "$ans" = unknown ] && [ "$boot" != 1 ] && [ "$gen_state" = none ] && [ "$census" != 1 ]; then classes=" uncensused${classes}"; fi
   line "$id" "$ans" "$L_PID" "$L_BIRTH" "$L_PANE" "$L_NAME" "$L_SINCE" "$gen_state" "${classes# }" "$child" "$L_PS" "$L_SID" "$L_MTIME" "$tuple" "$L_INODE"
 }
 case "${1:-}" in
