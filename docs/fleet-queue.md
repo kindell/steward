@@ -238,6 +238,48 @@ still runs blind, and rollouts and provenance checks have no ref at all.
 | the bridge failure's cause | skeppsbron | `bridge-failure-names` - basement's `#108` was withdrawn for it |
 | the hub client pin | butler | `#104` - nothing is queued in front of it now |
 
+## Is this row a test? One question, asked at the moment it runs
+
+Settled 2026-09-18 across three estates, after six one-off counts came out correctly computed
+and answering the wrong question. **Four carried no control row, and NONE was caught by the
+person who ran it** - two were saved by the answer being absurd on its face, the rest by another
+hand holding the counter-example.
+
+This is not a new rule. It is rule 23 - *consistent numbers are not a check; put the control
+assertion beside it* - applied to a COUNT instead of a suite. It gets missed because a count
+LOOKS like an observation, and nobody asks an observation whether it could have been right for
+the wrong reason.
+
+**The criterion, in the form it collapsed to:**
+
+> CAN THIS ROW BECOME FALSE FROM THE ERROR I AM LOOKING FOR, AT THE TIME IT RUNS?
+
+Three conditions were proposed separately during the evening and all three turn out to be
+CONSEQUENCES of it rather than additions - a partition cannot become false from any error at
+all; a number frozen in a comment is already false; two dependent measurements cannot diverge.
+So is a fourth: an empty predicate ("is the key mentioned in some test" came out 19 of 19 with
+the known defect sitting inside that hundred per cent) fails on *from the error I am looking
+for*. The time index is the one clause that does NOT fall out, and it is what makes the question
+askable more than once: without it the criterion is true of any row that was ever sharp.
+
+Tested against four cases whose answers were known before the question was put - it accepts the
+one form that actually caught the hardcoded mount ("zero literal mount paths outside the desk
+module", a plain absence claim) and rejects the three that could not have. A heuristic tried
+first - *prefer a relationship to a presence* - was DISCARDED for rejecting the only form that
+worked.
+
+**Two checks, two different questions.** The row above validates the INSTRUMENT. A mutation test
+needs a second one that validates the RUN: that the edit actually landed. A mutation that did not
+apply and a row that cannot fall produce the SAME observation - no change in the number - and the
+natural reading is the second. Diff the file; a mutation test that cannot show the file changed
+has shown nothing.
+
+**Where to put it.** A standing tool runs its own control row every call (`bus-behind` does). A
+one-off sweep has no tool to build into, and the place that remains is the LETTER: the expected
+answer written in the same text that will carry the number, before the run. That is auditable
+discipline, not mechanism - somebody must still remember - but a reader can afterwards see
+whether it was done, which moves the discovery off the author.
+
 ## Two ways to find a defect, and each is blind to the other's kind
 
 Settled 2026-09-18 by four findings in one evening, two from each method.
@@ -258,6 +300,35 @@ and whoever compares estates sees an identical absence everywhere and reads it a
 The practical consequence: one estate alone finds only holes; a fleet that never runs the chain
 on a machine finds only inconsistencies. **Three estates are not redundancy - they are a second
 instrument**, and neither instrument is optional.
+
+**A third kind and a third instrument**, both added the same evening:
+
+    DRIFT   the machine differs from what the CODE says
+
+Drift is neither a hole nor an inconsistency: the code is right, every estate is alike, and the
+machine is still not what the code describes. Running the chain finds it only when it happens to
+bite; comparing estates misses it when all have drifted the same way - which is the normal case,
+since they drift for the same reason. The instrument is a third: **compare the TREE against the
+DISK**, which the deploy already does against last-good but only during a rollout, never as a
+question somebody asks. Run on all three hosts in ten minutes and costing no machine time: every
+difference was a lagging rollout, and **zero hand edits anywhere** - a measured negative worth
+more than the three ratios, because the whole drift category rests on the deploy being the only
+way code reaches a machine.
+
+A defect can CHANGE KIND when it is half-fixed. The account helper was a HOLE in the morning
+(called from four places, installed by zero rows); the manifest row landed in the afternoon; what
+remains is one host of three without the file, which is DRIFT. The hand that wrote the row went
+on citing the hole as open for hours - **whoever fixes half of something is the likeliest to keep
+describing the whole of it with the old word**, because what you remember is the problem you
+solved, not the solution.
+
+**And a fourth method, which finds siblings rather than firsts:** ask what a guard that SHOULD
+have caught it actually matches. It needs no second estate and no host - it is a reading, available
+to any hand at any time, and therefore the cheapest. But nobody asks it until a defect is already
+found by one of the other two, so it does not find the first instance; it converts one instance
+into a class sweep. Measured on `deploy-manifest` check 8, whose expression matches only
+`$VAR/bin/…` and `$VAR/desk/bin/…`: of the four programs `bin/steward` executes it reached TWO. It
+is worth asking backwards about every hole already on this list.
 
 ## Done today
 
