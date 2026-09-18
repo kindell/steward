@@ -74,12 +74,24 @@ while read -r src target mode kind extra; do
   else
     bad "source missing in both product and estate: $src"
   fi
-  # 3. The target is relative and free of ~, $HOME and ..
-  case "$target" in /*|'~'*|*'$HOME'*|*..*) bad "target shape: $target" ;; esac
+  # 3. The target is relative and free of ~, $HOME and .. — AND kind=root is
+  #    the exact inverse, not an exemption. An ordinary target is prefixed with
+  #    $HOME_ROOT by six readers in the applier, so an absolute one would land at
+  #    $HOME_ROOT//usr/local/... — a file in the home with a strange name, once
+  #    per home, silently. A root target is applied by a pass outside the home
+  #    loop and must therefore be absolute or it would have no meaning at all.
+  #    Both halves are asserted: a relative root row is as wrong as an absolute
+  #    ordinary one, and neither can be reached by loosening the other.
+  if [ "$kind" = root ]; then
+    case "$target" in /*) : ;; *) bad "root target must be ABSOLUTE: $target" ;; esac
+    case "$target" in '~'*|*'$HOME'*|*..*) bad "root target shape: $target" ;; esac
+  else
+    case "$target" in /*|'~'*|*'$HOME'*|*..*) bad "target shape: $target" ;; esac
+  fi
   # 4. The mode is three octal digits
   case "$mode" in [0-7][0-7][0-7]) : ;; *) bad "mode: $mode ($src)" ;; esac
   # 5. The kind is one we know
-  case "$kind" in scripts|bin|systemd|lib|docs|registry) : ;; *) bad "kind: $kind ($src)" ;; esac
+  case "$kind" in scripts|bin|systemd|lib|docs|registry|root) : ;; *) bad "kind: $kind ($src)" ;; esac
   # 6. Forbidden targets: instance configuration is never deployed. The registry
   # is what the deploy READS to decide where to write; writing it back would let
   # a rollout rewrite its own instructions.

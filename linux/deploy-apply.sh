@@ -34,7 +34,18 @@ mkdir -p "$STATE" 2>/dev/null || { echo "deploy-apply: cannot write $STATE" >&2;
 
 # The manifest is read into a row list. Defined here, early, because the valve
 # validation below needs it.
-manifest_rows() { grep -v '^#' "$MANIFEST" | awk 'NF>=4'; }
+# THE HOME ROWS AND THE ROOT ROWS ARE READ SEPARATELY, AND EVERY EXISTING
+# CALLER GETS THE SPLIT FOR FREE. Six places read the manifest - the drift gate,
+# the sweep's directory set, the target set, the decoy scan, the install loop and
+# the last-good comparison - and all six go through manifest_rows(). Each of them
+# prefixes what it finds with $HOME_ROOT, which is right for a home target and
+# silently wrong for an absolute one: $HOME_ROOT//usr/local/sbin/x is a file in
+# the home with a strange name, written once per home, with rc 0.
+#
+# So kind=root leaves this reader rather than teaching six places to recognise it.
+# An exclusion is uniform and testable; six recognitions are neither.
+manifest_rows()      { grep -v '^#' "$MANIFEST" | awk 'NF>=4 && $4!="root"'; }
+manifest_root_rows() { grep -v '^#' "$MANIFEST" | awk 'NF>=4 && $4=="root"'; }
 
 # ── A REGISTRY ROW RECONCILES A DIRECTORY ──────────────────────────
 # Install every delivered *.conf, then remove every *.conf in the target that
@@ -542,6 +553,76 @@ ROWS
   result=OK; [ -n "$BOOTSTRAP" ] && result=BOOTSTRAP
   echo "HOME $HOME_ROOT RESULT=$result COMPARED=$COMPARED INSTALLED=$INSTALLED"
 done
+
+# ── ROOT TARGETS: ONCE PER HOST, AFTER THE HOMES ─────────────────────────
+#
+# A row whose target is absolute belongs to the MACHINE and not to a home, so it
+# is applied here, outside the loop, exactly once however many homes were given.
+# Its baseline sits beside the per-user ones as root.last-good: a host file has
+# no home, so it has no $USERNAME.last-good to be remembered in, and a drift gate
+# with no baseline is a comparison with one side missing.
+#
+# THE SWEEP DOES NOT RUN OVER THESE, and that is a property of the target space
+# rather than an omission. The sweep is bounded to "$HOME_ROOT"/* by design (see
+# the SWEEP_DIRS loop) and looks for a decoy on a home's PATH; an absolute target
+# is one directory, not a search path, and has no neighbour to be confused with.
+#
+# WHAT THIS DOES NOT DO: write anything under /etc/sudoers.d. The estate installs
+# the permission line and the product documents it - a deploy step that wrote a
+# malformed sudoers file would lock every human out of the machine it runs on.
+ROOT_LG="$STATE/root.last-good"
+ROOT_NEW=""; ROOT_N=0; ROOT_DRIFT=""
+while read -r src target mode kind; do
+  [ -n "${target:-}" ] || continue
+  case "$target" in
+    /*) ;;
+    *) echo "REFUSAL root-target $target: a kind=root row must name an ABSOLUTE path" >&2
+       TOTAL_RC=65; continue ;;
+  esac
+  srcfile="$STAGE/src/$src"
+  [ -f "$srcfile" ] || { echo "REFUSAL root-target $target: the source is missing from the stage: $src" >&2
+                         TOTAL_RC=65; continue; }
+  # THE DRIFT GATE, against last-good, BEFORE any writing - the same rule the
+  # homes get. A file that is neither what was last installed nor what is about
+  # to be has been changed by somebody, and overwriting it silently is how that
+  # change is lost without anyone learning it existed.
+  if [ -f "$ROOT_LG" ] && [ -f "$target" ]; then
+    lg_md5="$(awk -v m="$target" '$1==m {print $2}' "$ROOT_LG" | head -1)"
+    if [ -n "$lg_md5" ]; then
+      dep_md5="$(hash_of "$target")"
+      if [ "$dep_md5" != "$lg_md5" ]; then
+        echo "DRIFT root-target $target: on disk $dep_md5, last installed $lg_md5 - not overwritten" >&2
+        ROOT_DRIFT="$ROOT_DRIFT $target"; TOTAL_RC=65; continue
+      fi
+    fi
+  fi
+  mkdir -p "$(dirname "$target")" 2>/dev/null || {
+    echo "REFUSAL root-target $target: cannot create its directory" >&2; TOTAL_RC=70; continue; }
+  root_tmp="$(dirname "$target")/.deploy-tmp.$(basename "$target").$$"
+  if [ "${STEWARD_DEPLOY_INSTALL_OWNER:-}" = "off" ]; then
+    install -m "$mode" "$srcfile" "$root_tmp" || { rm -f "$root_tmp"
+      echo "REFUSAL root-target $target: install failed" >&2; TOTAL_RC=70; continue; }
+  else
+    install -o root -g "$(id -gn root 2>/dev/null || echo root)" -m "$mode" "$srcfile" "$root_tmp" \
+      || { rm -f "$root_tmp"; echo "REFUSAL root-target $target: install failed" >&2; TOTAL_RC=70; continue; }
+  fi
+  mv -f "$root_tmp" "$target" || { rm -f "$root_tmp"
+    echo "REFUSAL root-target $target: could not be moved into place" >&2; TOTAL_RC=70; continue; }
+  ROOT_NEW="$ROOT_NEW
+$target $(hash_of "$target")"
+  ROOT_N=$((ROOT_N+1))
+  echo "ROOT-TARGET $target mode=$mode"
+done <<ROOTROWS
+$(manifest_root_rows)
+ROOTROWS
+if [ "$ROOT_N" -gt 0 ]; then
+  mkdir -p "$STATE" 2>/dev/null
+  root_tmp_lg="$ROOT_LG.tmp.$$"
+  { echo "# root targets, written by deploy-apply - one line per absolute target"
+    printf '%s\n' "$ROOT_NEW" | grep .
+  } > "$root_tmp_lg" && chmod 600 "$root_tmp_lg" && mv "$root_tmp_lg" "$ROOT_LG"
+fi
+echo "ROOT-TARGETS installed=$ROOT_N drifted=$(printf '%s\n' $ROOT_DRIFT | grep -c .)"
 
 for u in $UNTOUCHED; do echo "UNTOUCHED-HOME $u"; done
 [ -z "$UNTOUCHED" ] && echo "UNTOUCHED-HOME: none — every home either differed or was bootstrapped; read that as a state, not as a receipt"

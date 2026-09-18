@@ -1252,8 +1252,20 @@ function listenSocket() {
     // THE SOCKET IS THE OWNER'S ALONE. The serve tool that fronts this desk
     // runs as the same account; every other account on the machine is
     // refused by the filesystem, before a single byte of HTTP is parsed. The
-    // umask is set before this call, so there is no window where the socket
-    // exists at a wider mode.
+    // THERE IS A WINDOW AND THIS COMMENT USED TO DENY IT. bind() creates the
+    // inode under the umask set below - 0777 & ~0077 = 0700 - and this chmod runs
+    // afterwards, so between them the socket exists at 0700. Measured 2026-09-18
+    // after repeated reds were put down to chance.
+    //
+    // The window is harmless and the invariant that holds is the one worth
+    // writing: 0700 & 0o077 is 0, as is 0600 & 0o077. No group, no other, ever.
+    // This chmod is a belt, not the guarantee - and because it always lands, a
+    // test that reads the mode AFTER startup can never notice a widened umask.
+    // Only a reader that catches the socket during the window can.
+    //
+    // Closing the window costs more than it buys: a narrower umask around the
+    // bind makes mkdirSync below create the socket's own directory at 0600, which
+    // the owner cannot enter. Measured, not assumed.
     chmodSync(SOCK, 0o600);
     console.error('desk: listening on ' + SOCK);
   });
