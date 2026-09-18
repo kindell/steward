@@ -149,7 +149,7 @@ import { execFileSync } from 'node:child_process';
 import { loadRemotes } from './remote.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, ICON } from './render.mjs';
+import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, pageInvited, ICON } from './render.mjs';
 import { parseBridge } from './bridge.mjs';
 import { MOUNT, setMount, at, reAt } from './mount.mjs';
 // NOT validateOrder. That one is the FORM's gate - method, content type, body size,
@@ -782,8 +782,10 @@ function serveInvite(req, res, rawToken, login, headers) {
   // second would act on a world the first one changed. The spool is read rather than
   // the snapshot, because a snapshot is a generation old by construction and two
   // reloads between two generations would both pass a check made against it.
+  // A RELOAD GETS THE SAME PAGE, NOT A SECOND ORDER. The visitor cannot tell the two
+  // apart and must not be able to: pressing reload is not an error to report.
   if (openActionsFor(fs, spool, inviteId).includes('invite-redeem')) {
-    return send(res, 303, '', Object.assign({}, headers, { location: at('') }));
+    return send(res, 200, pageInvited(), headers);
   }
 
   try {
@@ -794,11 +796,15 @@ function serveInvite(req, res, rawToken, login, headers) {
   }
   console.error('desk: queued invite-redeem for ' + inviteId);
 
-  // REDIRECTED TO THE INDEX AND NOT TO /desk/me, because /desk/me does not exist yet.
-  // The index already shows a person their own sessions, which is the page an invited
-  // person wants; the add-on buttons /desk/me adds are a later step and a redirect to
-  // a 404 would be a worse welcome than a plain one.
-  return send(res, 303, '', Object.assign({}, headers, { location: at('') }));
+  // ITS OWN PAGE, NOT A REDIRECT TO THE INDEX. The first version sent them to the
+  // index, and the index refuses anyone the register has no row for - which is what
+  // an invited person IS until apply has run. The welcome for a valid invitation was
+  // therefore a 403, given to the one visitor the estate had asked to come.
+  //
+  // 200 AND NOT 303 for the same reason the body is what it is: there is nowhere yet
+  // to send them. The page says the order is queued, names nothing the visitor did
+  // not already hold, and claims nothing about a verb that has not run.
+  return send(res, 200, pageInvited(), headers);
 }
 
 const server = http.createServer((req, res) => {

@@ -470,6 +470,31 @@ export function pageLogin(providers) {
     '<p>Log in with the account you were invited with.</p><ul>' + items + '</ul>', null);
 }
 
+// pageInvited - what an invited person sees the moment their order is queued, and
+// the reason this page exists at all.
+//
+// THE ROUTE USED TO REDIRECT THEM TO THE INDEX, and the index refuses anyone the
+// register has no row for - which is precisely what an invited person is until the
+// privileged half has run. So the welcome for a valid invitation was a 403: the one
+// visitor we asked to come was the one the desk turned away. A redirect to a page
+// that refuses is worse than no redirect.
+//
+// IT SAYS WHAT WILL HAPPEN AND NOT WHAT HAS HAPPENED. The order is queued; nothing
+// has been created yet. "You are now registered" would be a claim about a verb that
+// has not run, and this desk has spent a week learning what those cost.
+//
+// AND IT CARRIES NO IDENTIFIER. Not the invitation id, not the digest, not the
+// order id. A page a stranger reaches with a token must not hand back anything that
+// was not already in their hand - and the id is the one thing the register knows
+// that the visitor does not.
+export function pageInvited() {
+  return LAYOUT('Steward Desk',
+    '<p>Your invitation has been received.</p>' +
+    '<p>It is queued for the estate to act on. Nothing has been set up yet - when it ' +
+    'has, this address will show your sessions.</p>' +
+    '<p><a href="' + at('') + '">the desk</a></p>', null);
+}
+
 export function pageSession(snap, id) {
   const v = readSnapshot(snap);
   const s = v.sessions.find((x) => x.id === id);

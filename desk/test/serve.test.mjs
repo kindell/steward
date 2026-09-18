@@ -21,7 +21,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
+import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -500,6 +500,82 @@ test('a real invitation that is not open answers 404 and leaves the operator a l
     // AND THE TOKEN ITSELF IS NOT IN IT. A journal that records the secret turns
     // every reader of the log into a holder of the invitation.
     assert.ok(!err.includes(token), 'the journal must not carry the token: ' + err);
+  } finally {
+    await stopSpawned(handle);
+  }
+});
+
+// ── THE PATH THAT ACTUALLY WELCOMES SOMEBODY ───────────────────────────────
+// EVERY OTHER TEST HERE IS A REFUSAL. Until this one the route's success path had
+// never been run: a valid, open invitation presented by somebody the tailnet knows
+// and the register does not. That is the only case the route exists for, and it was
+// the only one with no assertion on it.
+//
+// IT PINS FOUR THINGS, and the last is the one a reload breaks:
+//   the answer is a PAGE and not a redirect - the index refuses a stranger, so a
+//     303 there hands a 403 to the one visitor we invited;
+//   an order is written, with the digest and the tailnet identity;
+//   the page names NOTHING the visitor did not already hold - not the invitation id,
+//     not the order id;
+//   a RELOAD gives the same page and does NOT queue a second order.
+test('a valid invitation is welcomed with a page, one order, and a reload that adds nothing', async () => {
+  const root = join(T, 'open-estate');
+  buildEstate(root);
+  const invites = join(root, 'invites.d');
+  mkdirSync(invites, { recursive: true, mode: 0o700 });
+
+  const token = 'tok' + 'B'.repeat(29);
+  const digest = createHash('sha256').update(token).digest('hex');
+  writeFileSync(join(invites, 'inv-0000cafe.conf'),
+    'NAME="Newcomer"\nPRINCIPAL="newcomer"\nENTITY="an-entity"\nHOST="a-host"\n' +
+    'RUNTIME="claude-code"\nPROVIDER="claude-max"\nTOKEN_SHA256="' + digest + '"\n' +
+    'ISSUED_BY="a"\nISSUED_AT="1767225600"\nEXPIRES_AT="4070908800"\n' +
+    'STATE="open"\n', { mode: 0o600 });
+
+  const sock = join(T, 'open-estate.sock');
+  const deskDir = join(T, 'open-desk');
+  const handle = await spawnUp(childEnv({
+    STEWARD_ESTATE_ROOT: root, STEWARD_DESK_SOCK: sock, STEWARD_DESK_DIR: deskDir,
+  }), sock);
+  const ask = () => new Promise((resolve, reject) => {
+    const r = http.request({ socketPath: sock, path: '/desk/invite/' + token, method: 'GET',
+      headers: { 'tailscale-user-login': 'nobody@example.com' }, agent: false }, (s) => {
+      let body = ''; s.setEncoding('utf8');
+      s.on('data', (c) => { body += c; });
+      s.on('end', () => resolve({ status: s.statusCode, body }));
+    });
+    r.on('error', reject); r.end();
+  });
+  const spool = join(deskDir, 'orders');
+  try {
+    const first = await ask();
+    assert.equal(first.status, 200, 'a page, not a redirect: ' + handle.getErr());
+    assert.match(first.body, /invitation has been received/);
+
+    const after = readdirSync(spool).filter((n) => n.endsWith('.json'));
+    assert.equal(after.length, 1, 'exactly one order');
+    const order = JSON.parse(readFileSync(join(spool, after[0]), 'utf8'));
+    assert.equal(order.action, 'invite-redeem');
+    assert.equal(order.principal, 'inv-0000cafe');
+    assert.equal(order.args.digest, digest);
+    assert.equal(order.args.identity, 'tailscale:nobody@example.com');
+
+    // THE TOKEN IS NOT IN THE ORDER. The register stores only the digest so a readable
+    // register is not a working invitation; an order carrying the token would undo
+    // that decision in a second place, on disk, for as long as the queue is not drained.
+    assert.ok(!readFileSync(join(spool, after[0]), 'utf8').includes(token),
+      'the order must carry the digest and never the token');
+
+    // AND THE PAGE NAMES NOTHING THE VISITOR DID NOT HOLD. They arrived with the
+    // token; the id and the order name are the register's, not theirs.
+    assert.ok(!first.body.includes('inv-0000cafe'), 'the page must not name the row');
+    assert.ok(!first.body.includes(order.id), 'the page must not name the order');
+
+    const second = await ask();
+    assert.equal(second.status, 200, 'a reload is not an error');
+    assert.equal(second.body, first.body, 'and it is the same page, byte for byte');
+    assert.equal(readdirSync(spool).filter((n) => n.endsWith('.json')).length, 1,
+      'a reload must not queue a second redemption');
   } finally {
     await stopSpawned(handle);
   }
