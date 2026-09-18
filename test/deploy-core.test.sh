@@ -279,6 +279,48 @@ else
   case "$u" in *AHEAD*) ok ;; *) bad "the refusal does not say AHEAD: $u" ;; esac
 fi
 
+fx2="$fx"
+echo "== provenance: the COMMIT is the proof, the branch name is the diagnosis =="
+# A DEPLOY WORKTREE PINNED TO main is what stops a branch left in a working tree
+# from blocking a host - measured on two estates on 2026-09-18, twice on one of
+# them, where a rollout a person ran was refused because a session had left the
+# shared checkout on a feature branch.
+#
+# `git worktree add ../deploy main` is refused when main is checked out
+# elsewhere, so the obvious answer is `--detach` at origin/main. The gate used to
+# refuse THAT too, by reading `symbolic-ref --short HEAD` and requiring the
+# string `main` BEFORE looking at what HEAD pointed at - eleven lines above a
+# comment explaining that the origin/main REF must never be trusted because a ref
+# is a cache. The name was bound where the object was meant.
+dt="$fx2/detached"; mkdir -p "$dt"
+( cd "$dt" && git init -q -b main && git config user.email p@p && git config user.name p \
+  && printf 'x\n' > f && git add f && git commit -qm x )
+git init -q --bare -b main "$fx2/dt-origin.git"
+( cd "$dt" && git remote add origin "$fx2/dt-origin.git" && git push -q origin main )
+
+( cd "$dt" && git checkout -q --detach HEAD )
+deploy_check_provenance "$dt" >/dev/null 2>&1; rc=$?
+check "detached exactly at origin/main: rc 0 - the commit proves it" [ "$rc" -eq 0 ]
+
+# THE CONTROL, and without it this suite would pass on a gate that stopped
+# checking anything at all. Detached is not a blanket pass: the same checkout,
+# detached one commit BEHIND its origin, must still be refused.
+( cd "$dt" && git checkout -q main && printf 'y\n' > g && git add g && git commit -qm y \
+  && git push -q origin main && git checkout -q --detach HEAD~1 )
+u="$(deploy_check_provenance "$dt" 2>&1)"; rc=$?
+check "detached one commit BEHIND: rc 65" [ "$rc" -eq 65 ]
+case "$u" in *BEHIND*) ok ;; *) bad "the refusal does not say BEHIND: $u" ;; esac
+
+# AND THE NAME STILL ANSWERS WHEN THE PROOF IS ABSENT, which is the common case
+# and the one that needs a readable sentence. Somebody on a feature branch must
+# read which branch they are on - not a relationship to origin they did not ask
+# about.
+( cd "$dt" && git checkout -q main && git checkout -q -b featuregren \
+  && printf 'z\n' > h && git add h && git commit -qm z )
+u="$(deploy_check_provenance "$dt" 2>&1)"; rc=$?
+check "a feature branch ahead of origin: rc 65" [ "$rc" -eq 65 ]
+case "$u" in *featuregren*) ok ;; *) bad "the refusal does not name the branch: $u" ;; esac
+
 # NO fetch ANYWHERE IN THE CORE. The read-only case above would keep passing if
 # somebody reintroduced a fetch guarded by a conditional, so the prohibition is
 # asserted about the FORM of the code as well as its behaviour.

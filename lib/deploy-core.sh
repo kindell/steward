@@ -62,20 +62,57 @@ deploy_check_provenance() {
     echo "  Is the remote reachable, and does it have a branch named main?" >&2
     return 65
   fi
-  local _branch
-  _branch="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null)"
-  if [ "$_branch" != "main" ]; then
-    echo "GATE FAILED: the checkout is on branch '$_branch', not main." >&2
-    echo "Deploy requires main. Run: git -C $REPO checkout main" >&2
-    return 65
+  local _head
+  _head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+  # THE BRANCH NAME IS A DIAGNOSIS WHEN THE PROOF IS MISSING, NEVER A CONDITION
+  # WHEN IT IS PRESENT. This check used to refuse anything whose HEAD was not a
+  # symbolic ref spelled `main` - before looking at what HEAD pointed AT. A
+  # checkout detached at exactly origin's main proves provenance as completely as
+  # a branch by that name, and was refused anyway.
+  #
+  # The file already argued the other way eleven lines down: every comparison
+  # below uses $_remote_sha and never the origin/main REF, because a ref is a
+  # cache. Binding the name while meaning the object is the same mistake at the
+  # other end of the same function.
+  #
+  # IT COST A REAL HOUR. A deploy worktree pinned to main is what stops a branch
+  # left in the working tree from blocking the host - measured on two estates on
+  # 2026-09-18, twice on one of them. `git worktree add ../steward-deploy main`
+  # is refused when main is checked out elsewhere, and `--detach` - the obvious
+  # answer - was refused HERE instead, by a name check standing in front of the
+  # proof. The remedy was to move main between checkouts; it should have been a
+  # flag.
+  #
+  # The name still answers when the proof is absent, which is the common case and
+  # the one that needs a good sentence: somebody on a feature branch should read
+  # "you are on branch foo", not "AHEAD of origin/main".
+  if [ -n "$_head" ] && [ "$_head" = "$_remote_sha" ]; then
+    : # provenance proven by the commit itself - the branch name adds nothing
+  else
+    local _branch
+    _branch="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null)"
+    # ONLY A NAMED BRANCH GETS THE NAME'S ANSWER. The first cut of this refused a
+    # DETACHED head here too, and its own control caught it: a checkout detached
+    # one commit behind origin read "on branch (detached HEAD), not main" instead
+    # of BEHIND, which is the sentence that says what to run. That is the same
+    # fault this change exists to remove, reintroduced one branch over - the name
+    # answering where the object has the better answer.
+    #
+    # So: a named branch that is not main is a complete diagnosis and stops here.
+    # A detached head is not a diagnosis at all, and falls through to the
+    # relationship below, which is what the reader actually needs.
+    if [ -n "$_branch" ] && [ "$_branch" != "main" ]; then
+      echo "GATE FAILED: the checkout is on branch '$_branch', not main, and its commit is not origin's main." >&2
+      echo "Deploy requires main, or a checkout sitting exactly on origin/main." >&2
+      echo "Run: git -C $REPO checkout main" >&2
+      return 65
+    fi
   fi
   # EVERY COMPARISON BELOW USES $_remote_sha, NEVER THE origin/main REF. The ref
   # is a local cache that only `fetch` refreshes, and this gate deliberately does
   # not fetch — so consulting it would compare HEAD against whatever the last
   # fetch happened to leave behind, possibly days old. A gate that reads a stale
   # cache and reports it as provenance is worse than no gate: it is confident.
-  local _head
-  _head="$(git -C "$REPO" rev-parse HEAD)"
   if [ "$_head" = "$_remote_sha" ]; then
     : # exactly HEAD == origin's main — provenance is known
   else
