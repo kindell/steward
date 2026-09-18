@@ -708,8 +708,19 @@ test('POST is 405', async () => {
   assert.equal(r.headers.allow, 'GET, HEAD');
 });
 
+// THIS ONE HAS NEVER FLAKED, AND WHAT PROTECTS IT IS DISTANCE. The shared server
+// is waited for with waitForSocket, which returns on existsSync - the same wake-up
+// that made the sibling assertion below flake - and this reads the socket 26 tests
+// later, by which time the chmod has long landed. That is not construction, it is
+// a gap, and a gap changes when somebody reorders a suite or those 26 tests get
+// faster.
+//
+// A pin that is green because it stands far away is the same family as a guard
+// that is green because it cannot fall, and more dangerous than either: it looks
+// proven. So it takes the same assertion as its sibling - the property rather than
+// an exact number - which makes it insensitive to WHERE it stands.
 test('the socket is the owner s alone', () => {
-  assert.equal(statSync(SOCK).mode & 0o777, 0o600);
+  assert.equal(statSync(SOCK).mode & 0o077, 0, 'no group or other access to the socket');
 });
 
 test('a viewer with no snapshot file is 503', async () => {
@@ -792,7 +803,51 @@ test('the default paths come from the bridge, not from a literal', async () => {
     const until = Date.now() + UP_CAP_MS;
     while (Date.now() < until && !existsSync(want)) await sleep(25);
     assert.ok(existsSync(want), 'the bridge s socket was never created; stderr: ' + err);
-    assert.equal(statSync(want).mode & 0o777, 0o600);
+    // THE PROPERTY IS THAT NOBODY ELSE CAN REACH IT, NOT THAT THE MODE IS 0600.
+    //
+    // The exact mode flaked for months. bind() creates the inode under the process
+    // umask - 0777 & ~0077 = 0700 - and the server chmods it to 0600 in the listen
+    // callback, AFTER it exists. The wait above wakes on existsSync, true the
+    // instant the inode appears, so the read lands on either side of the chmod by
+    // scheduling. Measured 2026-09-18: 448 !== 384.
+    //
+    // The security property never wavered: 0700 & 0o077 is 0 and so is 0600 &
+    // 0o077. No group, no other, at any moment - the only differing bit is the
+    // owner's execute bit, which on a socket means nothing.
+    //
+    //     umask 0o077  socket 0700   exact: FAIL   this: PASS
+    //     umask 0o022  socket 0755   exact: FAIL   this: FAIL
+    //     umask 0o000  socket 0777   exact: FAIL   this: FAIL
+    //
+    // DELETING THIS LINE WAS TRIED AND IT LEAVES A HOLE. The property has another
+    // test above, named for it, and the deletion rested on that being enough.
+    // Measured instead: with the server's umask widened to 0o022 that test still
+    // PASSES, because it looks 26 tests after the socket came up and the chmod has
+    // landed by then.
+    //
+    // Note what that is and is not. It is not that the other test CANNOT reach the
+    // window - it wakes on existsSync exactly as this one does, and both sockets
+    // are created by a bind() under the same umask. It is that it looks later. A
+    // first draft of this comment said "cannot even in principle", which is the
+    // same shape of false absence as the sentence in serve.mjs this branch
+    // corrects, written while correcting it.
+    //
+    // WHAT IT CATCHES, IT CATCHES ONLY WHERE THE WINDOW IS WIDE - and that is the
+    // same place it used to flake. Measured with the server's umask widened to
+    // 0o022, five runs on Linux: it passed five times out of five, because the
+    // chmod wins that race here every time. On the platform where the exact-mode
+    // version went red four times in a day, the window is wide enough to be landed
+    // in, and there this assertion would fail as it should.
+    //
+    // So its value is inverse to the flake it replaces: it guards on the platform
+    // where the old one was unusable, and guards nothing on the platform where the
+    // old one was quiet. The exact-mode version was the worst of both - red where
+    // the window is wide, blind where it is narrow.
+    //
+    // A guard that fires sometimes is worth having and worth not mistaking for one
+    // that fires always. The number is written here so nobody has to re-take it to
+    // find out which this is.
+    assert.equal(statSync(want).mode & 0o077, 0, 'no group or other access to the socket');
     assert.ok(existsSync(dirname(want)));
   } finally {
     const done = new Promise((r) => p.on('close', r));
