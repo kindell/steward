@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -405,6 +405,36 @@ test('a custom prefix moves every route together', async () => {
 // fails to SPAWN rather than the bridge refusing. No production knob: the path
 // is derived from serve.mjs's own location, so a copy without the sibling is
 // simply a desk whose bridge is missing.
+// THIS ONE TESTS NODE AND NOT US, WHICH IS THE POINT. Every line of the change
+// it guards rests on a single measured fact: three of the four ways execFileSync
+// throws leave e.stderr EMPTY, so a catch that writes stderr and nothing else
+// loses the cause in three cases out of four. If a future node begins filling
+// stderr in for a spawn failure, this falls and somebody re-reads the fact
+// instead of inheriting it.
+//
+// Offered by the basement estate out of the branch that was closed in favour of
+// this one; the control below is the half it did not have.
+function throwFrom(cmd, args, opts) {
+  try {
+    execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(opts || {}) });
+    return null;
+  } catch (e) { return e; }
+}
+
+test('three of the four causes carry no stderr at all', () => {
+  const silent = [
+    throwFrom('/nonexistent/desk-paths', []),                    // spawn failure: e.code
+    throwFrom('/bin/sh', ['-c', 'kill -9 $$']),                  // signal: e.signal
+    throwFrom('/bin/sh', ['-c', 'sleep 5'], { timeout: 200 }),   // timeout: e.signal
+  ].filter((e) => e && (!e.stderr || String(e.stderr) === ''));
+  assert.equal(silent.length, 3, 'all three of these must be silent on stderr');
+  // THE CONTROL. Without it the assertion above would hold on a node that
+  // returned no stderr for anything at all, which is the opposite finding.
+  const loud = throwFrom('/bin/sh', ['-c', 'echo boom >&2; exit 3']);
+  assert.ok(loud && String(loud.stderr).includes('boom'), 'the fourth cause must carry its stderr');
+  assert.equal(loud.status, 3, 'and its status, which is what names it');
+});
+
 test('a bridge that cannot be spawned names the cause, not only the failure', async () => {
   const alt = join(T, 'deskcopy');
   cpSync(dirname(SERVE), alt, { recursive: true });
