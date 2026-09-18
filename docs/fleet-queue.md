@@ -97,6 +97,18 @@ full round takes there, so a stale ref can be judged without asking anyone.
 
 A crashed run leaves its ref standing - visible and dateable rather than silent.
 
+THE NAME DISTINGUISHES ESTATES, NOT HANDS. One estate runs several sessions from
+one unix home under one git identity, so two of its runs are spelled alike. On the
+day the form was adopted this cost four misdirected attributions between three
+estates - a branch credited to the wrong estate twice, a run credited to the wrong
+session twice - and the cost each time was a paragraph in a letter.
+
+No field is being added for it. A form that changed spelling once already should
+not grow on a single day's irritation, and the estate that pays most for the
+ambiguity is the one that declined to propose the change. The number is written
+here so the next decision is made against a count rather than a guess about how
+often it happens.
+
 What this does NOT solve, so nobody reads it as more than it is: the race between
 the push and the merge is narrower but not zero, a host with no network to origin
 still runs blind, and rollouts and provenance checks have no ref at all.
