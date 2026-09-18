@@ -146,6 +146,7 @@ still runs blind, and rollouts and provenance checks have no ref at all.
 
 | item | held | note |
 |---|---|---|
+| `STEWARD_ESTATE` vs `STEWARD_ESTATE_ROOT` | - | deploy-self refuses with "set STEWARD_ESTATE" while the operator config carries STEWARD_ESTATE_ROOT - two names one word apart. Issue #71, and it bit in live operation 2026-09-18, not only in a reading |
 | deploy gate names a command that cannot work there | - | it refuses a detached worktree, then names `git pull --ff-only`, which answers "You are not currently on a branch" |
 | liveness seam: "points at nothing" about a file that exists | skeppsbron | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
 | ~~the fifth short list~~ | closed | `lib/registry.sh:269` is hand-kept and has been short five times, but `test/identity-schema.test.sh:200` unsets EVERY derived key, sources the library and asserts the key is still unset - naming it. Guarded maintenance, not an open hole. The row was written from the comment's first sentence and not from the check |
