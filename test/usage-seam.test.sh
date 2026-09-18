@@ -117,6 +117,36 @@ printf '#!/bin/bash\ntrue\n' > "$FX/noexec"; chmod -x "$FX/noexec"
 is "a file without its exec bit is not-executable" \
    "$(reason_after "$FX/noexec")" "seam-not-executable"
 
+# A FILE THAT IS THERE AND CANNOT BE REACHED IS NOT A MISSING FILE.
+#
+# `[ -e ]` is false when a DIRECTORY on the way cannot be entered, so a seam
+# whose shim lives in somebody else's home answers "names a path that does not
+# exist" about a file that is there, executable, and correct. Measured in live
+# operation 2026-09-18 across two estates: every session in a home other than
+# the hub's got that line at every registry read, for a shim mode 755 under a
+# home mode 750.
+#
+# The reading it invites is "the deploy failed" or "the link is broken", and
+# both send the reader looking for something that is not wrong. The true reading
+# is "this seam belongs to another account" - which is not a fault at all.
+#
+# The two are distinguishable without guessing: walk the parents and ask which
+# one cannot be entered. The kernel has already answered; nobody asked it.
+mkdir -p "$FX/shut"
+printf '#!/bin/bash\ntrue\n' > "$FX/shut/hidden"; chmod +x "$FX/shut/hidden"
+chmod 000 "$FX/shut"
+is "a shim behind a closed directory is unreachable, not missing" \
+   "$(reason_after "$FX/shut/hidden")" "seam-unreachable"
+is "unreachable: stderr names the DIRECTORY that cannot be entered" \
+   "$(grep -q "$FX/shut" "$FX/err" && echo yes || echo no)" "yes"
+chmod 755 "$FX/shut"
+# THE CONTROL: the unreachable branch must STOP firing once the directory opens.
+# It deliberately does not assert that the seam then succeeds - the shim here is
+# not a valid answer for this seam, and asserting success would be asserting
+# something about shim output that is not this test's subject.
+is "and the same path is no longer called unreachable" \
+   "$( [ "$(reason_after "$FX/shut/hidden")" = "seam-unreachable" ] && echo still || echo no-longer )" "no-longer"
+
 echo "== a shim that answers well has its rows carried through verbatim =="
 R1="alpha${TAB}claude-max${TAB}5h${TAB}63${TAB}2026-09-08T09:49:00.000Z${TAB}2026-09-08T08:49:00.000Z${TAB}bud-1${TAB}"
 R2="alpha${TAB}claude-max${TAB}week${TAB}16${TAB}2026-09-12T00:00:00.000Z${TAB}2026-09-08T08:49:00.000Z${TAB}bud-1${TAB}"
