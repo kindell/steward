@@ -225,6 +225,24 @@ desk/fetch.sh                    scripts/desk/fetch.sh                755  scrip
 desk/bin/desk-paths              scripts/desk/bin/desk-paths          755  scripts
 desk/bin/desk-snapshot-serve     scripts/desk/bin/desk-snapshot-serve 755  scripts
 desk/bin/principal-for-login     scripts/desk/bin/principal-for-login 755  scripts
+# THE ACCOUNT HELPER IS THE ONE FILE THAT DOES NOT LIVE IN A HOME.
+#
+# bin/steward calls it from four places - invite redeem step 3, offboard, and two
+# lock paths - always as `sudo -n /usr/local/sbin/steward-account-helper`. Until
+# 2026-09-18 NO line of code in the fleet put it there: it was on one host because
+# somebody copied it by hand on the 16th (byte-identical to the source, measured),
+# absent on a second, and absent with its sudoers line present on a third. Three
+# hosts, three states, none of them produced by code.
+#
+# A plan from 2026-09-08 said "the helper is deliberately NOT a manifest row: it is
+# installed to /usr/local/sbin by the estate" - a sentence in the future tense about
+# a step that was never built, read half a year later as a description of what is.
+# The estate installs the sudoers LINE, which is true and is a different sentence.
+#
+# kind=root is why this row can say an absolute path at all: every other row is
+# prefixed with the home root, in six readers.
+linux/steward-account-helper     /usr/local/sbin/steward-account-helper  755  root
+
 desk/bin/invite-for-digest       scripts/desk/bin/invite-for-digest   755  scripts
 desk/front.mjs                   scripts/desk/front.mjs               644  scripts
 desk/cookie.mjs                  scripts/desk/cookie.mjs              644  scripts
