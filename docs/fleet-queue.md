@@ -15,6 +15,25 @@ a change to this file. The commit is the claim - it is readable by every estate,
 it has an order, and `git log -- docs/fleet-queue.md` answers "who took what,
 when" without anyone having to remember.
 
+## This branch is never merged
+
+The product names no estate. Measured on main 2026-09-18: ONE file in the whole
+tree carries the word `basement` or `skeppsbron`, and it is the guard that
+enforces the rule, carrying its own fixture data. `docs/` has none. A stranger
+who clones the repo gets the mechanism and nobody's names.
+
+This file names three estates in every row, because that is what it is for: a
+claim that cannot say whose it is cannot be read. So the file and the tree are
+incompatible by construction, and both are right. It stays on the `fleet-queue`
+branch and never lands on main.
+
+That costs nothing it needed. The property that makes the file work is not that
+it is on main - it is that GIT REFUSES A CONFLICTING PUSH, which a branch does
+exactly as well. It has already done so once, between two sessions of one estate,
+ninety seconds apart.
+
+Fetch it before taking anything: `git fetch origin fleet-queue`.
+
 ## How to use it
 
 - To take an item: add your estate to its `held:` line and push. If two estates
