@@ -448,6 +448,93 @@ _bs() { ( unset -f stat 2>/dev/null; PATH="/usr/bin:/bin"; . "$_bs_src"; _bs_mod
 case "$(_bs "$_bs_fx/seven")" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ok ;; *) bad "H4 the value has a mode's shape" ;; esac
 rm -rf "$_bs_fx" "$_bs_src"
 
+# -- I. THE PROFILE PATTERN ENDS THE NAME -------------------------------------
+# A profile name is a PREFIX of every longer profile name, and until 2026-09-18
+# the three guards that ask "is a browser already running on this profile?" asked
+# it as a pgrep -f substring. So a short profile name matched a RUNNING profile
+# that merely began with it, the shorter-named rig was never started, and the run
+# counted it anyway and reported "N rig(s) ensured" every three minutes for a
+# whole day while its CDP port was dead. The fixture's alpha/alpha-two is that
+# shape; the real pair was a customer's name and the same name with a suffix, and
+# it is written generically here for the reason the file header already gives. Nothing in the output said otherwise; the fault was only visible to the
+# session whose browser was missing.
+#
+# THE COMMAND LINES BELOW ARE REAL, copied from the measurement that found it:
+# chromium's own argv, and the sg wrapper that starts it, where the profile is
+# SHELL-QUOTED. They are what pgrep actually sees.
+#
+# WHY grep -E AND NOT pgrep: the subject is the pattern, and a pattern is proved
+# against command lines, not against whatever happens to be running on the host
+# that runs the suite. pgrep -f applies the same ERE - verified on the live host
+# with the same pattern the function below produces (short name: 0 hits new, 11 old).
+# Running real pgrep here would make the result depend on the machine's process
+# table, which is the opposite of a measurement.
+_bs_re_src="$(mktemp)"
+# ONE RANGE, NOT TWO. _bs_re_quote is a one-liner, so a range of its own runs on
+# to the NEXT line that starts with '}' - which is _bs_profile_re's - and two such
+# ranges then print the overlap twice. The extracted file sourced without error
+# and every pattern came back EMPTY, which quietly passed three of the six checks
+# below, because an empty ERE matches everything. Extracting from the first
+# function to the second's closing brace is both of them, exactly once.
+sed -n '/^_bs_re_quote()/,/^}/p' "$SCRIPT" > "$_bs_re_src"
+_re() { ( HOME="/h/u"; . "$_bs_re_src"; _bs_profile_re "$1" ); }
+# A BELT, BECAUSE AN EMPTY PATTERN PASSES. The extraction above failed once and
+# produced nothing; grep -Eq "" matches every line, so three checks went green on
+# a function that had not been loaded. A guard here, not a measurement.
+if [ -z "$(_re alpha)" ]; then
+  echo "browser-stack.test: REFUSING section I - _bs_profile_re produced an empty pattern," >&2
+  echo "  so the extraction from $SCRIPT is broken and every check below would be vacuous." >&2
+  exit 1
+fi
+
+CL_LONG="/usr/lib/chromium/chrome --password-store=basic --user-data-dir=/h/u/chrome-profiles/alpha-two --lang=en"
+CL_WRAP="sh -c sg render -c \"exec chromium-browser --user-data-dir='/h/u/chrome-profiles/alpha-two' --remote-debugging-port=9328\""
+CL_SHORT="/usr/lib/chromium/chrome --password-store=basic --user-data-dir=/h/u/chrome-profiles/alpha"
+
+hits() { printf '%s' "$2" | grep -Eq "$1" && printf 'y' || printf 'n'; }
+
+# I1 THE DEFECT ITSELF: the short name must not find the long name's browser.
+[ "$(hits "$(_re alpha)" "$CL_LONG")" = n ] && ok \
+  || bad "I1 'alpha' must not match the alpha-two process" "pattern: $(_re alpha)"
+# I2 ...nor the wrapper that started it, where the name is quoted.
+[ "$(hits "$(_re alpha)" "$CL_WRAP")" = n ] && ok \
+  || bad "I2 'alpha' must not match the alpha-two wrapper" "pattern: $(_re alpha)"
+# I3 A GUARD THAT NEVER MATCHES IS NOT A FIX. The short name must still find its
+# own browser, or the narrowing would simply start a second one every three
+# minutes - the failure ensure_autocutsel below already paid for once.
+[ "$(hits "$(_re alpha)" "$CL_SHORT")" = y ] && ok \
+  || bad "I3 'alpha' still matches its own process" "pattern: $(_re alpha)"
+# I4 And the long name keeps working from both forms. The quoted one is NEW: the
+# old bare pattern could not see the sg wrapper at all, because of the quote
+# between '=' and the path - so the start window was unguarded.
+[ "$(hits "$(_re alpha-two)" "$CL_LONG")" = y ] && [ "$(hits "$(_re alpha-two)" "$CL_WRAP")" = y ] && ok \
+  || bad "I4 'alpha-two' matches its own process and wrapper" "pattern: $(_re alpha-two)"
+# I5 THE CONTROL, and it is the point of the section: the OLD pattern, written
+# out here, matches the long name's process. Without this row I1 could pass
+# because the fixture is wrong rather than because the code is right.
+[ "$(hits "user-data-dir=/h/u/chrome-profiles/alpha" "$CL_LONG")" = y ] && ok \
+  || bad "I5 the old substring pattern DID over-match (control)"
+# I6 A '.' IN A NAME IS A CHARACTER, NOT AN ERE ANY-CHAR. Unquoted, the pattern
+# for 'a.c' would match a profile literally named 'abc'.
+[ "$(hits "$(_re a.c)" "/x --user-data-dir=/h/u/chrome-profiles/abc")" = n ] && ok \
+  || bad "I6 a dot in a profile name is quoted" "pattern: $(_re a.c)"
+# I7 AND THE CALL SITES USE IT. I1-I6 measure the function; a correct function
+# that nobody calls fixes nothing, and the three guards in start_screen and
+# warn_dangerous_flags are where the defect actually lived. The pgrep stub logs
+# every pattern the script hands it, so B/C's run above is the evidence: no line
+# asking about a profile may be a bare substring.
+# ANCHOR ON '^pgrep ', not on the profile path. The first draft grepped the log
+# for 'chrome-profiles' and caught the CHROMIUM STUB'S OWN four lines, which of
+# course carry a bare --user-data-dir - they are the start, not the question. The
+# check went red against correct code. A log holds several speakers; say which.
+_bs_pg="$(grep -c '^pgrep .*chrome-profiles' "$homeC/calls.log" 2>/dev/null || echo 0)"
+_bs_bare="$(grep '^pgrep .*chrome-profiles' "$homeC/calls.log" 2>/dev/null | grep -cv '(\[\^-_\.\[:alnum:\]\]|\$)' || true)"
+[ "${_bs_pg:-0}" -gt 0 ] && ok || bad "I7a the run asked pgrep about profiles at all" "calls.log has $_bs_pg such lines"
+[ "${_bs_bare:-1}" -eq 0 ] && ok || bad "I7b every profile question ends the name" \
+  "$_bs_bare of $_bs_pg pgrep lines are bare substrings: $(grep '^pgrep .*chrome-profiles' "$homeC/calls.log" | grep -v '(\[\^-_\.\[:alnum:\]\]|\$)' | head -2)"
+unset _bs_pg _bs_bare
+rm -f "$_bs_re_src"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
 

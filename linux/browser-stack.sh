@@ -85,6 +85,52 @@ _bs_mode() {
   printf '?'
 }
 
+# THE PATTERN IS NOT THE SUBJECT. Three places ask "is a browser already running
+# on this profile?", and all three asked it with a pgrep -f SUBSTRING pattern:
+#
+#     pgrep -f "user-data-dir=$HOME/chrome-profiles/$prof"
+#
+# A substring has no end, so a profile name matched a RUNNING profile whose name
+# merely began with it — 'alpha' finding 'alpha-two'. The shorter-named rig could
+# therefore NEVER be started while its longer-named neighbour lived: the guard
+# answered "already running", the start was skipped, and the run still counted
+# the rig and printed "N rig(s) ensured" every three minutes. Measured
+# 2026-09-18 in one home on a session host: 11 hits for the short name, every
+# one of them a process on the LONGER name, no chromium on the short name's
+# profile at all, and its CDP port dead for a whole day with nothing saying so.
+#
+# THE TWO NAMES ARE WRITTEN GENERICALLY HERE ON PURPOSE, as the suite's fixture
+# already is: the real pair was a customer's name and that name plus a suffix,
+# and the product carries no person, estate, customer or host names. The defect
+# needs the SHAPE — one name a prefix of another — and nothing else.
+#
+# The line at the bottom of this file says the run leaves the declared rigs
+# existing. That sentence was false for a whole day, and nothing in the output
+# could tell you — which is the same family as the receipt that certifies the
+# wrong thing, only this time it was our own verdict doing it.
+#
+# THE KILL PATH IS THE WORSE HALF. warn_dangerous_flags walked the same list and
+# labelled every hit "on profile $prof", so a warning about the LONGER name's
+# browser was printed under the SHORTER name. A pattern that over-matches turns
+# a report about one rig into a claim about another.
+#
+# THE FIX IS ONE PATTERN IN ONE PLACE, for the reason ensure_autocutsel records
+# below: two spellings of the same question drift apart, and the drift is
+# invisible until it has leaked for hours. The name is ENDED here — by a single
+# quote (the shell-quoted form inside the sg wrapper), by a space (another
+# argument follows), or by the end of the command line. None of those can
+# continue a profile name, and '-' is deliberately NOT a terminator, because
+# '-' is exactly what a suffixed neighbour continues the shorter name with.
+#
+# pgrep -f takes an ERE, so a '.' in a home path or a profile name would be an
+# any-char and would widen the very pattern we are narrowing. Quote it.
+_bs_re_quote() { printf '%s' "$1" | sed 's/[][\\^$.*+?(){}|]/\\&/g'; }
+
+_bs_profile_re() { # <profile> — the ERE that matches THIS profile and no longer name
+  printf "user-data-dir='?%s/%s([^-_.[:alnum:]]|\$)" \
+    "$(_bs_re_quote "$HOME/chrome-profiles")" "$(_bs_re_quote "$1")"
+}
+
 start_screen() { # <display> <profile> <cdp-port> <vnc-port>
   # NEVER SET --remote-allow-origins. It opens CDP to any web page in the
   # browser. Solve it in the client instead (suppress_origin=True) — Chromium
@@ -182,10 +228,10 @@ start_screen() { # <display> <profile> <cdp-port> <vnc-port>
     echo "  chmod 700 \"$HOME/chrome-profiles/$prof\" and run again." >&2
     return 1
   fi
-  if ! pgrep -u "$(id -u)" -f "user-data-dir=$HOME/chrome-profiles/$prof" >/dev/null; then
+  if ! pgrep -u "$(id -u)" -f "$(_bs_profile_re "$prof")" >/dev/null; then
     rm -f "$HOME/chrome-profiles/$prof"/Singleton* 2>/dev/null
   fi
-  pgrep -u "$(id -u)" -f "user-data-dir=$HOME/chrome-profiles/$prof" >/dev/null || \
+  pgrep -u "$(id -u)" -f "$(_bs_profile_re "$prof")" >/dev/null || \
     DISPLAY=":$d" TZ="${RIG_TZ:-Europe/Stockholm}" sg video -c "sg render -c \"exec chromium-browser --user-data-dir='$HOME/chrome-profiles/$prof' \
       --remote-debugging-port=$cdp --no-first-run \
       --force-prefers-reduced-motion \
@@ -225,7 +271,7 @@ warn_dangerous_flags() { # <profile> — warn if a FOREIGN instance opens the pr
   # with pkill -f over ssh. A guard that alarms on itself soon does not alarm at
   # all.
   local prof="$1" pid args
-  for pid in $(pgrep -u "$(id -u)" -f "user-data-dir=$HOME/chrome-profiles/$prof" 2>/dev/null); do
+  for pid in $(pgrep -u "$(id -u)" -f "$(_bs_profile_re "$prof")" 2>/dev/null); do
     args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || continue
     case "$args" in
       *--remote-allow-origins*)
