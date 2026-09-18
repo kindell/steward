@@ -1310,3 +1310,70 @@ somebody touching the code it is about, not by somebody reading it again.**
 One reader took too narrow a slice of the right tree; the other took the right slice of
 a tree that had moved. **Both times what was missing lay inside what the reviewer
 already had.**
+
+---
+
+## 27. A rule nothing asserts on purpose is held by whatever asserts it by accident.
+
+`DESK_ORIGIN` had two readers with two patterns, and they disagreed about one
+character:
+
+```
+lib/registry.sh:2685    '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$'   the issuer ACCEPTS http
+desk/bin/desk-paths:108 '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'    the bridge REFUSES it
+```
+
+An estate configured with `http` therefore got an invitation **issued** and then
+found it opened no door. Neither reader lied by itself.
+
+The question this rule is about is not which pattern was right. It is **why the
+loose one survived**, since it had been read many times by people who would have
+tightened it on sight.
+
+It survived because the only assertion pinning the scheme was about something
+else:
+
+```sh
+printf 'DESK_ORIGIN="http://host-a.example.test:8443"\n' > "$ROOT/estate/steward.conf"
+is  "a port is part of the origin" "$(registry_desk_origin)" "http://host-a.example.test:8443"
+```
+
+The heading says **port**. The fixture happens to be `http`. Every reader who
+checked what held the scheme found an assertion that passed, and every reader who
+read this assertion was thinking about ports. Change the pattern to `https` only
+and this test goes red — so it was load-bearing — but nothing about it says so,
+and nobody who broke it would have learned what they had broken.
+
+**A test asserts everything its fixture contains, not only what its heading
+claims.** The difference is invisible while the test is green, which is almost
+always.
+
+### What to do
+
+- When a fixture carries a value the assertion does not name — a scheme, a port,
+  a locale, a permission bit, an ordering — either that property has its own
+  assertion, with its own heading, or it is not guarded.
+- When you tighten a validator, do not simply move the old fixture. Ask what the
+  old fixture was silently holding, and give that its own line. The repair here
+  kept `a port is part of the origin` with an `https` fixture and added a second
+  assertion beside it whose heading is the scheme and whose reason is written
+  down.
+- The reverse reading is the useful one when hunting: **if a rule is real but no
+  test names it, find the test that would go red and read its heading.** That
+  heading tells you what the next person will think they are changing.
+
+### Why this is not rule 24
+
+Rule 24 is about a check whose subject set is enumerated: it stops covering
+subjects that are added later. This is the opposite direction — full coverage of
+one subject, under a name that describes a different property, so the coverage is
+real and unfindable. Rule 24's failure is discovered when something new is missed;
+this one is discovered when somebody changes the thing and the wrong test goes
+red.
+
+### The same shape, in the same file, five times over
+
+`lib/registry.sh:269` records that the hand-kept key list has been short five
+times. That is rule 24. This rule is its neighbour: the list was short, *and* the
+property that would have caught it was being asserted by a test about ports. A
+fleet that has both will find neither by reading, because both are green.
