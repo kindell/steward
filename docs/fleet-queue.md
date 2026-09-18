@@ -109,9 +109,12 @@ The first four were misattributions - corrected afterwards, nobody standing stil
 This one cost a WAIT in real time, and neither party could discover it: the sender
 did not know the word was missing, the waiter did not know it existed.
 
-Two fixes, both on the side that can actually close it. The sender's, which needs
+Three fixes, all on the side that can actually close it. The sender's, which needs
 no form: A DECISION GOES TO EVERY HAND IN AN ESTATE, never to whichever hand wrote
-last. And the estate's own, chosen by the estate that pays for it: the ref name is
+last. Its other half, which costs one line: A DECISION THAT PERMITS AN ACTION NAMES
+THE HAND THAT IS TO PERFORM IT - then a relay can be routed by whoever receives it,
+instead of depending on somebody NOTICING that it concerns a neighbour. Both times
+it was caught by chance, and a form that rests on somebody noticing is not a form. And the estate's own, chosen by the estate that pays for it: the ref name is
 derived from REPO_PATH, so sessions in one home spell themselves apart without
 anyone agreeing on a list, and a third session names itself. Register, slug and bus
 name are untouched - a fleet-wide rename would charge three estates for a problem
