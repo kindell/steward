@@ -98,7 +98,23 @@ full round takes there, so a stale ref can be judged without asking anyone.
 A FULL ROUND IS FIFTEEN MINUTES, measured on two estates and not estimated: one
 reported 15m 01s, 15m 15s and 15m 14s over three runs alone on the machine, the
 other 15m 07s. Fourteen seconds of spread across two platforms. A ref older than
-half an hour is therefore a rest.
+half an hour is therefore a rest. The third estate measured 17m 27s over a single
+run, start read from the ref's own stamp and end from the log file's mtime - so
+its bound is thirty-five minutes. The thresholds differ and neither can be derived
+from the other, which is why each estate publishes its own. A number that carries
+its method can be weighed; one without can only be believed.
+
+TAKE THE REF DOWN BEFORE THE NEXT LETTER, not merely "when the number is
+published". The looser wording was written here first and it says WHEN without
+saying WITHIN WHAT: a run finished, its number sat ready in a log, and its owner
+spent twenty minutes writing about something else while the ref stood. A ref that
+stays up while its owner is writing about something else is no longer a state -
+it is the memory of one.
+
+It was caught because the estate that was blocked DECLINED LOUDLY: its script
+printed that it was standing down after twenty minutes, with the ref named. A
+silent wait would have cost that estate a round, cost the owner nothing, and left
+the rest undiscovered.
 
 The first figure offered was 27 minutes, given in good faith and never measured -
 read off a wall clock between starting a run and publishing its receipt, which is
