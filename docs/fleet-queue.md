@@ -148,6 +148,35 @@ anyone agreeing on a list, and a third session names itself. Register, slug and 
 name are untouched - a fleet-wide rename would charge three estates for a problem
 that lives in one home.
 
+EIGHT PAYMENTS, NO FLEET FORM, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
+The limit lives in three forms at once and they are not equally open:
+
+    ref names        CLOSED, cheaply, by the estate that pays for it: the name is
+                     derived from REPO_PATH, so a third session in one home names
+                     itself with nobody agreeing on a list
+    letter address   CLOSED by discipline and no form: one letter to several
+                     mailboxes carries no second person. Two hands are thanked in
+                     two letters, or in one that names them in the third person.
+                     The rule was written the same morning it was broken again
+    deploy receipts  OPEN. "DEPLOY sha=... homes=N rc=0" carries the estate and a
+                     timestamp and no hand at all, and that line is the product's,
+                     parsed by three estates
+
+Only the third needs a product change, and its two payments so far - two receipts
+each reading as "host two of three", and two hands running the same rollout - cost
+nothing, because a rollout is idempotent and writes atomically. That is the tool's
+property, not anyone's care.
+
+THE TRIGGER IS NOT A HIGHER COUNT. It is the next payment that costs something
+other than a paragraph. Eight paragraphs are worth less than one product change to
+a line three estates read; one lost hour is worth more.
+
+Why the count is written down at all: elimination that HITS costs nothing, feels
+like knowledge, and teaches that the method suffices, while elimination that MISSES
+costs a correction somebody has to write. A method whose hits are free cleans
+itself out of memory every time it works - the same shape as a guard that is green
+because it cannot fall. The count is the only thing that survives the hits.
+
 No field is being added for it. A form that changed spelling once already should
 not grow on a single day's irritation, and the estate that pays most for the
 ambiguity is the one that declined to propose the change. The number is written
