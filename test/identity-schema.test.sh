@@ -192,6 +192,43 @@ leakcount="$(printf '%s\n' "$leakkeys" | grep -c '[A-Z]')"
   || bad "the estate key set is derived from the library" "found $leakcount keys"
 case "$leakkeys" in *USAGE_CMD*) ok "the derived set reaches the single-key readers too" ;;
   *) bad "the derived set reaches the single-key readers too" "$leakkeys" ;; esac
+
+# THE DERIVATION IS BLIND WHERE IT MATTERS MOST, AND THIS CLOSES THAT.
+# The walk above reads the library's own clear line, so it can only ever test
+# keys that are ALREADY on it. A key whose reader lives outside lib/registry.sh
+# - desk/bin/desk-paths parses the estate file itself - gets onto that line by
+# somebody remembering, and when nobody does, the key is absent from the line,
+# absent from the derived set, and absent from every assertion below. That is
+# not a hypothetical: DESK_PREFIX sat outside all three until 2026-09-18 while
+# DESK_SESSION_KEY_FILE, the other key of exactly this kind, was named and
+# tested. So the outside readers are walked HERE, from their own file, and each
+# key they read is required to appear on the library's line.
+outside_keys() { # estate keys read by a parser that is not lib/registry.sh
+  sed -n "s/.*front_value[[:space:]]\{1,\}\([A-Z][A-Z0-9_]*\).*/\1/p" \
+    "$here/desk/bin/desk-paths" | sort -u
+}
+outkeys="$(outside_keys)"
+outcount="$(printf '%s\n' "$outkeys" | grep -c '[A-Z]')"
+# THE CONTROL, AND ITS ANSWER WRITTEN BEFORE THE RUN: desk-paths reads exactly
+# three estate keys today - DESK_ORIGIN, DESK_PREFIX, DESK_SESSION_KEY_FILE. A
+# walk that found none would make the loop below empty and this suite GREENER,
+# which is the whole failure this section exists to refuse, so the count and two
+# named members are asserted rather than trusted. Naming DESK_PREFIX here is
+# deliberate: it is the key that was missing, so if the fix is ever reverted the
+# loop below goes red instead of quiet.
+[ "$outcount" -ge 3 ] && ok "the outside readers' key set is derived from their own file ($outcount keys)" \
+  || bad "the outside readers' key set is derived from their own file" "found $outcount: $outkeys"
+case "$outkeys" in *DESK_PREFIX*) ok "the outside walk sees DESK_PREFIX" ;;
+  *) bad "the outside walk sees DESK_PREFIX" "$outkeys" ;; esac
+case "$outkeys" in *DESK_SESSION_KEY_FILE*) ok "the outside walk sees DESK_SESSION_KEY_FILE" ;;
+  *) bad "the outside walk sees DESK_SESSION_KEY_FILE" "$outkeys" ;; esac
+for outkey in $outkeys; do
+  case " $(printf '%s ' $leakkeys)" in
+    *" $outkey "*) ok "$outkey is read outside the library and is cleared inside it" ;;
+    *) bad "$outkey is read outside the library and is cleared inside it" \
+         "it is read by desk/bin/desk-paths and is not on registry_schema_check's clear line" ;;
+  esac
+done
 : > "$FX/estate/steward.conf"
 for leakkey in $leakkeys; do
   printf '%s="%s"\n' "$leakkey" "$(estate_value_for "$leakkey")" >> "$FX/estate/steward.conf"
