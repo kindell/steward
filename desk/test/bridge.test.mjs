@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBridge } from '../bridge.mjs';
+import { parseBridge, bridgeSpawnReason } from '../bridge.mjs';
 
 const OK = 'dir=/d\nsock=/d/desk.sock\n';
 
@@ -153,4 +153,67 @@ test('an empty sock is not reported as a missing directory', () => {
   assert.equal(r.ok, false);
   assert.match(r.reason, /'sock=' was printed with nothing after it/);
   assert.doesNotMatch(r.reason, /no directory/);
+});
+
+// --- why the bridge could not be RUN ------------------------------------------
+//
+// THE ERRORS ARE PRODUCED, NOT WRITTEN. A hand-built `{ code: 'ENOENT' }` would
+// assert against this file's own idea of what node throws, which is exactly the
+// mistake these cases exist to catch: the reason serve.mjs printed nothing useful
+// for three of four causes is that nobody had looked at what the throw carries.
+// So each case below runs execFileSync with serve.mjs's own options and hands the
+// real error to the function.
+import { execFileSync } from 'node:child_process';
+
+function throwFrom(bin, args, timeout = 300) {
+  try {
+    execFileSync(bin, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    return e;
+  }
+  assert.fail('the fixture did not throw: ' + bin + ' ' + args.join(' '));
+}
+
+test('a bridge that refuses carries its own reason, and the note says it exited', () => {
+  const e = throwFrom('/bin/sh', ['-c', 'echo "desk-paths: no DESK_ORIGIN" >&2; exit 78']);
+  assert.equal(String(e.stderr), 'desk-paths: no DESK_ORIGIN\n');
+  assert.match(bridgeSpawnReason(e), /exited 78/);
+});
+
+test('a spawn that fails names the kernel refusal, which stderr does not carry', () => {
+  const e = throwFrom('/nonexistent/desk-paths', []);
+  // The control: this is the half that used to arrive with no cause at all.
+  assert.ok(!e.stderr || String(e.stderr) === '', 'e.stderr must be empty here, or this case proves nothing');
+  assert.match(bridgeSpawnReason(e), /could not be run: ENOENT/);
+});
+
+test('a bridge killed by a signal is not reported as a refusal', () => {
+  const e = throwFrom('/bin/sh', ['-c', 'kill -9 $$']);
+  assert.ok(!e.stderr || String(e.stderr) === '');
+  const note = bridgeSpawnReason(e);
+  assert.match(note, /SIGKILL/);
+  assert.doesNotMatch(note, /exited/);
+});
+
+test('a timed-out bridge says so rather than nothing', () => {
+  const e = throwFrom('/bin/sh', ['-c', 'sleep 5']);
+  assert.ok(!e.stderr || String(e.stderr) === '');
+  assert.match(bridgeSpawnReason(e), /ETIMEDOUT/);
+});
+
+test('three of the four causes carry no stderr at all', () => {
+  // THE MEASUREMENT THIS WHOLE ADDITION RESTS ON, asserted rather than trusted.
+  // If a future node starts populating e.stderr for these, the note below stops
+  // being the only way to tell them apart and this file should be revisited.
+  const silent = [
+    throwFrom('/nonexistent/desk-paths', []),
+    throwFrom('/bin/sh', ['-c', 'kill -9 $$']),
+    throwFrom('/bin/sh', ['-c', 'sleep 5']),
+  ].filter((e) => !e.stderr || String(e.stderr) === '');
+  assert.equal(silent.length, 3);
+});
+
+test('an error with nothing on it still produces a sentence, never undefined', () => {
+  assert.equal(typeof bridgeSpawnReason(undefined), 'string');
+  assert.equal(typeof bridgeSpawnReason({}), 'string');
 });

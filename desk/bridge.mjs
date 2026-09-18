@@ -93,3 +93,41 @@ export function parseBridge(out) {
   }
   return { ok: true, found };
 }
+
+// bridgeSpawnReason - why the bridge could not be RUN, as opposed to what it
+// printed. parseBridge above answers the second question; nothing answered the
+// first, and the difference is not academic.
+//
+// MEASURED 2026-09-18, four causes through execFileSync with serve.mjs's own
+// options. Only ONE of them carries its reason in e.stderr:
+//
+//   the bridge exits non-zero   status=78   e.stderr: 'desk-paths: no DESK_ORIGIN'
+//   spawn fails                 code=ENOENT     e.stderr EMPTY
+//   killed by a signal          signal=SIGKILL  e.stderr EMPTY
+//   the call times out          code=ETIMEDOUT  e.stderr EMPTY
+//
+// serve.mjs wrote e.stderr and then one fixed sentence, so three of the four
+// arrived as the same line with no cause attached. A reader of that line could
+// not tell a bridge that REFUSED from one that never started, and those want
+// opposite investigations: the first is the estate's configuration, the second
+// is the host running out of something.
+//
+// That mattered on the day it was written. A desk-serve assertion had been
+// failing intermittently on one platform and not another for a working day,
+// and the only string that could have separated the two readings was this one.
+//
+// A spawn that fails for want of a file descriptor or a process slot is
+// EMFILE or EAGAIN here - the shape an intermittent, load-dependent,
+// platform-bound failure actually has, and the shape this function exists to
+// let a reader see.
+export function bridgeSpawnReason(e) {
+  if (!e) return 'no error was reported';
+  // ORDER IS BY HOW MUCH THE FIELD NARROWS. A code names a kernel refusal and
+  // is the most specific thing available; a status means the bridge ran and
+  // chose to refuse, which its own stderr will already have explained; a
+  // signal means something outside both killed it.
+  if (e.code) return 'the bridge could not be run: ' + e.code;
+  if (typeof e.status === 'number') return 'the bridge exited ' + e.status;
+  if (e.signal) return 'the bridge was killed by ' + e.signal;
+  return 'the reason was not reported by the runtime';
+}

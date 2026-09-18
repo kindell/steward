@@ -150,7 +150,7 @@ import { loadRemotes } from './remote.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pageIndex, pageTeam, pageProject, pageSession, pageLogin, pageInvited, ICON } from './render.mjs';
-import { parseBridge } from './bridge.mjs';
+import { parseBridge, bridgeSpawnReason } from './bridge.mjs';
 import { MOUNT, setMount, at, reAt } from './mount.mjs';
 // NOT validateOrder. That one is the FORM's gate - method, content type, body size,
 // fetch site, nonce - and this route is a GET a stranger follows from a link, with no
@@ -205,7 +205,11 @@ function deskPaths() {
     out = execFileSync(PATHS_BRIDGE, [], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     if (e && e.stderr) process.stderr.write(String(e.stderr));
-    console.error('desk: desk-paths could not name the desk directory and socket');
+    // THE CAUSE, NOT ONLY THE CONSEQUENCE. Three of the four ways this throws
+    // leave e.stderr empty, so the sentence below used to arrive alone - see
+    // bridgeSpawnReason in bridge.mjs for the measurement.
+    console.error('desk: desk-paths could not name the desk directory and socket - '
+      + bridgeSpawnReason(e));
     process.exit(78);
   }
   const parsed = parseBridge(out);
