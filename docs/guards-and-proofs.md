@@ -1310,3 +1310,216 @@ somebody touching the code it is about, not by somebody reading it again.**
 One reader took too narrow a slice of the right tree; the other took the right slice of
 a tree that had moved. **Both times what was missing lay inside what the reviewer
 already had.**
+
+---
+
+## 27. A rule nothing asserts on purpose is held by whatever asserts it by accident.
+
+`DESK_ORIGIN` had two readers with two patterns, and they disagreed about one
+character:
+
+```
+lib/registry.sh:2685    '^https?://[A-Za-z0-9.-]+(:[0-9]+)?$'   the issuer ACCEPTS http
+desk/bin/desk-paths:108 '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'    the bridge REFUSES it
+```
+
+An estate configured with `http` therefore got an invitation **issued** and then
+found it opened no door. Neither reader lied by itself.
+
+The question this rule is about is not which pattern was right. It is **why the
+loose one survived**, since it had been read many times by people who would have
+tightened it on sight.
+
+It survived because the only assertion pinning the scheme was about something
+else:
+
+```sh
+printf 'DESK_ORIGIN="http://host-a.example.test:8443"\n' > "$ROOT/estate/steward.conf"
+is  "a port is part of the origin" "$(registry_desk_origin)" "http://host-a.example.test:8443"
+```
+
+The heading says **port**. The fixture happens to be `http`. Every reader who
+checked what held the scheme found an assertion that passed, and every reader who
+read this assertion was thinking about ports. Change the pattern to `https` only
+and this test goes red — so it was load-bearing — but nothing about it says so,
+and nobody who broke it would have learned what they had broken.
+
+**A test asserts everything its fixture contains, not only what its heading
+claims.** The difference is invisible while the test is green, which is almost
+always.
+
+### What to do
+
+- When a fixture carries a value the assertion does not name — a scheme, a port,
+  a locale, a permission bit, an ordering — either that property has its own
+  assertion, with its own heading, or it is not guarded.
+- When you tighten a validator, do not simply move the old fixture. Ask what the
+  old fixture was silently holding, and give that its own line. The repair here
+  kept `a port is part of the origin` with an `https` fixture and added a second
+  assertion beside it whose heading is the scheme and whose reason is written
+  down.
+- The reverse reading is the useful one when hunting: **if a rule is real but no
+  test names it, find the test that would go red and read its heading.** That
+  heading tells you what the next person will think they are changing.
+
+### Why this is not rule 24
+
+Rule 24 is about a check whose subject set is enumerated: it stops covering
+subjects that are added later. This is the opposite direction — full coverage of
+one subject, under a name that describes a different property, so the coverage is
+real and unfindable. Rule 24's failure is discovered when something new is missed;
+this one is discovered when somebody changes the thing and the wrong test goes
+red.
+
+### The same shape, in the same file, five times over
+
+`lib/registry.sh:269` records that the hand-kept key list has been short five
+times. That is rule 24. This rule is its neighbour: the list was short, *and* the
+property that would have caught it was being asserted by a test about ports. A
+fleet that has both will find neither by reading, because both are green.
+
+---
+
+## 28. A check measures what its CODE says, never what its NAME says — and the name is the only part that travels.
+
+An estate's leak-guard went red on one file, in a class called **"exact counts of
+private artefacts"**. Three parties then guessed which line had matched. All
+three guessed wrong, and all three guessed from the class's name.
+
+| guess | line | reasoning |
+|---|---|---|
+| the guard's own estate | 86 | `Between 2 and 32 characters` — a number and a noun |
+| the guard's own estate | 39-40 | `0 done - 64 usage - 70 an action failed` — numbers and nouns |
+| a second estate | 344 | `a 750 home` — a number immediately before a *private artefact* |
+
+The actual match, found by running the pattern:
+
+```
+linux/steward-account-helper:353
+  # ran useradd two lines ago. 64 means the caller asked wrong and nothing
+```
+
+The word `lines`, followed within nineteen characters by `64` — **across a
+sentence boundary**. Not a count, not an artefact, and not a number and a noun in
+the same clause.
+
+### Why every guess was wrong the same way
+
+The class's word list is nine words: five English plural counting-nouns —
+`commits`, `lines`, `files`, `sessions`, `incidents` — and the four Swedish
+equivalents of the same nouns. Not one of the nine is `home`, `account`, `key`
+or `host`. **The name is broader than the
+implementation**, so a search built from the name cannot find what the code
+finds, and can only find something else.
+
+The second estate's guess is the instructive one: it was *more* careful than the
+first two — it rejected them for being exit codes and string lengths rather than
+counts, reasoned explicitly about what "a private artefact" means, searched for
+exactly that, found exactly one hit, and noted that one hit matching one hit was
+"corroborating, not proof". Every step of that was sound. It was still a wrong
+answer, because the whole chain hung from a description.
+
+> A note on the line above, which is itself an instance. The first draft quoted
+> all nine words verbatim, and four of them are not English. The estate language
+> guard failed this file on it — correctly: quoted data is still data in the
+> file that carries it. The remedy was to keep the argument and drop the tokens,
+> because the exact spelling of those four was never load-bearing; the point is
+> only that none of the nine names a private artefact. Narrowing the guard, or
+> exempting this file, was the other option and was not taken.
+>
+> The second draft then miscounted, in the one sentence whose subject is a
+> count: it listed four English words and implied four more, which is eight. The
+> list's owner supplied the wording above — five English, four Swedish — and had
+> already run it. Quoting somebody else's data by describing it is the right
+> instinct in the wrong file format; describing it *wrongly* is a different
+> mistake, and it took the person who owned the code to see it.
+
+### The asymmetry, which is the part to act on
+
+This is not a symmetric failure. One party could run the pattern; the others
+could not. **A letter can carry a check's name, its heading and its prose
+description. It cannot carry its code.** So a remote reader reasons from the name
+*by necessity*, not by laziness — which means the duty sits with whoever holds
+the code.
+
+- **If you can run it, send the evidence, not the class.** The matched line, or
+  the pattern itself. A red receipt naming only the class invites exactly the
+  three guesses above, and each one costs a round trip.
+- **If you cannot run it, say you cannot determine it.** Producing a candidate
+  from the heading is worse than producing nothing: it reads as a contribution,
+  it has to be disproved by the one person who could have spent that time
+  running the check, and hedging it as "not proof" does not stop the reader from
+  building on it.
+- **A guard's heading is documentation, and documentation drifts from code.** The
+  distance between them is invisible while the guard is green.
+
+### Its neighbours
+
+Rule 27 is about a rule held by an assertion whose heading names something else —
+the heading lies about what it *guards*. This is the same gap from the other
+side: the heading lies about what it *matches*. Both are only visible when
+somebody changes something and the wrong thing goes red; this one is also visible
+whenever the finding has to cross a machine boundary, which is every time two
+estates share a fleet.
+
+---
+
+## 29. The lens has a version too. A receipt that names the instrument but not the instrument's COMMIT records a number nobody can re-take.
+
+Rule 25 requires a number to carry its lens and its tree. This is the case where
+it carried both and was still unreproducible.
+
+Two gate runs on one host, hours apart:
+
+```
+3bb8057   estate-guard=RED   root=ddba5552  list=6e524e3f
+0dd2f55   estate-guard=ok    root=ddba5552  list=6e524e3f
+```
+
+**The digests are identical.** `root=` is the estate root's path, `list=` is the
+guard's own name list — both were written precisely so that a reader could tell
+whether two runs measured the same thing, and both said yes.
+
+The entire difference was **one character in the guard's own source**, and that
+character lived on a branch that had not landed. The second receipt is green, is
+fully attributed under rule 25, and cannot be reproduced from `main` by anybody —
+including its author, tomorrow.
+
+### Why the existing fields could not catch it
+
+`root=` and `list=` describe the guard's **subject**: which estate, which names.
+Nothing in the receipt described the guard's **code**. A guard is not a constant
+that reads a changing world; it is itself a thing under version control, edited
+on the same days as everything it measures — this one was edited three times in
+one day.
+
+This is rule 28 turned against the gate that enforces it. A check measures what
+its code says, never what its name says, and `estate-guard=ok` is a name.
+
+### What a receipt therefore has to carry
+
+The instrument's own commit, and whether that commit is reachable from the branch
+the rest of the fleet would run:
+
+```
+VAKTEN: /Users/jon/Projects/butler 9ca874f [main] uncommitted=2 on-main=yes
+```
+
+- `on-main=no` means the number rests on unlanded code. It may still be a true
+  number; it is not a **re-takeable** one, and the difference is the whole of what
+  a receipt is for.
+- Uncommitted changes in the instrument's checkout are the same defect without a
+  commit to name, so the count is printed rather than hidden.
+- The comparison must **fetch first**. An unfetched ref would make a branch that
+  landed during the run read as unlanded — the same error one turn quieter.
+- And it is proven in both directions before it is trusted: a checkout on main
+  reads `yes`, a commit above main reads `no`, a commit *below* main (an
+  ancestor) reads `yes`, and a directory that is not a checkout at all reads `?`
+  and `no` — loudly, never silently.
+
+### The general form
+
+Every measuring apparatus in a fleet is also an artefact of that fleet, changing
+on the same schedule. Wherever a receipt records *what was measured* and *what it
+was measured against*, ask what is missing: **what was it measured WITH, and can
+somebody else obtain that.**
