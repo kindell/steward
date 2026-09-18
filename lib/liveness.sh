@@ -52,6 +52,36 @@ LIVENESS_SEAM_REASON=""
 # THE VOCABULARY IS CLOSED PER FIELD. A command that answers `excellent` for a
 # daemon is a broken command, and a broken command must never be able to invent
 # a word a view would render as healthy.
+# WHICH DIRECTORY STOPPED THE WALK, OR NOTHING IF NONE DID.
+#
+# `[ -e ]` answers "no" for a file behind a directory this account cannot enter,
+# and that is indistinguishable from a file which is not there - while the two
+# want OPPOSITE actions from whoever reads the line. Measured in live operation
+# on two estates 2026-09-18: a shim mode 755 under a home mode 750 read as
+# missing from every other account on the machine.
+#
+# The kernel has already made the distinction. This asks it instead of guessing:
+# walk the parents from the root down, and the first one that EXISTS and cannot
+# be entered is the answer. A parent that does not exist means the path really is
+# missing, and the walk stops with nothing to report - so "unreachable" is never
+# claimed about a path that simply is not there.
+#
+# Deliberately duplicated in the three seam libraries rather than shared: each of
+# them sources nothing by design, and each keeps its own prefixed helpers.
+_liveness_unreachable_parent() {
+  local _p="${1:-}" _d="" _part
+  case "$_p" in /*) ;; *) return 1 ;; esac
+  local IFS=/
+  for _part in $_p; do
+    [ -n "$_part" ] || continue
+    _d="$_d/$_part"
+    [ "$_d" = "$_p" ] && break
+    [ -e "$_d" ] || return 1
+    if [ ! -x "$_d" ]; then printf '%s' "$_d"; return 0; fi
+  done
+  return 1
+}
+
 _liveness_word() {
   local v="${1:-}" c; shift
   for c in "$@"; do [ "$v" = "$c" ] && { printf '%s' "$v"; return 0; }; done
@@ -94,6 +124,11 @@ liveness_rows() {
        LIVENESS_SEAM_REASON="seam-not-absolute"; return 0 ;;
   esac
   if [ ! -e "$cmd" ]; then
+    _blocked="$(_liveness_unreachable_parent "$cmd")"
+    if [ -n "$_blocked" ]; then
+      echo "liveness: STEWARD_LIVENESS_CMD is there but cannot be reached from this account: '$cmd' - '$_blocked' cannot be entered. No liveness was measured." >&2
+      LIVENESS_SEAM_REASON="seam-unreachable"; return 0
+    fi
     echo "liveness: STEWARD_LIVENESS_CMD points at nothing: '$cmd' — no liveness was measured" >&2
     LIVENESS_SEAM_REASON="seam-not-found"; return 0
   fi
