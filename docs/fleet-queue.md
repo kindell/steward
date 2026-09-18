@@ -311,9 +311,28 @@ bite; comparing estates misses it when all have drifted the same way - which is 
 since they drift for the same reason. The instrument is a third: **compare the TREE against the
 DISK**, which the deploy already does against last-good but only during a rollout, never as a
 question somebody asks. Run on all three hosts in ten minutes and costing no machine time: every
-difference was a lagging rollout, and **zero hand edits anywhere** - a measured negative worth
-more than the three ratios, because the whole drift category rests on the deploy being the only
-way code reaches a machine.
+difference was a lagging rollout.
+
+**A claim that stood here for an hour and was wrong: "zero hand edits anywhere."** It rested on
+the FORWARD sweep, which asks whether every manifest row is on disk and therefore CANNOT, by
+construction, see a file that exists without a row demanding it. The domain could not contain the
+answer - the exact shape this document spends two sections cataloguing, in a number its own author
+called "measured rather than assumed". The reverse sweep, run afterwards on one estate's five
+homes, found 102 unclaimed files of which 33 are hand-edit remnants (`.conf.bak-klipp`,
+`.bak-omdop`, `.decoy-removed-…`), the oldest from 6 August, one owned by root inside another
+account's home. On a second host the same reverse sweep found 28 unclaimed and zero remnants - so
+the claim was true of ONE machine and false as a statement about the fleet.
+
+**So drift has two directions and only one of them heals:**
+
+    FORWARD   every manifest row -> is it on disk, and does it match?   catches LAGGING
+    BACKWARD  every file on disk -> is there a row demanding it?        catches REMNANTS
+
+A lagging file is fixed by the next rollout. A remnant survives every rollout FOREVER: the cleanup
+globs `*.conf` and `x.conf.bak-klipp` matches neither that nor the install glob, so it lies outside
+both the manifest's domain and the cleaner's. Six weeks and fifty-odd rollouts later the oldest one
+is still there. That makes remnants a kind of their own rather than drift in the same sense - a
+lagging file is a state the mechanism exists to close, a remnant is a state no mechanism touches.
 
 A defect can CHANGE KIND when it is half-fixed. The account helper was a HOLE in the morning
 (called from four places, installed by zero rows); the manifest row landed in the afternoon; what
