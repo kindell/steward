@@ -1,6 +1,15 @@
 #!/bin/bash
-# desk/bin/desk-paths - the two default locations the desk owns, derived from
-# the registry and from nowhere else.
+# desk/bin/desk-paths - what this estate says about its desk, derived from the
+# registry and from nowhere else: two default LOCATIONS, and the FRONT's keys.
+#
+# THIS LINE SAID "the two default locations the desk owns" until 2026-09-18, and
+# it had been wrong for as long as the front's keys have been emitted here - five
+# keys go out and two of them are not places. It cost something the day it was
+# read: an estate argued from this title that asking for the mount would widen a
+# path bridge's remit, when the bridge already emitted `origin=`, an https URL,
+# and already emitted `prefix=` itself. The objection was to a file that had not
+# existed for a while, and the title is what made it look current.
+# A heading is read by people deciding whether a change belongs in a file.
 #
 # THE DESK HAS TWO LANGUAGES AND MUST NOT HAVE TWO OPINIONS ABOUT WHERE IT
 # LIVES. The producer is bash and the server is Node; both need the same
