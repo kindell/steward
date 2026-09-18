@@ -1596,8 +1596,52 @@ grep -rn '<the literal path>' .
 
 - If the only writers are under `test/`, the precondition is manufactured and the
   green number is about logic.
-- If nothing writes it at all, the code depends on something that arrives by
-  hand, or does not arrive.
+- If nothing writes it at all, look in the **estate repository too** before
+  concluding anything — and then split what you find, because two very different
+  things look identical in one grep.
+
+### The two halves of "nothing creates it"
+
+Run over a whole product tree the day this rule was written:
+
+```
+literal $HOME paths in production code                       52
+no writer in production code, writers only in tests          15
+after counting the deploy MANIFEST as a creator              11
+distinct paths behind those                                   6
+no creator anywhere, estate repository included               1
+```
+
+The single one was the key that started this rule. The check confirmed the
+finding and turned up nothing new — which is a result and not a failure: it says
+this shape of hole is **rare rather than widespread**.
+
+The other five are a different thing and want a different action:
+
+| what the grep shows | what it is | what to do |
+|---|---|---|
+| no creator anywhere | the code depends on something that never arrives | a defect |
+| created only by a documented step in an estate's plan | a precondition **on a person** | a line that belongs in an install order |
+
+A manufactured precondition is a hole in a test. A human precondition is a hole
+in an instruction. They are indistinguishable in one repository and separate
+immediately in two.
+
+### Two ways the sweep itself lies
+
+Both found by running it against an answer already known, which is the only way
+they would have been found at all:
+
+- **The deploy manifest is a creator.** A sweep that recognises only `>` and `cp`
+  cannot see the product's own installation mechanism, and reports files that
+  ship correctly as having no creator. Four false hits.
+- **`grep -x` against `-Fx`.** A pattern containing `$` is read as a regex and
+  matches nothing, silently: `grep -cx -- '$HOME/…'` returned 0 against a file
+  carrying that line verbatim; `grep -Fxc` returned 1.
+
+Both produce a number that **looks like a finding**. That is the same family as a
+fetch without `+` and an enumeration filtered on a shortened name: the tool
+answers a question next to the one asked, with no drop in confidence.
 
 This is rule 28 one level up. Rule 28 is about a check measuring what its code
 says rather than what its name says; this is about a check measuring a world its
