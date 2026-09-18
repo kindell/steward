@@ -32,6 +32,28 @@ it is on main - it is that GIT REFUSES A CONFLICTING PUSH, which a branch does
 exactly as well. It has already done so once, between two sessions of one estate,
 ninety seconds apart.
 
+ROLE WORDS WERE THE OTHER CANDIDATE AND THEY ARE CLOSED BY A MEASUREMENT.
+Writing `the-darwin-estate` instead of a name passes the guard - that much was
+tested and it is true. But a role word has to be resolvable by whoever reads it,
+and the registries do not carry what it would need. Measured in two estates,
+fields enumerated:
+
+    hosts.d      OWNER LEGAL_OWNER OPERATOR SSH_ALIAS HOST_ADDR, warning
+                 thresholds, port ranges
+    peers.d      HUB_SSH, PRINCIPAL
+    platform, os, kernel, darwin, linux:   NO MATCHES IN EITHER
+
+So `the-darwin-estate` cannot be looked up anywhere, and `the-linux-estate` is
+ambiguous because two of the three are Linux. The mapping is not merely absent
+from the product - it is absent everywhere. Building it means a new field in
+three registries for the sake of a docs file, and that change should be made for
+its own reasons or not at all.
+
+Both estates changed position on this, in opposite directions, and converged -
+and neither had measured the premise they converged on. Agreement between two
+who have both REASONED is not a check, which is the same sentence this fleet
+wrote about two numbers earlier the same day.
+
 Fetch it before taking anything: `git fetch origin fleet-queue`.
 
 ## How to use it
