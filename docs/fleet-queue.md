@@ -301,6 +301,19 @@ The practical consequence: one estate alone finds only holes; a fleet that never
 on a machine finds only inconsistencies. **Three estates are not redundancy - they are a second
 instrument**, and neither instrument is optional.
 
+**The three instruments have an ORDER, and using them out of it manufactures findings:**
+
+    1  TREE against DISK    first, and until it reads zero
+    2  COMPARE ESTATES      only then - before that, every lagging file is a false
+                            inconsistency candidate for whoever compares
+    3  RUN THE CHAIN        any time, because it is blind to both of the others
+
+The cost is measured, not argued: on one host six manifest rows differed and several were
+nothing but a rollout that had not happened yet. A third party comparing that host against a
+freshly rolled-out one would have read each of them as an inconsistency - **the difference
+between the two hosts was a CLOCK and not a configuration.** Fix the clock first, then the
+comparison means something.
+
 **A third kind and a third instrument**, both added the same evening:
 
     DRIFT   the machine differs from what the CODE says
