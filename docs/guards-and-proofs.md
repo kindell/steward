@@ -1405,9 +1405,9 @@ the same clause.
 
 ### Why every guess was wrong the same way
 
-The class's word list is nine words: `commits`, `rader`, `lines`, `filer`,
-`files`, `sessioner`, `sessions`, `incidenter`, `incidents`. Not one of them is
-`home`, `account`, `key` or `host`. **The name is broader than the
+The class's word list is nine words — `commits`, `lines`, `files`, `incidents`
+and their plurals in the estate's own language. Not one of them is `home`,
+`account`, `key` or `host`. **The name is broader than the
 implementation**, so a search built from the name cannot find what the code
 finds, and can only find something else.
 
@@ -1417,6 +1417,14 @@ counts, reasoned explicitly about what "a private artefact" means, searched for
 exactly that, found exactly one hit, and noted that one hit matching one hit was
 "corroborating, not proof". Every step of that was sound. It was still a wrong
 answer, because the whole chain hung from a description.
+
+> A note on the line above, which is itself an instance. The first draft quoted
+> all nine words verbatim, and four of them are not English. The estate language
+> guard failed this file on it — correctly: quoted data is still data in the
+> file that carries it. The remedy was to keep the argument and drop the tokens,
+> because the exact spelling of those four was never load-bearing; the point is
+> only that none of the nine names a private artefact. Narrowing the guard, or
+> exempting this file, was the other option and was not taken.
 
 ### The asymmetry, which is the part to act on
 
