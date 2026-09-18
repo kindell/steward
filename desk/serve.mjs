@@ -205,7 +205,24 @@ function deskPaths() {
     out = execFileSync(PATHS_BRIDGE, [], { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     if (e && e.stderr) process.stderr.write(String(e.stderr));
-    console.error('desk: desk-paths could not name the desk directory and socket');
+    // NAME WHICH OF THE FOUR WAYS THIS WAS, BECAUSE THREE OF THEM LEAVE STDERR
+    // EMPTY. execFileSync throws on a spawn failure (e.code: ENOENT when the
+    // bridge is missing, EAGAIN when the process table is full), on a non-zero
+    // exit (e.status, and then the bridge has usually written its own reason),
+    // and on a signal (e.signal, which is what a struck timeout looks like from
+    // here). Writing e.stderr and nothing else therefore produced ONE fixed
+    // sentence with no cause in it for every case but the second.
+    //
+    // It costs more than a message. The server exits before it binds, so the
+    // socket never appears, and anything waiting on that socket reports that it
+    // was never created - true, and pointing at the wrong thing. The only string
+    // that could have named the cause was held by the code that caught it.
+    const why = [];
+    if (e && e.code !== undefined && e.code !== null) why.push('code=' + e.code);
+    if (e && e.status !== undefined && e.status !== null) why.push('status=' + e.status);
+    if (e && e.signal) why.push('signal=' + e.signal);
+    console.error('desk: desk-paths could not name the desk directory and socket'
+      + (why.length ? ' (' + why.join(' ') + ')' : ' (no code, status or signal on the error)'));
     process.exit(78);
   }
   const parsed = parseBridge(out);

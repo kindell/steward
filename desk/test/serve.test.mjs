@@ -21,7 +21,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
+import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -387,6 +387,48 @@ test('a custom prefix moves every route together', async () => {
 // A MALFORMED MOUNT IS REFUSED AT START, NAMING THE KEY - the same shape as every
 // other conf refusal, and checked here as well as in desk-paths because this is the
 // guard for every route by which a value can arrive that is not the estate file.
+// A BRIDGE THAT CANNOT BE SPAWNED MUST SAY WHY, AND THIS IS THE CASE WITH NO
+// STDERR TO FALL BACK ON.
+//
+// deskPaths() can fail four ways and all of them end in exit 78 before listen():
+// the bridge refuses (status), it cannot be spawned at all (code), it is killed
+// (signal), or its output will not parse. Only the FIRST writes anything to
+// stderr - and the catch wrote stderr and nothing else, so the other three
+// produced one fixed sentence with no cause in it.
+//
+// That is not a cosmetic loss. The server exits before binding, the socket never
+// appears, and a caller waiting on the socket reports "never created" - which is
+// true and points at the wrong thing. The one string that could name the cause
+// was discarded by the code that caught it.
+//
+// The rig copies the desk directory and removes the bridge, so execFileSync
+// fails to SPAWN rather than the bridge refusing. No production knob: the path
+// is derived from serve.mjs's own location, so a copy without the sibling is
+// simply a desk whose bridge is missing.
+test('a bridge that cannot be spawned names the cause, not only the failure', async () => {
+  const alt = join(T, 'deskcopy');
+  cpSync(dirname(SERVE), alt, { recursive: true });
+  rmSync(join(alt, 'bin', 'desk-paths'));
+  const env = childEnv();
+  delete env.STEWARD_DESK_DIR;
+  delete env.STEWARD_DESK_SOCK;
+  const r = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [join(alt, 'serve.mjs')], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.setEncoding('utf8');
+    p.stderr.on('data', (c) => { err += c; });
+    const t = setTimeout(() => { p.kill('SIGKILL'); resolve({ code: null, err }); }, UP_CAP_MS);
+    t.unref();
+    p.on('close', (code) => { clearTimeout(t); resolve({ code, err }); });
+  });
+  assert.equal(r.code, 78, r.err);
+  assert.match(r.err, /ENOENT/, 'the spawn failure must be named: ' + r.err);
+  // THE CONTROL: the sentence that was always there must still be there. Without
+  // it this test would pass on a change that replaced one uninformative message
+  // with another.
+  assert.match(r.err, /desk-paths/, r.err);
+});
+
 test('a malformed prefix refuses at start and names the key', async () => {
   const sock = join(T, 'bad-mount.sock');
   const r = await runToExit(childEnv({ STEWARD_DESK_SOCK: sock, STEWARD_DESK_PREFIX: '/desk/' }));
