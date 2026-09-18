@@ -52,6 +52,7 @@ mistake this fleet has already made more than once today. Name the branch and le
 
 | item | held | note |
 |---|---|---|
+| deploy gate names a command that cannot work there | - | it refuses a detached worktree, then names `git pull --ff-only`, which answers "You are not currently on a branch" |
 | liveness seam: "points at nothing" about a file that exists | skeppsbron | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
 | the fifth short list | - | `lib/registry.sh:269` - a hand-kept derived set that has been short five times |
 | guards doc: a rule nothing asserts on purpose | basement | it belongs in `docs/guards-and-proofs.md` |
