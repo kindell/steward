@@ -76,7 +76,7 @@ mistake this fleet has already made more than once today. Name the branch and le
 |---|---|---|
 | deploy gate names a command that cannot work there | - | it refuses a detached worktree, then names `git pull --ff-only`, which answers "You are not currently on a branch" |
 | liveness seam: "points at nothing" about a file that exists | skeppsbron | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
-| the fifth short list | - | `lib/registry.sh:269` - a hand-kept derived set that has been short five times |
+| ~~the fifth short list~~ | closed | `lib/registry.sh:269` is hand-kept and has been short five times, but `test/identity-schema.test.sh:200` unsets EVERY derived key, sources the library and asserts the key is still unset - naming it. Guarded maintenance, not an open hole. The row was written from the comment's first sentence and not from the check |
 | guards doc: a rule nothing asserts on purpose | basement | it belongs in `docs/guards-and-proofs.md` |
 | desk-serve: the three wait loops | - | 793, 1075, 1150 - only 1150 asks whether the child is alive, and throws the answer away in its message |
 | `guard-enumeration` | skeppsbron | committed, base has rotted, needs a rebase before it can be measured |
