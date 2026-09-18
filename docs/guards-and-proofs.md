@@ -1048,6 +1048,51 @@ Four instances in one week, none of them a miscount:
    Green for a different reason than the one claimed, in the commit message whose
    whole subject was that failure mode.
 
+### The surface this rule was missing: a one-off count is a test too
+
+Four instances above are all suites. On 2026-09-18 the same failure appeared six
+times in a single day in something nobody reads as a test — an **ad-hoc sweep run
+once to answer a question**, of the kind that produces a number for a letter and
+is then thrown away.
+
+| the sweep | what it reported | what was wrong |
+|---|---|---|
+| stale remote branches | six | the shortened `HEAD` symref counted as a branch |
+| a hardcoded path across the fleet | "no host has it" | one host was measured, three were claimed |
+| letters per recipient | a count | the archive holds two records per send |
+| files with no creator | four extra | the deploy manifest is a creator |
+| a literal path match | zero | `grep -x` read `$` as a regex where `-Fx` matched |
+| letters "behind" per estate | a standing bias | half the gap was a mailbox added at midday |
+
+**Four of six carried no control row at all, and none of the six was caught by
+the person who ran it.** Two were caught because the answer looked absurd; the
+rest because somebody else held a counter-example or made the same mistake aloud.
+
+A count looks like an observation, and nobody asks an observation whether it
+could have been right for the wrong reason. That is the whole of why this rule's
+surface was too narrow.
+
+### A control row has to be able to come out wrong
+
+The weaker form is worth naming because it was tried and it proves nothing: a row
+whose answer is known but which **passes under both the right and the wrong
+method**. That is this rule's own subject one level down — a control that cannot
+fail.
+
+- Choose the row so it is **wrong if the most likely fault is present**. For a
+  sweep over an archive, "this letter exists" passes either way; "this letter was
+  sent once and must count as one" fails under per-record counting and passes
+  under per-letter.
+- **The most likely fault lives in the instrument, not in the analysis.** One of
+  the six above miscounted because the bus writes two records per send — a
+  property of the archive that no reader of the analysis could have guessed. So
+  the row is chosen by whoever runs the sweep, and printed, so a reader can see
+  whether it discriminates or is merely known.
+- **Write the expected answer before the sweep runs.** A control added afterwards
+  tests the code and not the reasoning: it is chosen with the answer in hand, and
+  what gets chosen then is whatever passes. A row picked in advance can fail. One
+  picked afterwards has never failed for anybody.
+
 **Being red is not the same as measuring the right thing, either.** The cure at
 that level is MUTATION: change the production code in the specific way the test
 claims to guard against, and require it to fall FOR THAT REASON. Two here, one at
