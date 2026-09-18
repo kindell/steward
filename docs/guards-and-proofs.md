@@ -1531,3 +1531,75 @@ Every measuring apparatus in a fleet is also an artefact of that fleet, changing
 on the same schedule. Wherever a receipt records *what was measured* and *what it
 was measured against*, ask what is missing: **what was it measured WITH, and can
 somebody else obtain that.**
+
+---
+
+## 30. A test that manufactures its own precondition proves the logic, never the readiness. Green then means "this would work on a machine that was ready", and says nothing about whether any machine is.
+
+A chain of twelve steps was run end to end on a real host for the first time on
+2026-09-18. Ten passed. The two that did not had been green in the suite for
+weeks, and both failed for the same reason.
+
+**Step 8 reads a key that nothing creates.**
+
+```
+bin/steward:4443    local hub_pub="$HOME/.ssh/id_ed25519.pub"
+```
+
+No host in the fleet has that file. Hosts hold keys per purpose, which is what
+the bus's own header *requires* — one key per session, not per machine, written
+after a machine-wide key once stamped one session's mail with another's name.
+
+The literal path appears five times in the tree:
+
+| where | what it does |
+|---|---|
+| `bin/steward:4443` | the one production line — **reads** it |
+| `test/invite-redeem.test.sh:105` | `printf … > …/id_ed25519.pub` |
+| `test/register-modes.test.sh:544` | `printf … > …/id_ed25519.pub` |
+| a plan document, twice | specified it |
+
+**Every writer is a fixture.** The suite that covers this path is green at 186
+assertions and says nothing whatever about step 8, because its own code creates
+the file the step is looking for.
+
+### The second failure is the same shape wearing different clothes
+
+Step 8 can never report *already done* on a real host. Two of its three markers
+`stat` inside the newly created account's home — and the helper creates that home
+`750`, owned by the account. The host cannot enter it, so both markers answer
+*absent* when the truth is *present*. Measured in both directions: as the host,
+false; as the owner, true.
+
+The step then runs `ssh-keygen`, which finds the file and asks interactively. **A
+non-interactive verb hangs on re-run.** The helper's documented `750` and step
+8's markers are incompatible by construction, and the consequence is not a wrong
+answer but a stopped machine.
+
+### Why green meant nothing
+
+> When a test's CODE manufactures the precondition, green says *the logic holds*.
+> It never says *the machine is ready*.
+
+The same estate's account helper was called from four places and installed by
+**zero lines of code** until the day this was measured. Nothing was broken; the
+thing that would have revealed it had never been asked.
+
+### The check, which is one grep
+
+Search the tree for the literal path, resource or binary the code depends on, and
+look at who **writes** it:
+
+```
+grep -rn '<the literal path>' .
+```
+
+- If the only writers are under `test/`, the precondition is manufactured and the
+  green number is about logic.
+- If nothing writes it at all, the code depends on something that arrives by
+  hand, or does not arrive.
+
+This is rule 28 one level up. Rule 28 is about a check measuring what its code
+says rather than what its name says; this is about a check measuring a world its
+own code built. Both are invisible while green, and this one stays invisible
+until somebody runs the thing on a machine nobody prepared.
