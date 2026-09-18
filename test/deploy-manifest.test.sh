@@ -575,9 +575,16 @@ for srcfile in $ALL_SOURCES; do
     # caller happened to name the step, which is the same fault wearing a
     # different message.
     #
-    # The sentence is required to name the PATH as well as the phrase, so it
-    # cannot be satisfied by a refusal written about some other program.
-    elif grep -q "product checkout" "$sf" && grep -q "$want" "$sf"; then
+    # THE PATH AND THE PHRASE MUST BE ON THE SAME LINE, and the first draft of
+    # this arm asked for them anywhere in the file. That version passed with the
+    # refusal DELETED: the path was still in the file, on the line that executes
+    # it, and "product checkout" was still in the file, in cockpit's refusal three
+    # thousand lines away. Two greps over a whole file are two facts about a file,
+    # not one fact about a sentence. Both controls - delete the refusal, and point
+    # it at a different path - were green against that draft and are red against
+    # this one; they were written before it was run, which is the only reason the
+    # draft did not ship.
+    elif grep -F -- "$want" "$sf" | grep -q "product checkout"; then
       ok
     else
       bad "$srcfile EXECUTES $want but the manifest has no row for it, and no refusal in $srcfile names it and says a product checkout is required"
