@@ -86,6 +86,23 @@ deploy_check_provenance() {
   # The name still answers when the proof is absent, which is the common case and
   # the one that needs a good sentence: somebody on a feature branch should read
   # "you are on branch foo", not "AHEAD of origin/main".
+  #
+  # WHAT THE NAME CARRIED THAT PROVENANCE DOES NOT, written down so the next
+  # reader does not remove it where it still means something. A checkout on a
+  # branch named main FOLLOWS ALONG: somebody's `pull` moves it. A detached head
+  # is a state nobody moves for you, so the person maintaining a detached deploy
+  # worktree has to re-point it by hand each time origin advances.
+  #
+  # That is an ergonomic property and not a provenance one, and it is why the
+  # check is being removed rather than kept: this gate compares against the LIVE
+  # remote on every run, so a detached checkout left behind is REFUSED as BEHIND,
+  # exactly like a branch nobody pulled. There is no run that passes carrying old
+  # code. What the detached case costs is the remedy line - `pull --ff-only` is a
+  # dead end there - and that is handled below rather than by refusing the state.
+  #
+  # So: `--detach` becomes permitted, not recommended. An estate that wants its
+  # deploy worktree to follow along should keep main as a BRANCH there, which is
+  # a choice about maintenance rather than a condition the gate enforces.
   if [ -n "$_head" ] && [ "$_head" = "$_remote_sha" ]; then
     : # provenance proven by the commit itself - the branch name adds nothing
   else
