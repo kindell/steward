@@ -148,14 +148,36 @@ anyone agreeing on a list, and a third session names itself. Register, slug and 
 name are untouched - a fleet-wide rename would charge three estates for a problem
 that lives in one home.
 
+A NINTH INSTANCE IS OF A DIFFERENT KIND: CREDIT ERASED BY A GUARD DOING ITS WORK.
+A finding written into the product cannot name the estate that made it, because an
+estate name fails the leak guard - an installation's topology is not the product's
+to carry, and that trade is already settled with a number. So a finding quoted into
+an issue arrives without its origin, and a reader attributes it to whoever filed it.
+That happened here and nobody did anything wrong: the letter attributed correctly,
+the issue could not, the reader read reasonably. The eight before were misdirected
+credit; this one is erased credit, and there is no line anyone could have written
+differently.
+
+The two stores differ, and the difference should be KNOWN rather than discovered:
+
+    letters   can attribute, cannot be kept
+    issues    are kept, cannot attribute
+
+Anything that needs both carries its origin in a form the guard passes - a ROLE, a
+PLATFORM, a DATE - or the credit stays in the letters and the finding travels
+without it. That is the transposition rule again, applied to credit instead of to
+evidence: what crosses into a file with its own rules is transposed, not pasted.
+
 EIGHT PAYMENTS, NO FLEET FORM, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
 The limit lives in three forms at once and they are not equally open:
 
     ref names        CLOSED, cheaply, by the estate that pays for it: the name is
                      derived from REPO_PATH, so a third session in one home names
                      itself with nobody agreeing on a list
-    letter address   CLOSED by discipline and no form: one letter to several
-                     mailboxes carries no second person. Two hands are thanked in
+    letter address   NOT closed by discipline - that failed three times in one day,
+                     the third time inside the text declaring it closed. Closed
+                     instead by mechanism: ONE LETTER, ONE MAILBOX. No broadcast
+                     carries a second person. Two hands are thanked in
                      two letters, or in one that names them in the third person.
                      The rule was written the same morning it was broken again
     deploy receipts  OPEN. "DEPLOY sha=... homes=N rc=0" carries the estate and a
