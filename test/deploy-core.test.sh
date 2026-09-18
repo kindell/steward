@@ -310,6 +310,25 @@ check "detached exactly at origin/main: rc 0 - the commit proves it" [ "$rc" -eq
 u="$(deploy_check_provenance "$dt" 2>&1)"; rc=$?
 check "detached one commit BEHIND: rc 65" [ "$rc" -eq 65 ]
 case "$u" in *BEHIND*) ok ;; *) bad "the refusal does not say BEHIND: $u" ;; esac
+# AND THE REMEDY MUST WORK WHERE IT IS PRINTED. `pull --ff-only` is a dead end on
+# a detached head - measured 2026-09-18 in a detached worktree one commit behind
+# its origin: git refuses with "You are not currently on a branch", rc 1, and HEAD
+# does not move. A gate that refuses correctly and then names a command that
+# cannot work sends the reader to argue with git instead of fixing the checkout.
+case "$u" in
+  *"pull --ff-only"*)   bad "the detached refusal says pull, which cannot move a detached HEAD: $u" ;;
+  *"checkout --detach"*) ok ;;
+  *)                    bad "the detached refusal names no usable remedy: $u" ;;
+esac
+
+# THE CONTROL FOR THAT REMEDY. On a BRANCH, `pull --ff-only` is still right and
+# must not have been swapped out for everybody. Without this case the change above
+# would pass while breaking the common one.
+( cd "$dt" && git checkout -q main && git reset -q --hard HEAD~1 )
+u="$(deploy_check_provenance "$dt" 2>&1)"; rc=$?
+check "a BRANCH one commit behind: rc 65" [ "$rc" -eq 65 ]
+case "$u" in *"pull --ff-only"*) ok ;; *) bad "a branch behind must still be told to pull: $u" ;; esac
+( cd "$dt" && git reset -q --hard origin/main )
 
 # AND THE NAME STILL ANSWERS WHEN THE PROOF IS ABSENT, which is the common case
 # and the one that needs a readable sentence. Somebody on a feature branch must

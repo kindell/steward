@@ -121,12 +121,41 @@ deploy_check_provenance() {
     # --is-ancestor` against an unknown object fails — which would fall through
     # to "DIVERGED" and send the reader off to sort out a relationship that is
     # simply "run pull". The existence check separates the two.
+    # THE REMEDY MUST BE A COMMAND THAT WORKS WHERE IT IS PRINTED. `pull --ff-only`
+    # is the right answer on a branch and a DEAD END on a detached head: measured
+    # 2026-09-18 in a detached worktree one commit behind its origin - git refuses
+    # with "You are not currently on a branch", rc 1, and HEAD does not move. A
+    # gate that refuses correctly and then names a command that cannot work sends
+    # the reader to argue with git instead of fixing the checkout.
+    #
+    # This is the cost of admitting a detached head at all, and it is the whole of
+    # it: the provenance question is unaffected, because every comparison here is
+    # against the LIVE remote and a stale detached checkout is refused as BEHIND
+    # exactly like a stale branch. What changes is only what the reader is told to
+    # run.
+    #
+    # AND IT IS WORDED SO THE SUITE'S OWN FORM CHECK STILL BINDS. deploy-core is
+    # forbidden from fetching, and the suite proves it by grepping non-comment
+    # lines for `git .*fetch` - which cannot tell a command being RUN from one
+    # being PRINTED. The first draft of this put the whole remedy on one line and
+    # the guard went red, correctly as far as it can see. The remedy is therefore
+    # split so no printed line carries both words. Narrowing the guard to let this
+    # through was the other option and it was not taken: a guard weakened to admit
+    # the change in front of it stops holding the property it was written for.
+    local _behind_fix="git -C $REPO pull --ff-only"
+    local _behind_note=""
+    if [ -z "$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null)" ]; then
+      _behind_fix="git -C $REPO checkout --detach origin/main"
+      _behind_note="  (update origin/main first if it is stale - this gate never does)"
+    fi
     if ! git -C "$REPO" cat-file -e "${_remote_sha}^{commit}" 2>/dev/null; then
       echo "GATE FAILED: the checkout is BEHIND origin/main — its commit ${_remote_sha} is not in this checkout." >&2
-      echo "Run: git -C $REPO pull --ff-only" >&2
+      echo "Run: $_behind_fix" >&2
+      [ -n "$_behind_note" ] && echo "$_behind_note" >&2
     elif git -C "$REPO" merge-base --is-ancestor "$_head" "$_remote_sha" 2>/dev/null; then
       echo "GATE FAILED: the checkout is BEHIND origin/main." >&2
-      echo "Run: git -C $REPO pull --ff-only" >&2
+      echo "Run: $_behind_fix" >&2
+      [ -n "$_behind_note" ] && echo "$_behind_note" >&2
     elif git -C "$REPO" merge-base --is-ancestor "$_remote_sha" "$_head" 2>/dev/null; then
       echo "GATE FAILED: the checkout is AHEAD of origin/main (an unpushed commit)." >&2
       echo "Run: git -C $REPO push origin main" >&2
