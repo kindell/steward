@@ -446,6 +446,98 @@ for srcfile in $ALL_SOURCES; do
   done
 done
 
+# 12. EVERY SIBLING EXECUTABLE A SHIPPED FILE INVOKES HAS A ROW. Checks 10 and 11
+# both ask about LIBRARIES A FILE SOURCES. This asks about PROGRAMS A FILE RUNS,
+# which is a different dependency with the same failure and no coverage until now.
+#
+# MEASURED, AND IT COST A WORKING CHAIN: desk/serve.mjs runs
+# `join(HERE, 'bin', 'invite-for-digest')` to decide whether a presented token is an
+# open invitation. The file was written 2026-09-18 and never given a manifest row. A
+# deploy of the commit that introduced the route therefore succeeded - rc 0, every
+# other desk/bin sibling installed, `invite redeem --digest` answering on the machine -
+# and the route still could not run, because the one file it EXECS was the one the
+# manifest did not carry. Both estates deployed and both chains were broken at the
+# same link.
+#
+# Check 11's own comment records the same shape one class over: check 10 parsed a
+# source STATEMENT in three named trees, bin/steward sat outside all three and shipped
+# with six missing lib rows. Each widening covered the class that had just bitten and
+# left the next one. This is that next one.
+#
+# ITS SEARCH SPACE IS ENUMERATED AND THE CLASS IS LARGER, and that is written here
+# rather than left for the next person to discover. Two estates swept the whole tree
+# after this check was written and found FIVE files that a manifest-carried file
+# reaches and the manifest does not carry; these patterns catch two of them:
+#
+#   caught    desk/bin/invite-for-digest  <- desk/serve.mjs, join(HERE,'bin',...)
+#   caught    bin/probe-dispatch          <- bin/steward, "$HERE/bin/..."
+#   MISSED    probes/chromium-rig         <- bin/probe-dispatch, "$HERE/probes" then
+#                                            dispatch by filename - a DIRECTORY, not
+#                                            a named file
+#   MISSED    job-run.sh                  <- lib/jobreconcile.sh, a default written as
+#                                            "$(dirname "${BASH_SOURCE[0]}")/../x"
+#   NOT A HOLE  linux/steward-account-helper - reached at an ABSOLUTE path,
+#               /usr/local/sbin/..., installed by the estate through a sudoers rule.
+#               A manifest row would put it in ~/scripts where nothing looks.
+#
+# So this check is a floor and not an inventory. The rows for the two it misses are in
+# the manifest because a person put them there, and nothing here would notice if they
+# were removed. Deriving the whole class - every literal repo-relative path a carried
+# file references - is the shape check 11 already has for lib/<name>.sh and the shape
+# this should grow into; it is not done here.
+#
+# TWO PATTERNS, BOTH LITERAL, NEITHER GUESSING. A call whose final segment is a
+# variable names no file this check could look up and is left alone, exactly as check
+# 10 leaves a variable basename:
+#     node   join(HERE, 'bin', 'name')          -> <dir of source>/bin/name
+#     shell  "$here/bin/name", "$PRODUCT/desk/bin/name"
+# The shell form is resolved against the REPO ROOT rather than the source's directory,
+# because `$HERE` in those files is the product root by construction - measured on the
+# three current call sites in desk/apply.sh and linux/deploy-self.sh.
+for srcfile in $ALL_SOURCES; do
+  sf=""
+  if [ -f "$here/$srcfile" ]; then sf="$here/$srcfile"
+  elif [ -n "${ESTATE_ROOT:-}" ] && [ -f "$ESTATE_ROOT/$srcfile" ]; then sf="$ESTATE_ROOT/$srcfile"
+  fi
+  [ -n "$sf" ] || continue
+  srcdir="$(dirname "$srcfile")"
+  wantx=""
+  # node: join(HERE, 'bin', 'x') - HERE is the source file's own directory
+  for n in $(grep -oE "join\(HERE, *'bin', *'[a-zA-Z0-9_-]+'\)" "$sf" 2>/dev/null \
+             | sed -E "s/.*'bin', *'([a-zA-Z0-9_-]+)'.*/\1/" | sort -u); do
+    wantx="$wantx $srcdir/bin/$n"
+  done
+  # shell: "$here/bin/x". THE BASE IS READ OUT OF THE VARIABLE'S DEFINITION, never
+  # guessed from its name. The first version of this check assumed every such variable
+  # was the repo root - "measured on the three current call sites", which is exactly the
+  # move this whole suite exists to catch - and reported desk/fetch.sh and
+  # desk/snapshot.sh as holes when their `here` is the desk directory and the row they
+  # need is present. Measured:
+  #     here="$(... dirname "${BASH_SOURCE[0]}")"        the file's own directory
+  #     HERE="$(... dirname "${BASH_SOURCE[0]}")/.."     one level up
+  # So the definition ends in `/..` or it does not, and that is the whole rule. A
+  # variable whose definition this cannot find is skipped rather than resolved against
+  # a guess.
+  for s in $(grep -oE '\$\{?(here|HERE|PRODUCT)\}?/(bin|desk/bin)/[a-zA-Z0-9_-]+' "$sf" 2>/dev/null | sort -u); do
+    _var="$(printf '%s' "$s" | sed -E 's/^\$\{?([a-zA-Z_]+)\}?.*/\1/')"
+    _tail="$(printf '%s' "$s" | sed -E 's/^[^/]*\///')"
+    _def="$(grep -m1 -E "^[[:space:]]*$_var=" "$sf" 2>/dev/null)"
+    [ -n "$_def" ] || continue
+    case "$_def" in
+      *'/..'*) wantx="$wantx $_tail" ;;
+      *)       wantx="$wantx $srcdir/$_tail" ;;
+    esac
+  done
+  [ -z "$wantx" ] && continue
+  for want in $wantx; do
+    if grep -v '^#' "$M" | awk '{print $1}' | grep -qx "$want"; then
+      ok
+    else
+      bad "$srcfile EXECUTES $want but the manifest has no row for it"
+    fi
+  done
+done
+
 # 11b. PROOF: a `docs` row naming a library in prose produces no failure; a
 # `scripts` row with the identical content produces one. One real fixture
 # file, mentioning lib/nothing.sh (a name guaranteed to have no manifest
