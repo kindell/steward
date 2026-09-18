@@ -77,9 +77,9 @@ build_estate() { # <dir>
   # no DESK_PREFIX at all - so the assertion was true because the product's
   # default happened to match, not because this estate had said anything. A
   # suite that pins a path a key decides must set that key, or it is measuring
-  # the default and reporting it as the estate's. (butler-steward-jon's measure,
-  # 2026-09-18: three of the four suites pinning this literal set no such key,
-  # and those three are exactly the ones that carried the hardcoded mount.)
+  # the default and reporting it as the estate's. (the measure came from another
+  # estate in the fleet, 2026-09-18: three of the four suites pinning this literal
+  # set no such key, and those three are exactly the ones carrying the mount.)
   printf 'DESK_PREFIX="/desk"\n' >> "$d/estate/steward.conf" || return 70
   printf 'NAME="Acme"\nMEMBERS="alice"\n' > "$d/entities.d/acme.conf" || return 70
   printf 'OWNER="alice"\nLEGAL_OWNER="Acme Ltd"\nOPERATOR="alice"\n' > "$d/hosts.d/host-a.conf" || return 70
