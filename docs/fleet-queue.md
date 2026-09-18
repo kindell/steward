@@ -146,6 +146,7 @@ still runs blind, and rollouts and provenance checks have no ref at all.
 
 | item | held | note |
 |---|---|---|
+| the drift refusal names a cause it cannot measure | - | it prints "the signature of an interrupted run, not a hand edit" when the deployed file's md5 equals the INCOMING source's. Measured 2026-09-18: a neighbour's rollout finishing one second earlier produces exactly the same md5 relation. The refusal was right to refuse and wrong about why - and the why is what chose the next action (`--accept-drift`), which was harmless there and would be exactly wrong on a real hand edit. It should print what it MEASURED and list the causes consistent with it |
 | `STEWARD_ESTATE` vs `STEWARD_ESTATE_ROOT` | - | deploy-self refuses with "set STEWARD_ESTATE" while one operator config carries only STEWARD_ESTATE_ROOT. Issue #71, and it bit in live operation 2026-09-18. NARROWED by a counter-measurement the same hour: one estate carries BOTH names and does not hit it, so the fault is not "the deploy reads the wrong name" but "there are two names and only one estate has both". A fix that renames inside the deploy would BREAK the estate that works |
 | deploy gate names a command that cannot work there | - | it refuses a detached worktree, then names `git pull --ff-only`, which answers "You are not currently on a branch" |
 | liveness seam: "points at nothing" about a file that exists | skeppsbron | `lib/liveness.sh:96` cannot tell missing from unreachable; a fourth branch is needed |
