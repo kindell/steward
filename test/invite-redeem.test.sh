@@ -18,6 +18,10 @@ no()  { case "$2" in *"$3"*) bad "$1" "found '$3' in: $2" ;; *) ok "$1" ;; esac;
 # an EXACT argv line in the recorded log, field by field - a substring test
 # would pass on an invocation that carried extra words
 argv_has() { if grep -Fxq -- "$3" "$2" 2>/dev/null; then ok "$1"; else bad "$1" "no line exactly '$3'"; fi; }
+# THE NEGATIVE FORM MATCHES ON A PREFIX, not on a whole line, because what it
+# guards against is a call that would carry a path or flags this test cannot
+# predict. `argv_has` is exact for the opposite reason: it pins one invocation.
+argv_lacks() { if grep -Fq -- "$3" "$2" 2>/dev/null; then bad "$1" "found a line containing '$3'"; else ok "$1"; fi; }
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 echo "invite-redeem"
 
@@ -314,6 +318,32 @@ argv_has "reading the relay public key" "$FX/argv" "sudo|-n|-u|alice|cat|$AH/.ss
 argv_has "installing the delivery key" "$FX/argv" "sudo|-n|-u|alice|tee|-a|$AH/.ssh/authorized_keys"
 argv_has "seeding known_hosts" "$FX/argv" "sudo|-n|-u|alice|tee|-a|$AH/.ssh/known_hosts"
 argv_has "writing onboarding.env" "$FX/argv" "sudo|-n|-u|alice|tee|$AH/onboarding.env"
+
+# AND THE TWO IN-HOME MARKS ARE ASKED THE SAME WAY, which is what the section
+# above was always claiming in principle: a question about a file inside that
+# home has to be put as the account, because the helper creates the home 750
+# owned by it and the hub cannot enter it. The writes had the principle from
+# the start; the reads did not, and the gap was invisible for as long as it was
+# only ever run against fixtures.
+#
+# WHY THIS IS AN argv ASSERTION AND NOT A BEHAVIOURAL ONE, written out because
+# it is the whole point of the defect: a fixture home is owned by the user
+# running this suite, so the hub CAN read it here and both spellings answer the
+# same. The condition cannot be reproduced in a fixture at all - chmod 000 would
+# blind the shim exactly as it blinds the caller, since both are this one user.
+# Measured on a real host instead, 2026-09-18: `[ -f ]` as the hub answered
+# false about a relay key that was there, `test -f` as the owner answered true.
+# So what a test can honestly hold onto is that the QUESTION IS PUT AS THE
+# ACCOUNT - the same thing, and the only thing, the five rows above hold onto.
+argv_has "the relay-key mark, asked as the account" "$FX/argv" \
+  "sudo|-n|-u|alice|test|-f|$AH/.ssh/id_busrelay_$sid"
+argv_has "the delivery-row mark, asked as the account" "$FX/argv" \
+  "sudo|-n|-u|alice|grep|-q|bus-relay-deliver|$AH/.ssh/authorized_keys"
+# AND THE HUB'S OWN ROW IS STILL ASKED LOCALLY. It is the hub's file on the
+# hub's machine; routing it through the account would hand the account a reach
+# it has no reason to have, and this row is what would catch that.
+argv_lacks "the hub's own row is not asked through the account" "$FX/argv" \
+  "sudo|-n|-u|alice|grep|-q|bus-relay-in"
 
 echo "== the seeds the first ssh needs =="
 has "the hub's host key is in known_hosts" "$(cat "$FX/home/alice/.ssh/known_hosts")" "AAAAHOSTKEY"

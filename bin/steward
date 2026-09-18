@@ -4442,9 +4442,34 @@ EOF
   local relay_root="$HOME/scripts"
   local hub_pub="$HOME/.ssh/id_ed25519.pub"
   local have_key="" have_row="" have_deliver=""
-  [ -f "$relay_key" ] && have_key=1
+  # THE TWO IN-HOME MARKS ARE ASKED AS THE ACCOUNT, for exactly the reason the
+  # five in-home WRITES below already are: both sit inside a home the account
+  # helper creates 750 owned by that account, and the hub cannot enter it. The
+  # principle was written down for the writes and not carried to the reads.
+  #
+  # Measured on a real redemption, 2026-09-18, in both directions: for a relay
+  # key that WAS there, `[ -f ]` as the hub answered false and `test -f` as the
+  # owner answered true; the same for the delivery row. So both marks read
+  # false-ABSENT while the truth was present, this block could never fire on a
+  # real host, and the `ssh-keygen` below then found the key it had just been
+  # told was missing and PROMPTED - hanging a non-interactive verb on precisely
+  # the re-run these marks exist for.
+  #
+  # That is what makes it worse than a wrong answer: a false absent here is not
+  # a misreport, it is a HANG. And no fixture can see it, because a fixture home
+  # is owned by the user running the test.
+  #
+  # THE HUB'S OWN authorized_keys STAYS A LOCAL READ. It is the hub's file, the
+  # hub can read it, and asking for it through the account would hand the
+  # account a reach it has no reason to have. Only the marks that cross into
+  # somebody else's home change.
+  #
+  # A sudo that cannot run at all leaves these two false, and that is safe here:
+  # every branch below goes through the same `sudo -n -u`, so the run fails
+  # loudly at `_redeem_runas_fail` with what sudo said, instead of silently.
+  sudo -n -u "$unix_user" test -f "$relay_key" 2>/dev/null && have_key=1
   grep -q "bus-relay-in $sid\"" "$hub_ak" 2>/dev/null && have_row=1
-  grep -q "bus-relay-deliver" "$acct_ak" 2>/dev/null && have_deliver=1
+  sudo -n -u "$unix_user" grep -q "bus-relay-deliver" "$acct_ak" 2>/dev/null && have_deliver=1
   if [ -n "$have_key" ] && [ -n "$have_row" ] && [ -n "$have_deliver" ]; then
     _redeem_note 8 bus "already done"
   else
@@ -4460,8 +4485,14 @@ EOF
     # EVERY `sudo -n -u` CALL BELOW KEEPS ITS OUTPUT, so the refusal can say
     # whether sudo or the command said no - see _redeem_runas_fail.
     if [ -z "$have_key" ]; then
+      # STDIN IS CLOSED so this can never WAIT for an answer. ssh-keygen asks
+      # "Overwrite (y/n)?" when the file is already there, and -q does not
+      # silence that one. With the mark above fixed it should not happen - but
+      # the mark is a measurement and this is the floor under it: any future
+      # way of arriving here with the file present must FAIL, loudly, through
+      # the handler below, rather than hang a verb nobody is watching.
       runas_out="$(sudo -n -u "$unix_user" ssh-keygen -q -t ed25519 -N "" -f "$relay_key" \
-        -C "$host_slug-$unix_user-$sess_slug" 2>&1)" \
+        -C "$host_slug-$unix_user-$sess_slug" </dev/null 2>&1)" \
         || { _redeem_runas_fail "step 8 (bus): could not generate the relay key at $relay_key" "$unix_user" "$runas_out"; return $?; }
     fi
     local relay_pub relay_err
