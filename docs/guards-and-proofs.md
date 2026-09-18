@@ -1377,3 +1377,71 @@ red.
 times. That is rule 24. This rule is its neighbour: the list was short, *and* the
 property that would have caught it was being asserted by a test about ports. A
 fleet that has both will find neither by reading, because both are green.
+
+---
+
+## 28. A check measures what its CODE says, never what its NAME says — and the name is the only part that travels.
+
+An estate's leak-guard went red on one file, in a class called **"exact counts of
+private artefacts"**. Three parties then guessed which line had matched. All
+three guessed wrong, and all three guessed from the class's name.
+
+| guess | line | reasoning |
+|---|---|---|
+| the guard's own estate | 86 | `Between 2 and 32 characters` — a number and a noun |
+| the guard's own estate | 39-40 | `0 done - 64 usage - 70 an action failed` — numbers and nouns |
+| a second estate | 344 | `a 750 home` — a number immediately before a *private artefact* |
+
+The actual match, found by running the pattern:
+
+```
+linux/steward-account-helper:353
+  # ran useradd two lines ago. 64 means the caller asked wrong and nothing
+```
+
+The word `lines`, followed within nineteen characters by `64` — **across a
+sentence boundary**. Not a count, not an artefact, and not a number and a noun in
+the same clause.
+
+### Why every guess was wrong the same way
+
+The class's word list is nine words: `commits`, `rader`, `lines`, `filer`,
+`files`, `sessioner`, `sessions`, `incidenter`, `incidents`. Not one of them is
+`home`, `account`, `key` or `host`. **The name is broader than the
+implementation**, so a search built from the name cannot find what the code
+finds, and can only find something else.
+
+The second estate's guess is the instructive one: it was *more* careful than the
+first two — it rejected them for being exit codes and string lengths rather than
+counts, reasoned explicitly about what "a private artefact" means, searched for
+exactly that, found exactly one hit, and noted that one hit matching one hit was
+"corroborating, not proof". Every step of that was sound. It was still a wrong
+answer, because the whole chain hung from a description.
+
+### The asymmetry, which is the part to act on
+
+This is not a symmetric failure. One party could run the pattern; the others
+could not. **A letter can carry a check's name, its heading and its prose
+description. It cannot carry its code.** So a remote reader reasons from the name
+*by necessity*, not by laziness — which means the duty sits with whoever holds
+the code.
+
+- **If you can run it, send the evidence, not the class.** The matched line, or
+  the pattern itself. A red receipt naming only the class invites exactly the
+  three guesses above, and each one costs a round trip.
+- **If you cannot run it, say you cannot determine it.** Producing a candidate
+  from the heading is worse than producing nothing: it reads as a contribution,
+  it has to be disproved by the one person who could have spent that time
+  running the check, and hedging it as "not proof" does not stop the reader from
+  building on it.
+- **A guard's heading is documentation, and documentation drifts from code.** The
+  distance between them is invisible while the guard is green.
+
+### Its neighbours
+
+Rule 27 is about a rule held by an assertion whose heading names something else —
+the heading lies about what it *guards*. This is the same gap from the other
+side: the heading lies about what it *matches*. Both are only visible when
+somebody changes something and the wrong thing goes red; this one is also visible
+whenever the finding has to cross a machine boundary, which is every time two
+estates share a fleet.
