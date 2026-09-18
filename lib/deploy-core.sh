@@ -62,20 +62,74 @@ deploy_check_provenance() {
     echo "  Is the remote reachable, and does it have a branch named main?" >&2
     return 65
   fi
-  local _branch
-  _branch="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null)"
-  if [ "$_branch" != "main" ]; then
-    echo "GATE FAILED: the checkout is on branch '$_branch', not main." >&2
-    echo "Deploy requires main. Run: git -C $REPO checkout main" >&2
-    return 65
+  local _head
+  _head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+  # THE BRANCH NAME IS A DIAGNOSIS WHEN THE PROOF IS MISSING, NEVER A CONDITION
+  # WHEN IT IS PRESENT. This check used to refuse anything whose HEAD was not a
+  # symbolic ref spelled `main` - before looking at what HEAD pointed AT. A
+  # checkout detached at exactly origin's main proves provenance as completely as
+  # a branch by that name, and was refused anyway.
+  #
+  # The file already argued the other way eleven lines down: every comparison
+  # below uses $_remote_sha and never the origin/main REF, because a ref is a
+  # cache. Binding the name while meaning the object is the same mistake at the
+  # other end of the same function.
+  #
+  # IT COST A REAL HOUR. A deploy worktree pinned to main is what stops a branch
+  # left in the working tree from blocking the host - measured on two estates on
+  # 2026-09-18, twice on one of them. `git worktree add ../steward-deploy main`
+  # is refused when main is checked out elsewhere, and `--detach` - the obvious
+  # answer - was refused HERE instead, by a name check standing in front of the
+  # proof. The remedy was to move main between checkouts; it should have been a
+  # flag.
+  #
+  # The name still answers when the proof is absent, which is the common case and
+  # the one that needs a good sentence: somebody on a feature branch should read
+  # "you are on branch foo", not "AHEAD of origin/main".
+  #
+  # WHAT THE NAME CARRIED THAT PROVENANCE DOES NOT, written down so the next
+  # reader does not remove it where it still means something. A checkout on a
+  # branch named main FOLLOWS ALONG: somebody's `pull` moves it. A detached head
+  # is a state nobody moves for you, so the person maintaining a detached deploy
+  # worktree has to re-point it by hand each time origin advances.
+  #
+  # That is an ergonomic property and not a provenance one, and it is why the
+  # check is being removed rather than kept: this gate compares against the LIVE
+  # remote on every run, so a detached checkout left behind is REFUSED as BEHIND,
+  # exactly like a branch nobody pulled. There is no run that passes carrying old
+  # code. What the detached case costs is the remedy line - `pull --ff-only` is a
+  # dead end there - and that is handled below rather than by refusing the state.
+  #
+  # So: `--detach` becomes permitted, not recommended. An estate that wants its
+  # deploy worktree to follow along should keep main as a BRANCH there, which is
+  # a choice about maintenance rather than a condition the gate enforces.
+  if [ -n "$_head" ] && [ "$_head" = "$_remote_sha" ]; then
+    : # provenance proven by the commit itself - the branch name adds nothing
+  else
+    local _branch
+    _branch="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null)"
+    # ONLY A NAMED BRANCH GETS THE NAME'S ANSWER. The first cut of this refused a
+    # DETACHED head here too, and its own control caught it: a checkout detached
+    # one commit behind origin read "on branch (detached HEAD), not main" instead
+    # of BEHIND, which is the sentence that says what to run. That is the same
+    # fault this change exists to remove, reintroduced one branch over - the name
+    # answering where the object has the better answer.
+    #
+    # So: a named branch that is not main is a complete diagnosis and stops here.
+    # A detached head is not a diagnosis at all, and falls through to the
+    # relationship below, which is what the reader actually needs.
+    if [ -n "$_branch" ] && [ "$_branch" != "main" ]; then
+      echo "GATE FAILED: the checkout is on branch '$_branch', not main, and its commit is not origin's main." >&2
+      echo "Deploy requires main, or a checkout sitting exactly on origin/main." >&2
+      echo "Run: git -C $REPO checkout main" >&2
+      return 65
+    fi
   fi
   # EVERY COMPARISON BELOW USES $_remote_sha, NEVER THE origin/main REF. The ref
   # is a local cache that only `fetch` refreshes, and this gate deliberately does
   # not fetch — so consulting it would compare HEAD against whatever the last
   # fetch happened to leave behind, possibly days old. A gate that reads a stale
   # cache and reports it as provenance is worse than no gate: it is confident.
-  local _head
-  _head="$(git -C "$REPO" rev-parse HEAD)"
   if [ "$_head" = "$_remote_sha" ]; then
     : # exactly HEAD == origin's main — provenance is known
   else
@@ -84,12 +138,41 @@ deploy_check_provenance() {
     # --is-ancestor` against an unknown object fails — which would fall through
     # to "DIVERGED" and send the reader off to sort out a relationship that is
     # simply "run pull". The existence check separates the two.
+    # THE REMEDY MUST BE A COMMAND THAT WORKS WHERE IT IS PRINTED. `pull --ff-only`
+    # is the right answer on a branch and a DEAD END on a detached head: measured
+    # 2026-09-18 in a detached worktree one commit behind its origin - git refuses
+    # with "You are not currently on a branch", rc 1, and HEAD does not move. A
+    # gate that refuses correctly and then names a command that cannot work sends
+    # the reader to argue with git instead of fixing the checkout.
+    #
+    # This is the cost of admitting a detached head at all, and it is the whole of
+    # it: the provenance question is unaffected, because every comparison here is
+    # against the LIVE remote and a stale detached checkout is refused as BEHIND
+    # exactly like a stale branch. What changes is only what the reader is told to
+    # run.
+    #
+    # AND IT IS WORDED SO THE SUITE'S OWN FORM CHECK STILL BINDS. deploy-core is
+    # forbidden from fetching, and the suite proves it by grepping non-comment
+    # lines for `git .*fetch` - which cannot tell a command being RUN from one
+    # being PRINTED. The first draft of this put the whole remedy on one line and
+    # the guard went red, correctly as far as it can see. The remedy is therefore
+    # split so no printed line carries both words. Narrowing the guard to let this
+    # through was the other option and it was not taken: a guard weakened to admit
+    # the change in front of it stops holding the property it was written for.
+    local _behind_fix="git -C $REPO pull --ff-only"
+    local _behind_note=""
+    if [ -z "$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null)" ]; then
+      _behind_fix="git -C $REPO checkout --detach origin/main"
+      _behind_note="  (update origin/main first if it is stale - this gate never does)"
+    fi
     if ! git -C "$REPO" cat-file -e "${_remote_sha}^{commit}" 2>/dev/null; then
       echo "GATE FAILED: the checkout is BEHIND origin/main — its commit ${_remote_sha} is not in this checkout." >&2
-      echo "Run: git -C $REPO pull --ff-only" >&2
+      echo "Run: $_behind_fix" >&2
+      [ -n "$_behind_note" ] && echo "$_behind_note" >&2
     elif git -C "$REPO" merge-base --is-ancestor "$_head" "$_remote_sha" 2>/dev/null; then
       echo "GATE FAILED: the checkout is BEHIND origin/main." >&2
-      echo "Run: git -C $REPO pull --ff-only" >&2
+      echo "Run: $_behind_fix" >&2
+      [ -n "$_behind_note" ] && echo "$_behind_note" >&2
     elif git -C "$REPO" merge-base --is-ancestor "$_remote_sha" "$_head" 2>/dev/null; then
       echo "GATE FAILED: the checkout is AHEAD of origin/main (an unpushed commit)." >&2
       echo "Run: git -C $REPO push origin main" >&2
