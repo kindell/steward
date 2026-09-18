@@ -222,6 +222,9 @@ still runs blind, and rollouts and provenance checks have no ref at all.
 | desk-serve: the three wait loops | - | 793, 1075, 1150 - only 1150 asks whether the child is alive, and throws the answer away in its message |
 | step 8 names a hub key nothing creates, and it is an INCONSISTENCY not a hole | - | `bin/steward:4443` hardcodes `$HOME/.ssh/id_ed25519.pub` as the hub's delivery key. Measured by running the chain on skeppsbron: absent, so step 8 refuses. CORRECTED the same hour by another estate, which HAS the file - a leftover probe key from August, its comment field naming a machine name no longer in use. The identifying details stay in that estate's own hands; what belongs here is the shape. So the same line SUCCEEDS on one estate and FAILS on another, and nothing in either outcome says which you got; on that estate it would succeed with a key nobody designated. The third host is the number still missing. The letter that reported this said "no host in the fleet has one" from a SINGLE host's measurement - a false fleet-wide negative, written in the letter arguing that a green suite says nothing about a machine. The fix is NOT to create the key: a hardcoded default path finds whatever happens to lie there, never what somebody DESIGNATED. The delivery key must be NAMED BY THE ESTATE, like `HUB_SSH` and `DESK_ORIGIN` - which is also the only form compatible with `bus-send`'s own header, since that forbids one key standing for a machine. `id_ed25519.pub` appears in five places in the tree: that one product line, TWO test fixtures that `printf` the file into existence, and the plan that specified it. Zero creators |
 | step 8 can never report "already done" on a real host, and the consequence is a HANG | - | two of its three idempotence marks (`have_key` at `bin/steward:4445`, `have_deliver` at 4447) stat INSIDE the new account's home. `steward-account-helper` creates that home 750 owned by the account, so the hub cannot enter it. Measured in both directions on a real redemption: as the hub `[ -f ]` FALSE, as the owner TRUE. Both marks read false-absent while the truth is present, so `if have_key && have_row && have_deliver` can never fire; the step then runs `ssh-keygen`, which finds the file and PROMPTS. A non-interactive verb hangs on re-run - and re-run is exactly what the "already done" branches exist for. The helper's documented 750 and step 8's marks are incompatible BY CONSTRUCTION, so it is not a fault in either half alone. Same shape as the seam-unreachable work (fourth site), but the consequence is a hang rather than a wrong report. No test can see it: fixture homes are owned by the test user |
+| the order spool has no trigger - nothing runs `steward desk apply` | - | the manifest installs ELEVEN systemd units and none of them runs it. The server writes an order, `desk/apply.sh` knows how to dispatch it, and nothing fires apply.sh - so a person who clicks an invitation queues an order nobody collects. `desk/apply.sh:91` says "A path unit fires on a directory that may already have been drained by a previous run" - a present-tense sentence about a unit that is not in the tree. `linux/agent-codex@.path` exists, so path units ARE a form the house uses; the absence is a gap and not a choice against the form. Fourth comment today describing machinery nobody built. Confirmed on a second host across five homes: zero units in any of them. WHICH unit should fire apply is an estate question |
+| redeem step 11 runs a file no manifest row lands | - | `bin/steward:4622` runs `$HERE/linux/deploy-self.sh`. Manifest rows landing anything under `scripts/linux/`: ZERO. On a deployed host `$HERE` is `~/scripts` (bin/steward lands at `scripts/bin/steward`), and `~/scripts/linux/deploy-self.sh` is not there - measured with `ls`, on two hosts, five homes on the second. So step 11 works from a CHECKOUT and cannot work from an INSTALLATION, while the designed flow is deployed server -> spool -> deployed apply.sh -> deployed steward -> step 11. Identical in shape to `steward-account-helper`: a program bin/steward EXECUTES, installed by zero rows, invisible to every suite because suites run from the checkout. `cockpit` is also absent from the manifest and is NOT the same: it REFUSES with a sentence naming the requirement ("run bin/steward from a product checkout"). Step 11 says nothing and would fail with "No such file or directory" wrapped in "step 11 (skeleton) failed". Same absence, two very different costs to whoever debugs it. Whether a deployed home should be able to run a deploy AT ALL is a security question and belongs to the estate, not to a hand |
+| the invitation link hardcodes the desk's mount | basement-product | `bin/steward:3573` built the link as `$origin/desk/invite/$token` with the mount HARDCODED while the desk serves wherever `DESK_PREFIX` says. Measured both ways in loopback, same binary, only the mount changed: with MOUNT `/desk`, `/desk/invite/x` -> 404 (route reached, token unknown) and `/invite/x` -> 403 (identity gate, route never reached); with MOUNT `""` the two answers swap. So on an estate that sets `DESK_PREFIX=""` the link never reaches the route at all. An INCONSISTENCY, not a hole: counted on three hosts, two set nothing (default mount, link correct) and one sets empty (broken), from one line of code with nothing in the outcome saying which you got. Being fixed in #123, which also had to add `--front` to desk-paths - asking it for the mount otherwise makes the INVITATION depend on the desk's STATE DIRECTORY, which two estates discovered independently as ~200 red tests |
 | `guard-enumeration` | skeppsbron | committed, base has rotted, needs a rebase before it can be measured |
 
 ## Held
@@ -234,6 +237,27 @@ still runs blind, and rollouts and provenance checks have no ref at all.
 | the wrapper's failure window | basement | `#107` |
 | the bridge failure's cause | skeppsbron | `bridge-failure-names` - basement's `#108` was withdrawn for it |
 | the hub client pin | butler | `#104` - nothing is queued in front of it now |
+
+## Two ways to find a defect, and each is blind to the other's kind
+
+Settled 2026-09-18 by four findings in one evening, two from each method.
+
+    INCONSISTENCY   fails on one estate, succeeds on another, from the same line
+    HOLE            fails identically everywhere
+
+- **Comparing estates** finds inconsistencies and is blind to holes. A hole looks the same in
+  every home, so the comparison shows nothing at all.
+- **Running the chain on one machine** finds holes and is blind to inconsistencies. One machine
+  is ONE configuration - a single point in the space.
+
+From the comparison: the hub key `id_ed25519` (absent on two hosts, present-but-wrong on the
+third) and the link's mount. From the run: step 11's missing file and the absent unit. Neither
+pile was reachable by the other method: whoever ran the chain has only their own configuration,
+and whoever compares estates sees an identical absence everywhere and reads it as normal.
+
+The practical consequence: one estate alone finds only holes; a fleet that never runs the chain
+on a machine finds only inconsistencies. **Three estates are not redundancy - they are a second
+instrument**, and neither instrument is optional.
 
 ## Done today
 
