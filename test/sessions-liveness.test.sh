@@ -229,6 +229,35 @@ STEWARD_LIVENESS_CMD="$FX/noexec" liveness_rows >/dev/null 2>/dev/null
 is "a seam that could not be run says that" \
    "$(reason_of "$(liveness_for gamma "")")" "seam-not-executable"
 
+# A SEAM THAT IS THERE AND CANNOT BE REACHED IS NOT A MISSING SEAM.
+#
+# `[ -e ]` is false when a DIRECTORY on the way cannot be entered, so a seam
+# pointing into another account's home answered "points at nothing" about a file
+# that is there, executable and correct. Measured in live operation on two
+# estates 2026-09-18: every session in a home other than the hub's got that line
+# at every registry read - one estate had five homes, four of which SHOULD get
+# it and none of which could act on it as worded.
+#
+# "points at nothing" sends the reader after a broken link or a failed deploy.
+# The true reading is "this seam is the hub's and you are not the hub", which is
+# no fault at all. The outcome was true about the test and false about the world.
+mkdir -p "$FX/shut"
+printf '#!/bin/bash\nprintf "{}\\n"\n' > "$FX/shut/hidden"; chmod +x "$FX/shut/hidden"
+chmod 000 "$FX/shut"
+STEWARD_LIVENESS_CMD="$FX/shut/hidden" liveness_rows >/dev/null 2>"$FX/unreach.err"
+is "a seam behind a closed directory is unreachable, not missing" \
+   "$(reason_of "$(liveness_for gamma "")")" "seam-unreachable"
+is "unreachable: the line names the directory that stopped the walk" \
+   "$(grep -q "$FX/shut" "$FX/unreach.err" && echo yes || echo no)" "yes"
+chmod 755 "$FX/shut"
+# THE CONTROL. The unreachable branch must STOP firing once the directory opens,
+# or both assertions above would hold on a seam that called every path
+# unreachable - the opposite defect. It does not assert that the seam succeeds:
+# the shim is not a valid answer here, and that is not this test's subject.
+STEWARD_LIVENESS_CMD="$FX/shut/hidden" liveness_rows >/dev/null 2>/dev/null
+is "and the same seam is no longer called unreachable" \
+   "$( [ "$(reason_of "$(liveness_for gamma "")")" = "seam-unreachable" ] && echo still || echo no-longer )" "no-longer"
+
 # THE ESTATE MAY NAME ITS OWN OMISSIONS. A session the shim could not measure
 # is still OMITTED from `sessions` — it is never guessed — but the shim may say
 # why in an `omitted` map, and that reason reaches the consumer instead of a

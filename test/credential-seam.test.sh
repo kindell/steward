@@ -77,6 +77,25 @@ printf '#!/bin/bash\ntrue\n' > "$FX/notx"; chmod 644 "$FX/notx"
 run_rows "$FX/notx"
 is "1f a shim that cannot be run is named" "$CREDENTIAL_SEAM_REASON" "seam-not-executable"
 
+# 1g. THERE AND UNREACHABLE IS NOT MISSING. `[ -e ]` is false when a directory on
+# the way cannot be entered, so a shim in another account's home reads as absent.
+# Measured in live operation across two estates on 2026-09-18. The kernel already
+# knows which directory stopped the walk; this asks it instead of guessing.
+mkdir -p "$FX/shut"
+printf '#!/bin/bash\ntrue\n' > "$FX/shut/hidden"; chmod +x "$FX/shut/hidden"
+chmod 000 "$FX/shut"
+run_rows "$FX/shut/hidden"
+is "1g a shim behind a closed directory is unreachable, not missing" "$CREDENTIAL_SEAM_REASON" "seam-unreachable"
+is "1h and the refusal names the directory that stopped the walk" \
+   "$(grep -q "$FX/shut" "$FX/err" && echo yes || echo no)" "yes"
+chmod 755 "$FX/shut"
+# THE CONTROL: the unreachable branch must STOP firing once the directory opens.
+# Not that the seam then succeeds - the shim is not a valid answer here, and that
+# would be asserting something this test is not about.
+run_rows "$FX/shut/hidden"
+is "1i and the same path is no longer called unreachable" \
+   "$( [ "$CREDENTIAL_SEAM_REASON" = "seam-unreachable" ] && echo still || echo no-longer )" "no-longer"
+
 echo "== 2. a shim that fails, says nothing, or hangs =="
 run_rows "$(stub failing 'echo "provider refused" >&2; exit 3')"
 is  "2a a failing shim leaves a reason" "$CREDENTIAL_SEAM_REASON" "seam-failed"
