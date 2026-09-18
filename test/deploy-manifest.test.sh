@@ -530,22 +530,64 @@ for srcfile in $ALL_SOURCES; do
   # So the definition ends in `/..` or it does not, and that is the whole rule. A
   # variable whose definition this cannot find is skipped rather than resolved against
   # a guess.
-  for s in $(grep -oE '\$\{?(here|HERE|PRODUCT)\}?/(bin|desk/bin)/[a-zA-Z0-9_-]+' "$sf" 2>/dev/null | sort -u); do
+  # AND NOT ONLY bin/ AND desk/bin/. Until 2026-09-18 the expression above was the
+  # whole reach of this check, and the reach was narrower than the fault it exists
+  # to catch: bin/steward EXECUTES $HERE/linux/deploy-self.sh at step 11 of a
+  # redemption, no manifest row lands anything under scripts/linux/, and this walk
+  # could not see it because the path is in neither directory. The check found
+  # that bin/steward had started executing desk/bin/desk-paths on the same day, in
+  # the same file, and stayed silent about the program beside it.
+  #
+  # So a SOURCED or EXECUTED file named with an extension counts too - lib/*.sh,
+  # desk/*.sh, desk/*.mjs, linux/*.sh. A library that is sourced needs its row for
+  # exactly the same reason a program that is executed does: the file has to be on
+  # the machine. Measured when the expression was widened: eighteen paths across
+  # seven sources, seventeen with rows, one without - the one reported from a
+  # third estate by someone running the chain on a real host rather than reading it.
+  for s in $(grep -oE '\$\{?(here|HERE|PRODUCT)\}?/((bin|desk/bin)/[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+\.(sh|mjs))' "$sf" 2>/dev/null | sort -u); do
     _var="$(printf '%s' "$s" | sed -E 's/^\$\{?([a-zA-Z_]+)\}?.*/\1/')"
     _tail="$(printf '%s' "$s" | sed -E 's/^[^/]*\///')"
     _def="$(grep -m1 -E "^[[:space:]]*$_var=" "$sf" 2>/dev/null)"
     [ -n "$_def" ] || continue
     case "$_def" in
       *'/..'*) wantx="$wantx $_tail" ;;
-      *)       wantx="$wantx $srcdir/$_tail" ;;
+      # A SOURCE AT THE REPO ROOT HAS srcdir '.', and "./lib/registry.sh" is not
+      # the spelling a manifest row carries. This join went unexercised until the
+      # expression above was widened - every path it used to match lived under
+      # bin/ or desk/bin/, whose sources are never at the root - and it then
+      # reported six library rows as missing that have been present all along.
+      # A comparison of paths is a comparison of SPELLINGS unless something
+      # normalises them.
+      *) if [ "$srcdir" = "." ]; then wantx="$wantx $_tail"
+         else wantx="$wantx $srcdir/$_tail"; fi ;;
     esac
   done
   [ -z "$wantx" ] && continue
   for want in $wantx; do
     if grep -v '^#' "$M" | awk '{print $1}' | grep -qx "$want"; then
       ok
+    # A DELIBERATE CHECKOUT-ONLY PROGRAM IS A DECLARATION, NOT AN OMISSION, and
+    # this is the only thing that tells the two apart. cockpit/ has no row and is
+    # not a hole: bin/steward refuses for it with a sentence that names the path
+    # and says a product checkout is required, so an operator who meets the limit
+    # is told what the limit IS. A program with neither a row nor that sentence
+    # fails with the shell's "No such file or directory" wrapped in whatever the
+    # caller happened to name the step, which is the same fault wearing a
+    # different message.
+    #
+    # THE PATH AND THE PHRASE MUST BE ON THE SAME LINE, and the first draft of
+    # this arm asked for them anywhere in the file. That version passed with the
+    # refusal DELETED: the path was still in the file, on the line that executes
+    # it, and "product checkout" was still in the file, in cockpit's refusal three
+    # thousand lines away. Two greps over a whole file are two facts about a file,
+    # not one fact about a sentence. Both controls - delete the refusal, and point
+    # it at a different path - were green against that draft and are red against
+    # this one; they were written before it was run, which is the only reason the
+    # draft did not ship.
+    elif grep -F -- "$want" "$sf" | grep -q "product checkout"; then
+      ok
     else
-      bad "$srcfile EXECUTES $want but the manifest has no row for it"
+      bad "$srcfile EXECUTES $want but the manifest has no row for it, and no refusal in $srcfile names it and says a product checkout is required"
     fi
   done
 done

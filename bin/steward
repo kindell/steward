@@ -3384,6 +3384,60 @@ _invite_load_expect() { # <id>
 #           them; the candidates are on stdout, one per line, so the caller's
 #           refusal can name them next to --issued-by
 #   rc 78 - the account register cannot be resolved
+# THE MOUNT, FROM THE ESTATE AND NOT FROM THIS FILE. A link is an origin PLUS a
+# mount, and the estate owns both: DESK_ORIGIN says which host, DESK_PREFIX says
+# where on it. This verb read the first and hardcoded the second, so an estate
+# that mounts its desk at the root - DESK_PREFIX="" is a legal and deliberate
+# value - printed invitations pointing at /desk/invite/<token> while the route
+# lived at /invite/<token>. Measured in both directions on loopback, same
+# binaries, only the mount changed: the 404 and the 403 swap places. 403 is the
+# identity gate answering a stranger, which is exactly what an invited person
+# is, so the link that is meant to reach the one route placed BEFORE that gate
+# was the one link that never got there.
+#
+# ONE READER, NOT A SECOND COPY. desk/bin/desk-paths owns DESK_PREFIX and its
+# expression; this asks that reader rather than growing a third one. --front is
+# used so that reading the mount does not drag in STATE_DIR_NAME, which the
+# paths need and a link does not.
+#
+# ABSENT AND PRESENT-BUT-EMPTY ARE DIFFERENT ANSWERS, and the whole fix turns on
+# it: no prefix= line means the estate said nothing and the product's default
+# stands; `prefix=` with nothing after it means the estate chose the root. So
+# this tests for the LINE, never for the value being non-empty.
+#
+# AND THE DEFAULT IS READ, NOT RETYPED. desk/mount.mjs declares DEFAULT_MOUNT
+# and every route in the server is built from it; a copy of '/desk' here would
+# be a second declaration of the same constant in a second language, which is
+# the fault this function exists to remove. Unreadable is a refusal: a guessed
+# mount prints a link to a door that is not there, which is the bug again.
+_desk_mount() { # -> the mount this estate's desk answers on; "" is an answer
+  local _out _err _rc _def
+  # THE TWO STREAMS STAY APART. A `2>&1` here folds the bridge's ordinary output
+  # into its refusal, and the refusal then reaches the operator carrying an
+  # `origin=` line - measured by this verb's own suite, which asserts that a
+  # refusal prints no URL. Nothing secret was in it, and that is not the reason:
+  # an error message that quotes the data the run produced is one an operator
+  # reads as part of the diagnosis.
+  _err="$(mktemp)" || { printf '%s\n' "cannot create a temporary file" >&2; return 70; }
+  _out="$("$HERE/desk/bin/desk-paths" --front 2>"$_err")"; _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    printf '%s\n' "the desk bridge refused: $(tr '\n' ' ' < "$_err")" >&2
+    rm -f "$_err"; return 78
+  fi
+  rm -f "$_err"
+  if printf '%s\n' "$_out" | grep -q '^prefix='; then
+    printf '%s\n' "$_out" | sed -n 's/^prefix=//p' | tail -1
+    return 0
+  fi
+  _def="$(sed -n "s/^export const DEFAULT_MOUNT = '\\([^']*\\)';.*/\\1/p" \
+            "$HERE/desk/mount.mjs" 2>/dev/null | head -1)"
+  if [ -z "$_def" ]; then
+    printf '%s\n' "desk/mount.mjs declares no DEFAULT_MOUNT this reader can find - refusing to guess where the desk is mounted" >&2
+    return 78
+  fi
+  printf '%s\n' "$_def"
+}
+
 _invite_self_principal() {
   local me self d f slug u h p cands="" hits=0 last_p="" here_p="" here_n=0
   me="$(id -un)"
@@ -3570,7 +3624,19 @@ cmd_invite_issue() {
 
   # THE LINK IS PRINTED HERE AND NOWHERE ELSE, EVER. The row holds the digest;
   # there is no path in the product that can print this string a second time.
-  local link="$origin/desk/invite/$token"
+  #
+  # The mount comes from the estate through _desk_mount - see its comment. It is
+  # resolved AFTER the row is written on purpose: a refusal here costs a printed
+  # link and nothing else, and the operator can reissue. Resolving it earlier
+  # would put a bridge call in front of every issue that was going to fail on
+  # its own arguments anyway.
+  local mount merr2
+  merr2="$(mktemp)" || { _reg_fail "$want_json" "steward invite issue: cannot create a temporary file"; return 70; }
+  mount="$(_desk_mount 2>"$merr2")" || {
+    _reg_fail "$want_json" "steward invite issue: $(tr '\n' ' ' < "$merr2")"
+    rm -f "$merr2"; return 78; }
+  rm -f "$merr2"
+  local link="$origin$mount/invite/$token"
   if [ -n "$want_json" ]; then
     # _json_secret, NOT _json: the link is the one value in this object that
     # must not reach jq's argv, where every account on the host could read it.
@@ -4619,6 +4685,22 @@ EOF
   if [ -f "$home/scripts/lib/registry.sh" ]; then
     _redeem_note 11 skeleton "already done"
   else
+    # NAMED REFUSAL, NOT "No such file or directory". No manifest row lands
+    # anything under scripts/linux/, so this program exists in a product
+    # CHECKOUT and not in an INSTALLATION - and `bash` on a missing file would
+    # have arrived here as rc 127 with the shell's own sentence wrapped inside
+    # "step 11 (skeleton) failed", which names the step and hides the cause.
+    # cockpit already refuses this way for the same reason; this is that
+    # sentence, for this program.
+    #
+    # IT DOES NOT DECIDE WHETHER THE DEPLOYER BELONGS IN AN INSTALLATION. A home
+    # that can run a deploy is a different surface from one that cannot, and that
+    # is an estate question. This only makes today's answer legible where it is
+    # met, which is what separates a constraint from a hole.
+    if [ ! -f "$HERE/linux/deploy-self.sh" ]; then
+      _redeem_fail "step 11 (skeleton): this install has no skeleton deployer (looked in $HERE/linux/deploy-self.sh) - no manifest row lands linux/, so run bin/steward from a product checkout" 69
+      return 69
+    fi
     out="$(bash "$HERE/linux/deploy-self.sh" "$host_slug" 2>&1)"; rc=$?
     [ "$rc" -eq 0 ] || { _redeem_fail "step 11 (skeleton) failed: $out" "$rc"; return "$rc"; }
     _redeem_note 11 skeleton "deployed into $home/scripts"

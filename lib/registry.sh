@@ -277,6 +277,26 @@ registry_schema_check() {
   # library rather than from a second list. That check earns its keep:
   # it builds the key set FROM this library rather than from a second list,
   # so a key added anywhere is tested here without anybody remembering to.
+  #
+  # A SIXTH SHORT LIST, AND THE FIRST ONE THE DERIVED CHECK COULD NOT HAVE
+  # CAUGHT. DESK_PREFIX reaches the estate the same way DESK_SESSION_KEY_FILE
+  # does - its reader is desk/bin/desk-paths, outside this file - and it was
+  # missing from the line below until 2026-09-18. A key absent from that line is
+  # absent from the set the check derives FROM that line, so the derivation
+  # cannot close this particular hole no matter how carefully it walks: the two
+  # keys with outside readers are exactly the two it is blind to. Measured: an
+  # estate naming DESK_PREFIX left its value in the caller's shell after
+  # registry_load, while DESK_SESSION_KEY_FILE came back unset in the same run.
+  #
+  # AND THE LEAK IS NOT INERT FOR THIS KEY. DESK_PREFIX has a form this library
+  # never applies - the check that owns it lives with its reader - so a caller
+  # reading the leaked variable gets an estate-supplied value with no validation
+  # at all, and gets one whether the estate named the key or not. That is the
+  # shape a first attempt at building an invitation link from the mount would
+  # take, and on the estate it was written on it would appear to work.
+  # test/identity-schema.test.sh now derives the OUTSIDE readers' keys too and
+  # requires each to be named below, so the next key whose reader is not in this
+  # file is caught by machinery instead of by memory.
   local SCHEMA_VERSION="" LABEL_PREFIX="" ESTATE_NAME="" AGENT_INSTRUCTIONS="" \
         RC_LABEL_PREFIX="" HUB_SESSION="" HUB_HOST="" JOB_LOG_DIR="" HUB_SSH="" \
         TMUX_SOCKET="" PING_MSG="" JOB_LABEL_PREFIX="" SERVICE_LABEL_PREFIX="" \
@@ -286,7 +306,7 @@ registry_schema_check() {
         ESTATE_CHECKOUT="" \
         MAIL_ACCOUNT_FILE="" \
         ALERT_TO="" JOB_STATUS_CMD="" HOST_STATUS_CMD="" JOB_TIMEZONE="" \
-        DESK_ORIGIN="" DESK_SESSION_KEY_FILE=""
+        DESK_ORIGIN="" DESK_SESSION_KEY_FILE="" DESK_PREFIX=""
   # shellcheck source=/dev/null
   source "$estate" 2>/dev/null || return 0
   [ -n "$SCHEMA_VERSION" ] || return 0

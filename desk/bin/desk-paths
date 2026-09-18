@@ -1,6 +1,15 @@
 #!/bin/bash
-# desk/bin/desk-paths - the two default locations the desk owns, derived from
-# the registry and from nowhere else.
+# desk/bin/desk-paths - what this estate says about its desk, derived from the
+# registry and from nowhere else: two default LOCATIONS, and the FRONT's keys.
+#
+# THIS LINE SAID "the two default locations the desk owns" until 2026-09-18, and
+# it had been wrong for as long as the front's keys have been emitted here - five
+# keys go out and two of them are not places. It cost something the day it was
+# read: an estate argued from this title that asking for the mount would widen a
+# path bridge's remit, when the bridge already emitted `origin=`, an https URL,
+# and already emitted `prefix=` itself. The objection was to a file that had not
+# existed for a while, and the title is what made it look current.
+# A heading is read by people deciding whether a change belongs in a file.
 #
 # THE DESK HAS TWO LANGUAGES AND MUST NOT HAVE TWO OPINIONS ABOUT WHERE IT
 # LIVES. The producer is bash and the server is Node; both need the same
@@ -20,6 +29,8 @@
 #   origin=<DESK_ORIGIN>
 #   providers=<estate root>/desk/providers.d   (only when that directory exists)
 #   session_key=<DESK_SESSION_KEY_FILE>
+# With `--front` the two path lines are omitted and STATE_DIR_NAME is not read;
+# everything else is unchanged. No argument means every line, as before.
 # rc 78 when the estate does not load, or when a named front value is
 # malformed - a caller must never fall back to a guessed path or a guessed
 # origin, because a guessed one is a second desk nobody is reading.
@@ -36,11 +47,33 @@ else
   exit 78
 fi
 
-state="$(registry_state_dir_name)" || {
-  echo "desk-paths: the estate file names no readable STATE_DIR_NAME" >&2
-  exit 78
-}
-base="$HOME/.local/state/$state"
+# --front: THE FRONT'S LINES WITHOUT THE PATHS, and it exists because the two
+# halves have different preconditions. dir= and sock= need STATE_DIR_NAME; the
+# front's keys need nothing but their own lines. A caller that wants only the
+# mount - `steward invite issue`, building a link - would otherwise have to
+# satisfy a key it never asked about, and an estate that names DESK_ORIGIN but
+# no STATE_DIR_NAME could issue links yesterday and could not today. That is a
+# precondition arriving with a bug fix, which is the shape nobody reads as a
+# change.
+#
+# It is a MODE and not a second script: one reader of the estate is the whole
+# point of this file, and a second reader with its own copy of the expressions
+# is exactly what the fleet spent this week naming. Existing callers pass no
+# argument and see byte-identical output.
+front_only=""
+case "${1:-}" in
+  --front) front_only=1 ;;
+  "") ;;
+  *) echo "desk-paths: unknown argument '$1' (only --front is understood)" >&2; exit 64 ;;
+esac
+
+if [ -z "$front_only" ]; then
+  state="$(registry_state_dir_name)" || {
+    echo "desk-paths: the estate file names no readable STATE_DIR_NAME" >&2
+    exit 78
+  }
+  base="$HOME/.local/state/$state"
+fi
 # EVERY LINE GOES THROUGH `emit`, not only the ones a key's regex guards. The
 # two conf-derived values are checked in front_value, where the refusal can
 # name the ESTATE key an operator would edit; this is the backstop for the
@@ -57,8 +90,10 @@ emit() { # <output key> <value>
   esac
   printf '%s=%s\n' "$1" "$2"
 }
-emit dir  "$base/desk"
-emit sock "$base/desk.sock"
+if [ -z "$front_only" ]; then
+  emit dir  "$base/desk"
+  emit sock "$base/desk.sock"
+fi
 
 # THE FRONT'S THREE LINES, printed only when the estate names them. A desk
 # with no front has no origin, no providers and no key, and must not be

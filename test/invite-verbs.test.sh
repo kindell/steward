@@ -298,5 +298,104 @@ if [ "$rc" -ne 0 ]; then ok "a row that moved under the revoke is refused"; else
 has "and the redemption survives" "$(cat "$R9/invites.d/$R9ID.conf")" 'STATE="redeemed"'
 has "with its login intact" "$(cat "$R9/invites.d/$R9ID.conf")" 'REDEEMED_LOGIN="lee-host-a"'
 
+echo "== the link's mount is the ESTATE's, and the three cases are three links =="
+# THE FAULT THIS SECTION EXISTS TO CONSTRUCT. Until 2026-09-18 the link was
+# "$origin/desk/invite/$token" with the mount written into bin/steward, while the
+# route the server answers on is built from the estate's DESK_PREFIX. An estate
+# that mounts at the root - a legal, deliberate value - printed invitations at
+# /desk/invite/<token> while the route lived at /invite/<token>. Measured on
+# loopback in both directions: the 404 and the 403 swap places when the mount
+# does, and 403 is the identity gate answering a stranger - which is exactly what
+# an invited person is. The invite route is placed BEFORE that gate for that
+# reason, and the link was the one thing that never reached it.
+#
+# EVERY EXISTING ASSERTION IN THIS FILE WAS BLIND TO IT, and not by accident:
+# this fixture's estate names no DESK_PREFIX, so the default applied and the
+# pinned string matched. The suite could not construct the condition, which is
+# why it stayed green through the whole life of the bug. Six greps across three
+# suites pin the default mount; all six still pass, because a fixture that never
+# varies the key cannot see a fault that lives in the key.
+# A PRINCIPAL PER CASE, and the first draft did not have one: the verb refuses a
+# second open invitation for the same principal, so all four calls came back with
+# the same rc 65 and the same text. The control above caught it on the first run -
+# three identical answers - which is the whole reason it is written as three
+# DIFFERENT links rather than as three correct ones.
+# THE CASE NAME IS AN ARGUMENT, NOT A COUNTER. A counter incremented inside this
+# function is incremented in the subshell of the `$(...)` that calls it and never
+# in the caller, so every case would reuse the first name and every case after the
+# first would hit the same rc 65. That was the second thing the control caught,
+# and it is the same class as the first: the fixture, not the product.
+mount_link() { # <case name> <conf line, or nothing> -> the link, or 'RC=<rc>: <text>'
+  local _case="$1" _extra="${2-}"
+  { printf 'ESTATE_NAME="fixture"\nDESK_ORIGIN="https://desk.example.test"\n'
+    [ -n "$_extra" ] && printf '%s\n' "$_extra"
+  } > "$ROOT/estate/steward.conf"
+  local _o _rc
+  _o="$(bash "$S" invite issue --name "Mount Case" --principal "$_case" \
+          --entity acme --host host-a 2>&1)"; _rc=$?
+  if [ "$_rc" -ne 0 ]; then printf 'RC=%s: %s' "$_rc" "$(printf '%s' "$_o" | tr '\n' ' ')"; return; fi
+  printf '%s\n' "$_o" | grep -o 'https://desk.example.test[A-Za-z0-9/_-]*/invite/[A-Za-z0-9_-]*' | head -1
+}
+absent_link="$(mount_link mount-absent)"
+root_link="$(mount_link mount-root 'DESK_PREFIX=""')"
+named_link="$(mount_link mount-named 'DESK_PREFIX="/kontor"')"
+
+# THE CONTROL, AND ITS ANSWER WRITTEN BEFORE THE RUN. The likeliest fault is not
+# in the product but in this fixture: if rewriting the conf never reaches the
+# verb, every case gets the same mount while each assertion below still passes on
+# the default case and proves nothing about the other two.
+#
+# AND IT COMPARES MOUNTS, NOT LINKS. The first draft compared the three LINKS,
+# which differ by their tokens whatever the mount does - so it was green against
+# the unfixed product, where all three mounts are the hardcoded default. A
+# control that passes under the fault it was written for is the thing being
+# guarded against, one level up. Stripping origin and token is what makes the
+# three answers comparable: /desk, the empty string, /kontor.
+mount_of() { local _l="$1"; _l="${_l#https://desk.example.test}"; printf '%s' "${_l%/invite/*}"; }
+absent_mount="$(mount_of "$absent_link")"
+root_mount="$(mount_of "$root_link")"
+named_mount="$(mount_of "$named_link")"
+if [ "$absent_mount" != "$root_mount" ] && [ "$root_mount" != "$named_mount" ] \
+   && [ "$absent_mount" != "$named_mount" ]; then
+  ok "three estates give three different mounts"
+else
+  bad "three estates give three different mounts" \
+      "absent='$absent_mount' root='$root_mount' named='$named_mount' (links: $absent_link | $root_link | $named_link)"
+fi
+# ABSENT means the estate said nothing and the product's default stands. The
+# value is not retyped here either: it is read from the one file that declares
+# it, so a suite that agreed with a hardcoded '/desk' could not notice the
+# default moving.
+default_mount="$(sed -n "s/^export const DEFAULT_MOUNT = '\\([^']*\\)';.*/\\1/p" "$here/desk/mount.mjs" | head -1)"
+is  "the suite reads the product's default rather than restating it" \
+    "$([ -n "$default_mount" ] && echo yes || echo no)" "yes"
+case "$absent_link" in
+  "https://desk.example.test$default_mount/invite/"*) ok "an estate naming no prefix gets the product's default mount" ;;
+  *) bad "an estate naming no prefix gets the product's default mount" "$absent_link" ;;
+esac
+# PRESENT-AND-EMPTY IS AN ANSWER, not an absence. This is the case that was
+# broken, and the `no` beside the `has` is what makes it a measurement: a link
+# that merely CONTAINS /invite/ would also match the old, wrong string.
+case "$root_link" in
+  https://desk.example.test/invite/*) ok "an estate mounted at the root gets a link at the root" ;;
+  *) bad "an estate mounted at the root gets a link at the root" "$root_link" ;;
+esac
+no  "and the root estate's link carries no default mount" "$root_link" "/desk/invite/"
+case "$named_link" in
+  https://desk.example.test/kontor/invite/*) ok "an estate naming its own prefix gets it" ;;
+  *) bad "an estate naming its own prefix gets it" "$named_link" ;;
+esac
+# A MALFORMED MOUNT REFUSES AND NAMES THE KEY, rather than being trimmed into
+# something that works. A value quietly repaired is a value nobody fixes, and
+# the trailing slash is the exact shape the mount's expression rejects.
+bad_out="$(mount_link mount-bad 'DESK_PREFIX="/desk/"')"
+case "$bad_out" in
+  RC=78:*DESK_PREFIX*) ok "a malformed mount refuses with rc 78 and names the key" ;;
+  *) bad "a malformed mount refuses with rc 78 and names the key" "$bad_out" ;;
+esac
+no  "and no link is printed on that refusal" "$bad_out" "https://desk.example.test"
+# THE FIXTURE IS PUT BACK, so nothing after this section inherits a mount.
+printf 'ESTATE_NAME="fixture"\nDESK_ORIGIN="https://desk.example.test"\n' > "$ROOT/estate/steward.conf"
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

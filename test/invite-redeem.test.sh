@@ -29,7 +29,15 @@ echo "invite-redeem"
 mkdir -p "$FX/product/bin" "$FX/product/lib" "$FX/product/linux" "$FX/product/desk/bin"
 cp "$here/bin/steward"      "$FX/product/bin/steward"
 cp "$here/lib/registry.sh"  "$FX/product/lib/registry.sh"
-chmod 755 "$FX/product/bin/steward"
+# THE MOUNT'S TWO FILES, because the fixture stands in for a DEPLOYED tree and a
+# deployed tree has them - linux/deploy-manifest ships both. `invite issue` asks
+# desk/bin/desk-paths where this estate's desk is mounted and reads the product's
+# default out of desk/mount.mjs; a fixture product missing either would make the
+# verb refuse for a reason no real installation has, which is a fixture measuring
+# itself. They are COPIED, not stubbed: the point is that the real reader runs.
+cp "$here/desk/bin/desk-paths" "$FX/product/desk/bin/desk-paths"
+cp "$here/desk/mount.mjs"      "$FX/product/desk/mount.mjs"
+chmod 755 "$FX/product/bin/steward" "$FX/product/desk/bin/desk-paths"
 # deploy-self: the stub deploys a skeleton into EVERY home that has none, the
 # way the real per-host verb does. It is also THE HOOK the two concurrency
 # tests hang off: a file dropped by the test makes something else change the
@@ -78,10 +86,18 @@ chmod 700 "$ROOT/invites.d" "$ROOT/logins.d"
 # the estate's label prefixes, socket and token name. A fixture that named only
 # DESK_ORIGIN and the hub failed there with "wrote it but it does not load back"
 # - a refusal about the fixture, wearing the shape of a refusal about the code.
+#
+# DESK_PREFIX IS NAMED HERE FOR THE SAME REASON THE ORIGIN IS. Three greps below
+# pin 'https://desk.example.test/desk/invite/', and until 2026-09-18 they pinned
+# it while this estate named no mount - so they were true because the product's
+# default matched, not because the estate had chosen. A suite that pins a path a
+# key decides must set that key; otherwise it measures the default and reports
+# it as the estate's, and it goes on passing when the two stop agreeing.
 cat > "$ROOT/estate/steward.conf" <<'EOF'
 ESTATE_NAME="acme"
 SCHEMA_VERSION="4"
 DESK_ORIGIN="https://desk.example.test"
+DESK_PREFIX="/desk"
 LABEL_PREFIX="com.fixture.claude"
 RC_LABEL_PREFIX="fixture: "
 STATE_DIR_NAME="fixture-state"
