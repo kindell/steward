@@ -447,6 +447,34 @@ case "$u" in *"given twice"*) ok ;; *) bad "the refusal does not say the valve w
 case "$u" in *"$FX/home1"*"$FX/home2"*) ok ;; *) bad "the refusal names neither home, so the dropped one is not visible: $u" ;; esac
 case "$u" in *RESULT=OK*) bad "it deployed anyway — a refusal that installs is worse than the silence it replaced: $u" ;; *) ok ;; esac
 
+# ── A ROOT TARGET IS APPLIED ONCE PER HOST, NEVER ONCE PER HOME ────────
+#
+# The manifest's targets are relative to a home and apply prefixes every one of
+# them with $HOME_ROOT, in five independent code paths. A file that must reach an
+# ABSOLUTE path - the account helper under /usr/local/sbin is the shipped case -
+# therefore cannot be an ordinary row: it would land at $HOME_ROOT//usr/local/...,
+# a file in the home with a strange name, silently, once per home.
+#
+# kind=root is the fourth dispatch alongside registry and systemd. The home loop
+# skips it; a pass after the loop applies it once, with its own per-host baseline
+# beside the per-user ones.
+#
+# THE TARGET HERE IS ABSOLUTE AND INSIDE THE FIXTURE. That is not a test-only
+# knob - the production code simply honours an absolute target, and the fixture
+# picks one it owns.
+rig
+mkdir -p "$FX/rootdst"
+printf '#!/bin/bash\necho helper\n' > "$FX/stage/src/linux/helper"
+printf 'linux/helper  %s/rootdst/usr/local/sbin/helper  755  root\n' "$FX" >> "$FX/stage/deploy-manifest"
+u="$(run "$FX/home1")"; rc=$?
+check "root: rc 0"                                 [ "$rc" -eq 0 ]
+check "root: the file is at its ABSOLUTE target"   [ -x "$FX/rootdst/usr/local/sbin/helper" ]
+check "root: nothing was written under the home"   gone "$FX/home1/$FX/rootdst/usr/local/sbin/helper"
+check "root: the per-host baseline was written"    [ -f "$FX/state/root.last-good" ]
+# THE CONTROL. Without it every assertion above would hold on an apply that
+# refused the whole manifest and installed nothing at all.
+check "root: the home rows still landed"           [ -x "$FX/home1/bin/tool-a" ]
+
 # The usage line must not promise a repetition the parser refuses. This is the
 # half of the fix that lives in prose: the guard above only fires AFTER someone
 # wrote the form the documentation invited.
