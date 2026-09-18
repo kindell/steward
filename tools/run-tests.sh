@@ -488,8 +488,59 @@ else
   # md5sum on GNU, md5 on BSD; whichever answers, the 32 hex are read out of its line.
   eg_root="$(printf '%s' "$eg_root_phys" | { md5sum 2>/dev/null || md5 2>/dev/null; } | sed -n 's/.*\([0-9a-f]\{32\}\).*/\1/p' | cut -c1-8)"
   [ -n "$eg_root" ] || eg_root="unhashed"   # a host with neither: said, never a silent blank
+  # THE LENS HAS A VERSION TOO (rule 29). root= and list= describe the guard's
+  # SUBJECT - which estate, which names. Nothing described its CODE, and a guard is
+  # not a constant that reads a changing world: it is under version control and gets
+  # edited on the same days as everything it measures. Measured 2026-09-18: two
+  # receipts from one host, identical root= and identical list=, one RED and one ok,
+  # and the whole difference was one character in the guard's own source on a branch
+  # that had not landed. A second instance the same day, in the other estate: four
+  # edits to one guard between morning and evening, every receipt carrying the same
+  # two digests.
+  #
+  # WHAT IS SAID, and each part earns its place:
+  #   guard=<commit>    the instrument's own commit, from the ESTATE repo
+  #   +dirty            uncommitted changes to the guard COUNTED, never hidden - a
+  #                     working-tree edit is exactly the unreproducible case
+  #   +unlanded         the commit is not reachable from the estate's origin/main, so
+  #                     nobody else can take this number by checking out main
+  #   guard=?           the estate is not a checkout (a deployed home), said loudly
+  #                     rather than left blank
+  #
+  # A FETCH BEFORE THE COMPARISON, because a branch that landed WHILE the suites ran
+  # would otherwise read as unlanded - the run takes half an hour and the fleet merges
+  # inside that window several times a day. It is one ls-remote-shaped fetch of a
+  # single ref, it is allowed to fail, and a failure says so instead of quietly
+  # answering from a stale ref.
+  eg_guard="?"
+  if git -C "$STEWARD_ESTATE_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    eg_guard="$(git -C "$STEWARD_ESTATE_ROOT" log -1 --format=%h -- test/leak-guard.test.sh 2>/dev/null)"
+    [ -n "$eg_guard" ] || eg_guard="untracked"
+    # Uncommitted changes to the guard itself. --porcelain is empty or it is not.
+    [ -n "$(git -C "$STEWARD_ESTATE_ROOT" status --porcelain -- test/leak-guard.test.sh 2>/dev/null)" ] &&       eg_guard="$eg_guard+dirty"
+    # INTO A REF OF OUR OWN, NOT FETCH_HEAD. FETCH_HEAD is one file per repository, and
+    # the estate checkout is SHARED: this host runs two sessions out of one home against
+    # one estate root, and both of them gate. Two runs overlapping would write the same
+    # file and read each other's answer. It is the cheap case today - both fetch the same
+    # branch, so the value agrees - but "two runs, one instrument" is the family this
+    # whole field exists to close, and leaving it in the mechanism that reports it would
+    # be the guard failing its own rule.
+    #
+    # The ref carries the pid, is deleted immediately, and is deleted again on the way out
+    # of the failure branch - a fetch that half-succeeded must not leave a ref behind in
+    # somebody's estate checkout.
+    _eg_ref="refs/tmp/guard-landed-$$"
+    if git -C "$STEWARD_ESTATE_ROOT" fetch -q origin "main:$_eg_ref" 2>/dev/null; then
+      git -C "$STEWARD_ESTATE_ROOT" merge-base --is-ancestor \
+        "$(git -C "$STEWARD_ESTATE_ROOT" log -1 --format=%H -- test/leak-guard.test.sh 2>/dev/null)" \
+        "$_eg_ref" 2>/dev/null || eg_guard="$eg_guard+unlanded"
+    else
+      eg_guard="$eg_guard+unfetched"
+    fi
+    git -C "$STEWARD_ESTATE_ROOT" update-ref -d "$_eg_ref" 2>/dev/null || :
+  fi
   eg_tag="designated"; [ "$eg_src" = config ] && eg_tag="designated:config"
-  eg_tag="$eg_tag, root=$eg_root, list=$eg_digest"
+  eg_tag="$eg_tag, root=$eg_root, list=$eg_digest, guard=$eg_guard"
   if [ "$eg_rc" -eq 0 ]; then estate_guard="ok($eg_tag)"; printf '  ok     %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
   else estate_guard="RED($eg_tag)"; red=$((red+1)); printf '  RED    %-34s %s\n' "estate leak-guard ($eg_who)" "$eg_n"
        printf '%s\n' "$eg_out" | grep -E '^\s+/|^FAIL' | head -12 | sed 's/^/         /'
