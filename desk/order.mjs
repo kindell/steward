@@ -96,7 +96,17 @@ export function orderId(now = Date.now(), rnd = randomBytes) {
 // THE ALLOWLIST IS A VALUE, NOT A CONDITION, so that adding an action is one line in
 // one place and the validator cannot be made to accept something by a caller that
 // forgot to check. v1 carries the actions the services spec names.
-export const ACTIONS = ['claude-login', 'start-session', 'forge-login', 'request-rig', 'request-session'];
+// `invite-redeem` IS NOT A BUTTON and that is why it was not in the spec's table of
+// v1 actions: the five there are things a person does once they are already known.
+// This one is what makes them known, and it is ordered by the invitation page rather
+// than by a form on /desk/me.
+//
+// IT BELONGS IN THE SAME ALLOWLIST ANYWAY. The spool is the only thing the server
+// writes, so every order goes through this list or the applying side is handed
+// something no validator ever looked at. Leaving it out would have meant the
+// validator refusing the one order apply can actually run - which it did, across two
+// branches, until this line.
+export const ACTIONS = ['invite-redeem', 'claude-login', 'start-session', 'forge-login', 'request-rig', 'request-session'];
 
 // validateOrder - the services spec's list, IN ITS ORDER, and the order is part of
 // the contract. Cheap structural refusals come before anything that needs the key or
@@ -148,4 +158,53 @@ export function validateOrder(req, env) {
       origin: env.origin || 'tailnet',
     },
   };
+}
+
+// appendOrder - the ONLY write the server makes, and the only one it will ever make.
+//
+// THE DIRECTORY'S MODE IS SET ON EVERY WRITE, and the second call is not redundant:
+// mkdir's `mode` is masked by the umask, so a spool created under 022 comes out 0755
+// and the argument that asked for 0700 is the thing that reads as if it worked. The
+// chmod is what actually makes it 0700.
+//
+// IT SETS RATHER THAN CHECKS, and the comment says so on purpose. A directory the
+// group or the world can write is a directory where somebody else chooses what a
+// privileged process does, so this closes it every time rather than refusing and
+// leaving it open. WHAT IT DOES NOT DO is verify ownership or refuse a symlink, the
+// way the registry's own loaders do for their registers - the spool is created and
+// owned by this server, so that chain has no second writer to disagree with yet. If
+// the spool ever becomes something an operator places by hand, this is the line that
+// has to grow those two refusals, and this paragraph is the record that it has not.
+//
+// WRITTEN TO A TEMPORARY NAME AND RENAMED, because the applying side scans the
+// directory and a half-written order is a parse failure it would move aside with a
+// receipt. rename(2) within one directory is atomic, so the applier sees a whole file
+// or no file - never a partial one. The temporary name carries a dot prefix so a
+// scan that globs *.json cannot pick it up even in the instant before the rename.
+export function appendOrder(fs, dir, order) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const tmp = dir + '/.' + order.id + '.json.tmp';
+  const dst = dir + '/' + order.id + '.json';
+  fs.writeFileSync(tmp, JSON.stringify(order) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, dst);
+  return dst;
+}
+
+// openActionsFor - which actions this principal already has queued, for the one-open-
+// order-per-action rule. READ FROM THE SPOOL AND NOT FROM A SNAPSHOT: the snapshot is
+// a generation old by construction, and two orders written between two generations
+// would both pass a check made against it.
+export function openActionsFor(fs, dir, principal) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  for (const n of names) {
+    if (!n.endsWith('.json') || n.startsWith('.')) continue;
+    try {
+      const o = JSON.parse(fs.readFileSync(dir + '/' + n, 'utf8'));
+      if (o && o.principal === principal && typeof o.action === 'string') out.push(o.action);
+    } catch { /* a file the server did not write, or a partial one: not an open order */ }
+  }
+  return out;
 }

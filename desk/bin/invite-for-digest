@@ -1,0 +1,96 @@
+#!/bin/bash
+# desk/bin/invite-for-digest <sha256 hex> - is this digest an OPEN invitation?
+#
+# THE DESK HAS TWO LANGUAGES AND MUST NOT HAVE TWO OPINIONS about what an invitation
+# is. The registry already answers this - registry_invite_for_digest finds the row and
+# registry_invite_load computes INVITE_EFFECTIVE_STATE, which is where `expired` comes
+# from: the stored vocabulary is three words and expiry is a MEASUREMENT taken on
+# reading, not a fourth state somebody has to write. A Node process cannot source a
+# bash library, so this is the bridge, exactly as desk/bin/principal-for-login is for
+# identity and desk/bin/desk-paths is for the two paths.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# HONEST TO THE JOURNAL, UNIFORM TO THE BROWSER, and the split is the whole point.
+#
+# The page must answer the SAME 404 for an unknown token, a used one and an expired
+# one - otherwise it is an oracle: a stranger with a list of guesses learns which of
+# them were once real invitations, and when they were spent. That is the same
+# reasoning authCallback's refusals already carry.
+#
+# But an OPERATOR reading the journal needs to know which it was, because "the link I
+# sent yesterday" and "a link nobody ever issued" send them to different places.
+#
+# SO THE REFUSALS CARRY TWO CODES, AND THAT IS NOT AN ORACLE: the page answers 404 to
+# all of them either way, so nothing a visitor can observe changes. The codes are for
+# the CALLER, which is the desk, and they decide one thing only - whether the event is
+# worth a line in the journal.
+#
+#   rc 1   no invitation carries that digest. That is the PROBING case and it is
+#          indistinguishable from noise: a route a stranger can reach that writes a
+#          line per request is a log-flooding surface, and the desk's own rule already
+#          says ordinary refusals on a shared tailnet must never fill a log.
+#   rc 69  an invitation exists and is not open - redeemed, revoked, expired. THAT is
+#          the line an operator wants: somebody used a real link and it did not work,
+#          and the reason is on stderr beside the code.
+#
+# THE DIGEST AND NEVER THE TOKEN. The caller digests what it was given and passes the
+# digest; the register stores only the digest for the same reason. Nothing that can
+# open a door travels through this argv.
+set -uo pipefail
+here="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${STEWARD_REGISTRY_LIB:-}" ]; then
+  # shellcheck source=/dev/null
+  . "$STEWARD_REGISTRY_LIB" || exit 78
+elif [ -f "$here/../../lib/registry.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$here/../../lib/registry.sh" || exit 78
+else
+  echo "invite-for-digest: the registry library was found in neither layout (from $here)" >&2
+  exit 78
+fi
+
+[ $# -eq 1 ] || { echo "usage: invite-for-digest <sha256 hex digest>" >&2; exit 64; }
+
+# THE FORM IS CHECKED HERE AND NOT ONLY BY THE LOOKUP. A malformed digest cannot match
+# any row, so the lookup would answer "no invitation" - and an operator reading that in
+# the journal would go looking for an invitation that was never the problem.
+case "$1" in
+  *[!0-9a-f]*|"") echo "invite-for-digest: not a sha256 hex digest" >&2; exit 64 ;;
+esac
+[ "${#1}" -eq 64 ] || { echo "invite-for-digest: not a sha256 hex digest (${#1} characters)" >&2; exit 64; }
+
+# THE LOOKUP'S OWN rc IS KEPT APART, because it answers two different things with
+# two different repairs:
+#
+#   1   no row carries that digest - the probing case, and silent by design.
+#   65  MORE THAN ONE ROW CARRIES IT. On the identity side this desk treats "two rows
+#       claim it" as an ordinary event, and it is: two people can be handed the same
+#       work address, and the fixture has exactly that pair. A TOKEN IS NOT AN ADDRESS.
+#       It is 20 random bytes, so two rows sharing one digest is a duplicated row or a
+#       corrupted register, never a coincidence somebody arranged. That is worth a
+#       line, and folding it into "no invitation carries that digest" would send an
+#       operator looking for an invitation when the register is the thing that broke.
+#   78  the register would not load at all, which is not about this digest.
+id="$(registry_invite_for_digest "$1" 2>/dev/null)" || lookup_rc=$?
+case "${lookup_rc:-0}" in
+  0) : ;;
+  65) echo "invite-for-digest: more than one invitation carries that digest - the register is ambiguous and nothing will be opened on it" >&2; exit 69 ;;
+  78) echo "invite-for-digest: the invitation register would not load" >&2; exit 78 ;;
+  *)  echo "invite-for-digest: no invitation carries that digest" >&2; exit 1 ;;
+esac
+
+registry_invite_load "$id" >/dev/null 2>&1 || {
+  echo "invite-for-digest: '$id' matched but could not be read" >&2
+  exit 69
+}
+
+# INVITE_EFFECTIVE_STATE, NOT INVITE_STATE. The stored word says what somebody wrote;
+# the effective one says what is true now, and an invitation whose validity ran out
+# while nobody looked at it must read as expired the first time it is read.
+case "${INVITE_EFFECTIVE_STATE:-}" in
+  open) printf '%s\n' "$id" ;;
+  redeemed) echo "invite-for-digest: '$id' was already redeemed" >&2; exit 69 ;;
+  revoked)  echo "invite-for-digest: '$id' was revoked" >&2; exit 69 ;;
+  expired)  echo "invite-for-digest: '$id' expired at ${INVITE_EXPIRES_AT:-unknown}" >&2; exit 69 ;;
+  *)        echo "invite-for-digest: '$id' has no readable state" >&2; exit 69 ;;
+esac

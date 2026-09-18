@@ -21,10 +21,11 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
+import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, unlinkSync, rmSync, existsSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const SERVE = fileURLToPath(new URL('../serve.mjs', import.meta.url));
 const LOOKUP_BIN = fileURLToPath(new URL('../bin/principal-for-login', import.meta.url));
@@ -391,6 +392,205 @@ test('a malformed prefix refuses at start and names the key', async () => {
   const r = await runToExit(childEnv({ STEWARD_DESK_SOCK: sock, STEWARD_DESK_PREFIX: '/desk/' }));
   assert.equal(r.code, 78);
   assert.match(r.err, /DESK_PREFIX/);
+});
+
+// ── THE INVITATION PAGE, THE ONLY PAGE A STRANGER CAN REACH ─────────────────
+// EVERY WAY A TOKEN CAN BE NO GOOD GETS ONE ANSWER. Unknown, malformed, already
+// redeemed, revoked or expired all produce the SAME 404 an unknown path produces.
+// Anything else is an oracle: a stranger working through a list of guesses would
+// learn which of them were once real invitations, and roughly when they were spent.
+// The same reasoning authCallback's uniform refusals already carry.
+test('an unknown token is the same 404 as an unknown path', async () => {
+  const unknown = await get('/desk/no-such-route-at-all', A);
+  const badToken = await get('/desk/invite/' + 'z'.repeat(40), A);
+  assert.equal(badToken.status, 404);
+  assert.equal(badToken.body, unknown.body, 'byte for byte, or the page is an oracle');
+});
+
+// A TOKEN IS ONE PATH SEGMENT. A value with a slash in it is not a token that failed
+// to match - it is a different route being asked for, and it gets that route's answer.
+test('a token carrying a slash is a 404 and never reaches the register', async () => {
+  assert.equal((await get('/desk/invite/aa/bb', A)).status, 404);
+});
+
+test('an empty token is a 404', async () => {
+  assert.equal((await get('/desk/invite/', A)).status, 404);
+});
+
+// ── WHAT THE JOURNAL GETS, AND THE ONE THING IT MUST NOT GET ────────────────
+// THE PAGE IS UNIFORM AND THE JOURNAL IS NOT, and both halves need holding down,
+// because each one protects against the other's failure:
+//
+//   THE PAGE, if it varied, would be an oracle for a stranger with a list of guesses.
+//   THE JOURNAL, if it recorded every refusal, would be a flooding surface for that
+//   same stranger - this is the only route they can reach, so the only cost of a
+//   million guesses would be paid by the operator reading the log afterwards.
+//
+// So the quiet case is the UNKNOWN digest, and the loud case is a REAL invitation
+// that is not open. The first is already pinned by the startup-line assertion further
+// down, which shares this suite's child: if this route ever journals an unknown token
+// again, that test goes red. It caught exactly that while this route was being
+// written, which is why the two are named in each other's comments.
+//
+// This test needs its own child for the opposite reason - it needs a journal with
+// something IN it - and its own estate, because it writes an invitation register the
+// shared fixture deliberately does not have.
+test('a real invitation that is not open answers 404 and leaves the operator a line', async () => {
+  const root = join(T, 'invite-estate');
+  buildEstate(root);
+  // 0700 AND NOT THE DEFAULT. The loader refuses a group- or other-writable register
+  // outright, for the reason it states elsewhere: a row at mode 600 inside a directory
+  // anybody can write to is not protected by its mode, because anybody can rename it
+  // away and drop their own file in under the same name. The first draft of this test
+  // left the mode to the umask, got a 775 directory, and went red - correctly.
+  const invites = join(root, 'invites.d');
+  mkdirSync(invites, { recursive: true, mode: 0o700 });
+
+  // THE TOKEN IS DIGESTED HERE THE WAY THE ROUTE DIGESTS IT, rather than a digest
+  // being pasted in beside a token somebody once hashed. A test that carries both as
+  // literals passes when the two drift apart, and what it then proves is that an
+  // unknown digest 404s - which is a different test, already above, and green.
+  const token = 'tok' + 'A'.repeat(29);
+  const digest = createHash('sha256').update(token).digest('hex');
+  // A ROW THE REGISTER ACTUALLY ACCEPTS, not a sketch of one. Every required key is
+  // here and each value comes from its own vocabulary - RUNTIME and PROVIDER are
+  // closed lists and the timestamps are epoch seconds, all of which this fixture
+  // learned by being refused, one key at a time. That strictness is the point: a row
+  // the loader rejects makes the LOOKUP answer "no invitation carries that digest",
+  // so a sloppy fixture would take the silent path and fail on the journal assertion
+  // while looking like a digest problem. It did, three times, before this comment.
+  //
+  // EXPIRES_AT IS FAR AHEAD ON PURPOSE. The effective state is a measurement taken on
+  // reading, so a row that is both redeemed AND past expiry could be reported either
+  // way; this test is about the redeemed path, and the far date leaves only that.
+  writeFileSync(join(invites, 'inv-0000beef.conf'),
+    // THE NAMES ARE INVENTED, and that is not fastidiousness. The first draft used
+    // this estate's real entity and host because they were the ones in front of me,
+    // and the leak guard went red on the line: a fixture is product source, and a
+    // product that ships a customer's names has shipped them. Nothing here needs a
+    // real name - the loader checks RUNTIME and PROVIDER against closed lists and
+    // takes ENTITY and HOST as free text - so there is no cost to inventing them.
+    'NAME="Gone"\nPRINCIPAL="ghost"\nENTITY="an-entity"\nHOST="a-host"\n' +
+    'RUNTIME="claude-code"\nPROVIDER="claude-max"\nTOKEN_SHA256="' + digest + '"\n' +
+    'ISSUED_BY="a"\nISSUED_AT="1767225600"\nEXPIRES_AT="4070908800"\n' +
+    'STATE="redeemed"\n', { mode: 0o600 });
+
+  const sock = join(T, 'invite-estate.sock');
+  const handle = await spawnUp(childEnv({
+    STEWARD_ESTATE_ROOT: root, STEWARD_DESK_SOCK: sock,
+  }), sock);
+  try {
+    const res = await new Promise((resolve, reject) => {
+      const r = http.request({ socketPath: sock, path: '/desk/invite/' + token, method: 'GET',
+        headers: A, agent: false }, (s) => {
+        let body = ''; s.setEncoding('utf8');
+        s.on('data', (c) => { body += c; });
+        s.on('end', () => resolve({ status: s.statusCode, body }));
+      });
+      r.on('error', reject); r.end();
+    });
+    assert.equal(res.status, 404, 'a spent invitation is the same refusal as an unknown one');
+
+    // THE LINE NAMES THE ROW. "Something was refused" sends an operator nowhere; the
+    // id is what lets them look it up and see it was redeemed on Tuesday.
+    const err = handle.getErr();
+    assert.match(err, /inv-0000beef/, 'the journal names which invitation it was: ' + err);
+    assert.match(err, /redeemed/, 'and what was wrong with it: ' + err);
+
+    // AND THE TOKEN ITSELF IS NOT IN IT. A journal that records the secret turns
+    // every reader of the log into a holder of the invitation.
+    assert.ok(!err.includes(token), 'the journal must not carry the token: ' + err);
+  } finally {
+    await stopSpawned(handle);
+  }
+});
+
+// ── THE PATH THAT ACTUALLY WELCOMES SOMEBODY ───────────────────────────────
+// EVERY OTHER TEST HERE IS A REFUSAL. Until this one the route's success path had
+// never been run: a valid, open invitation presented by somebody the tailnet knows
+// and the register does not. That is the only case the route exists for, and it was
+// the only one with no assertion on it.
+//
+// IT PINS FOUR THINGS, and the last is the one a reload breaks:
+//   the answer is a PAGE and not a redirect - the index refuses a stranger, so a
+//     303 there hands a 403 to the one visitor we invited;
+//   an order is written, with the digest and the tailnet identity;
+//   the page names NOTHING the visitor did not already hold - not the invitation id,
+//     not the order id;
+//   a RELOAD gives the same page and does NOT queue a second order.
+test('a valid invitation is welcomed with a page, one order, and a reload that adds nothing', async () => {
+  const root = join(T, 'open-estate');
+  buildEstate(root);
+  const invites = join(root, 'invites.d');
+  mkdirSync(invites, { recursive: true, mode: 0o700 });
+
+  const token = 'tok' + 'B'.repeat(29);
+  const digest = createHash('sha256').update(token).digest('hex');
+  writeFileSync(join(invites, 'inv-0000cafe.conf'),
+    'NAME="Newcomer"\nPRINCIPAL="newcomer"\nENTITY="an-entity"\nHOST="a-host"\n' +
+    'RUNTIME="claude-code"\nPROVIDER="claude-max"\nTOKEN_SHA256="' + digest + '"\n' +
+    'ISSUED_BY="a"\nISSUED_AT="1767225600"\nEXPIRES_AT="4070908800"\n' +
+    'STATE="open"\n', { mode: 0o600 });
+
+  const sock = join(T, 'open-estate.sock');
+  const deskDir = join(T, 'open-desk');
+  const handle = await spawnUp(childEnv({
+    STEWARD_ESTATE_ROOT: root, STEWARD_DESK_SOCK: sock, STEWARD_DESK_DIR: deskDir,
+  }), sock);
+  const ask = () => new Promise((resolve, reject) => {
+    const r = http.request({ socketPath: sock, path: '/desk/invite/' + token, method: 'GET',
+      headers: { 'tailscale-user-login': 'nobody@example.com' }, agent: false }, (s) => {
+      let body = ''; s.setEncoding('utf8');
+      s.on('data', (c) => { body += c; });
+      s.on('end', () => resolve({ status: s.statusCode, body }));
+    });
+    r.on('error', reject); r.end();
+  });
+  const spool = join(deskDir, 'orders');
+  try {
+    const first = await ask();
+    assert.equal(first.status, 200, 'a page, not a redirect: ' + handle.getErr());
+    assert.match(first.body, /invitation has been received/);
+
+    const after = readdirSync(spool).filter((n) => n.endsWith('.json'));
+    assert.equal(after.length, 1, 'exactly one order');
+    const order = JSON.parse(readFileSync(join(spool, after[0]), 'utf8'));
+    assert.equal(order.action, 'invite-redeem');
+    assert.equal(order.principal, 'inv-0000cafe');
+    assert.equal(order.args.digest, digest);
+    assert.equal(order.args.identity, 'tailscale:nobody@example.com');
+
+    // THE TOKEN IS NOT IN THE ORDER. The register stores only the digest so a readable
+    // register is not a working invitation; an order carrying the token would undo
+    // that decision in a second place, on disk, for as long as the queue is not drained.
+    assert.ok(!readFileSync(join(spool, after[0]), 'utf8').includes(token),
+      'the order must carry the digest and never the token');
+
+    // AND THE PAGE NAMES NOTHING THE VISITOR DID NOT HOLD. They arrived with the
+    // token; the id and the order name are the register's, not theirs.
+    assert.ok(!first.body.includes('inv-0000cafe'), 'the page must not name the row');
+    assert.ok(!first.body.includes(order.id), 'the page must not name the order');
+
+    const second = await ask();
+    assert.equal(second.status, 200, 'a reload is not an error');
+    assert.equal(second.body, first.body, 'and it is the same page, byte for byte');
+    assert.equal(readdirSync(spool).filter((n) => n.endsWith('.json')).length, 1,
+      'a reload must not queue a second redemption');
+  } finally {
+    await stopSpawned(handle);
+  }
+});
+
+// THE INVITATION PAGE RUNS BEFORE THE PRINCIPAL CHECK, and this is what that buys: a
+// login the register has no row for reaches the route instead of the blanket 403 that
+// every other page gives it. An invited person IS a stranger to the register - that is
+// what the invitation is for.
+test('a stranger to the register reaches the route rather than the blanket 403', async () => {
+  const stranger = { 'tailscale-user-login': 'nobody@example.com' };
+  const onIndex = await get('/desk/', stranger);
+  const onInvite = await get('/desk/invite/' + 'z'.repeat(40), stranger);
+  assert.equal(onIndex.status, 403, 'every other page refuses them');
+  assert.equal(onInvite.status, 404, 'the invitation page answers as the route, not as the gate');
 });
 
 test('no login header is 403', async () => {
