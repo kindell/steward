@@ -95,6 +95,18 @@ and no dates, so without it a fourteen-minute run and a three-day-old corpse loo
 alike, and people learn to scroll past the list. Each estate publishes how long a
 full round takes there, so a stale ref can be judged without asking anyone.
 
+A FULL ROUND IS FIFTEEN MINUTES, measured on two estates and not estimated: one
+reported 15m 01s, 15m 15s and 15m 14s over three runs alone on the machine, the
+other 15m 07s. Fourteen seconds of spread across two platforms. A ref older than
+half an hour is therefore a rest.
+
+The first figure offered was 27 minutes, given in good faith and never measured -
+read off a wall clock between starting a run and publishing its receipt, which is
+the run PLUS the reporter's own letters and checks. It made one estate look twice
+as slow as the other and the staleness bound twice as loose as it should be. The
+estate that gave it measured it and withdrew it, with the reason: A NUMBER OTHERS
+BUILD A THRESHOLD ON IS NEVER TOO SMALL TO MEASURE.
+
 A crashed run leaves its ref standing - visible and dateable rather than silent.
 
 THE NAME DISTINGUISHES ESTATES, NOT HANDS. One estate runs several sessions from
