@@ -103,6 +103,20 @@ day the form was adopted this cost four misdirected attributions between three
 estates - a branch credited to the wrong estate twice, a run credited to the wrong
 session twice - and the cost each time was a paragraph in a letter.
 
+A fifth instance followed, of a different and dearer kind: a DECISION sent to one
+hand of a two-hand estate, which the other hand could not see and asked for again.
+The first four were misattributions - corrected afterwards, nobody standing still.
+This one cost a WAIT in real time, and neither party could discover it: the sender
+did not know the word was missing, the waiter did not know it existed.
+
+Two fixes, both on the side that can actually close it. The sender's, which needs
+no form: A DECISION GOES TO EVERY HAND IN AN ESTATE, never to whichever hand wrote
+last. And the estate's own, chosen by the estate that pays for it: the ref name is
+derived from REPO_PATH, so sessions in one home spell themselves apart without
+anyone agreeing on a list, and a third session names itself. Register, slug and bus
+name are untouched - a fleet-wide rename would charge three estates for a problem
+that lives in one home.
+
 No field is being added for it. A form that changed spelling once already should
 not grow on a single day's irritation, and the estate that pays most for the
 ambiguity is the one that declined to propose the change. The number is written
