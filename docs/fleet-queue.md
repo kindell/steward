@@ -70,6 +70,37 @@ results into this file - those rot, and a rotted number used as a reason is a
 mistake this fleet has already made more than once today. Name the branch and let
 `git` answer for it.
 
+## A run in flight lives in git
+
+A gate run exists only as a process on one host, and no enumeration can see it.
+On 2026-09-18 a merge that was correct by every rule invalidated a fourteen-minute
+run on another machine: the tree it measured stopped being the tree that lands.
+The fact WAS in a letter - the runner had said so twenty minutes earlier - and it
+did not reach the moment of decision, which is the second half of why letters are
+not state.
+
+    at start    git push origin <sha>:refs/gating/<short>-<host>-<timestamp>
+    at end      git push origin --delete refs/gating/<short>-<host>-<timestamp>
+    before a merge   git ls-remote origin 'refs/gating/*' - and do not merge over
+                     somebody else's run
+
+The first spelling adopted was `refs/gating/<sha>`, and three estates measured it
+broken within minutes. A PAIR gates the same sha by definition, so that spelling
+cannot represent two halves: the second push is a silent no-op with rc 0, and the
+first half to finish makes the other invisible while it still runs. It broke in
+the case it exists for.
+
+The host says who to ask. The timestamp is not decoration: ls-remote returns names
+and no dates, so without it a fourteen-minute run and a three-day-old corpse look
+alike, and people learn to scroll past the list. Each estate publishes how long a
+full round takes there, so a stale ref can be judged without asking anyone.
+
+A crashed run leaves its ref standing - visible and dateable rather than silent.
+
+What this does NOT solve, so nobody reads it as more than it is: the race between
+the push and the merge is narrower but not zero, a host with no network to origin
+still runs blind, and rollouts and provenance checks have no ref at all.
+
 ## Open
 
 | item | held | note |
