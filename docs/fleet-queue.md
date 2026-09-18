@@ -52,5 +52,5 @@ mistake this fleet has already made more than once today. Name the branch and le
 
 ## Done today
 
-The manifest rows for what deployed code executes; three rollouts; the estate
+The manifest rows for what deployed code executes; five rollouts; the estate
 leak-guard's collision rule; the desk invitation route.
