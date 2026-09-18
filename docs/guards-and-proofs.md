@@ -1405,9 +1405,10 @@ the same clause.
 
 ### Why every guess was wrong the same way
 
-The class's word list is nine words — `commits`, `lines`, `files`, `incidents`
-and their plurals in the estate's own language. Not one of them is `home`,
-`account`, `key` or `host`. **The name is broader than the
+The class's word list is nine words: five English plural counting-nouns —
+`commits`, `lines`, `files`, `sessions`, `incidents` — and the four Swedish
+equivalents of the same nouns. Not one of the nine is `home`, `account`, `key`
+or `host`. **The name is broader than the
 implementation**, so a search built from the name cannot find what the code
 finds, and can only find something else.
 
@@ -1425,6 +1426,13 @@ answer, because the whole chain hung from a description.
 > because the exact spelling of those four was never load-bearing; the point is
 > only that none of the nine names a private artefact. Narrowing the guard, or
 > exempting this file, was the other option and was not taken.
+>
+> The second draft then miscounted, in the one sentence whose subject is a
+> count: it listed four English words and implied four more, which is eight. The
+> list's owner supplied the wording above — five English, four Swedish — and had
+> already run it. Quoting somebody else's data by describing it is the right
+> instinct in the wrong file format; describing it *wrongly* is a different
+> mistake, and it took the person who owned the code to see it.
 
 ### The asymmetry, which is the part to act on
 
