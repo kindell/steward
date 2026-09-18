@@ -1505,6 +1505,23 @@ the rest of the fleet would run:
 GUARD: <estate checkout> 9ca874f [main] uncommitted=2 on-main=yes
 ```
 
+- **The instrument's commit is the file's, not the checkout's.** Both are worth
+  having and they answer different questions. The estate checkout's `HEAD` says
+  *what state the guard stood in*; the last commit that touched the guard's own
+  file says *what code did the measuring*. Only the second survives the estate
+  moving on: a receipt naming the guard file's commit can be re-taken ten commits
+  later, as long as none of them touched the guard. A receipt naming only the
+  checkout sends the next reader to a tree where the guard is byte-identical and
+  the number still cannot be tied to it.
+
+      root=  list=      what the guard measured
+      guard=            which code measured it
+      HEAD, uncommitted what state it stood in
+
+  The first draft of this rule prescribed only the third, because that is what
+  the estate that found the fault happened to print. A second estate built the
+  receipt a day later and reached for the guard file's own commit instead — and
+  that is the field rule 29 exists to require. The rule is corrected to say so.
 - `on-main=no` means the number rests on unlanded code. It may still be a true
   number; it is not a **re-takeable** one, and the difference is the whole of what
   a receipt is for.
